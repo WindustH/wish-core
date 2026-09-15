@@ -1,0 +1,28 @@
+[package]
+name = "wish-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2.0.20"
+# Parses the HTTP-date form of a `retry-after` header.
+httpdate = "1"
+# The library declares only the capabilities it needs (timers for per-attempt timeouts, channels for
+# streaming); whoever runs the program owns the runtime itself.
+tokio = { version = "1", features = ["sync", "time"] }
+# Byte-level stream reading, for bodies that must stay under a ceiling while being read.
+futures-util = "0.3"
+# HTTP client. `default-features = false` on purpose: rustls instead of system OpenSSL and `stream`
+# for SSE bodies, with no auto-decompression, no HTTP/2 and no platform proxy detection until asked.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+# AWS SigV4 request signing: the digests, and the HMAC-SHA256 chain a signature is made of.
+sha2 = "0.10"
+hmac = "0.12"
+# Lowercase hex, for the SHA-256 digests a signature spells its pieces with.
+hex = "0.4"
+# Google ADC service-account keys sign their token assertions with RS256, and their PEM bodies
+# decode as base64. Both routines are the ones the TLS stack already compiles under reqwest's
+# rustls, so nothing new enters the tree.
+ring = "0.17"
+base64 = "0.22"
