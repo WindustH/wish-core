@@ -13,15 +13,15 @@ use crate::protocol::outbound::{AuthProtocol, CredentialField};
 use crate::protocol::outbound::{Source, SourceHeader};
 
 /// The source that answers for a catalog protocol, when there is one.
-pub(crate) fn source(protocol: ModelListProtocol) -> Option<&'static Source> {
-  SOURCES.iter().find(|source| source.protocol == protocol.id())
+pub(crate) fn find_source(protocol: ModelListProtocol) -> Option<&'static Source> {
+  SOURCES.iter().find(|source| source.protocol == protocol.get_id())
 }
 
 /// Every model-list read this crate knows: one entry per readable protocol id.
 const SOURCES: &[Source] = &[
   // The catalog of a subscription sits beside its account endpoint and is read the same way.
   Source {
-    protocol: ModelListProtocol::OpenAiCodexModels.id(),
+    protocol: ModelListProtocol::OpenAiCodexModels.get_id(),
     base_url: Some("https://chatgpt.com"),
     path: Some("/backend-api/codex/models"),
     auth: AuthProtocol::Bearer(None),
@@ -30,14 +30,14 @@ const SOURCES: &[Source] = &[
   // DeepSeek mounts the OpenAI list at `/models`, almost everyone else at `/v1/models`, so the host
   // and the path belong to the caller's own configuration.
   Source {
-    protocol: ModelListProtocol::OpenAiModels.id(),
+    protocol: ModelListProtocol::OpenAiModels.get_id(),
     base_url: None,
     path: None,
     auth: AuthProtocol::Bearer(None),
     headers: &[],
   },
   Source {
-    protocol: ModelListProtocol::QwenModels.id(),
+    protocol: ModelListProtocol::QwenModels.get_id(),
     base_url: None,
     path: None,
     auth: AuthProtocol::Bearer(None),
@@ -45,7 +45,7 @@ const SOURCES: &[Source] = &[
   },
   // Anthropic reads its credential from a header of its own, and dates the API in another.
   Source {
-    protocol: ModelListProtocol::AnthropicModels.id(),
+    protocol: ModelListProtocol::AnthropicModels.get_id(),
     base_url: None,
     path: None,
     auth: AuthProtocol::Header("x-api-key"),
@@ -54,7 +54,7 @@ const SOURCES: &[Source] = &[
   // Google takes the key in `x-goog-api-key` (the `?key=` form is the other spelling of the same
   // thing, and a credential in a URL is a credential in every log line that ever touches it).
   Source {
-    protocol: ModelListProtocol::GoogleModels.id(),
+    protocol: ModelListProtocol::GoogleModels.get_id(),
     base_url: None,
     path: None,
     auth: AuthProtocol::Header("x-goog-api-key"),
@@ -63,7 +63,7 @@ const SOURCES: &[Source] = &[
   // Bedrock's catalog answers the account its signature names, on a host the region decides: the
   // base URL and the path are the caller's facts, and the account's AWS material signs the call.
   Source {
-    protocol: ModelListProtocol::BedrockModels.id(),
+    protocol: ModelListProtocol::BedrockModels.get_id(),
     base_url: None,
     path: None,
     auth: AuthProtocol::SigV4,

@@ -5,11 +5,11 @@
 //! its own: one attempt, and whether a failure is worth another try is the caller's decision.
 //! Paging is the caller's loop too - this reads one page and hands the next page's cursor back.
 
-use super::source::source;
+use super::source::find_source;
 use crate::protocol::error::Error;
 use crate::protocol::http_error;
 use crate::protocol::model_list::{
-  ModelCatalog, ModelListProtocol, Unsupported, page_query, parse_catalog_page,
+  ModelCatalog, ModelListProtocol, Unsupported, build_page_query, parse_catalog_page,
 };
 use crate::protocol::outbound::Credentials;
 use crate::protocol::wire::Transport;
@@ -57,16 +57,17 @@ pub async fn fetch<T: Transport>(
   credentials: &Credentials,
   now: u64,
 ) -> Result<ModelCatalog, Error> {
-  let source = source(protocol)
-    .ok_or_else(|| Error::unsupported("model list", protocol, Unsupported::NoListing.text()))?;
-  let wire_query = page_query(protocol, query.cursor.as_deref(), query.page_size)?;
+  let source = find_source(protocol).ok_or_else(|| {
+    Error::build_unsupported("model list", protocol, Unsupported::NoListing.get_text())
+  })?;
+  let wire_query = build_page_query(protocol, query.cursor.as_deref(), query.page_size)?;
   let call =
-    source.call(Some(&query.base_url), Some(&query.path), &wire_query, credentials, now)?;
+    source.build_call(Some(&query.base_url), Some(&query.path), &wire_query, credentials, now)?;
   let reply = transport.execute(&call).await?;
   if !reply.is_success() {
-    let error = http_error::provider_envelope(reply.status, &reply.body);
-    return Err(error.with_retry_after(reply.retry_after_ms()));
+    let error = http_error::decode_provider_envelope(reply.status, &reply.body);
+    return Err(error.with_retry_after(reply.get_retry_after_ms()));
   }
-  let body = http_error::json_body(protocol.id(), &reply.body)?;
+  let body = http_error::decode_json_body(protocol.get_id(), &reply.body)?;
   parse_catalog_page(protocol, &body)
 }

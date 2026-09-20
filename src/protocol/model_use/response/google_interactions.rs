@@ -22,7 +22,7 @@
 //!   `completion_tokens`, and the `total_*` counters), and thinking is reported beside the
 //!   candidates rather than inside them: it is folded into `output_tokens` the way it is billed.
 //! - A call is read from `name` + `arguments`, or from `tool_name` + `args` in older traffic, and
-//!   errors map to `Error::in_band` with `error.status` as the code.
+//!   errors map to `Error::from_in_band` with `error.status` as the code.
 
 use crate::protocol::error::Error;
 use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
@@ -30,10 +30,10 @@ use serde_json::{Value, json};
 
 pub fn decode(body: &Value) -> Result<Response, Error> {
   if let Some(error) = body.get("error") {
-    return Err(error_object(error));
+    return Err(decode_error_object(error));
   }
   if body.get("status").and_then(Value::as_str) == Some("failed") {
-    return Err(failed_error(body));
+    return Err(decode_failed_error(body));
   }
 
   let mut messages: Vec<Message> = Vec::new();
@@ -45,7 +45,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
         Some("model_output") => {
           let content = decode_blocks(step.get("content"));
           if !content.is_empty() {
-            messages.push(Message::Assistant { content });
+            messages.push(Message::Assistant { metadata: Default::default(), content });
           }
         }
         _ => {}
@@ -77,6 +77,7 @@ fn decode_thought(step: &Value) -> Message {
   }
   let plaintext = text.join("\n");
   Message::Reasoning {
+    metadata: Default::default(),
     plaintext: plaintext.clone(),
     display: plaintext,
     signature: step.get("signature").and_then(Value::as_str).unwrap_or("").to_owned(),
@@ -93,7 +94,12 @@ fn decode_function_call(step: &Value) -> Result<Message, Error> {
   let call_id = step.get("id").and_then(Value::as_str).unwrap_or("");
   let arguments =
     step.get("arguments").or_else(|| step.get("args")).cloned().unwrap_or_else(|| json!({}));
-  Ok(Message::ToolUse { call_id: call_id.to_owned(), name: name.to_owned(), arguments })
+  Ok(Message::ToolUse {
+    metadata: Default::default(),
+    call_id: call_id.to_owned(),
+    name: name.to_owned(),
+    arguments,
+  })
 }
 
 fn decode_blocks(content: Option<&Value>) -> Vec<ContentBlock> {
@@ -125,27 +131,27 @@ fn decode_block(block: &Value) -> Option<ContentBlock> {
 
 /// The failure a `failed` interaction reports: the error object it carries where it has one, and a
 /// plain statement of the status otherwise.
-pub(crate) fn failed_error(body: &Value) -> Error {
+pub(crate) fn decode_failed_error(body: &Value) -> Error {
   match body.get("error") {
-    Some(error) => error_object(error),
-    None => Error::in_band(None, "the interaction ended in failure".to_owned()),
+    Some(error) => decode_error_object(error),
+    None => Error::from_in_band(None, "the interaction ended in failure".to_owned()),
   }
 }
 
-fn error_object(error: &Value) -> Error {
+fn decode_error_object(error: &Value) -> Error {
   let message = error
     .get("message")
     .and_then(Value::as_str)
     .unwrap_or("upstream reported an error without a message");
   let code = error.get("status").and_then(Value::as_str);
-  Error::in_band(code.map(str::to_owned), message.to_owned())
+  Error::from_in_band(code.map(str::to_owned), message.to_owned())
 }
 
 fn decode_stop_reason(body: &Value, has_tool_uses: bool) -> StopReason {
-  stop_reason(body.get("status").and_then(Value::as_str), has_tool_uses)
+  map_stop_reason(body.get("status").and_then(Value::as_str), has_tool_uses)
 }
 
-pub(crate) fn stop_reason(status: Option<&str>, has_tool_uses: bool) -> StopReason {
+pub(crate) fn map_stop_reason(status: Option<&str>, has_tool_uses: bool) -> StopReason {
   match status {
     Some("completed") => {
       if has_tool_uses {
@@ -164,7 +170,7 @@ pub(crate) fn stop_reason(status: Option<&str>, has_tool_uses: bool) -> StopReas
 }
 
 fn decode_usage(body: &Value) -> Usage {
-  usage(body)
+  parse_usage(body)
 }
 
 /// Maps the top-level `usage` object.
@@ -173,7 +179,7 @@ fn decode_usage(body: &Value) -> Usage {
 /// `candidates_token_count`, `total_output_tokens`), the `total_*` counters the preview used, and
 /// the OpenAI-style pair. Thinking is reported beside the candidates rather than inside them, and
 /// is folded into `output_tokens` the way it is billed.
-pub(crate) fn usage(body: &Value) -> Usage {
+pub(crate) fn parse_usage(body: &Value) -> Usage {
   let usage = body.get("usage");
   let field = |names: &[&str]| -> Option<u64> {
     usage.and_then(|usage| names.iter().find_map(|name| usage.get(name))).and_then(Value::as_u64)

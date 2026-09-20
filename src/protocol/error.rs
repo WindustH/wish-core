@@ -1,12 +1,12 @@
-//! Errors, and the one place that decides whether they are worth retrying.
+//! Errors, and the one place that decides whether they are worth retry.
 
 /// Everything that can go wrong on the way to a reply, divided by where it came from: `Build` is a
 /// request this crate refuses to render, `Unsupported` is a feature the protocol it was asked of
 /// does not carry, `Malformed` is an upstream payload that does not fit its
 /// wire, `Upstream` is a failure the service reported, `Transport` is a failure of the network
-/// itself, and `Renewal` is material that had expired before the call could be sent. [`Error::retryable`]
+/// itself, and `Renewal` is material that had expired before the call could be sent. [`Error::is_retryable`]
 /// judges whether a second attempt could help.
-#[derive(Debug, thiserror::Error)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, thiserror::Error)]
 pub enum Error {
   /// The request cannot be rendered for this protocol: an axis the wire has no spelling for, a
   /// mandatory field left out, or a conversation the wire forbids.
@@ -19,11 +19,11 @@ pub enum Error {
   #[error("unsupported {feature} on `{subject}`: {reason}")]
   Unsupported {
     /// The feature that was asked for, in the words its own module uses.
-    feature: &'static str,
+    feature: String,
     /// What it was asked of: a protocol, a wire, a protocol.
     subject: String,
     /// Why the ask cannot be served, in the words the feature's `Unsupported` enum states it.
-    reason: &'static str,
+    reason: String,
   },
   /// The upstream payload does not fit the protocol or this crate's reading of it: a body that is
   /// not the JSON it promised, a delta for a block that never opened, or a body that broke its own
@@ -63,22 +63,26 @@ pub enum Error {
 
 impl Error {
   /// An ask a protocol cannot serve, with the reason its feature states.
-  pub(crate) fn unsupported(
+  pub(crate) fn build_unsupported(
     feature: &'static str,
     subject: impl std::fmt::Display,
     reason: &'static str,
   ) -> Self {
-    Self::Unsupported { feature, subject: subject.to_string(), reason }
+    Self::Unsupported {
+      feature: feature.into(),
+      subject: subject.to_string(),
+      reason: reason.into(),
+    }
   }
 
   /// An upstream failure carried by an HTTP reply.
-  pub(crate) fn http(status: u16, code: Option<String>, message: String) -> Self {
+  pub(crate) fn from_http(status: u16, code: Option<String>, message: String) -> Self {
     Self::Upstream { status: Some(status), code, message, retry_after_ms: None }
   }
 
   /// An upstream failure the protocol reported itself: inside a `2xx` body or a stream event, with
   /// no HTTP status to judge it by.
-  pub(crate) fn in_band(code: Option<String>, message: String) -> Self {
+  pub(crate) fn from_in_band(code: Option<String>, message: String) -> Self {
     Self::Upstream { status: None, code, message, retry_after_ms: None }
   }
 
@@ -89,7 +93,7 @@ impl Error {
   /// safe to replay). A failure reported inside a successful reply, a body that does not fit the
   /// protocol and a request that could not be built are all deterministic.
   #[must_use]
-  pub fn retryable(&self) -> bool {
+  pub fn is_retryable(&self) -> bool {
     match self {
       Error::Build(_) | Error::Unsupported { .. } | Error::Malformed(_) | Error::Renewal { .. } => {
         false
@@ -104,7 +108,7 @@ impl Error {
 
   /// Upstream-provided `retry-after`, in milliseconds, when the failure carried one.
   #[must_use]
-  pub fn retry_after_ms(&self) -> Option<u64> {
+  pub fn get_retry_after_ms(&self) -> Option<u64> {
     match self {
       Error::Upstream { retry_after_ms, .. } => *retry_after_ms,
       _ => None,
@@ -116,7 +120,7 @@ impl Error {
   /// build the client again, not to send the same call over the same material.
   ///
   /// A `401` is that verdict from every wire this crate speaks. A `403` is it only when the AWS
-  /// family says so by name (`ExpiredToken`, `InvalidAccessKeyId`, `UnrecognizedClientException`),
+  /// family says so by get_name (`ExpiredToken`, `InvalidAccessKeyId`, `UnrecognizedClientException`),
   /// because the same status from another service is a permission renewal will not change.
   #[must_use]
   pub fn needs_renewal(&self) -> bool {
@@ -146,7 +150,7 @@ impl Error {
 /// layers above need from a network failure is this, and no more: the report, and whether another
 /// attempt could help. Keeping the crossing narrow is what lets the transport own its own failure
 /// vocabulary while both layers still meet in one [`Error`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TransportFailure {
   /// Whether sending the same call again could plausibly succeed.
   pub retryable: bool,

@@ -38,7 +38,7 @@ use crate::Error;
 use crate::protocol::account_state::{
   AccountState, AccountStateProtocol, Balance, Failure, FailureKind, QuotaWindow,
 };
-use crate::protocol::{lexical, percent_from_ratio};
+use crate::protocol::{convert_ratio_to_percent, read_scalar_text};
 
 /// Reads the open-platform balance body, which needs its `data` object to be one at all.
 ///
@@ -66,11 +66,11 @@ pub fn parse_balance(body: &Value) -> Result<AccountState, Error> {
       message: "the balance service rejected the read".to_owned(),
     });
   }
-  let cash = data.get("cash_balance").and_then(lexical);
+  let cash = data.get("cash_balance").and_then(read_scalar_text);
   if cash.as_deref().is_some_and(|cash| cash.starts_with('-')) {
     warnings.push("cash_balance is negative; the account is in arrears".to_owned());
   }
-  let available = data.get("available_balance").and_then(lexical);
+  let available = data.get("available_balance").and_then(read_scalar_text);
   if failure.is_none()
     && available.as_deref().is_some_and(|left| left.parse::<f64>().is_ok_and(|left| left <= 0.0))
   {
@@ -90,7 +90,7 @@ pub fn parse_balance(body: &Value) -> Result<AccountState, Error> {
       cash,
       granted: None,
       topped_up: None,
-      voucher: data.get("voucher_balance").and_then(lexical),
+      voucher: data.get("voucher_balance").and_then(read_scalar_text),
       credit: None,
       owed: None,
       minor_unit: None,
@@ -128,7 +128,7 @@ pub fn parse_companion(body: &Value) -> Result<AccountState, Error> {
       warnings.push(format!("`{field}` window is not reported"));
       continue;
     };
-    let ratio = limit.get("used_ratio").and_then(lexical);
+    let ratio = limit.get("used_ratio").and_then(read_scalar_text);
     if ratio.is_none() {
       warnings.push(format!("`{field}` reports no used_ratio"));
     }
@@ -140,9 +140,9 @@ pub fn parse_companion(body: &Value) -> Result<AccountState, Error> {
       used: None,
       limit: None,
       remaining: None,
-      used_percent: ratio.as_deref().and_then(percent_from_ratio),
+      used_percent: ratio.as_deref().and_then(convert_ratio_to_percent),
       window: minutes.map(|minutes| json!({ "duration": minutes, "unit": "minutes" })),
-      resets_at: limit.get("reset_time").and_then(lexical),
+      resets_at: limit.get("reset_time").and_then(read_scalar_text),
       reached: ratio
         .as_deref()
         .and_then(|ratio| ratio.parse::<f64>().ok())
@@ -157,8 +157,8 @@ pub fn parse_companion(body: &Value) -> Result<AccountState, Error> {
       name: Some(balance.get("type").and_then(Value::as_str).unwrap_or("booster").to_owned()),
       unit: "credits".to_owned(),
       used: None,
-      limit: balance.get("amount").and_then(lexical),
-      remaining: balance.get("amountLeft").and_then(lexical),
+      limit: balance.get("amount").and_then(read_scalar_text),
+      remaining: balance.get("amountLeft").and_then(read_scalar_text),
       used_percent: None,
       window: None,
       resets_at: None,
@@ -167,7 +167,9 @@ pub fn parse_companion(body: &Value) -> Result<AccountState, Error> {
     });
   }
   let charge_limit = wallet.and_then(|wallet| wallet.get("monthlyChargeLimit"));
-  if let Some(limit) = charge_limit.and_then(|limit| limit.get("priceInCents")).and_then(lexical) {
+  if let Some(limit) =
+    charge_limit.and_then(|limit| limit.get("priceInCents")).and_then(read_scalar_text)
+  {
     let currency = charge_limit.and_then(|limit| limit.get("currency")).and_then(Value::as_str);
     quotas.push(QuotaWindow {
       id: "monthly_charge".to_owned(),
@@ -180,7 +182,7 @@ pub fn parse_companion(body: &Value) -> Result<AccountState, Error> {
       used: wallet
         .and_then(|wallet| wallet.get("monthlyUsed"))
         .and_then(|used| used.get("priceInCents"))
-        .and_then(lexical),
+        .and_then(read_scalar_text),
       limit: Some(limit),
       remaining: None,
       used_percent: None,

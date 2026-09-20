@@ -52,7 +52,7 @@ use serde_json::{Value, json};
 
 use crate::Error;
 use crate::protocol::account_state::{AccountState, AccountStateProtocol, Balance, QuotaWindow};
-use crate::protocol::lexical;
+use crate::protocol::read_scalar_text;
 
 /// Reads the quota payload of a rate-limit frame, which needs `rate_limits` to be one at all.
 ///
@@ -70,14 +70,17 @@ pub fn parse(body: &Value) -> Result<AccountState, Error> {
       id: id.to_owned(),
       name: None,
       unit: "unknown".to_owned(),
-      used: window.get("used").and_then(lexical),
-      limit: window.get("limit").and_then(lexical),
-      remaining: window.get("remaining").and_then(lexical),
-      used_percent: window.get("used_percent").and_then(lexical),
+      used: window.get("used").and_then(read_scalar_text),
+      limit: window.get("limit").and_then(read_scalar_text),
+      remaining: window.get("remaining").and_then(read_scalar_text),
+      used_percent: window.get("used_percent").and_then(read_scalar_text),
       window: window
         .get("window_minutes")
         .map(|minutes| json!({ "duration": minutes, "unit": "minutes" })),
-      resets_at: window.get("reset_at").or_else(|| window.get("resets_at")).and_then(lexical),
+      resets_at: window
+        .get("reset_at")
+        .or_else(|| window.get("resets_at"))
+        .and_then(read_scalar_text),
       reached: None,
       unlimited: None,
     });
@@ -91,7 +94,7 @@ pub fn parse(body: &Value) -> Result<AccountState, Error> {
     if exists {
       balances.push(Balance {
         currency: "credits".to_owned(),
-        available: credits.get("balance").and_then(lexical),
+        available: credits.get("balance").and_then(read_scalar_text),
         total: None,
         cash: None,
         granted: None,
@@ -142,7 +145,7 @@ pub fn parse_usage(body: &Value) -> AccountState {
   let mut quotas = Vec::new();
   let mut warnings = Vec::new();
   if let Some(limit) = body.get("rate_limit").filter(|limit| limit.is_object()) {
-    meter_windows("", limit, &mut quotas);
+    append_meter_windows("", limit, &mut quotas);
   }
   for meter in body.get("additional_rate_limits").and_then(Value::as_array).into_iter().flatten() {
     let Some(name) = meter.get("limit_name").and_then(Value::as_str) else {
@@ -150,7 +153,7 @@ pub fn parse_usage(body: &Value) -> AccountState {
       continue;
     };
     match meter.get("rate_limit").filter(|limit| limit.is_object()) {
-      Some(limit) => meter_windows(name, limit, &mut quotas),
+      Some(limit) => append_meter_windows(name, limit, &mut quotas),
       None => warnings.push(format!("the `{name}` meter reports no rate limit")),
     }
   }
@@ -167,7 +170,7 @@ pub fn parse_usage(body: &Value) -> AccountState {
 
 /// One meter's two windows and the meter's own standing: the account's meter when `name` is empty,
 /// an additional meter (`gpt-reserve`) otherwise.
-fn meter_windows(name: &str, limit: &Value, quotas: &mut Vec<QuotaWindow>) {
+fn append_meter_windows(name: &str, limit: &Value, quotas: &mut Vec<QuotaWindow>) {
   let reached = limit.get("limit_reached").and_then(Value::as_bool);
   for window in ["primary", "secondary"] {
     let key = format!("{window}_window");
@@ -176,15 +179,18 @@ fn meter_windows(name: &str, limit: &Value, quotas: &mut Vec<QuotaWindow>) {
       id: if name.is_empty() { window.to_owned() } else { format!("{name}:{window}") },
       name: (!name.is_empty()).then(|| name.to_owned()),
       unit: "unknown".to_owned(),
-      used: value.get("used").and_then(lexical),
-      limit: value.get("limit").and_then(lexical),
-      remaining: value.get("remaining").and_then(lexical),
-      used_percent: value.get("used_percent").and_then(lexical),
+      used: value.get("used").and_then(read_scalar_text),
+      limit: value.get("limit").and_then(read_scalar_text),
+      remaining: value.get("remaining").and_then(read_scalar_text),
+      used_percent: value.get("used_percent").and_then(read_scalar_text),
       window: value
         .get("limit_window_seconds")
         .and_then(Value::as_u64)
         .map(|seconds| json!({ "duration": seconds / 60, "unit": "minutes" })),
-      resets_at: value.get("reset_at").or_else(|| value.get("resets_at")).and_then(lexical),
+      resets_at: value
+        .get("reset_at")
+        .or_else(|| value.get("resets_at"))
+        .and_then(read_scalar_text),
       reached,
       unlimited: None,
     });
@@ -198,9 +204,9 @@ fn meter_windows(name: &str, limit: &Value, quotas: &mut Vec<QuotaWindow>) {
 pub fn from_headers(headers: &[(String, String)]) -> Option<AccountState> {
   let mut quotas = Vec::new();
   for id in ["primary", "secondary"] {
-    let percent = header(headers, &format!("x-codex-{id}-used-percent"));
-    let window = header(headers, &format!("x-codex-{id}-window-minutes"));
-    let resets_at = header(headers, &format!("x-codex-{id}-reset-at"));
+    let percent = get_header(headers, &format!("x-codex-{id}-used-percent"));
+    let window = get_header(headers, &format!("x-codex-{id}-window-minutes"));
+    let resets_at = get_header(headers, &format!("x-codex-{id}-reset-at"));
     if percent.is_none() && window.is_none() && resets_at.is_none() {
       continue;
     }
@@ -223,7 +229,7 @@ pub fn from_headers(headers: &[(String, String)]) -> Option<AccountState> {
   }
   let mut balances = Vec::new();
   let mut warnings = Vec::new();
-  if header(headers, "x-codex-credits-unlimited").as_deref() == Some("true") {
+  if get_header(headers, "x-codex-credits-unlimited").as_deref() == Some("true") {
     quotas.push(QuotaWindow {
       id: "credits".to_owned(),
       name: None,
@@ -237,7 +243,7 @@ pub fn from_headers(headers: &[(String, String)]) -> Option<AccountState> {
       reached: None,
       unlimited: Some(true),
     });
-  } else if header(headers, "x-codex-credits-has-credits").as_deref() == Some("true") {
+  } else if get_header(headers, "x-codex-credits-has-credits").as_deref() == Some("true") {
     balances.push(Balance {
       currency: "credits".to_owned(),
       available: None,
@@ -267,7 +273,7 @@ pub fn from_headers(headers: &[(String, String)]) -> Option<AccountState> {
 }
 
 /// One header's value, trimmed: an empty header is a header the service did not send.
-fn header(headers: &[(String, String)], name: &str) -> Option<String> {
+fn get_header(headers: &[(String, String)], name: &str) -> Option<String> {
   headers
     .iter()
     .find(|(key, _)| key.eq_ignore_ascii_case(name))

@@ -52,11 +52,11 @@ pub enum ModelUseProtocol {
 
 impl ModelUseProtocol {
   /// Headers this protocol needs besides `content-type` and auth.
-  pub(crate) fn headers(self) -> &'static [(&'static str, &'static str)] {
+  pub(crate) fn get_headers(self) -> &'static [(&'static str, &'static str)] {
     match self {
       ModelUseProtocol::AnthropicMessages(..) => request::anthropic_messages::HEADERS,
       ModelUseProtocol::OpenAiChat(..) => request::openai_chat::HEADERS,
-      ModelUseProtocol::OpenAiResponses(mode) => mode.deployment.headers(),
+      ModelUseProtocol::OpenAiResponses(mode) => mode.deployment.get_headers(),
       ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent => {
         request::google_generate_content::HEADERS
       }
@@ -66,40 +66,40 @@ impl ModelUseProtocol {
     }
   }
 
-  pub(crate) fn render(self, request: &request::Request, stream: bool) -> Result<Value, Error> {
+  pub(crate) fn render(self, request: &request::Request) -> Result<Value, Error> {
     match self {
       ModelUseProtocol::AnthropicMessages(mode) => {
-        request::anthropic_messages::render(request, mode, stream)
+        request::anthropic_messages::render(request, mode)
       }
-      ModelUseProtocol::OpenAiChat(mode) => request::openai_chat::render(request, mode, stream),
+      ModelUseProtocol::OpenAiChat(mode) => request::openai_chat::render(request, mode),
       ModelUseProtocol::OpenAiResponses(variant) => {
-        request::openai_responses::render(request, variant, stream)
+        request::openai_responses::render(request, variant)
       }
       ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent => {
         request::google_generate_content::render(request)
       }
-      ModelUseProtocol::GoogleInteractions => request::google_interactions::render(request, stream),
+      ModelUseProtocol::GoogleInteractions => request::google_interactions::render(request),
       ModelUseProtocol::BedrockConverse => request::bedrock_converse::render(request),
-      ModelUseProtocol::MistralConversations => {
-        request::mistral_conversations::render(request, stream)
-      }
+      ModelUseProtocol::MistralConversations => request::mistral_conversations::render(request),
     }
   }
 
-  /// The streamed form of a resolved path, when the streaming verb differs from the buffered
-  /// one. A protocol whose streamed call uses the same URL returns it unchanged.
-  pub(crate) fn stream_path(self, path: String) -> String {
+  /// Resolve the request's response mode into its wire endpoint.
+  pub(crate) fn resolve_request_path(self, request: &request::Request, path: String) -> String {
+    if !request.stream {
+      return path;
+    }
     match self {
       ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent => {
-        stream::google_generate_content::stream_path(&path)
+        request::google_generate_content::resolve_stream_path(&path)
       }
-      ModelUseProtocol::BedrockConverse => stream::bedrock_converse::stream_path(&path),
+      ModelUseProtocol::BedrockConverse => request::bedrock_converse::resolve_stream_path(&path),
       _ => path,
     }
   }
 
   /// The stream decoder of this protocol, or why it does not have one yet.
-  pub(crate) fn stream_decoder(self) -> Result<StreamDecoder, Error> {
+  pub(crate) fn create_stream_decoder(self) -> Result<StreamDecoder, Error> {
     match self {
       ModelUseProtocol::AnthropicMessages(..) => {
         Ok(StreamDecoder::AnthropicMessages(stream::anthropic_messages::Decoder::new()))
@@ -139,22 +139,26 @@ impl ModelUseProtocol {
     }
   }
 
-  pub(crate) fn http_error(self, status: u16, body: &Value) -> Error {
+  pub(crate) fn decode_http_error(self, status: u16, body: &Value) -> Error {
     match self {
-      ModelUseProtocol::AnthropicMessages(..) => http_error::anthropic_messages(status, body),
-      ModelUseProtocol::OpenAiChat(..) => http_error::openai_chat(status, body),
-      ModelUseProtocol::OpenAiResponses(..) => http_error::openai_responses(status, body),
-      ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent => {
-        http_error::google_generate_content(status, body)
+      ModelUseProtocol::AnthropicMessages(..) => {
+        http_error::decode_anthropic_messages(status, body)
       }
-      ModelUseProtocol::GoogleInteractions => http_error::google_interactions(status, body),
-      ModelUseProtocol::BedrockConverse => http_error::bedrock_converse(status, body),
-      ModelUseProtocol::MistralConversations => http_error::mistral_conversations(status, body),
+      ModelUseProtocol::OpenAiChat(..) => http_error::decode_openai_chat(status, body),
+      ModelUseProtocol::OpenAiResponses(..) => http_error::decode_openai_responses(status, body),
+      ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent => {
+        http_error::decode_google_generate_content(status, body)
+      }
+      ModelUseProtocol::GoogleInteractions => http_error::decode_google_interactions(status, body),
+      ModelUseProtocol::BedrockConverse => http_error::decode_bedrock_converse(status, body),
+      ModelUseProtocol::MistralConversations => {
+        http_error::decode_mistral_conversations(status, body)
+      }
     }
   }
 
   /// The wire's own name, for the errors that say which protocol refused something.
-  pub(crate) fn name(self) -> &'static str {
+  pub(crate) fn get_name(self) -> &'static str {
     match self {
       ModelUseProtocol::AnthropicMessages(..) => "anthropic messages",
       ModelUseProtocol::OpenAiChat(..) => "openai chat",

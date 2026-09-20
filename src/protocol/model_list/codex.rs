@@ -76,6 +76,6 @@ pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
 }
 
 /// The query of a page: the client version, and nothing else.
-pub(crate) fn page_query() -> Vec<(String, String)> {
+pub(crate) fn build_page_query() -> Vec<(String, String)> {
   vec![("client_version".to_owned(), CLIENT_VERSION.to_owned())]
 }

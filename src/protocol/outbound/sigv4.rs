@@ -81,7 +81,7 @@ pub(crate) fn sign(
   let seconds = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |passed| passed.as_secs());
   let days = seconds / 86_400;
   let secs_of_day = seconds % 86_400;
-  let (year, month, day) = civil_from_days(i64::try_from(days).unwrap_or(0));
+  let (year, month, day) = convert_days_to_date(i64::try_from(days).unwrap_or(0));
   let amz_date = format!(
     "{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z",
     secs_of_day / 3600,
@@ -113,12 +113,14 @@ pub(crate) fn sign(
     hex::encode(Sha256::digest(canonical_request.as_bytes()))
   );
 
-  let k_date =
-    hmac_key(format!("AWS4{}", credentials.secret_access_key).as_bytes(), date_stamp.as_bytes())?;
-  let k_region = hmac_key(&k_date, credentials.region.as_bytes())?;
-  let k_service = hmac_key(&k_region, service.as_bytes())?;
-  let k_signing = hmac_key(&k_service, b"aws4_request")?;
-  let signature = hex::encode(hmac_key(&k_signing, string_to_sign.as_bytes())?);
+  let k_date = compute_hmac(
+    format!("AWS4{}", credentials.secret_access_key).as_bytes(),
+    date_stamp.as_bytes(),
+  )?;
+  let k_region = compute_hmac(&k_date, credentials.region.as_bytes())?;
+  let k_service = compute_hmac(&k_region, service.as_bytes())?;
+  let k_signing = compute_hmac(&k_service, b"aws4_request")?;
+  let signature = hex::encode(compute_hmac(&k_signing, string_to_sign.as_bytes())?);
 
   Ok(SigV4Headers {
     x_amz_date: amz_date,
@@ -132,7 +134,7 @@ pub(crate) fn sign(
 
 /// HMAC-SHA256 accepts keys of any length (RFC 2104), so the error is a formality kept for the
 /// day a caller derives keys some other way.
-fn hmac_key(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+fn compute_hmac(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
   let mut mac = Hmac::<Sha256>::new_from_slice(key)
     .map_err(|error| format!("an HMAC rejected its key: {error}"))?;
   mac.update(data);
@@ -141,7 +143,7 @@ fn hmac_key(key: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Days since the epoch to `(year, month, day)`: Howard Hinnant's civil-from-days, the one calendar
 /// a timestamp needs.
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
+fn convert_days_to_date(days: i64) -> (i64, i64, i64) {
   let z = days + 719_468;
   let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
   let doe = z - era * 146_097;

@@ -14,14 +14,14 @@ use crate::protocol::outbound::{AuthProtocol, CredentialField};
 use crate::protocol::outbound::{Source, SourceHeader};
 
 /// The source that answers for an account protocol, when there is one.
-pub(crate) fn source(protocol: AccountStateProtocol) -> Option<&'static Source> {
-  SOURCES.iter().find(|source| source.protocol == protocol.id())
+pub(crate) fn find_source(protocol: AccountStateProtocol) -> Option<&'static Source> {
+  SOURCES.iter().find(|source| source.protocol == protocol.get_id())
 }
 
 /// Every account read this crate knows: one entry per readable protocol id.
 const SOURCES: &[Source] = &[
   Source {
-    protocol: AccountStateProtocol::DeepseekUserBalance.id(),
+    protocol: AccountStateProtocol::DeepseekUserBalance.get_id(),
     base_url: Some("https://api.deepseek.com"),
     path: Some("/user/balance"),
     auth: AuthProtocol::Bearer(None),
@@ -31,7 +31,7 @@ const SOURCES: &[Source] = &[
   // mainland console, `api.moonshot.ai` for a global one. Which host an account lives on is the
   // caller's fact, so it arrives as a base URL override.
   Source {
-    protocol: AccountStateProtocol::KimiOpenBalance.id(),
+    protocol: AccountStateProtocol::KimiOpenBalance.get_id(),
     base_url: Some("https://api.moonshot.cn"),
     path: Some("/v1/users/me/balance"),
     auth: AuthProtocol::Bearer(None),
@@ -40,7 +40,7 @@ const SOURCES: &[Source] = &[
   // The code service serves the plan of a coding subscription from a host of its own, and wants the
   // user agent its own CLI sends. `api.kimi.ai` answers the same path for a global account.
   Source {
-    protocol: AccountStateProtocol::KimiCodeCompanionUsage.id(),
+    protocol: AccountStateProtocol::KimiCodeCompanionUsage.get_id(),
     base_url: Some("https://api.kimi.com"),
     path: Some("/coding/v1/usages"),
     auth: AuthProtocol::Bearer(None),
@@ -52,14 +52,14 @@ const SOURCES: &[Source] = &[
   // Two key families, two endpoints: a platform key (`sk-api-*`) reads the account balance, a
   // token-plan key (`sk-cp-*`) reads the plan's own windows.
   Source {
-    protocol: AccountStateProtocol::MinimaxAccountBalance.id(),
+    protocol: AccountStateProtocol::MinimaxAccountBalance.get_id(),
     base_url: Some("https://api.minimaxi.com"),
     path: Some("/account/query_balance"),
     auth: AuthProtocol::Bearer(None),
     headers: &[],
   },
   Source {
-    protocol: AccountStateProtocol::MinimaxTokenPlanRemains.id(),
+    protocol: AccountStateProtocol::MinimaxTokenPlanRemains.get_id(),
     base_url: Some("https://api.minimaxi.com"),
     path: Some("/v1/token_plan/remains"),
     auth: AuthProtocol::Bearer(None),
@@ -67,7 +67,7 @@ const SOURCES: &[Source] = &[
   },
   // `open.bigmodel.cn` serves the same path to the mainland console: one API, two hosts.
   Source {
-    protocol: AccountStateProtocol::ZaiCodingPlanMonitor.id(),
+    protocol: AccountStateProtocol::ZaiCodingPlanMonitor.get_id(),
     base_url: Some("https://api.z.ai"),
     path: Some("/api/monitor/usage/quota/limit"),
     auth: AuthProtocol::Bearer(None),
@@ -75,7 +75,7 @@ const SOURCES: &[Source] = &[
   },
   // A mainland account reads the same path from `api.siliconflow.cn`'s global twin.
   Source {
-    protocol: AccountStateProtocol::SiliconflowBalance.id(),
+    protocol: AccountStateProtocol::SiliconflowBalance.get_id(),
     base_url: Some("https://api.siliconflow.cn"),
     path: Some("/v1/user/info"),
     auth: AuthProtocol::Bearer(None),
@@ -84,14 +84,14 @@ const SOURCES: &[Source] = &[
   // A key reads its own quota here; the account-wide view of the same service is the credits
   // endpoint, which only a management key is allowed to read.
   Source {
-    protocol: AccountStateProtocol::OpenrouterKeyQuota.id(),
+    protocol: AccountStateProtocol::OpenrouterKeyQuota.get_id(),
     base_url: Some("https://openrouter.ai"),
     path: Some("/api/v1/auth/key"),
     auth: AuthProtocol::Bearer(None),
     headers: &[],
   },
   Source {
-    protocol: AccountStateProtocol::OpenrouterCredits.id(),
+    protocol: AccountStateProtocol::OpenrouterCredits.get_id(),
     base_url: Some("https://openrouter.ai"),
     path: Some("/api/v1/credits"),
     auth: AuthProtocol::Bearer(None),
@@ -99,7 +99,7 @@ const SOURCES: &[Source] = &[
   },
   // The inference router is `router.huggingface.co`; the account this reads is the hub's own.
   Source {
-    protocol: AccountStateProtocol::HuggingfaceWhoamiBilling.id(),
+    protocol: AccountStateProtocol::HuggingfaceWhoamiBilling.get_id(),
     base_url: Some("https://huggingface.co"),
     path: Some("/api/whoami-v2"),
     auth: AuthProtocol::Bearer(None),
@@ -108,7 +108,7 @@ const SOURCES: &[Source] = &[
   // An enterprise workspace reads its own quota, and the workspace travels twice: the path
   // addresses it and a header names it.
   Source {
-    protocol: AccountStateProtocol::QwenWorkspaceQuota.id(),
+    protocol: AccountStateProtocol::QwenWorkspaceQuota.get_id(),
     base_url: Some("https://dashscope.aliyuncs.com"),
     path: Some("/api/v1/workspaces/{workspace_id}/quota"),
     auth: AuthProtocol::Bearer(None),
@@ -117,7 +117,7 @@ const SOURCES: &[Source] = &[
   // Codex asks its account endpoint with the same bearer and the same account header as its model
   // calls.
   Source {
-    protocol: AccountStateProtocol::OpenAiCodexUsage.id(),
+    protocol: AccountStateProtocol::OpenAiCodexUsage.get_id(),
     base_url: Some("https://chatgpt.com"),
     path: Some("/backend-api/wham/usage"),
     auth: AuthProtocol::Bearer(None),

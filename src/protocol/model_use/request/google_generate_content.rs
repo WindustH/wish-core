@@ -121,7 +121,7 @@ fn split_leading_instructions(
   let mut index = 0;
   while let Some(message) = conversation.get(index) {
     let content = match message {
-      Message::System { content } | Message::Developer { content } => content,
+      Message::System { content, .. } | Message::Developer { content, .. } => content,
       _ => break,
     };
     let mut text: Vec<&str> = Vec::new();
@@ -158,16 +158,16 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           "the generateContent wire cannot carry a compacted conversation".to_owned(),
         ));
       }
-      Message::User { content } => {
+      Message::User { content, .. } => {
         if let Some((_, name)) = pending.first() {
-          return Err(missing_response(name));
+          return Err(build_missing_response_error(name));
         }
         push_turn(&mut contents, "user", render_user_parts(content)?);
         index += 1;
       }
       Message::Reasoning { .. } | Message::Assistant { .. } | Message::ToolUse { .. } => {
         if let Some((_, name)) = pending.first() {
-          return Err(missing_response(name));
+          return Err(build_missing_response_error(name));
         }
         let mut parts: Vec<Value> = Vec::new();
         let mut signature: Option<String> = None;
@@ -196,7 +196,7 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
                 push_part(&mut parts, part, &mut signature);
               }
             }
-            Message::Assistant { content } => {
+            Message::Assistant { content, .. } => {
               for block in content {
                 match block {
                   ContentBlock::Text { text } => {
@@ -211,7 +211,7 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
                 }
               }
             }
-            Message::ToolUse { call_id, name, arguments } => {
+            Message::ToolUse { call_id, name, arguments, .. } => {
               let mut function_call = json!({"name": name, "args": arguments});
               if !call_id.is_empty() {
                 function_call["id"] = json!(call_id);
@@ -234,7 +234,7 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
         }
         let mut parts: Vec<Value> = Vec::new();
         let mut used = 0;
-        while let Some(Message::ToolResult { call_id, name, content }) =
+        while let Some(Message::ToolResult { call_id, name, content, .. }) =
           conversation.get(index + used)
         {
           match pending.get(used) {
@@ -254,7 +254,7 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           used += 1;
         }
         if used != pending.len() {
-          return Err(missing_response(&pending[used].1));
+          return Err(build_missing_response_error(&pending[used].1));
         }
         pending.clear();
         push_turn(&mut contents, "user", parts);
@@ -263,7 +263,7 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
     }
   }
   if let Some((_, name)) = pending.first() {
-    return Err(missing_response(name));
+    return Err(build_missing_response_error(name));
   }
   match contents.first() {
     Some((role, _)) if *role != "user" => Err(Error::Build(
@@ -275,7 +275,7 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   }
 }
 
-fn missing_response(name: &str) -> Error {
+fn build_missing_response_error(name: &str) -> Error {
   Error::Build(format!(
     "tool call `{name}` is not followed by its tool result on the generateContent wire"
   ))
@@ -337,4 +337,20 @@ fn render_tool_choice(choice: ToolChoice) -> &'static str {
     ToolChoice::None => "NONE",
     ToolChoice::Required => "ANY",
   }
+}
+
+/// The streaming endpoint for the same request body.
+pub fn resolve_stream_path(path: &str) -> String {
+  let mut url = path.to_owned();
+  if url.contains(":generateContent") && !url.contains(":streamGenerateContent") {
+    url = url.replace(":generateContent", ":streamGenerateContent");
+  }
+  if url.contains('?') {
+    if !url.contains("alt=sse") {
+      url.push_str("&alt=sse");
+    }
+  } else {
+    url.push_str("?alt=sse");
+  }
+  url
 }

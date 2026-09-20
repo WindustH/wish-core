@@ -92,18 +92,18 @@ pub struct AdcTokens {
 pub fn parse(text: &str) -> Result<Adc, Error> {
   let value = serde_json::from_str::<Value>(text)
     .map_err(|error| Error::Build(format!("the ADC file is not JSON: {error}")))?;
-  let kind = string_field(&value, "type")?;
+  let kind = read_string_field(&value, "type")?;
   match kind.as_str() {
     "authorized_user" => Ok(Adc::AuthorizedUser {
-      client_id: string_field(&value, "client_id")?,
-      client_secret: string_field(&value, "client_secret")?,
-      refresh_token: string_field(&value, "refresh_token")?,
-      token_uri: string_field(&value, "token_uri")?,
+      client_id: read_string_field(&value, "client_id")?,
+      client_secret: read_string_field(&value, "client_secret")?,
+      refresh_token: read_string_field(&value, "refresh_token")?,
+      token_uri: read_string_field(&value, "token_uri")?,
     }),
     "service_account" => Ok(Adc::ServiceAccount {
-      client_email: string_field(&value, "client_email")?,
-      private_key: string_field(&value, "private_key")?,
-      token_uri: string_field(&value, "token_uri")?,
+      client_email: read_string_field(&value, "client_email")?,
+      private_key: read_string_field(&value, "private_key")?,
+      token_uri: read_string_field(&value, "token_uri")?,
     }),
     other => Err(Error::Build(format!(
       "the ADC file's `{other}` form is not answered here: only `authorized_user` (a login) and \
@@ -112,7 +112,7 @@ pub fn parse(text: &str) -> Result<Adc, Error> {
   }
 }
 
-fn string_field(value: &Value, name: &str) -> Result<String, Error> {
+fn read_string_field(value: &Value, name: &str) -> Result<String, Error> {
   value
     .get(name)
     .and_then(Value::as_str)
@@ -134,7 +134,7 @@ fn string_field(value: &Value, name: &str) -> Result<String, Error> {
 /// [`Error::Build`] when the form's request cannot be built, [`Error::Transport`] when the
 /// network fails before a reply exists, [`Error::Upstream`] for a refused exchange, and
 /// [`Error::Malformed`] when the reply is not a token response.
-pub async fn token<T: Transport>(
+pub async fn fetch_token<T: Transport>(
   transport: &T,
   adc: &Adc,
   scope: &str,
@@ -143,7 +143,7 @@ pub async fn token<T: Transport>(
   let (uri, body) = match adc {
     Adc::AuthorizedUser { client_id, client_secret, refresh_token, token_uri } => (
       token_uri.as_str(),
-      form(&[
+      encode_form(&[
         ("client_id", client_id.as_str()),
         ("client_secret", client_secret.as_str()),
         ("refresh_token", refresh_token.as_str()),
@@ -152,9 +152,9 @@ pub async fn token<T: Transport>(
     ),
     Adc::ServiceAccount { client_email, private_key, token_uri } => (
       token_uri.as_str(),
-      form(&[
+      encode_form(&[
         ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
-        ("assertion", &assertion(client_email, private_key, token_uri, scope, now)?),
+        ("assertion", &build_assertion(client_email, private_key, token_uri, scope, now)?),
       ]),
     ),
   };
@@ -169,15 +169,15 @@ pub async fn token<T: Transport>(
   };
   let call = target.dispatch(draft, &Credentials::default(), 0)?;
   let reply = transport.execute(&call).await?;
-  tokens(&reply, now)
+  decode_tokens(&reply, now)
 }
 
-fn tokens(reply: &Reply, now: u64) -> Result<AdcTokens, Error> {
+fn decode_tokens(reply: &Reply, now: u64) -> Result<AdcTokens, Error> {
   if !reply.is_success() {
-    let error = http_error::provider_envelope(reply.status, &reply.body);
-    return Err(error.with_retry_after(reply.retry_after_ms()));
+    let error = http_error::decode_provider_envelope(reply.status, &reply.body);
+    return Err(error.with_retry_after(reply.get_retry_after_ms()));
   }
-  let body = http_error::json_body("google_adc", &reply.body)?;
+  let body = http_error::decode_json_body("google_adc", &reply.body)?;
   let access_token = body
     .get("access_token")
     .and_then(Value::as_str)
@@ -210,20 +210,20 @@ fn split_uri(uri: &str) -> Result<(String, String), Error> {
   Ok((format!("{scheme}://{host}"), format!("/{path}")))
 }
 
-fn form(fields: &[(&str, &str)]) -> Vec<u8> {
+fn encode_form(fields: &[(&str, &str)]) -> Vec<u8> {
   let mut body = Vec::new();
   for (index, (name, value)) in fields.iter().enumerate() {
     if index > 0 {
       body.push(b'&');
     }
-    form_escape(&mut body, name.as_bytes());
+    append_form_encoded(&mut body, name.as_bytes());
     body.push(b'=');
-    form_escape(&mut body, value.as_bytes());
+    append_form_encoded(&mut body, value.as_bytes());
   }
   body
 }
 
-fn form_escape(out: &mut Vec<u8>, bytes: &[u8]) {
+fn append_form_encoded(out: &mut Vec<u8>, bytes: &[u8]) {
   for &byte in bytes {
     match byte {
       b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte),
@@ -236,14 +236,14 @@ fn form_escape(out: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 /// Signs one service account's assertion: the RS256 JWT Google's jwt-bearer grant takes.
-fn assertion(
+fn build_assertion(
   client_email: &str,
   private_key: &str,
   token_uri: &str,
   scope: &str,
   now: u64,
 ) -> Result<String, Error> {
-  let key = ring::rsa::KeyPair::from_pkcs8(&pem_to_der(private_key)?)
+  let key = ring::rsa::KeyPair::from_pkcs8(&decode_pem_to_der(private_key)?)
     .map_err(|_| Error::Build("the ADC private key is not an RSA PKCS#8 key".to_owned()))?;
   let header = json!({"alg": "RS256", "typ": "JWT"});
   let claims = json!({
@@ -277,7 +277,7 @@ fn assertion(
 
 /// Decodes a PKCS#8 PEM body (the `-----BEGIN PRIVATE KEY-----` form a service account file
 /// carries) into the DER bytes `ring` parses.
-fn pem_to_der(pem: &str) -> Result<Vec<u8>, Error> {
+fn decode_pem_to_der(pem: &str) -> Result<Vec<u8>, Error> {
   let mut body = String::new();
   let mut inside = false;
   for line in pem.lines() {

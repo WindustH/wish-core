@@ -37,12 +37,12 @@ pub fn decode(body: &Value, mode: ChatCompletionApiCompatMode) -> Result<Respons
       .and_then(Value::as_str)
       .unwrap_or("upstream reported an error without a message");
     let code = error.get("code").and_then(Value::as_str);
-    return Err(Error::in_band(code.map(str::to_owned), message.to_owned()));
+    return Err(Error::from_in_band(code.map(str::to_owned), message.to_owned()));
   }
 
   // MiniMax refuses a call with `200` and its own envelope, and no `choices` at all.
   if mode == ChatCompletionApiCompatMode::MiniMax
-    && let Some(error) = refusal_error(body)
+    && let Some(error) = decode_refusal_error(body)
   {
     return Err(error);
   }
@@ -62,7 +62,7 @@ pub fn decode(body: &Value, mode: ChatCompletionApiCompatMode) -> Result<Respons
     Some(Value::Array(chunks)) if mode.is_mistral() => {
       let text: String = chunks
         .iter()
-        .filter(|chunk| chunk_type(chunk) == Some("text"))
+        .filter(|chunk| get_chunk_type(chunk) == Some("text"))
         .filter_map(|chunk| chunk.get("text").and_then(Value::as_str))
         .collect();
       if !text.is_empty() {
@@ -85,7 +85,7 @@ pub fn decode(body: &Value, mode: ChatCompletionApiCompatMode) -> Result<Respons
     messages.push(reasoning);
   }
   if !content.is_empty() {
-    messages.push(Message::Assistant { content });
+    messages.push(Message::Assistant { metadata: Default::default(), content });
   }
   messages.extend(tool_uses);
   Ok(Response {
@@ -113,6 +113,7 @@ fn decode_reasoning(
     return Ok(None);
   }
   Ok(Some(Message::Reasoning {
+    metadata: Default::default(),
     plaintext: text.to_owned(),
     display: text.to_owned(),
     signature: String::new(),
@@ -137,7 +138,12 @@ fn decode_tool_use(call: &Value) -> Result<Message, Error> {
       .map_err(|_| Error::Malformed("tool call arguments are not valid JSON".to_owned()))?,
     _ => json!({}),
   };
-  Ok(Message::ToolUse { call_id: call_id.to_owned(), name: name.to_owned(), arguments })
+  Ok(Message::ToolUse {
+    metadata: Default::default(),
+    call_id: call_id.to_owned(),
+    name: name.to_owned(),
+    arguments,
+  })
 }
 
 /// Captures reasoning this wire folds into the assistant `content` as `thinking` chunks.
@@ -165,6 +171,7 @@ fn decode_thinking_chunks(
     return Ok(None);
   }
   Ok(Some(Message::Reasoning {
+    metadata: Default::default(),
     plaintext: plaintext.clone(),
     display: plaintext,
     signature: String::new(),
@@ -176,7 +183,7 @@ fn decode_thinking_chunks(
 ///
 /// `base_resp.status_code` is zero for a call the service served and non-zero for one it refused,
 /// with its reason in `status_msg`.
-pub(crate) fn refusal_error(payload: &Value) -> Option<Error> {
+pub(crate) fn decode_refusal_error(payload: &Value) -> Option<Error> {
   let base = payload.get("base_resp")?;
   let status = base.get("status_code").and_then(Value::as_i64).filter(|status| *status != 0)?;
   let message = base
@@ -184,25 +191,28 @@ pub(crate) fn refusal_error(payload: &Value) -> Option<Error> {
     .and_then(Value::as_str)
     .filter(|message| !message.is_empty())
     .unwrap_or("the service refused the call without a message");
-  Some(Error::in_band(Some(status.to_string()), message.to_owned()))
+  Some(Error::from_in_band(Some(status.to_string()), message.to_owned()))
 }
 
 /// The `type` of one content chunk.
-pub(crate) fn chunk_type(chunk: &Value) -> Option<&str> {
+pub(crate) fn get_chunk_type(chunk: &Value) -> Option<&str> {
   chunk.get("type").and_then(Value::as_str)
 }
 
 /// Whether a content chunk is a thought: the vendor's schema spells the type `thinking`, its prose
 /// spells it `think`, so both are read.
 pub(crate) fn is_thinking(chunk: &Value) -> bool {
-  matches!(chunk_type(chunk), Some("thinking" | "think"))
+  matches!(get_chunk_type(chunk), Some("thinking" | "think"))
 }
 
 fn decode_stop_reason(choice: &Value, mode: ChatCompletionApiCompatMode) -> StopReason {
-  stop_reason(choice.get("finish_reason").and_then(Value::as_str), mode)
+  map_stop_reason(choice.get("finish_reason").and_then(Value::as_str), mode)
 }
 
-pub(crate) fn stop_reason(finish: Option<&str>, mode: ChatCompletionApiCompatMode) -> StopReason {
+pub(crate) fn map_stop_reason(
+  finish: Option<&str>,
+  mode: ChatCompletionApiCompatMode,
+) -> StopReason {
   match finish {
     Some("stop") => StopReason::Stop,
     Some("length") => StopReason::MaxOutputLengthExceeded,
@@ -217,10 +227,10 @@ pub(crate) fn stop_reason(finish: Option<&str>, mode: ChatCompletionApiCompatMod
 }
 
 fn decode_usage(body: &Value) -> Usage {
-  usage(body)
+  parse_usage(body)
 }
 
-pub(crate) fn usage(body: &Value) -> Usage {
+pub(crate) fn parse_usage(body: &Value) -> Usage {
   let usage = body.get("usage");
   let field = |path: &[&str]| -> Option<u64> {
     let mut node = usage?;

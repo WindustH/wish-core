@@ -43,7 +43,7 @@ pub mod zai;
 pub use fetch::fetch;
 
 /// One allowance window: a limit, and how much of it is spent.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct QuotaWindow {
   /// Stable window id, e.g. `primary`, `usage`, `weekly`, `model_1`.
   pub id: String,
@@ -73,7 +73,7 @@ pub struct QuotaWindow {
 }
 
 /// One account balance.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Balance {
   /// Currency or credit unit as reported.
   pub currency: String,
@@ -102,7 +102,7 @@ pub struct Balance {
 /// The service's own code and message are kept verbatim; the kind is what was added, so a caller
 /// can tell "the key is wrong" from "the account is out of money" without a table of every
 /// service's numbering.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
   /// The normalized kind.
   pub kind: FailureKind,
@@ -113,7 +113,7 @@ pub struct Failure {
 }
 
 /// The kinds of failure worth telling apart.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailureKind {
   /// The credential is missing, wrong, or not accepted by this endpoint.
   Unauthorized,
@@ -126,7 +126,7 @@ pub enum FailureKind {
 }
 
 /// One service's account snapshot, as far as it reports any.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AccountState {
   /// The protocol that read this body.
   pub protocol: AccountStateProtocol,
@@ -147,10 +147,10 @@ pub struct AccountState {
 /// Which account reading a body or a reply is read by.
 ///
 /// One variant per service and shape: the vocabulary this crate knows. A caller names one to read an
-/// account, and a reading names the one that produced it. [`AccountStateProtocol::id`] is the same name in
+/// account, and a reading names the one that produced it. [`AccountStateProtocol::get_id`] is the same name in
 /// text, so the source tables and any configuration boundary can carry it and
 /// [`FromStr`](std::str::FromStr) brings it back.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountStateProtocol {
   /// The numbers a served reply carries, where a caller asks for nothing else.
   ResponseUsage,
@@ -222,7 +222,7 @@ impl AccountStateProtocol {
 
   /// The name this protocol is known by in text: what the source tables, the documentation and a
   /// reading's own [`AccountState::protocol`] say.
-  pub const fn id(self) -> &'static str {
+  pub const fn get_id(self) -> &'static str {
     match self {
       AccountStateProtocol::ResponseUsage => "response_usage",
       AccountStateProtocol::OpenAiCodexQuotaHeaders => "openai_codex_quota_headers",
@@ -261,14 +261,14 @@ impl AccountStateProtocol {
 
 impl std::fmt::Display for AccountStateProtocol {
   fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    formatter.write_str(self.id())
+    formatter.write_str(self.get_id())
   }
 }
 
 impl std::str::FromStr for AccountStateProtocol {
   type Err = Error;
 
-  /// Reads back what [`AccountStateProtocol::id`] wrote, for a boundary that carries text.
+  /// Reads back what [`AccountStateProtocol::get_id`] wrote, for a boundary that carries text.
   ///
   /// # Errors
   ///
@@ -277,13 +277,13 @@ impl std::str::FromStr for AccountStateProtocol {
     Self::ALL
       .iter()
       .copied()
-      .find(|protocol| protocol.id() == id)
+      .find(|protocol| protocol.get_id() == id)
       .ok_or_else(|| Error::Build(format!("unknown account protocol `{id}`")))
   }
 }
 
 /// Why an account state cannot be read where it was asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unsupported {
   /// The reading rides the headers of a served reply: there is no body of its own to parse, and
   /// no endpoint to ask.
@@ -297,7 +297,7 @@ pub enum Unsupported {
 
 impl Unsupported {
   /// The reason in the words a caller reads back.
-  pub const fn text(self) -> &'static str {
+  pub const fn get_text(self) -> &'static str {
     match self {
       Unsupported::RidesTheHeaders => "is read from a reply's headers, not from a body of its own",
       Unsupported::RidesAReply => {
@@ -341,13 +341,15 @@ pub fn parse_account_body(
     | AccountStateProtocol::OpenAiRatelimitHeaders
     | AccountStateProtocol::GroqRatelimitHeaders
     | AccountStateProtocol::CerebrasRatelimitHeaders
-    | AccountStateProtocol::MistralRatelimitHeaders => {
-      Err(Error::unsupported("account state", protocol, Unsupported::RidesTheHeaders.text()))
-    }
+    | AccountStateProtocol::MistralRatelimitHeaders => Err(Error::build_unsupported(
+      "account state",
+      protocol,
+      Unsupported::RidesTheHeaders.get_text(),
+    )),
     // Named, but nothing reads them on their own: the numbers they stand for belong to a served
     // reply, and a caller holding one reads it through the call it came from.
     AccountStateProtocol::ResponseUsage | AccountStateProtocol::LocalUsageLedger => {
-      Err(Error::unsupported("account state", protocol, Unsupported::RidesAReply.text()))
+      Err(Error::build_unsupported("account state", protocol, Unsupported::RidesAReply.get_text()))
     }
   }
 }
@@ -401,6 +403,10 @@ pub fn parse_reply(
         }),
       }
     }
-    _ => Err(Error::unsupported("account state", protocol, Unsupported::HasItsOwnRequest.text())),
+    _ => Err(Error::build_unsupported(
+      "account state",
+      protocol,
+      Unsupported::HasItsOwnRequest.get_text(),
+    )),
   }
 }

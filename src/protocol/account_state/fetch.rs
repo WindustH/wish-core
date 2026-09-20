@@ -7,7 +7,7 @@
 
 use super::Unsupported;
 use super::headers;
-use super::source::source;
+use super::source::find_source;
 use crate::protocol::error::Error;
 use crate::protocol::http_error;
 use crate::protocol::outbound::Credentials;
@@ -40,13 +40,13 @@ pub async fn fetch<T: Transport>(
   } else {
     Unsupported::RidesAReply
   };
-  let source =
-    source(protocol).ok_or_else(|| Error::unsupported("account state", protocol, reason.text()))?;
-  let call = source.call(base_url, None, &[], credentials, now)?;
+  let source = find_source(protocol)
+    .ok_or_else(|| Error::build_unsupported("account state", protocol, reason.get_text()))?;
+  let call = source.build_call(base_url, None, &[], credentials, now)?;
   let reply = transport.execute(&call).await?;
   if !reply.is_success() {
-    let error = http_error::provider_envelope(reply.status, &reply.body);
-    return Err(error.with_retry_after(reply.retry_after_ms()));
+    let error = http_error::decode_provider_envelope(reply.status, &reply.body);
+    return Err(error.with_retry_after(reply.get_retry_after_ms()));
   }
-  parse_account_body(protocol, &http_error::json_body(protocol.id(), &reply.body)?)
+  parse_account_body(protocol, &http_error::decode_json_body(protocol.get_id(), &reply.body)?)
 }

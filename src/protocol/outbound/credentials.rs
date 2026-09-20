@@ -7,7 +7,7 @@
 //!
 //! What a wire asks for is not always the key: a console endpoint reads a workspace from its own
 //! header, and one with no key form at all reads the session a browser holds. Each piece has a
-//! name ([`CredentialField`]), which is also the name a path placeholder is written with, so a
+//! get_name ([`CredentialField`]), which is also the name a path placeholder is written with, so a
 //! wire can say what it needs without carrying it.
 //!
 //! Material is also exchanged for material: [`oauth`](super::oauth) is the one request that
@@ -42,7 +42,7 @@ pub struct Credentials {
   pub refresh_token: Option<String>,
   /// When the access token stops being accepted, when the key is one: read off the pair a refresh
   /// handed back, by whoever applied that pair to this material. Read by
-  /// [`expired`](super::expired) and the judgment [`Outbound::dispatch`](super::Outbound::dispatch)
+  /// [`is_expired`](super::is_expired) and the judgment [`Outbound::dispatch`](super::Outbound::dispatch)
   /// makes, which is where a spent material is refused before anything is sent.
   pub expires_at: Option<u64>,
   /// The region an AWS account is served from, which its signature's scope names and a read's
@@ -58,7 +58,7 @@ pub struct Credentials {
 
 impl Credentials {
   /// Credentials that are only a key, which is what most services need.
-  pub fn key(api_key: impl Into<String>) -> Self {
+  pub fn from_api_key(api_key: impl Into<String>) -> Self {
     Self { api_key: api_key.into(), ..Self::default() }
   }
 
@@ -67,7 +67,7 @@ impl Credentials {
   /// and the account id and expiry the exchange named. Everything the exchange did not name
   /// stays as it was - this renews material, it does not rebuild an account.
   #[must_use]
-  pub fn renewed(&self, tokens: &Tokens) -> Self {
+  pub fn renew(&self, tokens: &Tokens) -> Self {
     Self {
       api_key: tokens.access_token.clone(),
       refresh_token: tokens.refresh_token.clone().or_else(|| self.refresh_token.clone()),
@@ -79,7 +79,7 @@ impl Credentials {
 
   /// One of the account's own fields, absent when it was not given or is empty: an empty value is
   /// a configuration mistake, not a request to send half-addressed.
-  pub(crate) fn field(&self, field: CredentialField) -> Option<&str> {
+  pub(crate) fn get_field(&self, field: CredentialField) -> Option<&str> {
     let value = match field {
       CredentialField::ApiKey => Some(self.api_key.as_str()),
       CredentialField::WorkspaceId => self.workspace_id.as_deref(),
@@ -143,7 +143,7 @@ pub enum CredentialField {
 
 impl CredentialField {
   /// The name this field is written as, in a configuration and in a path placeholder.
-  pub(crate) fn name(self) -> &'static str {
+  pub(crate) fn get_name(self) -> &'static str {
     match self {
       CredentialField::ApiKey => "api_key",
       CredentialField::WorkspaceId => "workspace_id",

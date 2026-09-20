@@ -63,13 +63,13 @@ impl Decoder {
       "conversation.response.started" | "response.started" => {}
       "message.output.delta" | "message.output" => {
         if let Some(content) = payload.get("content").filter(|content| !content.is_null()) {
-          self.content(content, &mut out)?;
+          self.decode_content(content, &mut out)?;
         }
       }
-      "function.call.delta" | "function.call" => self.function_call(&payload, &mut out)?,
+      "function.call.delta" | "function.call" => self.decode_function_call(&payload, &mut out)?,
       "conversation.response.done" | "response.done" => {
         if payload.get("usage").is_some_and(|usage| !usage.is_null()) {
-          out.push(StreamEvent::Usage(buffered::usage(&payload)));
+          out.push(StreamEvent::Usage(buffered::parse_usage(&payload)));
         }
         out.extend(self.finish());
       }
@@ -78,7 +78,7 @@ impl Decoder {
           Value::String(code) => code.clone(),
           other => other.to_string(),
         });
-        return Err(Error::in_band(
+        return Err(Error::from_in_band(
           code,
           payload
             .get("message")
@@ -108,14 +108,14 @@ impl Decoder {
   }
 
   /// One `content` delta: a plain string, or a chunk list carrying text and thoughts.
-  fn content(&mut self, content: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
+  fn decode_content(&mut self, content: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
     match content {
-      Value::String(text) => self.text_delta(text, out),
+      Value::String(text) => self.emit_text_delta(text, out),
       Value::Array(chunks) => {
         for chunk in chunks {
-          if buffered::chunk_type(chunk) == Some("text") {
+          if buffered::get_chunk_type(chunk) == Some("text") {
             if let Some(text) = chunk.get("text").and_then(Value::as_str) {
-              self.text_delta(text, out);
+              self.emit_text_delta(text, out);
             }
             continue;
           }
@@ -146,7 +146,11 @@ impl Decoder {
   }
 
   /// One `function.call.delta`: one block per `tool_call_id`, opened by its first fragment.
-  fn function_call(&mut self, payload: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
+  fn decode_function_call(
+    &mut self,
+    payload: &Value,
+    out: &mut Vec<StreamEvent>,
+  ) -> Result<(), Error> {
     let call_id = payload.get("tool_call_id").and_then(Value::as_str).ok_or_else(|| {
       Error::Malformed("function.call delta is missing `tool_call_id`".to_owned())
     })?;
@@ -175,7 +179,7 @@ impl Decoder {
   }
 
   /// One text delta, ignoring the empty ones a chunk list is full of.
-  fn text_delta(&mut self, text: &str, out: &mut Vec<StreamEvent>) {
+  fn emit_text_delta(&mut self, text: &str, out: &mut Vec<StreamEvent>) {
     if text.is_empty() {
       return;
     }

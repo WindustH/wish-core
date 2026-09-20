@@ -40,7 +40,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
       _ => {}
     }
   }
-  Ok(Response { messages, stop_reason, usage: usage(body), account_state: None })
+  Ok(Response { messages, stop_reason, usage: parse_usage(body), account_state: None })
 }
 
 /// One `message.output` entry: a thought becomes its own message ahead of the text, the order every
@@ -49,8 +49,10 @@ fn decode_message_output(entry: &Value, messages: &mut Vec<Message>) -> Result<(
   let chunks = match entry.get("content") {
     Some(Value::String(text)) => {
       if !text.is_empty() {
-        messages
-          .push(Message::Assistant { content: vec![ContentBlock::Text { text: text.clone() }] });
+        messages.push(Message::Assistant {
+          metadata: Default::default(),
+          content: vec![ContentBlock::Text { text: text.clone() }],
+        });
       }
       return Ok(());
     }
@@ -66,11 +68,14 @@ fn decode_message_output(entry: &Value, messages: &mut Vec<Message>) -> Result<(
   }
   let text: String = chunks
     .iter()
-    .filter(|chunk| chunk_type(chunk) == Some("text"))
+    .filter(|chunk| get_chunk_type(chunk) == Some("text"))
     .filter_map(|chunk| chunk.get("text").and_then(Value::as_str))
     .collect();
   if !text.is_empty() {
-    messages.push(Message::Assistant { content: vec![ContentBlock::Text { text }] });
+    messages.push(Message::Assistant {
+      metadata: Default::default(),
+      content: vec![ContentBlock::Text { text }],
+    });
   }
   Ok(())
 }
@@ -93,6 +98,7 @@ fn decode_reasoning(chunks: &[Value]) -> Result<Option<Message>, Error> {
     return Ok(None);
   }
   Ok(Some(Message::Reasoning {
+    metadata: Default::default(),
     plaintext: plaintext.clone(),
     display: plaintext,
     signature: String::new(),
@@ -115,21 +121,26 @@ fn decode_function_call(entry: &Value) -> Result<Message, Error> {
       .map_err(|_| Error::Malformed("function.call arguments are not valid JSON".to_owned()))?,
     _ => json!({}),
   };
-  Ok(Message::ToolUse { call_id: call_id.to_owned(), name: name.to_owned(), arguments })
+  Ok(Message::ToolUse {
+    metadata: Default::default(),
+    call_id: call_id.to_owned(),
+    name: name.to_owned(),
+    arguments,
+  })
 }
 
 /// The `type` of one content chunk.
-pub(crate) fn chunk_type(chunk: &Value) -> Option<&str> {
+pub(crate) fn get_chunk_type(chunk: &Value) -> Option<&str> {
   chunk.get("type").and_then(Value::as_str)
 }
 
 /// Whether a content chunk is a thought: the vendor's schema spells the type `thinking`, its prose
 /// spells it `think`, so both are read.
 pub(crate) fn is_thinking(chunk: &Value) -> bool {
-  matches!(chunk_type(chunk), Some("thinking" | "think"))
+  matches!(get_chunk_type(chunk), Some("thinking" | "think"))
 }
 
-pub(crate) fn usage(body: &Value) -> Usage {
+pub(crate) fn parse_usage(body: &Value) -> Usage {
   let usage = body.get("usage");
   let field = |name: &str| usage.and_then(|usage| usage.get(name)).and_then(Value::as_u64);
   Usage {

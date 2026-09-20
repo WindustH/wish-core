@@ -50,7 +50,7 @@
 //!   array instead of the plain joined string.
 
 use crate::protocol::error::Error;
-use crate::protocol::model_use::request::{ANSWER_HEADROOM, TierBudget, tier_budget};
+use crate::protocol::model_use::request::{ANSWER_HEADROOM, TierBudget, resolve_tier_budget};
 use crate::protocol::{ContentBlock, Message, ReasoningConfig, Request, Tool, ToolChoice};
 use serde_json::{Map, Value, json};
 
@@ -83,11 +83,7 @@ pub enum MessagesApiCompatMode {
   TokenHub,
 }
 
-pub fn render(
-  request: &Request,
-  mode: MessagesApiCompatMode,
-  stream: bool,
-) -> Result<Value, Error> {
+pub fn render(request: &Request, mode: MessagesApiCompatMode) -> Result<Value, Error> {
   let max_tokens = request.max_output_tokens.ok_or_else(|| {
     Error::Build("max_tokens is required on the anthropic messages wire".to_owned())
   })?;
@@ -116,7 +112,7 @@ pub fn render(
     }
   }
   body.insert("messages".into(), Value::Array(messages));
-  if stream {
+  if request.stream {
     body.insert("stream".into(), json!(true));
   }
   if let Some(reasoning) = &request.reasoning {
@@ -172,7 +168,7 @@ fn render_reasoning(
     MessagesApiCompatMode::Official => {
       let thinking = match (config.enabled, config.effort.as_deref()) {
         (Some(false) | None, None) => return Ok(()),
-        (_, Some(effort)) => match tier_budget(effort)? {
+        (_, Some(effort)) => match resolve_tier_budget(effort)? {
           TierBudget::Tokens(budget_tokens) => {
             json!({"type": "enabled", "budget_tokens": budget_tokens})
           }
@@ -252,7 +248,7 @@ fn split_leading_instructions(
   let mut index = 0;
   while let Some(message) = conversation.get(index) {
     let content = match message {
-      Message::System { content } | Message::Developer { content } => content,
+      Message::System { content, .. } | Message::Developer { content, .. } => content,
       _ => break,
     };
     let mut text: Vec<&str> = Vec::new();
@@ -290,16 +286,16 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           "the anthropic messages wire cannot carry a compacted conversation".to_owned(),
         ));
       }
-      Message::User { content } => {
+      Message::User { content, .. } => {
         if let Some(call_id) = pending.first() {
-          return Err(missing_result(call_id));
+          return Err(build_missing_result_error(call_id));
         }
-        push_turn(&mut turns, "user", user_blocks(content)?);
+        push_turn(&mut turns, "user", render_user_blocks(content)?);
         index += 1;
       }
       Message::Reasoning { .. } | Message::Assistant { .. } | Message::ToolUse { .. } => {
         if let Some(call_id) = pending.first() {
-          return Err(missing_result(call_id));
+          return Err(build_missing_result_error(call_id));
         }
         let mut blocks: Vec<Value> = Vec::new();
         let mut used = 0;
@@ -313,15 +309,15 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
                     .to_owned(),
                 ));
               }
-              if let Some(block) = reasoning_block(plaintext, signature, ciphertext) {
+              if let Some(block) = render_reasoning_block(plaintext, signature, ciphertext) {
                 blocks.push(block);
               }
             }
-            Message::Assistant { content } => {
+            Message::Assistant { content, .. } => {
               seen_content = true;
-              blocks.extend(assistant_blocks(content)?);
+              blocks.extend(render_assistant_blocks(content)?);
             }
-            Message::ToolUse { call_id, name, arguments } => {
+            Message::ToolUse { call_id, name, arguments, .. } => {
               seen_content = true;
               pending.push(call_id.clone());
               blocks
@@ -362,7 +358,7 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           used += 1;
         }
         if used != pending.len() {
-          return Err(missing_result(&pending[used]));
+          return Err(build_missing_result_error(&pending[used]));
         }
         pending.clear();
         push_turn(&mut turns, "user", blocks);
@@ -371,7 +367,7 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
     }
   }
   if let Some(call_id) = pending.first() {
-    return Err(missing_result(call_id));
+    return Err(build_missing_result_error(call_id));
   }
   match turns.first() {
     Some((role, _)) if role != "user" => Err(Error::Build(
@@ -383,7 +379,7 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   }
 }
 
-fn missing_result(call_id: &str) -> Error {
+fn build_missing_result_error(call_id: &str) -> Error {
   Error::Build(format!(
     "tool call `{call_id}` is not followed by its tool result on the anthropic messages wire"
   ))
@@ -402,7 +398,7 @@ fn push_turn(turns: &mut Vec<(String, Vec<Value>)>, role: &str, mut blocks: Vec<
   turns.push((role.to_owned(), blocks));
 }
 
-fn user_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
+fn render_user_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
   let mut blocks: Vec<Value> = Vec::new();
   for block in content {
     match block {
@@ -420,7 +416,7 @@ fn user_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
   Ok(blocks)
 }
 
-fn assistant_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
+fn render_assistant_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
   let mut blocks: Vec<Value> = Vec::new();
   for block in content {
     match block {
@@ -437,7 +433,7 @@ fn assistant_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
   Ok(blocks)
 }
 
-fn reasoning_block(plaintext: &str, signature: &str, ciphertext: &str) -> Option<Value> {
+fn render_reasoning_block(plaintext: &str, signature: &str, ciphertext: &str) -> Option<Value> {
   if !ciphertext.is_empty() {
     return Some(json!({"type": "redacted_thinking", "data": ciphertext}));
   }

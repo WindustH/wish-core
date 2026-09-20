@@ -13,7 +13,7 @@ use crate::protocol::error::Error;
 use crate::protocol::wire::ReplyStream;
 use crate::protocol::wire::{Call, Limits, Method, Reply, Transport, parse_retry_after};
 
-use super::{Proxy, TransportError, payload_error, read_error, truncate};
+use super::{Proxy, TransportError, build_payload_error, build_read_error, truncate};
 
 /// Attempts HTTP calls with `reqwest`.
 pub struct ReqwestTransport {
@@ -50,7 +50,7 @@ impl ReqwestTransport {
   }
 
   /// Renders one request: the caller's header list verbatim, nothing added behind its back.
-  fn request(&self, call: &Call) -> Result<reqwest::RequestBuilder, Error> {
+  fn build_request(&self, call: &Call) -> Result<reqwest::RequestBuilder, Error> {
     let method = match call.method {
       Method::Get => reqwest::Method::GET,
       Method::Post => reqwest::Method::POST,
@@ -74,17 +74,17 @@ impl Transport for ReqwestTransport {
     let total_deadline = tokio::time::Instant::now() + self.limits.total;
     let headers_deadline =
       (tokio::time::Instant::now() + self.limits.first_byte).min(total_deadline);
-    let response = match tokio::time::timeout_at(headers_deadline, self.request(call)?.send()).await
-    {
-      Ok(Ok(response)) => response,
-      Ok(Err(error)) => return Err(request_error(&error)),
-      Err(_) => {
-        return Err(
-          TransportError::AwaitHeaders("no response head within the first-byte limit".to_owned())
-            .into(),
-        );
-      }
-    };
+    let response =
+      match tokio::time::timeout_at(headers_deadline, self.build_request(call)?.send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => return Err(decode_request_error(&error)),
+        Err(_) => {
+          return Err(
+            TransportError::AwaitHeaders("no response head within the first-byte limit".to_owned())
+              .into(),
+          );
+        }
+      };
     let status = response.status().as_u16();
     let headers = response
       .headers()
@@ -96,7 +96,7 @@ impl Transport for ReqwestTransport {
     let success = (200..300).contains(&status);
     let limit =
       if success { self.limits.max_response_bytes } else { self.limits.max_error_body_bytes };
-    let body = match bounded_read_until(response, limit, total_deadline).await {
+    let body = match read_bounded_until(response, limit, total_deadline).await {
       Ok(body) => body,
       // An error body only exists to be classified, so losing it must not hide the status code.
       Err(_) if !success => Vec::new(),
@@ -109,18 +109,18 @@ impl Transport for ReqwestTransport {
     let total_deadline = tokio::time::Instant::now() + self.limits.total;
     let headers_deadline =
       (tokio::time::Instant::now() + self.limits.first_byte).min(total_deadline);
-    let response = match tokio::time::timeout_at(headers_deadline, self.request(call)?.send()).await
-    {
-      Ok(Ok(response)) => response,
-      Ok(Err(error)) => return Err(request_error(&error)),
-      Err(_) => {
-        return Err(
-          TransportError::AwaitHeaders("no response head within the first-byte limit".to_owned())
-            .into(),
-        );
-      }
-    };
-    Ok(HttpBodyStream::http(response, self.limits))
+    let response =
+      match tokio::time::timeout_at(headers_deadline, self.build_request(call)?.send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => return Err(decode_request_error(&error)),
+        Err(_) => {
+          return Err(
+            TransportError::AwaitHeaders("no response head within the first-byte limit".to_owned())
+              .into(),
+          );
+        }
+      };
+    Ok(HttpBodyStream::from_http_response(response, self.limits))
   }
 }
 
@@ -142,7 +142,7 @@ pub struct HttpBodyStream {
 }
 
 impl HttpBodyStream {
-  fn http(response: reqwest::Response, limits: Limits) -> Self {
+  fn from_http_response(response: reqwest::Response, limits: Limits) -> Self {
     let status = response.status().as_u16();
     let headers: Vec<(String, String)> = response
       .headers()
@@ -162,19 +162,19 @@ impl HttpBodyStream {
 }
 
 impl ReplyStream for HttpBodyStream {
-  fn status(&self) -> u16 {
+  fn get_status(&self) -> u16 {
     self.status
   }
 
-  fn retry_after_ms(&self) -> Option<u64> {
+  fn get_retry_after_ms(&self) -> Option<u64> {
     self.retry_after_ms
   }
 
-  fn headers(&self) -> &[(String, String)] {
+  fn get_headers(&self) -> &[(String, String)] {
     &self.headers
   }
 
-  fn limits(&self) -> Limits {
+  fn get_limits(&self) -> Limits {
     self.limits
   }
 
@@ -190,7 +190,7 @@ impl ReplyStream for HttpBodyStream {
     let idle_deadline = (now + self.limits.idle).min(self.total_deadline);
     let chunk = match tokio::time::timeout_at(idle_deadline, self.response.chunk()).await {
       Ok(chunk) => {
-        let chunk = chunk.map_err(|error| read_error(&error.to_string()))?;
+        let chunk = chunk.map_err(|error| build_read_error(&error.to_string()))?;
         chunk.map(|chunk| chunk.to_vec())
       }
       Err(_) if idle_deadline >= self.total_deadline => {
@@ -207,7 +207,7 @@ impl ReplyStream for HttpBodyStream {
     let Some(chunk) = chunk else { return Ok(None) };
     self.received += chunk.len();
     if self.received > self.limits.max_response_bytes {
-      return Err(payload_error(&format!(
+      return Err(build_payload_error(&format!(
         "stream exceeds {} bytes",
         self.limits.max_response_bytes
       )));
@@ -218,7 +218,7 @@ impl ReplyStream for HttpBodyStream {
 
 /// Maps a `reqwest` failure onto one attempt phase. The message is capped: an upstream must never
 /// be able to flood a log line with text of its own choosing.
-fn request_error(error: &reqwest::Error) -> Error {
+fn decode_request_error(error: &reqwest::Error) -> Error {
   let message = truncate(&error.to_string());
   if error.is_connect() {
     TransportError::Connect(message).into()
@@ -229,26 +229,26 @@ fn request_error(error: &reqwest::Error) -> Error {
   }
 }
 
-async fn bounded_read(response: reqwest::Response, max_bytes: usize) -> Result<Vec<u8>, Error> {
+async fn read_bounded(response: reqwest::Response, max_bytes: usize) -> Result<Vec<u8>, Error> {
   let mut body = Vec::new();
   let mut stream = response.bytes_stream();
   while let Some(chunk) = stream.next().await {
-    let chunk = chunk.map_err(|error| read_error(&error.to_string()))?;
+    let chunk = chunk.map_err(|error| build_read_error(&error.to_string()))?;
     body.extend_from_slice(&chunk);
     if body.len() > max_bytes {
-      return Err(payload_error(&format!("response body exceeds {max_bytes} bytes")));
+      return Err(build_payload_error(&format!("response body exceeds {max_bytes} bytes")));
     }
   }
   Ok(body)
 }
 
-async fn bounded_read_until(
+async fn read_bounded_until(
   response: reqwest::Response,
   max_bytes: usize,
   deadline: tokio::time::Instant,
 ) -> Result<Vec<u8>, Error> {
-  match tokio::time::timeout_at(deadline, bounded_read(response, max_bytes)).await {
+  match tokio::time::timeout_at(deadline, read_bounded(response, max_bytes)).await {
     Ok(body) => body,
-    Err(_) => Err(read_error("response body exceeded the total timeout")),
+    Err(_) => Err(build_read_error("response body exceeded the total timeout")),
   }
 }

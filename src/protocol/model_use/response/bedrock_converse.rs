@@ -27,7 +27,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
   // An in-band failure: this wire reports one with a `message` and a `__type` (or `code`) beside it.
   if let Some(message) = body.get("message").and_then(Value::as_str) {
     let code = body.get("__type").or_else(|| body.get("code")).and_then(Value::as_str);
-    return Err(Error::in_band(code.map(str::to_owned), message.to_owned()));
+    return Err(Error::from_in_band(code.map(str::to_owned), message.to_owned()));
   }
 
   let mut messages: Vec<Message> = Vec::new();
@@ -37,7 +37,8 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
       if blocks.is_empty() {
         return;
       }
-      messages.push(Message::Assistant { content: std::mem::take(blocks) });
+      messages
+        .push(Message::Assistant { metadata: Default::default(), content: std::mem::take(blocks) });
     };
     for block in content {
       if let Some(reasoning) = decode_reasoning(block) {
@@ -64,6 +65,7 @@ fn decode_reasoning(block: &Value) -> Option<Message> {
   let reasoning = block.get("reasoningContent")?;
   if let Some(ciphertext) = reasoning.get("redactedContent").and_then(Value::as_str) {
     return Some(Message::Reasoning {
+      metadata: Default::default(),
       plaintext: String::new(),
       display: String::new(),
       signature: String::new(),
@@ -82,6 +84,7 @@ fn decode_reasoning(block: &Value) -> Option<Message> {
     .and_then(Value::as_str)
     .unwrap_or("");
   Some(Message::Reasoning {
+    metadata: Default::default(),
     plaintext: text.to_owned(),
     display: text.to_owned(),
     signature: signature.to_owned(),
@@ -99,14 +102,19 @@ fn decode_tool_use(block: &Value) -> Result<Option<Message>, Error> {
     .ok_or_else(|| Error::Malformed("toolUse block is missing `name`".to_owned()))?;
   let call_id = tool_use.get("toolUseId").and_then(Value::as_str).unwrap_or("");
   let arguments = tool_use.get("input").cloned().unwrap_or_else(|| json!({}));
-  Ok(Some(Message::ToolUse { call_id: call_id.to_owned(), name: name.to_owned(), arguments }))
+  Ok(Some(Message::ToolUse {
+    metadata: Default::default(),
+    call_id: call_id.to_owned(),
+    name: name.to_owned(),
+    arguments,
+  }))
 }
 
 fn decode_stop_reason(body: &Value) -> StopReason {
-  stop_reason(body.get("stopReason").and_then(Value::as_str))
+  map_stop_reason(body.get("stopReason").and_then(Value::as_str))
 }
 
-pub(crate) fn stop_reason(reason: Option<&str>) -> StopReason {
+pub(crate) fn map_stop_reason(reason: Option<&str>) -> StopReason {
   match reason {
     Some("end_turn" | "stop_sequence") => StopReason::Stop,
     Some("tool_use") => StopReason::ToolUse,
@@ -118,10 +126,10 @@ pub(crate) fn stop_reason(reason: Option<&str>) -> StopReason {
 }
 
 fn decode_usage(body: &Value) -> Usage {
-  usage(body.get("usage"))
+  parse_usage(body.get("usage"))
 }
 
-pub(crate) fn usage(usage: Option<&Value>) -> Usage {
+pub(crate) fn parse_usage(usage: Option<&Value>) -> Usage {
   let field = |name: &str| usage.and_then(|usage| usage.get(name)).and_then(Value::as_u64);
   Usage {
     input_tokens: field("inputTokens"),

@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 use crate::Error;
 use crate::protocol::account_state::{AccountState, AccountStateProtocol, QuotaWindow};
-use crate::protocol::lexical;
+use crate::protocol::read_scalar_text;
 
 /// Reads the credits body.
 ///
@@ -36,8 +36,8 @@ pub fn parse_credits(body: &Value) -> Result<AccountState, Error> {
   let Some(data) = body.get("data").filter(|data| data.is_object()) else {
     return Err(Error::Malformed("openrouter credits body missing `data` object".to_owned()));
   };
-  let topped_up = data.get("total_credits").and_then(lexical);
-  let spent = data.get("total_usage").and_then(lexical);
+  let topped_up = data.get("total_credits").and_then(read_scalar_text);
+  let spent = data.get("total_usage").and_then(read_scalar_text);
   if topped_up.is_none() && spent.is_none() {
     return Err(Error::Malformed("openrouter credits body carries no amount".to_owned()));
   }
@@ -83,8 +83,8 @@ pub fn parse_key(body: &Value) -> Result<AccountState, Error> {
   let Some(data) = body.get("data").filter(|data| data.is_object()) else {
     return Err(Error::Malformed("openrouter key body missing `data` object".to_owned()));
   };
-  let usage = data.get("usage").and_then(lexical);
-  let limit = data.get("limit").and_then(lexical);
+  let usage = data.get("usage").and_then(read_scalar_text);
+  let limit = data.get("limit").and_then(read_scalar_text);
   let rate_limit = data.get("rate_limit").filter(|limit| limit.is_object());
   if usage.is_none() && limit.is_none() && rate_limit.is_none() {
     return Err(Error::Malformed("openrouter key body carries no quota".to_owned()));
@@ -119,7 +119,7 @@ pub fn parse_key(body: &Value) -> Result<AccountState, Error> {
       name: None,
       unit: "requests".to_owned(),
       used: None,
-      limit: rate_limit.get("requests").and_then(lexical),
+      limit: rate_limit.get("requests").and_then(read_scalar_text),
       remaining: None,
       used_percent: None,
       // The window comes as a duration the service words itself (`10s`), so it is kept as it came.

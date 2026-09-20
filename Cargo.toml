@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+serde = { version = "1", features = ["derive", "rc"] }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+lru = "0.18.2"
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2.0.20"
 # Parses the HTTP-date form of a `retry-after` header.

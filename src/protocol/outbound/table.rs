@@ -47,7 +47,7 @@ impl Source {
   ///
   /// `base_url` and `path` fill in what the source leaves open; `query` is rendered in order,
   /// with values percent-encoded, because a cursor is an opaque token that may carry anything.
-  pub(crate) fn call(
+  pub(crate) fn build_call(
     &self,
     base_url: Option<&str>,
     path: Option<&str>,
@@ -62,10 +62,10 @@ impl Source {
       headers: Vec::new(),
       body: Vec::new(),
     };
-    self.outbound(base_url, path)?.dispatch(draft, credentials, now)
+    self.build_outbound(base_url, path)?.dispatch(draft, credentials, now)
   }
 
-  fn outbound(&self, base_url: Option<&str>, path: Option<&str>) -> Result<Outbound, Error> {
+  fn build_outbound(&self, base_url: Option<&str>, path: Option<&str>) -> Result<Outbound, Error> {
     let base = base_url
       .or(self.base_url)
       .ok_or_else(|| Error::Build(format!("`{}` needs a base URL", self.protocol)))?;

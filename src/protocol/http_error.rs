@@ -13,7 +13,7 @@ use crate::protocol::error::Error;
 const LIMIT: usize = 512;
 
 /// The text of one string member of an object, when it is there, is a string and is not empty.
-pub fn string_member(object: Option<&Value>, key: &str) -> Option<String> {
+pub fn read_string_member(object: Option<&Value>, key: &str) -> Option<String> {
   let text = object?.get(key)?.as_str()?;
   (!text.is_empty()).then(|| text.to_owned())
 }
@@ -22,7 +22,7 @@ pub fn string_member(object: Option<&Value>, key: &str) -> Option<String> {
 ///
 /// A code arrives as a string from most services and as a number from several others - the wire
 /// envelope decides that, not us - and either spelling is the code.
-pub fn member_text(object: Option<&Value>, key: &str) -> Option<String> {
+pub fn read_member_text(object: Option<&Value>, key: &str) -> Option<String> {
   match object?.get(key)? {
     Value::String(text) => (!text.is_empty()).then(|| text.to_owned()),
     Value::Number(number) => Some(number.to_string()),
@@ -42,68 +42,84 @@ pub fn from_envelope(
   body: &Value,
 ) -> Error {
   let message = message.unwrap_or_else(|| truncate(&body.to_string()));
-  Error::http(status, code, format!("HTTP {status}: {message}"))
+  Error::from_http(status, code, format!("HTTP {status}: {message}"))
 }
 
 /// The text of a body that never parsed as JSON at all.
-pub fn body_text(bytes: &[u8]) -> String {
+pub fn decode_body_text(bytes: &[u8]) -> String {
   truncate(&String::from_utf8_lossy(bytes))
 }
 
 /// Anthropic messages: `error: {type, message}`.
-pub fn anthropic_messages(status: u16, body: &Value) -> Error {
+pub fn decode_anthropic_messages(status: u16, body: &Value) -> Error {
   let error = body.get("error");
-  from_envelope(status, string_member(error, "type"), string_member(error, "message"), body)
+  from_envelope(
+    status,
+    read_string_member(error, "type"),
+    read_string_member(error, "message"),
+    body,
+  )
 }
 
 /// OpenAI chat completions: `error: {message, type, code}`, where `code` is often null.
-pub fn openai_chat(status: u16, body: &Value) -> Error {
-  openai_envelope(status, body)
+pub fn decode_openai_chat(status: u16, body: &Value) -> Error {
+  decode_openai_envelope(status, body)
 }
 
 /// OpenAI responses: the same envelope as chat completions.
-pub fn openai_responses(status: u16, body: &Value) -> Error {
-  openai_envelope(status, body)
+pub fn decode_openai_responses(status: u16, body: &Value) -> Error {
+  decode_openai_envelope(status, body)
 }
 
 /// Gemini `generateContent`: `error: {code, message, status}`, where `code` repeats the HTTP status
 /// as a number and `status` is the canonical string (`RESOURCE_EXHAUSTED` and friends).
-pub fn google_generate_content(status: u16, body: &Value) -> Error {
+pub fn decode_google_generate_content(status: u16, body: &Value) -> Error {
   let error = body.get("error");
-  from_envelope(status, string_member(error, "status"), string_member(error, "message"), body)
+  from_envelope(
+    status,
+    read_string_member(error, "status"),
+    read_string_member(error, "message"),
+    body,
+  )
 }
 
 /// Gemini interactions: the same `error: {code, message, status}` envelope.
-pub fn google_interactions(status: u16, body: &Value) -> Error {
+pub fn decode_google_interactions(status: u16, body: &Value) -> Error {
   let error = body.get("error");
-  from_envelope(status, string_member(error, "status"), string_member(error, "message"), body)
+  from_envelope(
+    status,
+    read_string_member(error, "status"),
+    read_string_member(error, "message"),
+    body,
+  )
 }
 
 /// Bedrock Converse: a bare `{message}`, sometimes with `__type` naming the exception.
-pub fn bedrock_converse(status: u16, body: &Value) -> Error {
+pub fn decode_bedrock_converse(status: u16, body: &Value) -> Error {
   // The runtime spells it `message`; the gateway in front of it spells it `Message`.
   let message =
-    string_member(Some(body), "message").or_else(|| string_member(Some(body), "Message"));
-  from_envelope(status, string_member(Some(body), "__type"), message, body)
+    read_string_member(Some(body), "message").or_else(|| read_string_member(Some(body), "Message"));
+  from_envelope(status, read_string_member(Some(body), "__type"), message, body)
 }
 
 /// Mistral: `{code, message}` with an optional `type`, the same on both of its wires.
-pub fn mistral_conversations(status: u16, body: &Value) -> Error {
+pub fn decode_mistral_conversations(status: u16, body: &Value) -> Error {
   // Both of its wires answer with `{code, message}`, and the gateway in front of them answers with
   // FastAPI's `{detail}`.
-  let code = member_text(Some(body), "code").or_else(|| member_text(Some(body), "type"));
+  let code = read_member_text(Some(body), "code").or_else(|| read_member_text(Some(body), "type"));
   let message =
-    string_member(Some(body), "message").or_else(|| string_member(Some(body), "detail"));
+    read_string_member(Some(body), "message").or_else(|| read_string_member(Some(body), "detail"));
   from_envelope(status, code, message, body)
 }
 
-fn openai_envelope(status: u16, body: &Value) -> Error {
+fn decode_openai_envelope(status: u16, body: &Value) -> Error {
   // This is the wire everything else imitates, and the imitations drift: some drop the `error`
   // wrapper and put the report at the top of the body, some make `error` a bare string, and some
   // file it under FastAPI's `detail`. Whichever the body puts the report in, that is the envelope.
   let error = body.get("error").or_else(|| body.get("detail")).unwrap_or(body);
-  let code = member_text(Some(error), "code").or_else(|| member_text(Some(error), "type"));
-  let message = string_member(Some(error), "message")
+  let code =
+    read_member_text(Some(error), "code").or_else(|| read_member_text(Some(error), "type"));
+  let message = read_string_member(Some(error), "message")
     .or_else(|| error.as_str().filter(|text| !text.is_empty()).map(str::to_owned));
   from_envelope(status, code, message, body)
 }
@@ -123,9 +139,9 @@ fn truncate(text: &str) -> String {
 /// `{error: {message, code}}`, Aliyun's `{Code, Message}`, MiniMax's nested
 /// `{base_resp: {status_code, status_msg}}`, a bare string under `error`, and FastAPI's `{detail}`;
 /// the status is prefixed either way, because the status is the one fact every shape shares.
-pub fn provider_envelope(status: u16, body: &[u8]) -> Error {
+pub fn decode_provider_envelope(status: u16, body: &[u8]) -> Error {
   let Ok(value) = serde_json::from_slice::<Value>(body) else {
-    return Error::http(status, None, format!("HTTP {status}: {}", body_text(body)));
+    return Error::from_http(status, None, format!("HTTP {status}: {}", decode_body_text(body)));
   };
   // One service answers with a bare string under `error`, and that string is the whole report.
   let base = value
@@ -133,24 +149,24 @@ pub fn provider_envelope(status: u16, body: &[u8]) -> Error {
     .or_else(|| value.get("error"))
     .or_else(|| value.get("detail"))
     .unwrap_or(&value);
-  let code = member_text(Some(base), "code")
-    .or_else(|| member_text(Some(base), "Code"))
-    .or_else(|| member_text(Some(base), "type"))
-    .or_else(|| member_text(Some(base), "status_code"));
-  let message = string_member(Some(base), "message")
-    .or_else(|| string_member(Some(base), "Message"))
-    .or_else(|| string_member(Some(base), "status_msg"))
-    .or_else(|| string_member(Some(base), "msg"))
+  let code = read_member_text(Some(base), "code")
+    .or_else(|| read_member_text(Some(base), "Code"))
+    .or_else(|| read_member_text(Some(base), "type"))
+    .or_else(|| read_member_text(Some(base), "status_code"));
+  let message = read_string_member(Some(base), "message")
+    .or_else(|| read_string_member(Some(base), "Message"))
+    .or_else(|| read_string_member(Some(base), "status_msg"))
+    .or_else(|| read_string_member(Some(base), "msg"))
     .or_else(|| base.as_str().filter(|text| !text.is_empty()).map(str::to_owned));
   from_envelope(status, code, message, &value)
 }
 
 /// A successful body as JSON, or the malformed reply a protocol would report for it.
-pub fn json_body(protocol: &str, bytes: &[u8]) -> Result<Value, Error> {
+pub fn decode_json_body(protocol: &str, bytes: &[u8]) -> Result<Value, Error> {
   serde_json::from_slice(bytes).map_err(|error| {
     Error::Malformed(format!(
       "{protocol} response body is not JSON ({error}): {}",
-      body_text(bytes)
+      decode_body_text(bytes)
     ))
   })
 }

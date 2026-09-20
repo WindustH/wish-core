@@ -59,6 +59,6 @@ pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
 }
 
 /// The query of a page: this endpoint takes no cursor and no page size.
-pub(crate) fn page_query() -> Vec<(String, String)> {
+pub(crate) fn build_page_query() -> Vec<(String, String)> {
   Vec::new()
 }

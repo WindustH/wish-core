@@ -36,7 +36,7 @@ pub enum UpstreamCompactionProtocol {
 
 impl UpstreamCompactionProtocol {
   /// The name this protocol is known by in text.
-  pub const fn id(self) -> &'static str {
+  pub const fn get_id(self) -> &'static str {
     match self {
       UpstreamCompactionProtocol::OpenAiResponses => "openai_responses",
       UpstreamCompactionProtocol::OpenAiResponsesStreamed => "openai_responses_streamed",
@@ -53,7 +53,7 @@ pub enum Unsupported {
 
 impl Unsupported {
   /// The reason in the words a caller reads back.
-  pub const fn text(self) -> &'static str {
+  pub const fn get_text(self) -> &'static str {
     match self {
       Unsupported::NoCall => "has no upstream compaction call",
     }

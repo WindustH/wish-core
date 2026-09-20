@@ -35,7 +35,7 @@ use serde_json::Value;
 /// Both readings keep one rule: what the service said is what the caller sees. A balance re-encoded
 /// through a float can lose the cent that matters, and a zero that was invented is worse than a
 /// missing value.
-pub(crate) fn lexical(value: &Value) -> Option<String> {
+pub(crate) fn read_scalar_text(value: &Value) -> Option<String> {
   match value {
     Value::String(text) => Some(text.clone()),
     Value::Number(number) => Some(number.to_string()),
@@ -49,7 +49,7 @@ pub(crate) fn lexical(value: &Value) -> Option<String> {
 /// The point moves rather than the number being multiplied, so no digit is invented and none is
 /// lost to a float: `0.125` reads `12.5`, `1` reads `100`, `0.0` reads `0`. A value that is not a
 /// decimal number reads as nothing at all.
-pub(crate) fn percent_from_ratio(ratio: &str) -> Option<String> {
+pub(crate) fn convert_ratio_to_percent(ratio: &str) -> Option<String> {
   let (sign, digits) = match ratio.strip_prefix('-') {
     Some(magnitude) => ("-", magnitude),
     None => ("", ratio),

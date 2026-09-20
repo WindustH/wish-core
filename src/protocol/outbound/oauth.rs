@@ -74,15 +74,15 @@ pub async fn refresh<T: Transport>(
   let call = target.dispatch(draft, &Credentials::default(), 0)?;
   let reply = transport.execute(&call).await?;
   if !reply.is_success() {
-    let error = http_error::provider_envelope(reply.status, &reply.body);
-    return Err(error.with_retry_after(reply.retry_after_ms()));
+    let error = http_error::decode_provider_envelope(reply.status, &reply.body);
+    return Err(error.with_retry_after(reply.get_retry_after_ms()));
   }
-  let body = http_error::json_body("openai_codex_oauth", &reply.body)?;
-  tokens(&body)
+  let body = http_error::decode_json_body("openai_codex_oauth", &reply.body)?;
+  decode_tokens(&body)
 }
 
 /// Reads a token response: the pair, plus what the tokens claim about the account.
-fn tokens(body: &Value) -> Result<Tokens, Error> {
+fn decode_tokens(body: &Value) -> Result<Tokens, Error> {
   let access_token = body
     .get("access_token")
     .and_then(Value::as_str)
@@ -106,7 +106,7 @@ fn tokens(body: &Value) -> Result<Tokens, Error> {
         // One claim of an unverified JWT: the payload segment, decoded.
         id_token
           .and_then(|token| token.split('.').nth(1))
-          .and_then(base64url)
+          .and_then(decode_base64url)
           .and_then(|payload| serde_json::from_slice::<Value>(&payload).ok())
           .and_then(|claims| claims.get("chatgpt_account_id").cloned())
           .and_then(|found| found.as_str().map(str::to_owned))
@@ -115,16 +115,16 @@ fn tokens(body: &Value) -> Result<Tokens, Error> {
     expires_at: access_token
       .split('.')
       .nth(1)
-      .and_then(base64url)
+      .and_then(decode_base64url)
       .and_then(|payload| serde_json::from_slice::<Value>(&payload).ok())
       .and_then(|claims| claims.get("exp").cloned())
       .and_then(|exp| exp.as_u64()),
   })
 }
 
-/// The base64url payload of a JWT segment, decoded here rather than through a dependency: one claim
+/// The decode_base64url payload of a JWT segment, decoded here rather than through a dependency: one claim
 /// reader is not worth a crate.
-fn base64url(encoded: &str) -> Option<Vec<u8>> {
+fn decode_base64url(encoded: &str) -> Option<Vec<u8>> {
   let mut bytes = Vec::with_capacity(encoded.len() / 4 * 3);
   let mut accumulator = 0u32;
   let mut bits = 0u32;

@@ -13,7 +13,7 @@
 //! - A signature arriving on its own - a bare `thoughtSignature` part, or a `thought` part without
 //!   text - fills the open reasoning block when it carries no signature yet, and otherwise becomes
 //!   one closed signature-only reasoning block, so the mandatory signature replay never loses it.
-//! - A `functionCall` part is one complete block: it opens, carries its call id (empty when the
+//! - A `functionCall` part is one complete block: it opens, carries its call get_id (empty when the
 //!   wire omits `id`, the pairing-by-name convention of the buffered decoder), name and serialized
 //!   `args`, and closes in place.
 //! - `usageMetadata` rides every chunk cumulatively and is reported whenever it is non-zero;
@@ -31,23 +31,6 @@ use serde_json::{Value, json};
 use crate::protocol::error::Error;
 use crate::protocol::model_use::response::google_generate_content as buffered;
 use crate::protocol::{BlockKind, StreamEvent};
-
-/// The streamed form of a resolved path: the verb segment becomes `:streamGenerateContent` (when
-/// the path uses the standard verb) and `alt=sse` selects the SSE framing.
-pub fn stream_path(path: &str) -> String {
-  let mut url = path.to_owned();
-  if url.contains(":generateContent") && !url.contains(":streamGenerateContent") {
-    url = url.replace(":generateContent", ":streamGenerateContent");
-  }
-  if url.contains('?') {
-    if !url.contains("alt=sse") {
-      url.push_str("&alt=sse");
-    }
-  } else {
-    url.push_str("?alt=sse");
-  }
-  url
-}
 
 /// One reasoning block while it is open, holding its signature back until it closes.
 struct OpenReasoning {
@@ -75,11 +58,11 @@ impl Decoder {
     let chunk: Value = serde_json::from_str(data)
       .map_err(|error| Error::Malformed(format!("generateContent chunk is not JSON: {error}")))?;
     if chunk.get("error").is_some_and(|error| error.is_object()) {
-      return Err(buffered::upstream_error(&chunk));
+      return Err(buffered::decode_upstream_error(&chunk));
     }
     let mut out = Vec::new();
     if chunk.get("usageMetadata").is_some_and(|usage| !usage.is_null()) {
-      let usage = buffered::usage(&chunk);
+      let usage = buffered::parse_usage(&chunk);
       if usage.total_tokens.unwrap_or(0) > 0 {
         out.push(StreamEvent::Usage(usage));
       }
@@ -94,7 +77,7 @@ impl Decoder {
       candidate.and_then(|candidate| candidate.pointer("/content/parts")).and_then(Value::as_array)
     {
       for part in parts {
-        self.part(part, &mut out)?;
+        self.decode_part(part, &mut out)?;
       }
     }
     Ok(out)
@@ -107,7 +90,7 @@ impl Decoder {
     self.close_text(&mut out);
     self.close_reasoning(&mut out);
     let reason = match self.finish_reason.as_deref() {
-      Some(finish) => buffered::stop_reason(Some(finish), self.tool_uses > 0),
+      Some(finish) => buffered::map_stop_reason(Some(finish), self.tool_uses > 0),
       None if self.tool_uses > 0 => crate::protocol::StopReason::ToolUse,
       None => {
         return Err(Error::Malformed("stream ended without a finishReason".to_owned()));
@@ -117,7 +100,7 @@ impl Decoder {
     Ok(out)
   }
 
-  fn part(&mut self, part: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
+  fn decode_part(&mut self, part: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
     let signature = part
       .get("thoughtSignature")
       .and_then(Value::as_str)

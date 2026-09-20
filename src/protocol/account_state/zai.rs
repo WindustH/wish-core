@@ -30,7 +30,7 @@ use serde_json::{Value, json};
 use crate::protocol::account_state::{
   AccountState, AccountStateProtocol, Failure, FailureKind, QuotaWindow,
 };
-use crate::protocol::lexical;
+use crate::protocol::read_scalar_text;
 
 /// Reads the monitor body.
 pub fn parse(body: &Value) -> AccountState {
@@ -72,7 +72,7 @@ fn read_limit(limit: &Value, warnings: &mut Vec<String>) -> QuotaWindow {
     .get("unit")
     .and_then(Value::as_i64)
     .zip(limit.get("number").and_then(Value::as_i64))
-    .and_then(|(unit, number)| window_of(unit, number));
+    .and_then(|(unit, number)| decode_window(unit, number));
   let id = match &window {
     Some((_, label)) => format!("{kind}:{label}"),
     None => {
@@ -80,7 +80,7 @@ fn read_limit(limit: &Value, warnings: &mut Vec<String>) -> QuotaWindow {
       kind.to_owned()
     }
   };
-  if !matches!(counted(kind), "credits" | "tokens" | "time") {
+  if !matches!(get_counted_unit(kind), "credits" | "tokens" | "time") {
     warnings.push(format!("`{kind}` is a limit type this protocol does not know"));
   }
   if let Some(details) =
@@ -91,20 +91,20 @@ fn read_limit(limit: &Value, warnings: &mut Vec<String>) -> QuotaWindow {
   QuotaWindow {
     id,
     name: Some(kind.to_owned()),
-    unit: counted(kind).to_owned(),
-    used: limit.get("currentValue").and_then(lexical),
-    limit: limit.get("usage").and_then(lexical),
-    remaining: limit.get("remaining").and_then(lexical),
-    used_percent: limit.get("percentage").and_then(lexical),
+    unit: get_counted_unit(kind).to_owned(),
+    used: limit.get("currentValue").and_then(read_scalar_text),
+    limit: limit.get("usage").and_then(read_scalar_text),
+    remaining: limit.get("remaining").and_then(read_scalar_text),
+    used_percent: limit.get("percentage").and_then(read_scalar_text),
     window: window.map(|(minutes, _)| json!({ "duration": minutes, "unit": "minutes" })),
-    resets_at: limit.get("nextResetTime").and_then(lexical),
+    resets_at: limit.get("nextResetTime").and_then(read_scalar_text),
     reached: limit.get("percentage").and_then(Value::as_f64).map(|spent| spent >= 100.0),
     unlimited: None,
   }
 }
 
 /// What an entry's amounts count.
-fn counted(kind: &str) -> &'static str {
+fn get_counted_unit(kind: &str) -> &'static str {
   match kind {
     "CREDIT_LIMIT" => "credits",
     "TOKENS_LIMIT" => "tokens",
@@ -115,7 +115,7 @@ fn counted(kind: &str) -> &'static str {
 
 /// The window a `unit` and `number` pair describes: its length in minutes, and the short name the
 /// pair reads as. `unit` 1 is a day, 3 an hour, 5 a minute, 6 a week, and `number` multiplies it.
-fn window_of(unit: i64, number: i64) -> Option<(i64, String)> {
+fn decode_window(unit: i64, number: i64) -> Option<(i64, String)> {
   let (per_unit, letter) = match unit {
     1 => (1440, "d"),
     3 => (60, "h"),

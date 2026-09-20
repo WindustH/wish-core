@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 pub fn decode(body: &Value) -> Result<Response, Error> {
   if body.get("error").is_some() {
-    return Err(upstream_error(body));
+    return Err(decode_upstream_error(body));
   }
 
   let mut messages: Vec<Message> = Vec::new();
@@ -33,7 +33,8 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
     if content.is_empty() {
       return;
     }
-    messages.push(Message::Assistant { content: std::mem::take(content) });
+    messages
+      .push(Message::Assistant { metadata: Default::default(), content: std::mem::take(content) });
   };
   // A signature that arrives on its own (a bare `thoughtSignature` part, or a `thought` part
   // without text) belongs to the reasoning it concludes: fill the previous reasoning message
@@ -51,6 +52,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
         _ => {
           flush(messages, content);
           messages.push(Message::Reasoning {
+            metadata: Default::default(),
             plaintext: String::new(),
             display: String::new(),
             signature: proof.to_owned(),
@@ -66,6 +68,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
         if let Some(text) = part.get("text").and_then(Value::as_str) {
           flush(&mut messages, &mut content);
           messages.push(Message::Reasoning {
+            metadata: Default::default(),
             plaintext: text.to_owned(),
             display: text.to_owned(),
             signature: signature.to_owned(),
@@ -80,6 +83,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
         flush(&mut messages, &mut content);
         if !signature.is_empty() {
           messages.push(Message::Reasoning {
+            metadata: Default::default(),
             plaintext: String::new(),
             display: String::new(),
             signature: signature.to_owned(),
@@ -93,6 +97,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
         if !signature.is_empty() {
           flush(&mut messages, &mut content);
           messages.push(Message::Reasoning {
+            metadata: Default::default(),
             plaintext: String::new(),
             display: String::new(),
             signature: signature.to_owned(),
@@ -124,14 +129,14 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
   })
 }
 
-pub(crate) fn upstream_error(body: &Value) -> Error {
+pub(crate) fn decode_upstream_error(body: &Value) -> Error {
   let error = body.get("error");
   let message = error
     .and_then(|error| error.get("message"))
     .and_then(Value::as_str)
     .unwrap_or("upstream reported an error without a message");
   let code = error.and_then(|error| error.get("status")).and_then(Value::as_str);
-  Error::in_band(code.map(str::to_owned), message.to_owned())
+  Error::from_in_band(code.map(str::to_owned), message.to_owned())
 }
 
 fn decode_function_call(function_call: &Value) -> Result<Message, Error> {
@@ -141,14 +146,19 @@ fn decode_function_call(function_call: &Value) -> Result<Message, Error> {
     .ok_or_else(|| Error::Malformed("functionCall part is missing `name`".to_owned()))?;
   let call_id = function_call.get("id").and_then(Value::as_str).unwrap_or("");
   let arguments = function_call.get("args").cloned().unwrap_or_else(|| json!({}));
-  Ok(Message::ToolUse { call_id: call_id.to_owned(), name: name.to_owned(), arguments })
+  Ok(Message::ToolUse {
+    metadata: Default::default(),
+    call_id: call_id.to_owned(),
+    name: name.to_owned(),
+    arguments,
+  })
 }
 
 fn decode_stop_reason(body: &Value, has_tool_uses: bool) -> StopReason {
-  stop_reason(body.pointer("/candidates/0/finishReason").and_then(Value::as_str), has_tool_uses)
+  map_stop_reason(body.pointer("/candidates/0/finishReason").and_then(Value::as_str), has_tool_uses)
 }
 
-pub(crate) fn stop_reason(finish: Option<&str>, has_tool_uses: bool) -> StopReason {
+pub(crate) fn map_stop_reason(finish: Option<&str>, has_tool_uses: bool) -> StopReason {
   match finish {
     Some("STOP") if has_tool_uses => StopReason::ToolUse,
     Some("STOP") => StopReason::Stop,
@@ -163,14 +173,14 @@ pub(crate) fn stop_reason(finish: Option<&str>, has_tool_uses: bool) -> StopReas
 }
 
 fn decode_usage(body: &Value) -> Usage {
-  usage(body)
+  parse_usage(body)
 }
 
 /// Maps the top-level `usageMetadata`. The wire reports thinking tokens separately in
 /// `thoughtsTokenCount` while billing them as output; `output_tokens` folds them in so the
 /// number is what the model was charged, matching the dialects whose completion count already
 /// includes reasoning.
-pub(crate) fn usage(body: &Value) -> Usage {
+pub(crate) fn parse_usage(body: &Value) -> Usage {
   let usage = body.get("usageMetadata");
   let field =
     |key: &str| -> Option<u64> { usage.and_then(|usage| usage.get(key)).and_then(Value::as_u64) };

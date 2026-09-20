@@ -3,7 +3,7 @@
 //! Conversions:
 //! - One [`Balance`] per `balance_infos` entry, in the currency the wire names: `total_balance` is
 //!   `total`, `granted_balance` is `granted` and `topped_up_balance` is `topped_up`, each read with
-//!   `lexical` so the digits arrive exactly as the wire wrote them.
+//!   `read_scalar_text` so the digits arrive exactly as the wire wrote them.
 //! - `is_available` is the service's own verdict on whether the balance still covers calls, so it
 //!   becomes `availability` and, when false, an unpaid [`Failure`] - not only a warning.
 //!
@@ -24,7 +24,7 @@ use crate::Error;
 use crate::protocol::account_state::{
   AccountState, AccountStateProtocol, Balance, Failure, FailureKind,
 };
-use crate::protocol::lexical;
+use crate::protocol::read_scalar_text;
 
 /// Reads the balance body.
 pub fn parse(body: &Value) -> Result<AccountState, Error> {
@@ -42,10 +42,10 @@ pub fn parse(body: &Value) -> Result<AccountState, Error> {
     balances.push(Balance {
       currency,
       available: None,
-      total: info.get("total_balance").and_then(lexical),
+      total: info.get("total_balance").and_then(read_scalar_text),
       cash: None,
-      granted: info.get("granted_balance").and_then(lexical),
-      topped_up: info.get("topped_up_balance").and_then(lexical),
+      granted: info.get("granted_balance").and_then(read_scalar_text),
+      topped_up: info.get("topped_up_balance").and_then(read_scalar_text),
       voucher: None,
       credit: None,
       owed: None,

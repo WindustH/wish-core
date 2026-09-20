@@ -36,7 +36,7 @@ pub enum Proxy {
 }
 
 /// Reading the body failed: the connection broke, or the attempt outlived its limits.
-pub(super) fn read_error(message: &str) -> Error {
+pub(super) fn build_read_error(message: &str) -> Error {
   TransportError::ReadBody(truncate(message)).into()
 }
 
@@ -44,7 +44,7 @@ pub(super) fn read_error(message: &str) -> Error {
 ///
 /// The same call would do it again, so this is a dead end rather than something to retry: it is a
 /// payload that does not fit our reading, not a network failure.
-pub(super) fn payload_error(message: &str) -> Error {
+pub(super) fn build_payload_error(message: &str) -> Error {
   Error::Malformed(truncate(message))
 }
 

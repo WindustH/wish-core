@@ -2,7 +2,7 @@
 //!
 //! This is the first layer where a [`Request`] becomes a network round trip, and deliberately only
 //! that: render the body, resolve the path, dispatch the draft, execute one attempt, then hand the
-//! reply either to the protocol's decoder or to its error envelope. The streamed twin is `call_stream`: the
+//! reply either to the protocol's decoder or to its error envelope. When `Request::stream` is true, the same call returns a stream: the
 //! same one attempt, its body read record by record (SSE text framing, or bedrock's binary
 //! event-stream frames holding the same shape) and handed to the protocol's decoder, with nothing
 //! assembled on the way. Both call lanes own the retry loop: a transient failure is waited out
@@ -37,8 +37,14 @@ use crate::protocol::{
   Message, Request, Response, StreamAccumulator, StreamEvent, UpstreamCompaction,
   UpstreamCompactionRequest, http_error, model_use::request::openai_responses::ResponsesDeployment,
 };
-use crate::retry::{RetryPolicy, retrying};
+use crate::retry::{RetryPolicy, retry};
 use crate::transport::{BedrockStream, SseEvent, SseStream};
+
+/// The response mode selected by `Request::stream`.
+pub enum CallResponse<S> {
+  Complete(Box<Response>),
+  Stream(S),
+}
 
 /// One model-use protocol bound to one configured endpoint, the read protocols named beside it,
 /// and one transport.
@@ -134,7 +140,7 @@ impl<T: Transport> Client<T> {
       ) => "is served only by a deployment that compacts on the call it always serves",
       _ => "is served only on the openai responses wire",
     };
-    Err(Error::unsupported("upstream compaction", compaction.id(), reason))
+    Err(Error::build_unsupported("upstream compaction", compaction.get_id(), reason))
   }
 
   /// Names the model-list protocol this upstream serves, for [`Client::get_model_list`].
@@ -152,7 +158,7 @@ impl<T: Transport> Client<T> {
   }
 
   /// Replaces the clock this client reads, as unix seconds. The expiry judgment reads it - at
-  /// every dispatch and in [`Client::credentials_expired`] - and the machine's clock is the
+  /// every dispatch and in [`Client::are_credentials_expired`] - and the machine's clock is the
   /// default. A caller who wants determinism hands its own.
   #[must_use]
   pub fn with_clock(mut self, clock: std::sync::Arc<dyn Fn() -> u64 + Send + Sync>) -> Self {
@@ -163,14 +169,14 @@ impl<T: Transport> Client<T> {
   /// When the material stops being accepted, when it says so itself; `None` is material that
   /// does not run out.
   #[must_use]
-  pub fn credential_expires_at(&self) -> Option<u64> {
+  pub fn get_credential_expiry(&self) -> Option<u64> {
     self.credentials.expires_at
   }
 
   /// Whether the material has run out, against the clock this client reads.
   #[must_use]
-  pub fn credentials_expired(&self) -> bool {
-    crate::protocol::outbound::expired(&self.credentials, self.now())
+  pub fn are_credentials_expired(&self) -> bool {
+    crate::protocol::outbound::is_expired(&self.credentials, self.get_current_time())
   }
 
   /// Exchanges the material this client holds for fresh material, over the transport this
@@ -178,7 +184,7 @@ impl<T: Transport> Client<T> {
   /// that renews is an access token read from `Authorization` - and hands the renewed material
   /// back, installed nowhere.
   ///
-  /// What comes back is [`Credentials::renewed`] over the exchange's answer: a new access token,
+  /// What comes back is [`Credentials::renew`] over the exchange's answer: a new access token,
   /// the rotated refresh token (kept, when the endpoint rotated nothing), the account and expiry
   /// the exchange named, everything else as it was. Installing it is [`Client::set_credentials`],
   /// and storing what the exchange rotated stays with whoever holds the account state.
@@ -189,12 +195,12 @@ impl<T: Transport> Client<T> {
   /// neither runs out nor exchanges - [`Error::Build`] when the material does not carry what
   /// its exchange needs, and the rest as that exchange states them.
   pub async fn refresh_credentials(&self) -> Result<Credentials, Error> {
-    let refresh = match self.outbound.auth() {
+    let refresh = match self.outbound.get_auth() {
       AuthProtocol::Bearer(Some(refresh)) => refresh,
       auth => {
-        return Err(Error::unsupported(
+        return Err(Error::build_unsupported(
           "credential refresh",
-          auth.name(),
+          auth.get_name(),
           "carries no renewal: a key or a signature neither runs out nor exchanges",
         ));
       }
@@ -203,14 +209,19 @@ impl<T: Transport> Client<T> {
       CredentialsRefreshProtocol::OAuth => {
         let tokens =
           crate::protocol::outbound::oauth::refresh(&self.transport, &self.credentials).await?;
-        Ok(self.credentials.renewed(&tokens))
+        Ok(self.credentials.renew(&tokens))
       }
       CredentialsRefreshProtocol::GoogleAdc { adc, scope } => {
-        let tokens =
-          crate::protocol::outbound::adc::token(&self.transport, adc, scope, self.now()).await?;
+        let tokens = crate::protocol::outbound::adc::fetch_token(
+          &self.transport,
+          adc,
+          scope,
+          self.get_current_time(),
+        )
+        .await?;
         // A Google exchange rotates nothing: the grant was made once, and the token it hands
-        // back is the only thing that changed. `renewed` keeps the rest as it was.
-        Ok(self.credentials.renewed(&crate::protocol::outbound::Tokens {
+        // back is the only thing that changed. `renew` keeps the rest as it was.
+        Ok(self.credentials.renew(&crate::protocol::outbound::Tokens {
           access_token: tokens.access_token,
           expires_at: Some(tokens.expires_at),
           ..Default::default()
@@ -225,15 +236,19 @@ impl<T: Transport> Client<T> {
     self.credentials = credentials;
   }
 
-  /// Sends one request, replacing the attempt while the failure looks transient and attempts are
-  /// left.
-  ///
-  /// A non-`2xx` reply never becomes a [`Response`], even when it is valid JSON, and a `2xx` body
-  /// that is not JSON is a malformed reply rather than something to paper over. A failure that
-  /// [`Error::retryable`] rejects ends the call at once; so does running out of attempts, with the
-  /// last failure returned.
-  pub async fn call(&self, request: &Request) -> Result<Response, Error> {
-    retrying(&self.retry, |_| self.attempt(request)).await
+  /// Sends a request in the response mode it declares. Buffered calls retry whole attempts;
+  /// streamed calls retry only until the first event, then hand ownership of the stream back.
+  pub async fn call(
+    &self,
+    request: &Request,
+  ) -> Result<CallResponse<EventStream<T::Stream>>, Error> {
+    if request.stream {
+      self.stream_with_retries(request).await.map(CallResponse::Stream)
+    } else {
+      retry(&self.retry, |_| self.attempt(request))
+        .await
+        .map(|response| CallResponse::Complete(Box::new(response)))
+    }
   }
 
   /// Asks the service to stand in for a conversation, replacing the attempt while the failure looks
@@ -247,11 +262,11 @@ impl<T: Transport> Client<T> {
   /// replaced rather than just its opening: nothing of a compaction reaches the caller before the
   /// item standing in for the history does, so a replay cannot splice anything into what they
   /// already have - it only asks the service to compact twice.
-  pub async fn upstream_compact(
+  pub async fn compact_upstream(
     &self,
     request: &UpstreamCompactionRequest,
   ) -> Result<UpstreamCompaction, Error> {
-    retrying(&self.retry, |_| self.upstream_compact_attempt(request)).await
+    retry(&self.retry, |_| self.attempt_upstream_compaction(request)).await
   }
 
   /// Reads one page of the model list this upstream serves, over the protocol named when the
@@ -264,13 +279,14 @@ impl<T: Transport> Client<T> {
   /// states them.
   pub async fn get_model_list(&self, query: &ModelListQuery) -> Result<ModelCatalog, Error> {
     let protocol = self.model_list.ok_or_else(|| {
-      Error::unsupported(
+      Error::build_unsupported(
         "model list",
-        self.model_use.name(),
+        self.model_use.get_name(),
         "was not named when this client was built",
       )
     })?;
-    model_list::fetch(&self.transport, protocol, query, &self.credentials, self.now()).await
+    model_list::fetch(&self.transport, protocol, query, &self.credentials, self.get_current_time())
+      .await
   }
 
   /// Reads the account state this upstream reports, over the protocol named when the client was
@@ -283,33 +299,47 @@ impl<T: Transport> Client<T> {
   /// no ask of its own; the rest as [`mod@crate::protocol::account_state::fetch`] states them.
   pub async fn get_account_state(&self, base_url: Option<&str>) -> Result<AccountState, Error> {
     let protocol = self.account_state.ok_or_else(|| {
-      Error::unsupported(
+      Error::build_unsupported(
         "account state",
-        self.model_use.name(),
+        self.model_use.get_name(),
         "was not named when this client was built",
       )
     })?;
-    account_state::fetch(&self.transport, protocol, &self.credentials, base_url, self.now()).await
+    account_state::fetch(
+      &self.transport,
+      protocol,
+      &self.credentials,
+      base_url,
+      self.get_current_time(),
+    )
+    .await
   }
 
   /// Internal: one attempt of [`Client::call`]: render, resolve, build, execute, then decode or report.
-  async fn attempt(&self, request: &Request) -> Result<Response, Error> {
-    let body = Self::body_bytes(self.model_use.render(request, false)?)?;
-    let path = self.outbound.resolve_path(&request.model);
-    let call = self.outbound.dispatch(
-      self.draft(path, self.headers_with(&[]), body),
+  fn build_model_use_call(&self, request: &Request) -> Result<Call, Error> {
+    let body = Self::serialize_body(self.model_use.render(request)?)?;
+    let path =
+      self.model_use.resolve_request_path(request, self.outbound.resolve_path(&request.model));
+    self.outbound.dispatch(
+      self.build_draft(path, self.build_headers(&[]), body),
       &self.credentials,
-      self.now(),
-    )?;
+      self.get_current_time(),
+    )
+  }
+
+  async fn attempt(&self, request: &Request) -> Result<Response, Error> {
+    let call = self.build_model_use_call(request)?;
     let reply = self.transport.execute(&call).await?;
     if !reply.is_success() {
       return Err(
-        self.upstream_error(reply.status, &reply.body).with_retry_after(reply.retry_after_ms()),
+        self
+          .decode_upstream_error(reply.status, &reply.body)
+          .with_retry_after(reply.get_retry_after_ms()),
       );
     }
-    let body = Self::reply_body(&reply)?;
+    let body = Self::decode_reply_body(&reply)?;
     let mut response = self.model_use.decode(&body)?;
-    response.account_state = self.account_state_reading(&reply.headers, Some(&body))?;
+    response.account_state = self.parse_account_state_reading(&reply.headers, Some(&body))?;
     Ok(response)
   }
 
@@ -317,7 +347,10 @@ impl<T: Transport> Client<T> {
   /// path or its compacting suffix, the rendered trigger body, and the headers this wire adds
   /// beside what all of its calls carry. Refused here when this client's wire has no compaction
   /// call, before anything is sent.
-  fn upstream_compaction_call(&self, request: &UpstreamCompactionRequest) -> Result<Call, Error> {
+  fn build_upstream_compaction_call(
+    &self,
+    request: &UpstreamCompactionRequest,
+  ) -> Result<Call, Error> {
     let (variant, path) = match (self.model_use, self.upstream_compaction) {
       // A deployment that compacts on its ordinary call keeps that call's path.
       (
@@ -329,70 +362,74 @@ impl<T: Transport> Client<T> {
         Some(UpstreamCompactionProtocol::OpenAiResponses),
       ) => (variant, format!("{}/compact", self.outbound.resolve_path(&request.model))),
       _ => {
-        return Err(Error::unsupported(
+        return Err(Error::build_unsupported(
           "upstream compaction",
-          self.model_use.name(),
-          CompactionUnsupported::NoCall.text(),
+          self.model_use.get_name(),
+          CompactionUnsupported::NoCall.get_text(),
         ));
       }
     };
     let body =
-      Self::body_bytes(upstream_compaction_wire::openai_responses::render(request, variant)?)?;
+      Self::serialize_body(upstream_compaction_wire::openai_responses::render(request, variant)?)?;
     self.outbound.dispatch(
-      self.draft(
+      self.build_draft(
         path,
-        self.headers_with(upstream_compaction_wire::openai_responses::extra_headers(variant)),
+        self.build_headers(upstream_compaction_wire::openai_responses::get_extra_headers(variant)),
         body,
       ),
       &self.credentials,
-      self.now(),
+      self.get_current_time(),
     )
   }
 
-  /// Internal: one attempt of [`Client::upstream_compact`]: render, resolve, build, execute, then read or report.
-  async fn upstream_compact_attempt(
+  /// Internal: one attempt of [`Client::compact_upstream`]: render, resolve, build, execute, then read or report.
+  async fn attempt_upstream_compaction(
     &self,
     request: &UpstreamCompactionRequest,
   ) -> Result<UpstreamCompaction, Error> {
     if matches!(self.upstream_compaction, Some(UpstreamCompactionProtocol::OpenAiResponsesStreamed))
     {
-      return self.upstream_compact_streamed(request).await;
+      return self.compact_upstream_from_stream(request).await;
     }
-    let call = self.upstream_compaction_call(request)?;
+    let call = self.build_upstream_compaction_call(request)?;
     let reply = self.transport.execute(&call).await?;
     if !reply.is_success() {
       return Err(
-        self.upstream_error(reply.status, &reply.body).with_retry_after(reply.retry_after_ms()),
+        self
+          .decode_upstream_error(reply.status, &reply.body)
+          .with_retry_after(reply.get_retry_after_ms()),
       );
     }
-    let body = Self::reply_body(&reply)?;
+    let body = Self::decode_reply_body(&reply)?;
     // The call was built, so this wire is the responses one: the decode has no refusal of its
     // own to make.
     let mut compaction =
       crate::protocol::upstream_compaction::response::openai_responses::decode(&body)?;
-    compaction.account_state = self.account_state_reading(&reply.headers, Some(&body))?;
+    compaction.account_state = self.parse_account_state_reading(&reply.headers, Some(&body))?;
     Ok(compaction)
   }
 
   /// Internal: one attempt of a compaction on a deployment that answers it on the call it always serves: the
   /// trigger item in the body is what asks for the compaction, and the item standing in for the
   /// history arrives on the stream like any other item.
-  async fn upstream_compact_streamed(
+  async fn compact_upstream_from_stream(
     &self,
     request: &UpstreamCompactionRequest,
   ) -> Result<UpstreamCompaction, Error> {
-    let call = self.upstream_compaction_call(request)?;
+    let call = self.build_upstream_compaction_call(request)?;
     let reply = self.transport.execute_stream(&call).await?;
     // The responses wire is the only one with this call, and it is served over SSE.
     let mut source = WireEventSource::Sse(SseStream::new(reply));
     if !source.is_success() {
-      let body = source.error_body().await;
+      let body = source.read_error_body().await;
       return Err(
-        self.upstream_error(source.status(), &body).with_retry_after(source.retry_after_ms()),
+        self
+          .decode_upstream_error(source.get_status(), &body)
+          .with_retry_after(source.get_retry_after_ms()),
       );
     }
-    let account_state = self.account_state_reading(source.headers(), None)?;
-    let mut decoder = self.model_use.stream_decoder()?;
+    let account_state = self.parse_account_state_reading(source.get_headers(), None)?;
+    let mut decoder = self.model_use.create_stream_decoder()?;
     let mut accumulator = StreamAccumulator::new().with_account_state(account_state);
     let mut stopped = false;
     while !stopped {
@@ -411,14 +448,14 @@ impl<T: Transport> Client<T> {
         }
       }
     }
-    streamed_upstream_compaction(accumulator.finish()?)
+    decode_streamed_upstream_compaction(accumulator.finish()?)
   }
 
   /// Internal: the account reading this reply carries, when the endpoint named an account protocol.
   ///
   /// `body` is `None` on the streamed path, where only the reply head is in hand: a protocol that
   /// needs the payload reports [`Error::Build`] there instead of quietly finding nothing.
-  fn account_state_reading(
+  fn parse_account_state_reading(
     &self,
     headers: &[(String, String)],
     body: Option<&Value>,
@@ -439,7 +476,7 @@ impl<T: Transport> Client<T> {
   /// and the policy would replace at all, which a failure after the request reached the service is
   /// not. Once an event is in the caller's hands a failure is terminal, because a replay would
   /// splice a second copy of the answer into what the caller has already seen.
-  pub async fn call_stream(&self, request: &Request) -> Result<EventStream<T::Stream>, Error> {
+  async fn stream_with_retries(&self, request: &Request) -> Result<EventStream<T::Stream>, Error> {
     let mut attempt = 1;
     loop {
       let error = match self.open_stream(request).await {
@@ -453,43 +490,46 @@ impl<T: Transport> Client<T> {
         },
         Err(error) => error,
       };
-      if attempt >= self.retry.max_attempts || !error.retryable() {
+      if attempt >= self.retry.max_attempts || !error.is_retryable() {
         return Err(error);
       }
       tokio::time::sleep(Duration::from_millis(
-        self.retry.backoff_ms(attempt, error.retry_after_ms()),
+        self.retry.calculate_backoff_ms(attempt, error.get_retry_after_ms()),
       ))
       .await;
       attempt += 1;
     }
   }
 
-  /// Internal: one attempt of [`Client::call_stream`]: open the body, or report why it cannot be opened.
+  /// Internal: one attempt of [`Client::call`]: open the body, or report why it cannot be opened.
   async fn open_stream(&self, request: &Request) -> Result<EventStream<T::Stream>, Error> {
-    let decoder = self.model_use.stream_decoder()?;
-    let body = Self::body_bytes(self.model_use.render(request, true)?)?;
-    let path = self.model_use.stream_path(self.outbound.resolve_path(&request.model));
-    let call = self.outbound.dispatch(
-      self.draft(path, self.headers_with(&[]), body),
-      &self.credentials,
-      self.now(),
-    )?;
+    let decoder = self.model_use.create_stream_decoder()?;
+    let call = self.build_model_use_call(request)?;
     let reply = self.transport.execute_stream(&call).await?;
     let mut source = match self.model_use {
       ModelUseProtocol::BedrockConverse => WireEventSource::Bedrock(BedrockStream::new(reply)),
       _ => WireEventSource::Sse(SseStream::new(reply)),
     };
     if !source.is_success() {
-      let body = source.error_body().await;
+      let body = source.read_error_body().await;
       return Err(
-        self.upstream_error(source.status(), &body).with_retry_after(source.retry_after_ms()),
+        self
+          .decode_upstream_error(source.get_status(), &body)
+          .with_retry_after(source.get_retry_after_ms()),
       );
     }
-    let account_state = self.account_state_reading(source.headers(), None)?;
-    Ok(EventStream { source, decoder, pending: VecDeque::new(), done: false, account_state })
+    let account_state = self.parse_account_state_reading(source.get_headers(), None)?;
+    Ok(EventStream {
+      source,
+      decoder,
+      pending: VecDeque::new(),
+      done: false,
+      account_state,
+      protocol: self.model_use,
+    })
   }
 
-  fn now(&self) -> u64 {
+  fn get_current_time(&self) -> u64 {
     self.clock.as_ref().map_or_else(
       || {
         std::time::SystemTime::now()
@@ -500,31 +540,31 @@ impl<T: Transport> Client<T> {
     )
   }
 
-  fn draft(&self, path: String, headers: Vec<(String, String)>, body: Vec<u8>) -> Draft {
+  fn build_draft(&self, path: String, headers: Vec<(String, String)>, body: Vec<u8>) -> Draft {
     Draft { method: Method::Post, path: Some(path), query: Vec::new(), headers, body }
   }
 
-  fn body_bytes(body: Value) -> Result<Vec<u8>, Error> {
+  fn serialize_body(body: Value) -> Result<Vec<u8>, Error> {
     serde_json::to_vec(&body)
       .map_err(|error| Error::Build(format!("request body is not serializable: {error}")))
   }
 
-  fn reply_body(reply: &Reply) -> Result<Value, Error> {
+  fn decode_reply_body(reply: &Reply) -> Result<Value, Error> {
     serde_json::from_slice(&reply.body).map_err(|error| {
       Error::Malformed(format!(
         "2xx response body is not JSON ({error}): {}",
-        http_error::body_text(&reply.body)
+        http_error::decode_body_text(&reply.body)
       ))
     })
   }
 
-  fn headers_with(&self, extra: &[(&'static str, &'static str)]) -> Vec<(String, String)> {
+  fn build_headers(&self, extra: &[(&'static str, &'static str)]) -> Vec<(String, String)> {
     let mut headers: Vec<(String, String)> =
       vec![("content-type".to_owned(), "application/json".to_owned())];
     headers.extend(
       self
         .model_use
-        .headers()
+        .get_headers()
         .iter()
         .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
     );
@@ -532,12 +572,14 @@ impl<T: Transport> Client<T> {
     headers
   }
 
-  fn upstream_error(&self, status: u16, body: &[u8]) -> Error {
+  fn decode_upstream_error(&self, status: u16, body: &[u8]) -> Error {
     match serde_json::from_slice::<Value>(body) {
-      Ok(body) => self.model_use.http_error(status, &body),
-      Err(_) => {
-        Error::http(status, None, format!("HTTP {status}: {}", http_error::body_text(body)))
-      }
+      Ok(body) => self.model_use.decode_http_error(status, &body),
+      Err(_) => Error::from_http(
+        status,
+        None,
+        format!("HTTP {status}: {}", http_error::decode_body_text(body)),
+      ),
     }
   }
 }
@@ -558,10 +600,10 @@ enum WireEventSource<S: ReplyStream> {
 }
 
 impl<S: ReplyStream> WireEventSource<S> {
-  fn status(&self) -> u16 {
+  fn get_status(&self) -> u16 {
     match self {
-      WireEventSource::Sse(stream) => stream.status(),
-      WireEventSource::Bedrock(stream) => stream.status(),
+      WireEventSource::Sse(stream) => stream.get_status(),
+      WireEventSource::Bedrock(stream) => stream.get_status(),
     }
   }
 
@@ -572,24 +614,24 @@ impl<S: ReplyStream> WireEventSource<S> {
     }
   }
 
-  fn retry_after_ms(&self) -> Option<u64> {
+  fn get_retry_after_ms(&self) -> Option<u64> {
     match self {
-      WireEventSource::Sse(stream) => stream.retry_after_ms(),
-      WireEventSource::Bedrock(stream) => stream.retry_after_ms(),
+      WireEventSource::Sse(stream) => stream.get_retry_after_ms(),
+      WireEventSource::Bedrock(stream) => stream.get_retry_after_ms(),
     }
   }
 
-  fn headers(&self) -> &[(String, String)] {
+  fn get_headers(&self) -> &[(String, String)] {
     match self {
-      WireEventSource::Sse(stream) => stream.headers(),
-      WireEventSource::Bedrock(stream) => stream.headers(),
+      WireEventSource::Sse(stream) => stream.get_headers(),
+      WireEventSource::Bedrock(stream) => stream.get_headers(),
     }
   }
 
-  async fn error_body(&mut self) -> Vec<u8> {
+  async fn read_error_body(&mut self) -> Vec<u8> {
     match self {
-      WireEventSource::Sse(stream) => stream.error_body().await,
-      WireEventSource::Bedrock(stream) => stream.error_body().await,
+      WireEventSource::Sse(stream) => stream.read_error_body().await,
+      WireEventSource::Bedrock(stream) => stream.read_error_body().await,
     }
   }
 
@@ -616,6 +658,7 @@ impl<S: ReplyStream> WireEventSource<S> {
 
 /// One streamed call in flight: body wire events decoded into the protocol's normalized events.
 pub struct EventStream<S: ReplyStream> {
+  protocol: ModelUseProtocol,
   source: WireEventSource<S>,
   decoder: StreamDecoder,
   pending: VecDeque<StreamEvent>,
@@ -624,12 +667,23 @@ pub struct EventStream<S: ReplyStream> {
 }
 
 impl<S: ReplyStream> EventStream<S> {
+  /// A caller-owned accumulator with this wire's interruption replay rules and reply metadata.
+  pub fn create_accumulator(&self) -> StreamAccumulator {
+    StreamAccumulator::for_protocol(self.protocol).with_account_state(self.account_state.clone())
+  }
+
+  /// Abandon local reading without flushing parsers or synthesizing a normal EOF.
+  /// This does not confirm remote cancellation or stop upstream billing.
+  pub fn abort(self) {
+    drop(self);
+  }
+
   /// The account reading the opening reply carried, when the endpoint named an account protocol.
   ///
   /// It is known before the first event, because the reply head is read before the body is
   /// streamed. Handing it to a `StreamAccumulator` puts it
   /// beside the decoded messages.
-  pub fn account_state(&self) -> Option<&AccountState> {
+  pub fn get_account_state(&self) -> Option<&AccountState> {
     self.account_state.as_ref()
   }
 
@@ -670,7 +724,7 @@ impl<S: ReplyStream> EventStream<S> {
 /// compaction: the history it stands in for would otherwise look complete while what it stood for
 /// was gone. The streamed path reports no warnings, because its decoder tolerates what it cannot
 /// represent.
-fn streamed_upstream_compaction(response: Response) -> Result<UpstreamCompaction, Error> {
+fn decode_streamed_upstream_compaction(response: Response) -> Result<UpstreamCompaction, Error> {
   let found = response
     .messages
     .iter()

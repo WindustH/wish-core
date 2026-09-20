@@ -22,7 +22,7 @@ use crate::Error;
 use crate::protocol::account_state::{
   AccountState, AccountStateProtocol, Balance, Failure, FailureKind,
 };
-use crate::protocol::lexical;
+use crate::protocol::read_scalar_text;
 
 /// Reads the account body.
 ///
@@ -60,10 +60,10 @@ pub fn parse(body: &Value) -> Result<AccountState, Error> {
     quotas: Vec::new(),
     balances: vec![Balance {
       currency: "CNY".to_owned(),
-      available: data.get("totalBalance").and_then(lexical),
+      available: data.get("totalBalance").and_then(read_scalar_text),
       total: None,
-      cash: data.get("chargeBalance").and_then(lexical),
-      granted: data.get("balance").and_then(lexical),
+      cash: data.get("chargeBalance").and_then(read_scalar_text),
+      granted: data.get("balance").and_then(read_scalar_text),
       topped_up: None,
       voucher: None,
       credit: None,

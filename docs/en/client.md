@@ -15,7 +15,7 @@ let client = Client::new(
   outbound,
   transport,
 )
-.with_credentials(Credentials::key("sk-ant-..."))
+.with_credentials(Credentials::from_api_key("sk-ant-..."))
 .with_model_list(ModelListProtocol::AnthropicModels)
 .with_account_state(AccountStateProtocol::AnthropicRatelimitHeaders)
 .with_retry(RetryPolicy::default());
@@ -34,21 +34,22 @@ The same protocol through a gateway is the same lines with another base URL. For
 the material carries tokens instead of a key (`api_key` = access token, `refresh_token`,
 `expires_at`, `account_id`), and the auth protocol carries the renewal beside the placement
 (`AuthProtocol::Bearer(Some(CredentialsRefreshProtocol::OAuth))`, say):
-`Client::credentials_expired` asks whether the material has run out, `Client::refresh_credentials`
+`Client::are_credentials_expired` asks whether the material has run out, `Client::refresh_credentials`
 returns the renewed material, `Client::set_credentials` installs it - and a `dispatch` over spent
 material is refused as `Error::Renewal` before anything is sent. Storing what the exchange rotated
 stays with the caller.
 
-Three lanes take a `Request` or an `UpstreamCompactionRequest` in this crate's shape:
+`call(&request)` is the single model-use entry point. `Request.stream` selects its result:
 
-- `call` - the buffered lane: decode the `2xx` body into a `Response`, classify the non-`2xx` one
-  into an `Error`. A transient failure replaces the whole attempt while the policy allows.
-- `call_stream` - the streamed lane: an `EventStream` of the protocol's `StreamEvent`s, nothing
-  assembled on the way. Retries stop at the first event handed over - a replay would splice a
-  second copy of the answer into what the caller has already seen.
-- `upstream_compact` - the call that asks a service to stand in for a conversation
-  ([upstream-compaction](protocol/upstream-compaction.md)), over the compaction protocol named at
-  build time.
+- `false` returns `CallResponse::Complete(Box<Response>)`. Transient failures may retry the whole attempt.
+- `true` returns `CallResponse::Stream(EventStream)`. Retries stop once the first event is in hand.
+
+The same field drives protocol request construction: body `stream`/usage options where supported,
+or the streaming URL for Google GenerateContent and Bedrock. There is no separate stream flag on
+renderers or a second public client entry point. Codex deployments reject `stream: false`.
+
+`compact_upstream` takes its own `UpstreamCompactionRequest` over the named compaction protocol;
+it returns the compacted conversation. See [upstream-compaction](protocol/upstream-compaction.md).
 
 Two more read what the upstream serves, each over its own protocol:
 
@@ -59,17 +60,28 @@ Two more read what the upstream serves, each over its own protocol:
   reading kept behind another door than the conversation target.
 
 ```rust
-let mut stream = client.call_stream(&request).await?;
-let mut accumulator = StreamAccumulator::new().with_account_state(stream.account_state().cloned());
-while let Some(event) = stream.next().await? {
-  accumulator.feed(event)?;
-}
-let response = accumulator.finish()?;
+request.stream = true; // false uses the same call and returns a complete response
+let response = match client.call(&request).await? {
+  CallResponse::Complete(response) => *response,
+  CallResponse::Stream(mut stream) => {
+    let mut accumulator = stream.create_accumulator();
+    while let Some(event) = stream.next().await? {
+      accumulator.feed(event)?;
+    }
+    accumulator.finish()?
+  }
+};
 ```
 
 `with_account_state` serves two readings at once: a protocol a reply carries fills
-`Response::account_state` and `stream.account_state()` on every call, and a protocol with a
+`Response::account_state` and `stream.get_account_state()` on every call, and a protocol with a
 request of its own is read by `Client::get_account_state`. A protocol from the wrong side of that
 divide fails the ask it cannot serve, with the reason its feature states. `Limits` and `Proxy`,
 set on the transport, bound the attempt - the caller's facts, because only the caller knows its
 own network.
+
+The [agent](agent.md) layer builds an in-memory tool loop on this client, keeping retries here.
+
+For explicit interruption, keep this accumulator outside pending reads, abort the stream, then call
+`accumulator.interrupt(ToolExecutionState::NotStarted)` if none of its tools ran. The protocol
+returns eligible content with tool results already paired; see [interrupted streams](protocol/model-use.md#interrupted-streams).

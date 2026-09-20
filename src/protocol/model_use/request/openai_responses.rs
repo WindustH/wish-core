@@ -80,7 +80,7 @@ pub enum ResponsesDeployment {
 
 impl ResponsesDeployment {
   /// Headers this deployment asks for besides auth and `content-type`.
-  pub(crate) fn headers(self) -> &'static [(&'static str, &'static str)] {
+  pub(crate) fn get_headers(self) -> &'static [(&'static str, &'static str)] {
     match self {
       ResponsesDeployment::Platform => HEADERS,
       ResponsesDeployment::Codex => CODEX_HEADERS,
@@ -98,11 +98,7 @@ pub const HEADERS: &[(&str, &str)] = &[];
 pub const CODEX_HEADERS: &[(&str, &str)] =
   &[("originator", "codex_cli_rs"), ("oai-product-sku", "codex")];
 
-pub fn render(
-  request: &Request,
-  variant: ResponsesApiCompatMode,
-  stream: bool,
-) -> Result<Value, Error> {
+pub fn render(request: &Request, variant: ResponsesApiCompatMode) -> Result<Value, Error> {
   let mut body = Map::new();
   body.insert("model".into(), json!(request.model));
   body.insert("store".into(), json!(false));
@@ -111,10 +107,10 @@ pub fn render(
   }
   // The Codex backend serves only streamed calls, so a buffered one asks for a reply it will not
   // give; the same refusal as the cap above, made here rather than by the service.
-  if variant.deployment == ResponsesDeployment::Codex && !stream {
+  if variant.deployment == ResponsesDeployment::Codex && !request.stream {
     return Err(Error::Build("the Codex deployment serves only streamed calls".to_owned()));
   }
-  if stream {
+  if request.stream {
     body.insert("stream".into(), json!(true));
   }
   if variant.reasoning_form == ReasoningForm::Ciphertext {
@@ -151,10 +147,10 @@ pub(crate) fn render_items(
   let mut items: Vec<Value> = Vec::new();
   for message in conversation {
     match message {
-      Message::System { content } => items.push(render_input_message("system", content)),
-      Message::Developer { content } => items.push(render_input_message("developer", content)),
-      Message::User { content } => items.push(render_input_message("user", content)),
-      Message::ToolUse { call_id, name, arguments } => {
+      Message::System { content, .. } => items.push(render_input_message("system", content)),
+      Message::Developer { content, .. } => items.push(render_input_message("developer", content)),
+      Message::User { content, .. } => items.push(render_input_message("user", content)),
+      Message::ToolUse { call_id, name, arguments, .. } => {
         items.push(render_function_call_item(call_id, name, arguments))
       }
       Message::ToolResult { call_id, content, .. } => {
@@ -165,12 +161,12 @@ pub(crate) fn render_items(
           items.push(item);
         }
       }
-      Message::Assistant { content } => {
+      Message::Assistant { content, .. } => {
         if let Some(item) = render_assistant_item(content)? {
           items.push(item);
         }
       }
-      Message::UpstreamCompaction { id, encrypted_content } => {
+      Message::UpstreamCompaction { id, encrypted_content, .. } => {
         items.push(render_compaction_item(id.as_deref(), encrypted_content));
       }
     }

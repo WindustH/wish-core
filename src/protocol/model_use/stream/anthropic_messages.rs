@@ -48,7 +48,7 @@ impl Decoder {
         }
       }
       "content_block_start" => {
-        let index = block_index(&payload, "content_block_start")?;
+        let index = parse_block_index(&payload, "content_block_start")?;
         let block = payload.get("content_block");
         let field = |name: &str| block.and_then(|block| block.get(name)).and_then(Value::as_str);
         match field("type").unwrap_or_default() {
@@ -80,7 +80,7 @@ impl Decoder {
         }
       }
       "content_block_delta" => {
-        let index = block_index(&payload, "content_block_delta")?;
+        let index = parse_block_index(&payload, "content_block_delta")?;
         let delta = payload.get("delta");
         let field = |name: &str| {
           delta
@@ -108,11 +108,13 @@ impl Decoder {
         }
       }
       "content_block_stop" => {
-        out.push(StreamEvent::BlockEnd { index: block_index(&payload, "content_block_stop")? });
+        out.push(StreamEvent::BlockEnd {
+          index: parse_block_index(&payload, "content_block_stop")?,
+        });
       }
       "message_delta" => {
         if let Some(reason) = payload.pointer("/delta/stop_reason").and_then(Value::as_str) {
-          self.stop_reason = Some(buffered::stop_reason(Some(reason)));
+          self.stop_reason = Some(buffered::map_stop_reason(Some(reason)));
         }
         let usage = payload.get("usage");
         if usage.is_some() {
@@ -121,12 +123,12 @@ impl Decoder {
         }
       }
       "message_stop" => {
-        let reason = self.stop_reason.take().unwrap_or_else(|| buffered::stop_reason(None));
+        let reason = self.stop_reason.take().unwrap_or_else(|| buffered::map_stop_reason(None));
         out.push(StreamEvent::Stop(reason));
       }
       "error" => {
         let error = payload.get("error");
-        return Err(Error::in_band(
+        return Err(Error::from_in_band(
           error.and_then(|error| error.get("type")).and_then(Value::as_str).map(str::to_owned),
           error
             .and_then(|error| error.get("message"))
@@ -172,7 +174,7 @@ impl Decoder {
 }
 
 /// The wire block index of an event that names a block.
-fn block_index(payload: &Value, event: &str) -> Result<u32, Error> {
+fn parse_block_index(payload: &Value, event: &str) -> Result<u32, Error> {
   payload
     .get("index")
     .and_then(Value::as_u64)

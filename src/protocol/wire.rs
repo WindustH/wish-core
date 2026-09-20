@@ -33,7 +33,7 @@ impl Method {
 
 /// One HTTP call, already rendered and merged by the layer above.
 ///
-/// Method, absolute URL, merged headers (endpoint plus auth) and the serialized body.
+/// Method, absolute URL, merged get_headers (endpoint plus auth) and the serialized body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Call {
   pub method: Method,
@@ -55,7 +55,7 @@ pub struct Reply {
 
 impl Reply {
   /// First value of a header, matched case-insensitively.
-  pub fn header(&self, name: &str) -> Option<&str> {
+  pub fn get_header(&self, name: &str) -> Option<&str> {
     self
       .headers
       .iter()
@@ -69,8 +69,8 @@ impl Reply {
   }
 
   /// `retry-after` as milliseconds, when the reply carries a usable value.
-  pub fn retry_after_ms(&self) -> Option<u64> {
-    parse_retry_after(self.header("retry-after")?)
+  pub fn get_retry_after_ms(&self) -> Option<u64> {
+    parse_retry_after(self.get_header("retry-after")?)
   }
 }
 
@@ -137,27 +137,30 @@ impl Default for Limits {
 /// The streamed half of the attempt contract: a transport opens a call and hands the body over as
 /// the upstream produced it, with the ceilings the attempt was opened under. Nothing is buffered and
 /// nothing is framed here; where an event ends belongs to the framing layer, which reads the same
-/// ceilings off [`ReplyStream::limits`].
+/// ceilings off [`ReplyStream::get_limits`].
+// Dropping a reply stream must abandon local reads and release its resources. It must not
+// flush incomplete frames as EOF or claim remote cancellation. A cancelled pending `next`
+// may be followed by dropping the stream; resumability of that same read is not required.
 pub trait ReplyStream: Send {
   /// Status line as received, before any body byte.
-  fn status(&self) -> u16;
+  fn get_status(&self) -> u16;
 
   /// `retry-after` of the reply head, in milliseconds, when it carried a usable value.
-  fn retry_after_ms(&self) -> Option<u64>;
+  fn get_retry_after_ms(&self) -> Option<u64>;
 
   /// The headers of the reply head, as received.
   ///
   /// Kept because a service reports what a call left in its account only on a call it really
   /// served, and for several of them the headers are the only place it says so.
-  fn headers(&self) -> &[(String, String)];
+  fn get_headers(&self) -> &[(String, String)];
 
   /// Whether the status is in the `2xx` range.
   fn is_success(&self) -> bool {
-    (200..300).contains(&self.status())
+    (200..300).contains(&self.get_status())
   }
 
   /// The ceilings this stream was opened with.
-  fn limits(&self) -> Limits;
+  fn get_limits(&self) -> Limits;
 
   /// The next chunk of the body, or `None` at its end.
   fn next(&mut self) -> impl Future<Output = Result<Option<Vec<u8>>, Error>> + Send;
@@ -166,9 +169,9 @@ pub trait ReplyStream: Send {
   ///
   /// Mirrors the buffered path: an error body exists to be classified, so failing to read it must
   /// not hide the status code, and a body that is not whole is dropped rather than half-kept.
-  fn error_body(&mut self) -> impl Future<Output = Vec<u8>> + Send {
+  fn read_error_body(&mut self) -> impl Future<Output = Vec<u8>> + Send {
     async move {
-      let cap = self.limits().max_error_body_bytes;
+      let cap = self.get_limits().max_error_body_bytes;
       let mut body = Vec::new();
       loop {
         match self.next().await {
@@ -201,7 +204,7 @@ pub trait Transport {
   /// Opens one attempt and hands its body back as it arrives.
   ///
   /// A non-`2xx` reply is a stream too: the status is already known by then, and
-  /// [`ReplyStream::error_body`] reads the bounded body so that the layer above can classify it
+  /// [`ReplyStream::read_error_body`] reads the bounded body so that the layer above can classify it
   /// exactly as it does for [`Reply`].
   fn execute_stream(&self, call: &Call)
   -> impl Future<Output = Result<Self::Stream, Error>> + Send;

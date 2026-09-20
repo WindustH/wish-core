@@ -18,7 +18,7 @@
 
 use std::collections::VecDeque;
 
-use super::payload_error;
+use super::build_payload_error;
 use crate::protocol::error::Error;
 use crate::protocol::wire::ReplyStream;
 
@@ -55,23 +55,23 @@ pub struct EventStreamFrame {
 
 impl EventStreamFrame {
   /// Looks a header up by name.
-  pub fn header(&self, name: &str) -> Option<&EventStreamValue> {
+  pub fn get_header(&self, name: &str) -> Option<&EventStreamValue> {
     self.headers.iter().find(|(key, _)| key == name).map(|(_, value)| value)
   }
 
   /// The `:message-type` header, if present.
-  pub fn message_type(&self) -> Option<&str> {
-    self.header(":message-type").and_then(EventStreamValue::as_str)
+  pub fn get_message_type(&self) -> Option<&str> {
+    self.get_header(":message-type").and_then(EventStreamValue::as_str)
   }
 
   /// The `:event-type` header, if present.
-  pub fn event_type(&self) -> Option<&str> {
-    self.header(":event-type").and_then(EventStreamValue::as_str)
+  pub fn get_event_type(&self) -> Option<&str> {
+    self.get_header(":event-type").and_then(EventStreamValue::as_str)
   }
 
   /// The `:exception-type` header, if present.
-  pub fn exception_type(&self) -> Option<&str> {
-    self.header(":exception-type").and_then(EventStreamValue::as_str)
+  pub fn get_exception_type(&self) -> Option<&str> {
+    self.get_header(":exception-type").and_then(EventStreamValue::as_str)
   }
 }
 
@@ -145,10 +145,10 @@ fn parse_frame(bytes: &[u8]) -> Result<EventStreamFrame, EventStreamError> {
   let prelude_crc = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
   let message_crc =
     u32::from_be_bytes([bytes[total - 4], bytes[total - 3], bytes[total - 2], bytes[total - 1]]);
-  if crc32(&bytes[..8]) != prelude_crc {
+  if calculate_crc32(&bytes[..8]) != prelude_crc {
     return Err(EventStreamError::CrcMismatch);
   }
-  if crc32(&bytes[..total - 4]) != message_crc {
+  if calculate_crc32(&bytes[..total - 4]) != message_crc {
     return Err(EventStreamError::CrcMismatch);
   }
   let headers_end = PRELUDE_LEN + headers_len;
@@ -263,7 +263,7 @@ fn take<'a>(slice: &mut &'a [u8], len: usize) -> Option<&'a [u8]> {
 }
 
 /// CRC-32 (IEEE 802.3, the zlib polynomial), as the event-stream spec defines it.
-pub fn crc32(bytes: &[u8]) -> u32 {
+pub fn calculate_crc32(bytes: &[u8]) -> u32 {
   let mut crc = 0xFFFF_FFFF_u32;
   for &byte in bytes {
     crc ^= u32::from(byte);
@@ -303,7 +303,7 @@ pub struct BedrockStream<S: ReplyStream> {
 impl<S: ReplyStream> BedrockStream<S> {
   /// Reads `reply` as event-stream frames, bounded by the limits the reply was opened with.
   pub fn new(reply: S) -> Self {
-    let limits = reply.limits();
+    let limits = reply.get_limits();
     Self {
       reply,
       parser: EventStreamParser::with_max_frame(limits.max_event_bytes),
@@ -315,18 +315,18 @@ impl<S: ReplyStream> BedrockStream<S> {
   }
 
   /// Status of the reply being streamed.
-  pub fn status(&self) -> u16 {
-    self.reply.status()
+  pub fn get_status(&self) -> u16 {
+    self.reply.get_status()
   }
 
   /// `retry-after` of the reply head, in milliseconds.
-  pub fn retry_after_ms(&self) -> Option<u64> {
-    self.reply.retry_after_ms()
+  pub fn get_retry_after_ms(&self) -> Option<u64> {
+    self.reply.get_retry_after_ms()
   }
 
   /// The headers of the reply head, as received.
-  pub fn headers(&self) -> &[(String, String)] {
-    self.reply.headers()
+  pub fn get_headers(&self) -> &[(String, String)] {
+    self.reply.get_headers()
   }
 
   /// Whether that status is in the `2xx` range.
@@ -335,8 +335,8 @@ impl<S: ReplyStream> BedrockStream<S> {
   }
 
   /// Best-effort body of a non-`2xx` reply, for the layer that classifies it.
-  pub async fn error_body(&mut self) -> Vec<u8> {
-    self.reply.error_body().await
+  pub async fn read_error_body(&mut self) -> Vec<u8> {
+    self.reply.read_error_body().await
   }
 
   /// The next payload record, or `None` at the end of the body.
@@ -345,7 +345,7 @@ impl<S: ReplyStream> BedrockStream<S> {
       if let Some(record) = self.pending.pop_front() {
         self.events += 1;
         if self.events > self.max_events {
-          return Err(payload_error(&format!("stream exceeds {} events", self.max_events)));
+          return Err(build_payload_error(&format!("stream exceeds {} events", self.max_events)));
         }
         return Ok(Some(record));
       }
@@ -356,12 +356,12 @@ impl<S: ReplyStream> BedrockStream<S> {
       match self.reply.next().await? {
         Some(chunk) => {
           let frames =
-            self.parser.feed(&chunk).map_err(|error| payload_error(&error.to_string()))?;
-          self.pending.extend(frames.into_iter().filter_map(record_of));
+            self.parser.feed(&chunk).map_err(|error| build_payload_error(&error.to_string()))?;
+          self.pending.extend(frames.into_iter().filter_map(decode_record));
         }
         None => {
           self.exhausted = true;
-          self.parser.finish().map_err(|error| payload_error(&error.to_string()))?;
+          self.parser.finish().map_err(|error| build_payload_error(&error.to_string()))?;
         }
       }
     }
@@ -369,15 +369,15 @@ impl<S: ReplyStream> BedrockStream<S> {
 }
 
 /// The record a frame becomes; `ping` frames carry no output and are dropped.
-fn record_of(frame: EventStreamFrame) -> Option<BedrockRecord> {
-  if frame.message_type() == Some("exception") {
-    let exception = frame.exception_type().unwrap_or("UnknownException");
+fn decode_record(frame: EventStreamFrame) -> Option<BedrockRecord> {
+  if frame.get_message_type() == Some("exception") {
+    let exception = frame.get_exception_type().unwrap_or("UnknownException");
     return Some(BedrockRecord {
       event: format!("__exception:{exception}"),
       data: String::from_utf8_lossy(&frame.payload).into_owned(),
     });
   }
-  let event = frame.event_type()?.to_owned();
+  let event = frame.get_event_type()?.to_owned();
   if event == "ping" {
     return None;
   }

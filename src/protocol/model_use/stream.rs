@@ -21,6 +21,12 @@
 //! one it sees beside the messages, starting from the one
 //! [`StreamAccumulator::with_account_state`] was handed for the reply head.
 
+mod partial;
+pub use partial::{
+  IncompleteReason, PartialBlock, PartialContent, PartialResponse, ReplayDisposition, StreamEnd,
+  StreamFinalization, ToolExecutionState,
+};
+
 pub mod anthropic_messages;
 pub mod bedrock_converse;
 pub mod google_generate_content;
@@ -51,10 +57,10 @@ pub enum StreamDecoder {
 }
 
 impl StreamDecoder {
-  /// Feeds one SSE record: its `event:` name (usually redundant with the payload's `type`) and
+  /// Feeds one SSE record: its `event:` get_name (usually redundant with the payload's `type`) and
   /// its `data:` payload.
   pub fn feed(&mut self, event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
-    match self {
+    let events = match self {
       StreamDecoder::AnthropicMessages(decoder) => decoder.feed(event, data),
       StreamDecoder::BedrockConverse(decoder) => decoder.feed(event, data),
       StreamDecoder::GoogleGenerateContent(decoder) => decoder.feed(event, data),
@@ -62,23 +68,56 @@ impl StreamDecoder {
       StreamDecoder::MistralConversations(decoder) => decoder.feed(event, data),
       StreamDecoder::OpenAiChat(decoder) => decoder.feed(event, data),
       StreamDecoder::OpenAiResponses(decoder) => decoder.feed(event, data),
-    }
+    }?;
+    // Responses can close an item whose own status is incomplete. Its closing event must
+    // not certify arguments or encrypted reasoning merely because the outer response is open.
+    let incomplete_item = matches!(self, StreamDecoder::OpenAiResponses(_))
+      && events.iter().any(|event| matches!(event, StreamEvent::BlockEnd { .. }))
+      && serde_json::from_str::<serde_json::Value>(data).ok().is_some_and(|value| {
+        value
+          .pointer("/item/status")
+          .and_then(serde_json::Value::as_str)
+          .is_some_and(|status| status != "completed")
+      });
+    if incomplete_item { Ok(events) } else { Ok(certify_blocks(events)) }
   }
 
   /// Synthesizes the terminal events of a body that ended without one. Only a protocol whose wire
   /// has no terminal marker (the body ending is the terminal) produces anything here; the others
   /// stay silent, and their accumulator then reports the missing stop event.
   pub fn finish(&mut self) -> Result<Vec<StreamEvent>, Error> {
-    match self {
+    let events = match self {
       StreamDecoder::BedrockConverse(decoder) => decoder.finish(),
       StreamDecoder::GoogleGenerateContent(decoder) => decoder.finish(),
       _ => Ok(Vec::new()),
-    }
+    }?;
+    Ok(certify_blocks(events))
   }
 }
 
+// Synthetic closing events on an abnormal terminal do not certify complete payloads.
+// Explicit block endings delivered in earlier records keep their certification.
+fn certify_blocks(events: Vec<StreamEvent>) -> Vec<StreamEvent> {
+  let normal = !events.iter().any(|event| {
+    matches!(event,
+    StreamEvent::Stop(reason) if !matches!(reason, StopReason::Stop | StopReason::ToolUse))
+  });
+  let mut out = Vec::with_capacity(events.len());
+  for event in events {
+    let index = match &event {
+      StreamEvent::BlockEnd { index } if normal => Some(*index),
+      _ => None,
+    };
+    out.push(event);
+    if let Some(index) = index {
+      out.push(StreamEvent::BlockComplete { index });
+    }
+  }
+  out
+}
+
 /// What a streamed block carries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockKind {
   Text,
   Reasoning,
@@ -86,14 +125,16 @@ pub enum BlockKind {
 }
 
 /// One normalized event from a protocol's stream decoder.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub enum StreamEvent {
   /// A block opened at `index`; deltas for it may follow.
   BlockStart { index: u32, kind: BlockKind },
   /// Text appended to a text block.
   TextDelta { index: u32, delta: String },
-  /// Visible reasoning text appended to a reasoning block.
+  /// Replayable reasoning text appended to a reasoning block.
   ReasoningDelta { index: u32, delta: String },
+  /// Display-only reasoning summary. Never contributes to replayable plaintext.
+  ReasoningDisplayDelta { index: u32, delta: String },
   /// Reasoning signature (`signature`, `thoughtSignature`) appended as it arrives.
   ReasoningSignatureDelta { index: u32, signature: String },
   /// Reasoning ciphertext (`redacted_thinking.data`, `encrypted_content`, a redacted block) appended
@@ -102,8 +143,11 @@ pub enum StreamEvent {
   /// Argument JSON fragment for a tool block. `call_id` and `name` arrive at least once before the
   /// block closes.
   ToolUseDelta { index: u32, call_id: Option<String>, name: Option<String>, arguments: String },
-  /// The block is complete.
+  /// The block is closed, possibly synthetically at an abnormal terminal.
   BlockEnd { index: u32 },
+  /// The protocol confirms the closed block is complete. Never infer this from valid JSON alone.
+  /// `StreamDecoder` supplies this after a real block ending or a successful terminal record.
+  BlockComplete { index: u32 },
   /// Cumulative usage, replacing what was reported before.
   Usage(Usage),
   /// An account_state reading the stream itself carried, replacing whatever the reply head reported.
@@ -118,6 +162,7 @@ pub enum StreamEvent {
 /// Rebuilds a [`Response`] from events, holding the stream to the contract above.
 #[derive(Default)]
 pub struct StreamAccumulator {
+  protocol: Option<super::ModelUseProtocol>,
   blocks: BTreeMap<u32, Block>,
   /// Whole items, at the index they were handed over at, beside the blocks.
   items: BTreeMap<u32, Message>,
@@ -130,8 +175,10 @@ pub struct StreamAccumulator {
 struct Block {
   kind: BlockKind,
   closed: bool,
+  complete: bool,
   text: String,
   plaintext: String,
+  display: Option<String>,
   signature: String,
   ciphertext: String,
   call_id: Option<String>,
@@ -144,8 +191,10 @@ impl Block {
     Self {
       kind,
       closed: false,
+      complete: false,
       text: String::new(),
       plaintext: String::new(),
+      display: None,
       signature: String::new(),
       ciphertext: String::new(),
       call_id: None,
@@ -158,6 +207,13 @@ impl Block {
 impl StreamAccumulator {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  /// Selects protocol-specific replay rules for interrupted reasoning. Without a protocol,
+  /// reasoning is display-only; text and certified tool calls can still be retained.
+  /// Transparent reasoning prefixes can be replayed before completion; opaque payloads cannot.
+  pub fn for_protocol(protocol: super::ModelUseProtocol) -> Self {
+    Self { protocol: Some(protocol), ..Self::default() }
   }
 
   /// Carries the account_state reading the opening reply held into the rebuilt [`Response`].
@@ -173,28 +229,36 @@ impl StreamAccumulator {
   /// Takes one event, or reports the contract violation it caused.
   pub fn feed(&mut self, event: StreamEvent) -> Result<(), Error> {
     if self.stop_reason.is_some() {
-      return Err(violation("event after the stop event"));
+      return Err(build_violation_error("event after the stop event"));
     }
     match event {
       StreamEvent::BlockStart { index, kind } => self.open(index, kind),
       StreamEvent::TextDelta { index, delta } => {
-        self.block_mut(index, BlockKind::Text)?.text.push_str(&delta);
+        self.get_block_mut(index, BlockKind::Text)?.text.push_str(&delta);
         Ok(())
       }
       StreamEvent::ReasoningDelta { index, delta } => {
-        self.block_mut(index, BlockKind::Reasoning)?.plaintext.push_str(&delta);
+        self.get_block_mut(index, BlockKind::Reasoning)?.plaintext.push_str(&delta);
+        Ok(())
+      }
+      StreamEvent::ReasoningDisplayDelta { index, delta } => {
+        self
+          .get_block_mut(index, BlockKind::Reasoning)?
+          .display
+          .get_or_insert_default()
+          .push_str(&delta);
         Ok(())
       }
       StreamEvent::ReasoningSignatureDelta { index, signature } => {
-        self.block_mut(index, BlockKind::Reasoning)?.signature.push_str(&signature);
+        self.get_block_mut(index, BlockKind::Reasoning)?.signature.push_str(&signature);
         Ok(())
       }
       StreamEvent::ReasoningCiphertextDelta { index, ciphertext } => {
-        self.block_mut(index, BlockKind::Reasoning)?.ciphertext.push_str(&ciphertext);
+        self.get_block_mut(index, BlockKind::Reasoning)?.ciphertext.push_str(&ciphertext);
         Ok(())
       }
       StreamEvent::ToolUseDelta { index, call_id, name, arguments } => {
-        let block = self.block_mut(index, BlockKind::ToolUse)?;
+        let block = self.get_block_mut(index, BlockKind::ToolUse)?;
         if call_id.is_some() {
           block.call_id = call_id;
         }
@@ -205,6 +269,17 @@ impl StreamAccumulator {
         Ok(())
       }
       StreamEvent::BlockEnd { index } => self.close(index),
+      StreamEvent::BlockComplete { index } => {
+        let block = self
+          .blocks
+          .get_mut(&index)
+          .ok_or_else(|| build_violation_error("completion before block start"))?;
+        if !block.closed || block.complete {
+          return Err(build_violation_error("invalid block completion"));
+        }
+        block.complete = true;
+        Ok(())
+      }
       StreamEvent::Usage(usage) => {
         self.usage = Some(usage);
         Ok(())
@@ -214,7 +289,10 @@ impl StreamAccumulator {
         Ok(())
       }
       StreamEvent::UpstreamCompaction { index, id, encrypted_content } => {
-        self.items.insert(index, Message::UpstreamCompaction { id, encrypted_content });
+        self.items.insert(
+          index,
+          Message::UpstreamCompaction { metadata: Default::default(), id, encrypted_content },
+        );
         Ok(())
       }
       StreamEvent::Stop(reason) => {
@@ -231,7 +309,7 @@ impl StreamAccumulator {
   /// blocks.
   pub fn finish(self) -> Result<Response, Error> {
     let stop_reason =
-      self.stop_reason.ok_or_else(|| violation("stream ended without a stop event"))?;
+      self.stop_reason.ok_or_else(|| build_violation_error("stream ended without a stop event"))?;
     let mut messages: Vec<Message> = Vec::new();
     let mut items: VecDeque<(u32, Message)> = self.items.into_iter().collect();
     for (index, block) in self.blocks {
@@ -241,31 +319,34 @@ impl StreamAccumulator {
         messages.push(item);
       }
       if !block.closed {
-        return Err(violation(&format!("stream ended with block {index} still open")));
+        return Err(build_violation_error(&format!("stream ended with block {index} still open")));
       }
       match block.kind {
         BlockKind::Text => match messages.last_mut() {
-          Some(Message::Assistant { content }) => {
+          Some(Message::Assistant { content, .. }) => {
             content.push(ContentBlock::Text { text: block.text });
           }
-          _ => messages
-            .push(Message::Assistant { content: vec![ContentBlock::Text { text: block.text }] }),
+          _ => messages.push(Message::Assistant {
+            metadata: Default::default(),
+            content: vec![ContentBlock::Text { text: block.text }],
+          }),
         },
         BlockKind::Reasoning => {
           messages.push(Message::Reasoning {
-            plaintext: block.plaintext.clone(),
-            display: block.plaintext,
+            metadata: Default::default(),
+            display: block.display.unwrap_or_else(|| block.plaintext.clone()),
+            plaintext: block.plaintext,
             signature: block.signature,
             ciphertext: block.ciphertext,
           });
         }
         BlockKind::ToolUse => {
-          let call_id = block
-            .call_id
-            .ok_or_else(|| violation(&format!("tool block {index} closed without a call id")))?;
-          let name = block
-            .name
-            .ok_or_else(|| violation(&format!("tool block {index} closed without a name")))?;
+          let call_id = block.call_id.ok_or_else(|| {
+            build_violation_error(&format!("tool block {index} closed without a call id"))
+          })?;
+          let name = block.name.ok_or_else(|| {
+            build_violation_error(&format!("tool block {index} closed without a name"))
+          })?;
           let arguments = if block.arguments.trim().is_empty() {
             json!({})
           } else {
@@ -275,7 +356,12 @@ impl StreamAccumulator {
               ))
             })?
           };
-          messages.push(Message::ToolUse { call_id, name, arguments });
+          messages.push(Message::ToolUse {
+            metadata: Default::default(),
+            call_id,
+            name,
+            arguments,
+          });
         }
       }
     }
@@ -290,25 +376,25 @@ impl StreamAccumulator {
 
   fn open(&mut self, index: u32, kind: BlockKind) -> Result<(), Error> {
     if self.blocks.contains_key(&index) {
-      return Err(violation(&format!("block {index} is opened twice")));
+      return Err(build_violation_error(&format!("block {index} is opened twice")));
     }
     self.blocks.insert(index, Block::new(kind));
     Ok(())
   }
 
-  fn block_mut(&mut self, index: u32, kind: BlockKind) -> Result<&mut Block, Error> {
+  fn get_block_mut(&mut self, index: u32, kind: BlockKind) -> Result<&mut Block, Error> {
     let block = self
       .blocks
       .get_mut(&index)
-      .ok_or_else(|| violation(&format!("event for block {index} before it opened")))?;
+      .ok_or_else(|| build_violation_error(&format!("event for block {index} before it opened")))?;
     if block.kind != kind {
-      return Err(violation(&format!(
+      return Err(build_violation_error(&format!(
         "{kind:?} event for block {index}, which is {:?}",
         block.kind
       )));
     }
     if block.closed {
-      return Err(violation(&format!("event for block {index} after it closed")));
+      return Err(build_violation_error(&format!("event for block {index} after it closed")));
     }
     Ok(block)
   }
@@ -317,16 +403,16 @@ impl StreamAccumulator {
     let block = self
       .blocks
       .get_mut(&index)
-      .ok_or_else(|| violation(&format!("block {index} closed before it opened")))?;
+      .ok_or_else(|| build_violation_error(&format!("block {index} closed before it opened")))?;
     if block.closed {
-      return Err(violation(&format!("block {index} is closed twice")));
+      return Err(build_violation_error(&format!("block {index} is closed twice")));
     }
     if block.kind == BlockKind::ToolUse {
       if block.call_id.is_none() {
-        return Err(violation(&format!("tool block {index} closed without a call id")));
+        return Err(build_violation_error(&format!("tool block {index} closed without a call id")));
       }
       if block.name.is_none() {
-        return Err(violation(&format!("tool block {index} closed without a name")));
+        return Err(build_violation_error(&format!("tool block {index} closed without a name")));
       }
     }
     block.closed = true;
@@ -335,6 +421,6 @@ impl StreamAccumulator {
 }
 
 /// A protocol decoder broke the stream contract.
-fn violation(message: &str) -> Error {
+fn build_violation_error(message: &str) -> Error {
   Error::Malformed(format!("stream contract: {message}"))
 }

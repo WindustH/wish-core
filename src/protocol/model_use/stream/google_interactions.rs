@@ -85,22 +85,22 @@ impl Decoder {
     let mut out = Vec::new();
     match event_type {
       "interaction.started" | "interaction.created" | "interaction.in_progress" => {}
-      "step.start" => self.step_start(&value, &mut out),
-      "step.delta" => self.step_delta(&value, &mut out)?,
-      "step.stop" | "step.completed" => self.step_stop(&value, &mut out),
+      "step.start" => self.handle_step_start(&value, &mut out),
+      "step.delta" => self.handle_step_delta(&value, &mut out)?,
+      "step.stop" | "step.completed" => self.handle_step_stop(&value, &mut out),
       "interaction.completed"
       | "interaction.incomplete"
       | "interaction.budget_exceeded"
       | "interaction.requires_action"
-      | "interaction.cancelled" => return self.terminal(&value),
+      | "interaction.cancelled" => return self.handle_terminal(&value),
       "interaction.failed" => {
         self.done = true;
         let interaction = value.get("interaction").unwrap_or(&value);
-        return Err(buffered::failed_error(interaction));
+        return Err(buffered::decode_failed_error(interaction));
       }
       "error" => {
         self.done = true;
-        return Err(error_event(&value));
+        return Err(decode_error_event(&value));
       }
       // Unknown and future event types are tolerated.
       _ => {}
@@ -108,7 +108,7 @@ impl Decoder {
     Ok(out)
   }
 
-  fn step_start(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
+  fn handle_step_start(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
     let Some(step) = usize::try_from(value.get("index").and_then(Value::as_u64).unwrap_or(0))
       .ok()
       .and_then(|index| value.get("step").map(|step| (index, step)))
@@ -121,7 +121,7 @@ impl Decoder {
       // the continuation, and the signature arrives with them.
       Some("thought") => {
         self.open(index, BlockKind::Reasoning, false, out);
-        let text = thought_text(step);
+        let text = decode_thought_text(step);
         if let Some(block) = self.steps.get_mut(&index) {
           block.payload = Some(step.clone());
           if !text.is_empty() {
@@ -162,7 +162,7 @@ impl Decoder {
       }
       // A model output opens on the text its start carries, or lazily on its first delta.
       Some("model_output") => {
-        if let Some(text) = output_text(step).filter(|text| !text.is_empty()) {
+        if let Some(text) = decode_output_text(step).filter(|text| !text.is_empty()) {
           self.open(index, BlockKind::Text, false, out);
           if let Some(block) = self.steps.get_mut(&index) {
             block.payload = Some(step.clone());
@@ -176,7 +176,7 @@ impl Decoder {
     }
   }
 
-  fn step_delta(&mut self, value: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
+  fn handle_step_delta(&mut self, value: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
     let Some(index) = usize::try_from(value.get("index").and_then(Value::as_u64).unwrap_or(0))
       .ok()
       .filter(|index| *index != usize::MAX)
@@ -207,7 +207,7 @@ impl Decoder {
           return Ok(());
         }
         self.open(index, BlockKind::Reasoning, true, out);
-        let text = thought_delta_text(delta.expect("checked"));
+        let text = decode_thought_delta_text(delta.expect("checked"));
         if !text.is_empty()
           && let Some(step) = self.steps.get_mut(&index)
         {
@@ -259,7 +259,7 @@ impl Decoder {
   }
 
   /// The terminal interaction event: fill unstreamed steps, close every block, report, stop.
-  fn terminal(&mut self, value: &Value) -> Result<Vec<StreamEvent>, Error> {
+  fn handle_terminal(&mut self, value: &Value) -> Result<Vec<StreamEvent>, Error> {
     let interaction = value.get("interaction").unwrap_or(value);
     self.done = true;
     let mut out = Vec::new();
@@ -306,10 +306,10 @@ impl Decoder {
     indices.sort_unstable();
     out.extend(indices.into_iter().map(|index| StreamEvent::BlockEnd { index }));
     if interaction.get("usage").is_some() {
-      out.push(StreamEvent::Usage(buffered::usage(interaction)));
+      out.push(StreamEvent::Usage(buffered::parse_usage(interaction)));
     }
     let has_tool_uses = self.steps.values().any(|block| block.kind == BlockKind::ToolUse);
-    out.push(StreamEvent::Stop(buffered::stop_reason(
+    out.push(StreamEvent::Stop(buffered::map_stop_reason(
       interaction.get("status").and_then(Value::as_str),
       has_tool_uses,
     )));
@@ -351,7 +351,7 @@ impl Decoder {
         // Only a thought that never streamed fills its text here; its signature lands at the
         // terminal.
         if block.needs_terminal_fill {
-          let text = thought_text(step);
+          let text = decode_thought_text(step);
           if !text.is_empty() {
             out.push(StreamEvent::ReasoningDelta { index: block_index, delta: text });
           }
@@ -387,7 +387,7 @@ impl Decoder {
       }
       BlockKind::Text => {
         if block.needs_terminal_fill
-          && let Some(text) = output_text(step)
+          && let Some(text) = decode_output_text(step)
         {
           out.push(StreamEvent::TextDelta { index: block_index, delta: text });
         }
@@ -396,7 +396,7 @@ impl Decoder {
   }
 
   /// One step's completed payload arriving in its own event. The event may carry only the index.
-  fn step_stop(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
+  fn handle_step_stop(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
     let Some(index) = usize::try_from(value.get("index").and_then(Value::as_u64).unwrap_or(0)).ok()
     else {
       return;
@@ -416,7 +416,7 @@ impl Decoder {
 
 /// The text of a thought delta: the current wire nests the summary content under `content` (one
 /// text block, or an array of them), while older traffic put the text in `text` directly.
-fn thought_delta_text(delta: &Value) -> String {
+fn decode_thought_delta_text(delta: &Value) -> String {
   let content = delta.get("content");
   let blocks: Vec<&Value> = match content {
     Some(Value::Object(_)) => content.into_iter().collect(),
@@ -436,7 +436,7 @@ fn thought_delta_text(delta: &Value) -> String {
 }
 
 /// The text of a thought step: `summary[].text` first, the `content` string as fallback.
-fn thought_text(step: &Value) -> String {
+fn decode_thought_text(step: &Value) -> String {
   let summary: Vec<&str> = step
     .get("summary")
     .and_then(Value::as_array)
@@ -451,7 +451,7 @@ fn thought_text(step: &Value) -> String {
 }
 
 /// The text of a model output step, joining its text blocks.
-fn output_text(step: &Value) -> Option<String> {
+fn decode_output_text(step: &Value) -> Option<String> {
   match step.get("content") {
     Some(Value::String(text)) => Some(text.clone()),
     Some(Value::Array(blocks)) => Some(
@@ -467,7 +467,7 @@ fn output_text(step: &Value) -> Option<String> {
 }
 
 /// Maps a bare `error` event to an upstream error.
-fn error_event(value: &Value) -> Error {
+fn decode_error_event(value: &Value) -> Error {
   let error = value.get("error");
   let message = error
     .and_then(|error| error.get("message"))
@@ -476,5 +476,5 @@ fn error_event(value: &Value) -> Error {
   let code = error
     .and_then(|error| error.get("code").or_else(|| error.get("status")))
     .and_then(Value::as_str);
-  Error::in_band(code.map(str::to_owned), message.to_owned())
+  Error::from_in_band(code.map(str::to_owned), message.to_owned())
 }

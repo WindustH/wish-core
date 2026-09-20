@@ -214,11 +214,7 @@ impl ChatCompletionApiCompatMode {
   }
 }
 
-pub fn render(
-  request: &Request,
-  mode: ChatCompletionApiCompatMode,
-  stream: bool,
-) -> Result<Value, Error> {
+pub fn render(request: &Request, mode: ChatCompletionApiCompatMode) -> Result<Value, Error> {
   let mut body = Map::new();
   body.insert("model".into(), json!(request.model));
   if !mode.is_mistral() {
@@ -227,7 +223,7 @@ pub fn render(
   if let Some(key) = request.cache.as_ref().and_then(|cache| cache.key.as_deref()) {
     body.insert("prompt_cache_key".into(), json!(key));
   }
-  if stream {
+  if request.stream {
     body.insert("stream".into(), json!(true));
     if !mode.is_mistral() {
       // Usage only arrives in the stream when it is asked for.
@@ -259,28 +255,28 @@ fn render_messages(
   let mut index = 0;
   while index < conversation.len() {
     match &conversation[index] {
-      Message::System { content } => {
+      Message::System { content, .. } => {
         pending_reasoning = None;
         messages.push(render_instruction("system", content)?);
       }
       Message::UpstreamCompaction { .. } => {
         return Err(Error::Build("the chat wire cannot carry a compacted conversation".to_owned()));
       }
-      Message::Developer { content } => {
+      Message::Developer { content, .. } => {
         pending_reasoning = None;
         messages.push(render_instruction("developer", content)?);
       }
-      Message::User { content } => {
+      Message::User { content, .. } => {
         pending_reasoning = None;
         messages.push(render_user(content)?);
       }
-      Message::Assistant { content } => {
+      Message::Assistant { content, .. } => {
         let (message, used) =
           render_assistant(content, &conversation[index + 1..], pending_reasoning.take(), mode)?;
         messages.push(message);
         index += used;
       }
-      Message::ToolUse { call_id, name, arguments } => {
+      Message::ToolUse { call_id, name, arguments, .. } => {
         let mut message = json!({
           "role": "assistant",
           "content": Value::Null,
@@ -356,7 +352,7 @@ fn render_assistant(
 ) -> Result<(Value, usize), Error> {
   let mut tool_uses: Vec<Value> = Vec::new();
   let mut used = 0;
-  while let Some(Message::ToolUse { call_id, name, arguments }) = following.get(used) {
+  while let Some(Message::ToolUse { call_id, name, arguments, .. }) = following.get(used) {
     tool_uses.push(render_tool_use(call_id, name, arguments));
     used += 1;
   }
@@ -392,7 +388,7 @@ fn attach_reasoning(
 ) {
   let Some(reasoning) = reasoning.filter(|reasoning| !reasoning.is_empty()) else { return };
   if mode.is_mistral() {
-    let mut chunks = vec![thinking_chunk(&reasoning)];
+    let mut chunks = vec![render_thinking_chunk(&reasoning)];
     if let Some(Value::String(text)) = message.get("content")
       && !text.is_empty()
     {
@@ -405,7 +401,7 @@ fn attach_reasoning(
 }
 
 /// The chunk a replayed thought travels in on this wire.
-fn thinking_chunk(reasoning: &str) -> Value {
+fn render_thinking_chunk(reasoning: &str) -> Value {
   json!({
     "type": "thinking",
     "closed": true,

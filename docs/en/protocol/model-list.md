@@ -11,5 +11,5 @@ cannot be represented is kept as warnings.
 caller                      model_list                     service
 ──────────────────────────────────────────────────────────────────────────────
 ModelCatalog ◀── parse_catalog_page() ◀── model_list/<dialect>.rs ◀── one page ◀── HTTP
-              ── fetch() + page_query() ──▶ outbound (the entry's target × Credentials) ──▶ HTTP
+              ── fetch() + build_page_query() ──▶ outbound (the entry's target × Credentials) ──▶ HTTP
 ```

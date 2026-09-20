@@ -33,7 +33,7 @@ use crate::Error;
 use crate::protocol::account_state::{
   AccountState, AccountStateProtocol, Balance, Failure, FailureKind, QuotaWindow,
 };
-use crate::protocol::lexical;
+use crate::protocol::read_scalar_text;
 
 /// Length of the interval window every plan entry carries.
 const INTERVAL_MINUTES: i64 = 300;
@@ -54,7 +54,7 @@ pub fn parse_quota(body: &Value) -> Result<AccountState, Error> {
   for (index, model) in remains.iter().enumerate() {
     let name = model.get("model_name").and_then(Value::as_str).map(str::to_owned);
     let subject = name.clone().unwrap_or_else(|| format!("model_{index}"));
-    quotas.push(window(
+    quotas.push(parse_window(
       model,
       &subject,
       "interval",
@@ -63,7 +63,7 @@ pub fn parse_quota(body: &Value) -> Result<AccountState, Error> {
       "end_time",
       &mut warnings,
     ));
-    quotas.push(window(
+    quotas.push(parse_window(
       model,
       &subject,
       "weekly",
@@ -92,7 +92,7 @@ pub fn parse_quota(body: &Value) -> Result<AccountState, Error> {
 
 /// Reads one rolling window of a plan entry; the interval and the weekly window carry the same
 /// fields under a different prefix, and end under different names.
-fn window(
+fn parse_window(
   model: &Value,
   subject: &str,
   label: &str,
@@ -115,8 +115,8 @@ fn window(
     id: format!("{subject}:{label}"),
     name: Some(subject.to_owned()),
     unit: "credits".to_owned(),
-    used: model.get(format!("{prefix}_usage_count")).and_then(lexical),
-    limit: model.get(format!("{prefix}_total_count")).and_then(lexical),
+    used: model.get(format!("{prefix}_usage_count")).and_then(read_scalar_text),
+    limit: model.get(format!("{prefix}_total_count")).and_then(read_scalar_text),
     remaining: None,
     // The share spent, which this service reports as the share that is left.
     used_percent: model
@@ -124,7 +124,7 @@ fn window(
       .and_then(Value::as_f64)
       .map(|left| (100.0 - left).to_string()),
     window: Some(json!({ "duration": minutes, "unit": "minutes" })),
-    resets_at: model.get(end).and_then(lexical),
+    resets_at: model.get(end).and_then(read_scalar_text),
     reached,
     unlimited: None,
   }
@@ -149,7 +149,7 @@ pub fn parse_balance(body: &Value) -> AccountState {
       .unwrap_or("the balance service rejected the read")
       .to_owned(),
   });
-  let owed = body.get("owed_amount").and_then(lexical);
+  let owed = body.get("owed_amount").and_then(read_scalar_text);
   if failure.is_none()
     && owed.as_deref().is_some_and(|owed| owed.parse::<f64>().is_ok_and(|owed| owed > 0.0))
   {
@@ -171,13 +171,13 @@ pub fn parse_balance(body: &Value) -> AccountState {
     quotas: Vec::new(),
     balances: vec![Balance {
       currency,
-      available: body.get("available_amount").and_then(lexical),
+      available: body.get("available_amount").and_then(read_scalar_text),
       total: None,
-      cash: body.get("cash_balance").and_then(lexical),
+      cash: body.get("cash_balance").and_then(read_scalar_text),
       granted: None,
       topped_up: None,
-      voucher: body.get("voucher_balance").and_then(lexical),
-      credit: body.get("credit_balance").and_then(lexical),
+      voucher: body.get("voucher_balance").and_then(read_scalar_text),
+      credit: body.get("credit_balance").and_then(read_scalar_text),
       owed,
       minor_unit: None,
     }],

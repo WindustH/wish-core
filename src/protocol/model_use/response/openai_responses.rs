@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 
 pub fn decode(body: &Value) -> Result<Response, Error> {
   if body.get("status").and_then(Value::as_str) == Some("failed") {
-    return Err(upstream_error(body));
+    return Err(decode_upstream_error(body));
   }
   let mut messages: Vec<Message> = Vec::new();
   if let Some(output) = body.get("output").and_then(Value::as_array) {
@@ -35,7 +35,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
         Some("message") => {
           let content = decode_message_content(item);
           if !content.is_empty() {
-            messages.push(Message::Assistant { content });
+            messages.push(Message::Assistant { metadata: Default::default(), content });
           }
         }
         Some("function_call") => messages.push(decode_function_call(item)?),
@@ -52,14 +52,14 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
   })
 }
 
-pub(crate) fn upstream_error(body: &Value) -> Error {
+pub(crate) fn decode_upstream_error(body: &Value) -> Error {
   let error = body.get("error");
   let message = error
     .and_then(|error| error.get("message"))
     .and_then(Value::as_str)
     .unwrap_or("upstream reported failure without an error message");
   let code = error.and_then(|error| error.get("code")).and_then(Value::as_str);
-  Error::in_band(code.map(str::to_owned), message.to_owned())
+  Error::from_in_band(code.map(str::to_owned), message.to_owned())
 }
 
 pub(crate) fn decode_reasoning(item: &Value) -> Option<Message> {
@@ -81,6 +81,7 @@ pub(crate) fn decode_reasoning(item: &Value) -> Option<Message> {
     return None;
   }
   Some(Message::Reasoning {
+    metadata: Default::default(),
     plaintext,
     display,
     signature: String::new(),
@@ -117,14 +118,19 @@ pub(crate) fn decode_function_call(item: &Value) -> Result<Message, Error> {
       .map_err(|_| Error::Malformed("function_call arguments are not valid JSON".to_owned()))?,
     _ => json!({}),
   };
-  Ok(Message::ToolUse { call_id: call_id.to_owned(), name: name.to_owned(), arguments })
+  Ok(Message::ToolUse {
+    metadata: Default::default(),
+    call_id: call_id.to_owned(),
+    name: name.to_owned(),
+    arguments,
+  })
 }
 
 fn decode_stop_reason(body: &Value, has_tool_uses: bool) -> StopReason {
-  stop_reason(body, has_tool_uses)
+  map_stop_reason(body, has_tool_uses)
 }
 
-pub(crate) fn stop_reason(body: &Value, has_tool_uses: bool) -> StopReason {
+pub(crate) fn map_stop_reason(body: &Value, has_tool_uses: bool) -> StopReason {
   match body.get("status").and_then(Value::as_str) {
     Some("completed") => {
       if has_tool_uses {
@@ -149,10 +155,10 @@ pub(crate) fn stop_reason(body: &Value, has_tool_uses: bool) -> StopReason {
 }
 
 fn decode_usage(body: &Value) -> Usage {
-  usage(body)
+  parse_usage(body)
 }
 
-pub(crate) fn usage(body: &Value) -> Usage {
+pub(crate) fn parse_usage(body: &Value) -> Usage {
   let usage = body.get("usage");
   let field = |path: &[&str]| -> Option<u64> {
     let mut node = usage?;

@@ -52,14 +52,15 @@ const MAX_ORPHAN_DELTA_BYTES: usize = 64 * 1024;
 enum ItemShape {
   Text,
   Reasoning,
+  ReasoningSummary,
   ToolUse,
 }
 
 impl ItemShape {
-  fn kind(self) -> BlockKind {
+  fn get_kind(self) -> BlockKind {
     match self {
       ItemShape::Text => BlockKind::Text,
-      ItemShape::Reasoning => BlockKind::Reasoning,
+      ItemShape::Reasoning | ItemShape::ReasoningSummary => BlockKind::Reasoning,
       ItemShape::ToolUse => BlockKind::ToolUse,
     }
   }
@@ -87,7 +88,7 @@ impl Decoder {
 
   /// Codex's quota rides the stream as a frame of its own: it says what the account has left
   /// without being part of the answer, so it becomes a reading rather than a block.
-  fn rate_limits(&self, value: &Value, out: &mut Vec<StreamEvent>) {
+  fn decode_rate_limits(&self, value: &Value, out: &mut Vec<StreamEvent>) {
     let Some(rate_limits) = value.get("rate_limits") else { return };
     let payload = json!({ "rate_limits": rate_limits, "plan_type": value.get("plan_type") });
     if let Ok(snapshot) = codex::parse(&payload) {
@@ -108,25 +109,28 @@ impl Decoder {
     let mut out = Vec::new();
     match event_type {
       "response.created" | "response.in_progress" | "response.queued" => {}
-      "response.rate_limits" | "codex.rate_limits" => self.rate_limits(&value, &mut out),
+      "response.rate_limits" | "codex.rate_limits" => self.decode_rate_limits(&value, &mut out),
       "response.usage" => {}
-      "response.output_item.added" => self.item_added(&value, &mut out),
-      "response.content_part.added" => self.part_added(&value, &mut out),
-      "response.output_text.delta" => self.delta(&value, ItemShape::Text, &mut out)?,
-      "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
-        self.delta(&value, ItemShape::Reasoning, &mut out)?
+      "response.output_item.added" => self.handle_item_added(&value, &mut out),
+      "response.content_part.added" => self.handle_part_added(&value, &mut out),
+      "response.output_text.delta" => self.handle_delta(&value, ItemShape::Text, &mut out)?,
+      "response.reasoning_text.delta" => {
+        self.handle_delta(&value, ItemShape::Reasoning, &mut out)?
+      }
+      "response.reasoning_summary_text.delta" => {
+        self.handle_delta(&value, ItemShape::ReasoningSummary, &mut out)?
       }
       "response.function_call_arguments.delta" => {
-        self.delta(&value, ItemShape::ToolUse, &mut out)?
+        self.handle_delta(&value, ItemShape::ToolUse, &mut out)?
       }
-      "response.output_item.done" => self.item_done(&value, &mut out)?,
+      "response.output_item.done" => self.handle_item_done(&value, &mut out)?,
       "response.completed" | "response.done" | "response.incomplete" | "response.cancelled" => {
-        return self.terminal(&value);
+        return self.handle_terminal(&value);
       }
       "response.failed" | "response.error" | "error" => {
         let response = value.get("response").unwrap_or(&value);
         self.done = true;
-        return Err(buffered::upstream_error(response));
+        return Err(buffered::decode_upstream_error(response));
       }
       // Unknown and future event types are tolerated.
       _ => {}
@@ -134,7 +138,7 @@ impl Decoder {
     Ok(out)
   }
 
-  fn item_added(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
+  fn handle_item_added(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
     let Some(item) = value.get("item") else { return };
     let shape = match item.get("type").and_then(Value::as_str) {
       Some("function_call") => ItemShape::ToolUse,
@@ -150,7 +154,7 @@ impl Decoder {
     self.next_index += 1;
     self.blocks.insert(item_id.clone(), (index, shape));
     self.open.push(index);
-    out.push(StreamEvent::BlockStart { index, kind: shape.kind() });
+    out.push(StreamEvent::BlockStart { index, kind: shape.get_kind() });
     match shape {
       ItemShape::ToolUse => {
         // The item announces the call id and name; arguments follow as deltas.
@@ -170,13 +174,13 @@ impl Decoder {
           arguments: String::new(),
         });
       }
-      ItemShape::Reasoning => self.reasoning_ciphertext(index, item, out),
-      ItemShape::Text => {}
+      ItemShape::Reasoning => self.emit_reasoning_ciphertext(index, item, out),
+      ItemShape::Text | ItemShape::ReasoningSummary => {}
     }
     self.flush_orphans(&item_id, index, out);
   }
 
-  fn part_added(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
+  fn handle_part_added(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
     let Some(part) = value.get("part") else { return };
     if part.get("type").and_then(Value::as_str) != Some("output_text") {
       return;
@@ -193,7 +197,7 @@ impl Decoder {
     self.flush_orphans(item_id, index, out);
   }
 
-  fn delta(
+  fn handle_delta(
     &mut self,
     value: &Value,
     shape: ItemShape,
@@ -219,21 +223,21 @@ impl Decoder {
     Ok(())
   }
 
-  fn item_done(&mut self, value: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
+  fn handle_item_done(&mut self, value: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
     let Some(item) = value.get("item") else { return Ok(()) };
     // A compacted history arrives as one whole item rather than as blocks, so it takes an index of
     // its own among them and travels on as it came.
     if item.get("type").and_then(Value::as_str) == Some("compaction") {
       let index = self.next_index;
       self.next_index += 1;
-      let (id, encrypted_content) = compaction::compaction_payload(item)?;
+      let (id, encrypted_content) = compaction::decode_compaction_payload(item)?;
       out.push(StreamEvent::UpstreamCompaction { index, id, encrypted_content });
       return Ok(());
     }
     let Some(item_id) = item.get("id").and_then(Value::as_str) else { return Ok(()) };
     let Some(&(index, shape)) = self.blocks.get(item_id) else { return Ok(()) };
     if shape == ItemShape::Reasoning {
-      self.reasoning_ciphertext(index, item, out);
+      self.emit_reasoning_ciphertext(index, item, out);
     }
     if let Some(position) = self.open.iter().position(|open| *open == index) {
       self.open.remove(position);
@@ -243,7 +247,7 @@ impl Decoder {
   }
 
   /// The terminal response event: fail on orphaned content, close every block, report usage, stop.
-  fn terminal(&mut self, value: &Value) -> Result<Vec<StreamEvent>, Error> {
+  fn handle_terminal(&mut self, value: &Value) -> Result<Vec<StreamEvent>, Error> {
     let response = value.get("response").unwrap_or(value);
     if !self.orphans.is_empty() {
       let ids: Vec<&str> = self.orphans.keys().map(String::as_str).collect();
@@ -260,14 +264,14 @@ impl Decoder {
       open.into_iter().map(|index| StreamEvent::BlockEnd { index }).collect()
     };
     if response.get("usage").is_some() {
-      out.push(StreamEvent::Usage(buffered::usage(response)));
+      out.push(StreamEvent::Usage(buffered::parse_usage(response)));
     }
     let has_tool_uses = self.blocks.values().any(|(_, shape)| *shape == ItemShape::ToolUse);
-    out.push(StreamEvent::Stop(buffered::stop_reason(response, has_tool_uses)));
+    out.push(StreamEvent::Stop(buffered::map_stop_reason(response, has_tool_uses)));
     Ok(out)
   }
 
-  fn reasoning_ciphertext(&mut self, index: u32, item: &Value, out: &mut Vec<StreamEvent>) {
+  fn emit_reasoning_ciphertext(&mut self, index: u32, item: &Value, out: &mut Vec<StreamEvent>) {
     if self.ciphertext_seen.contains(&index) {
       return;
     }
@@ -295,6 +299,9 @@ impl Decoder {
       ItemShape::Text => out.push(StreamEvent::TextDelta { index, delta: delta.to_owned() }),
       ItemShape::Reasoning => {
         out.push(StreamEvent::ReasoningDelta { index, delta: delta.to_owned() })
+      }
+      ItemShape::ReasoningSummary => {
+        out.push(StreamEvent::ReasoningDisplayDelta { index, delta: delta.to_owned() })
       }
       ItemShape::ToolUse => out.push(StreamEvent::ToolUseDelta {
         index,

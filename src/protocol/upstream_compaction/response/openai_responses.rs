@@ -28,7 +28,7 @@ use serde_json::Value;
 
 pub fn decode(body: &Value) -> Result<UpstreamCompaction, Error> {
   if body.get("status").and_then(Value::as_str) == Some("failed") {
-    return Err(model_use::upstream_error(body));
+    return Err(model_use::decode_upstream_error(body));
   }
   let mut conversation: Conversation = Vec::new();
   let mut warnings: Vec<String> = Vec::new();
@@ -37,8 +37,12 @@ pub fn decode(body: &Value) -> Result<UpstreamCompaction, Error> {
       // The item stands in for the history: the payload goes back exactly as it came, so it is kept
       // as it is and never read here.
       Some("compaction") => {
-        let (id, encrypted_content) = compaction_payload(item)?;
-        conversation.push(Message::UpstreamCompaction { id, encrypted_content });
+        let (id, encrypted_content) = decode_compaction_payload(item)?;
+        conversation.push(Message::UpstreamCompaction {
+          metadata: Default::default(),
+          id,
+          encrypted_content,
+        });
       }
       Some("message") => match decode_message(item) {
         Ok(message) => conversation.push(message),
@@ -57,7 +61,7 @@ pub fn decode(body: &Value) -> Result<UpstreamCompaction, Error> {
   }
   Ok(UpstreamCompaction {
     conversation,
-    usage: model_use::usage(body),
+    usage: model_use::parse_usage(body),
     account_state: None,
     warnings,
   })
@@ -65,7 +69,7 @@ pub fn decode(body: &Value) -> Result<UpstreamCompaction, Error> {
 
 /// The service's own two parts of that item: its name for the compaction when it gave one, and the
 /// opaque payload it stands in for the history with.
-pub(crate) fn compaction_payload(item: &Value) -> Result<(Option<String>, String), Error> {
+pub(crate) fn decode_compaction_payload(item: &Value) -> Result<(Option<String>, String), Error> {
   let payload = item
     .get("encrypted_content")
     .and_then(Value::as_str)
@@ -80,10 +84,10 @@ pub(crate) fn compaction_payload(item: &Value) -> Result<(Option<String>, String
 fn decode_message(item: &Value) -> Result<Message, String> {
   let role = item.get("role").and_then(Value::as_str).unwrap_or("");
   let build: fn(Vec<ContentBlock>) -> Message = match role {
-    "user" => |content| Message::User { content },
-    "assistant" => |content| Message::Assistant { content },
-    "system" => |content| Message::System { content },
-    "developer" => |content| Message::Developer { content },
+    "user" => |content| Message::User { metadata: Default::default(), content },
+    "assistant" => |content| Message::Assistant { metadata: Default::default(), content },
+    "system" => |content| Message::System { metadata: Default::default(), content },
+    "developer" => |content| Message::Developer { metadata: Default::default(), content },
     other => return Err(format!("a `message` item with role `{other}` was dropped")),
   };
   let content: Vec<ContentBlock> = item
@@ -111,6 +115,7 @@ fn decode_function_output(item: &Value) -> Result<Message, Error> {
     .and_then(Value::as_str)
     .ok_or_else(|| Error::Malformed("function_call_output item is missing `call_id`".to_owned()))?;
   Ok(Message::ToolResult {
+    metadata: Default::default(),
     call_id: call_id.to_owned(),
     name: String::new(),
     content: item.get("output").cloned().unwrap_or(Value::Null),

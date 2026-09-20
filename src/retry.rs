@@ -1,6 +1,6 @@
 //! How many times one call may be attempted, and how long to wait between attempts.
 //!
-//! The policy is pure data plus one arithmetic step, and `retrying` is the loop that spends it.
+//! The policy is pure data plus one arithmetic step, and `retry` is the loop that spends it.
 //! What one attempt *is* stays the caller's business: a buffered call replaces it whole, a streamed
 //! one only while nothing has been handed over yet, which is why the client keeps its own loop for
 //! the second case.
@@ -13,7 +13,7 @@ use crate::protocol::error::Error;
 /// Bounded attempt policy for one logical call.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RetryPolicy {
-  /// Max attempts per logical operation (including the first). `1` disables retrying.
+  /// Max attempts per logical operation (including the first). `1` disables retry.
   pub max_attempts: u32,
   /// Initial backoff delay (ms).
   pub initial_delay_ms: u64,
@@ -46,7 +46,7 @@ impl RetryPolicy {
   /// `[delay * (1 - jitter), delay]`. A `Retry-After` is a floor rather than a ceiling: when the
   /// upstream asks for a longer pause, the longer pause wins.
   #[must_use]
-  pub fn backoff_ms(&self, attempt_no: u32, retry_after_ms: Option<u64>) -> u64 {
+  pub fn calculate_backoff_ms(&self, attempt_no: u32, retry_after_ms: Option<u64>) -> u64 {
     let exp = f64::from(attempt_no.saturating_sub(1));
     let base = (self.initial_delay_ms as f64) * self.multiplier.powf(exp);
     let delay = base.min(self.max_delay_ms as f64) as u64;
@@ -57,7 +57,7 @@ impl RetryPolicy {
     // Full jitter: uniform in [delay * (1 - j), delay].
     let span = (delay as f64) * self.jitter_ratio;
     let floor = delay as f64 - span;
-    let picked = floor + rand_unit() * span;
+    let picked = floor + generate_random_unit() * span;
     (picked.min(self.max_delay_ms as f64) as u64).max(retry_floor)
   }
 }
@@ -67,7 +67,7 @@ impl RetryPolicy {
 ///
 /// One attempt is whatever the caller hands over, which is what lets a buffered read and a streamed
 /// one share the policy without sharing a definition of "delivered nothing yet".
-pub(crate) async fn retrying<T, F, Fut>(policy: &RetryPolicy, mut attempt: F) -> Result<T, Error>
+pub(crate) async fn retry<T, F, Fut>(policy: &RetryPolicy, mut attempt: F) -> Result<T, Error>
 where
   F: FnMut(u32) -> Fut,
   Fut: Future<Output = Result<T, Error>>,
@@ -77,10 +77,10 @@ where
     match attempt(number).await {
       Ok(value) => return Ok(value),
       Err(error) => {
-        if number >= policy.max_attempts || !error.retryable() {
+        if number >= policy.max_attempts || !error.is_retryable() {
           return Err(error);
         }
-        let delay = policy.backoff_ms(number, error.retry_after_ms());
+        let delay = policy.calculate_backoff_ms(number, error.get_retry_after_ms());
         tokio::time::sleep(Duration::from_millis(delay)).await;
         number += 1;
       }
@@ -90,7 +90,7 @@ where
 
 /// Deterministic-enough unit sample in [0, 1): splitmix over the clock and the process id, which
 /// keeps a jitter dependency out of the crate.
-fn rand_unit() -> f64 {
+fn generate_random_unit() -> f64 {
   let nanos = std::time::SystemTime::now()
     .duration_since(std::time::UNIX_EPOCH)
     .map_or(0, |duration| u64::from(duration.subsec_nanos()) ^ duration.as_secs());

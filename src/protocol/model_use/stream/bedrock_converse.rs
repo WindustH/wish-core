@@ -30,15 +30,6 @@ use crate::protocol::error::Error;
 use crate::protocol::model_use::response::bedrock_converse as buffered;
 use crate::protocol::{BlockKind, StopReason, StreamEvent};
 
-/// The streamed form of a resolved path: the standard verb segment becomes `converse-stream`.
-pub fn stream_path(path: &str) -> String {
-  if path.ends_with("/converse") {
-    format!("{}-stream", path.strip_suffix("/converse").expect("checked"))
-  } else {
-    path.to_owned()
-  }
-}
-
 /// Decodes one `converse-stream` body.
 #[derive(Default)]
 pub struct Decoder {
@@ -64,16 +55,16 @@ impl Decoder {
       return Err(Error::Malformed("converse frame without an event type".to_owned()));
     };
     if let Some(exception) = event.strip_prefix("__exception:") {
-      return Err(exception_error(exception, data));
+      return Err(decode_exception_error(exception, data));
     }
     let value: Value = serde_json::from_str(data)
       .map_err(|error| Error::Malformed(format!("converse event is not JSON: {error}")))?;
     let mut out = Vec::new();
     match event {
       "messageStart" | "messageDelta" => {}
-      "contentBlockStart" => self.block_start(&value, &mut out),
-      "contentBlockDelta" => self.block_delta(&value, &mut out),
-      "contentBlockStop" => self.block_stop(&value, &mut out),
+      "contentBlockStart" => self.handle_block_start(&value, &mut out),
+      "contentBlockDelta" => self.handle_block_delta(&value, &mut out),
+      "contentBlockStop" => self.handle_block_stop(&value, &mut out),
       "messageStop" => {
         if let Some(reason) = value.pointer("/messageStop/stopReason").and_then(Value::as_str) {
           self.finish_reason = Some(reason.to_owned());
@@ -81,7 +72,7 @@ impl Decoder {
       }
       "metadata" => {
         if let Some(usage) = value.pointer("/metadata/usage").filter(|usage| !usage.is_null()) {
-          let usage = buffered::usage(Some(usage));
+          let usage = buffered::parse_usage(Some(usage));
           self.usage = Some(usage);
           out.push(StreamEvent::Usage(usage));
         }
@@ -104,7 +95,7 @@ impl Decoder {
     Err(Error::Malformed("stream ended before messageStop and metadata".to_owned()))
   }
 
-  fn block_start(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
+  fn handle_block_start(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
     let Some(index) = value.pointer("/contentBlockStart/contentBlockIndex").and_then(Value::as_u64)
     else {
       return;
@@ -133,7 +124,7 @@ impl Decoder {
     });
   }
 
-  fn block_delta(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
+  fn handle_block_delta(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
     let Some(index) = value.pointer("/contentBlockDelta/contentBlockIndex").and_then(Value::as_u64)
     else {
       return;
@@ -175,7 +166,7 @@ impl Decoder {
     }
   }
 
-  fn block_stop(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
+  fn handle_block_stop(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
     let Some(index) = value.pointer("/contentBlockStop/contentBlockIndex").and_then(Value::as_u64)
     else {
       return;
@@ -185,7 +176,7 @@ impl Decoder {
     }
   }
 
-  /// The block of a delta: opened now (with the kind the delta just named) if this is its first.
+  /// The block of a delta: opened get_current_time (with the kind the delta just named) if this is its first.
   fn ensure(&mut self, index: u64, kind: BlockKind, out: &mut Vec<StreamEvent>) -> u32 {
     if let Some(block) = self.blocks.get(&index) {
       return *block;
@@ -206,7 +197,7 @@ impl Decoder {
     let mut out: Vec<StreamEvent> =
       indices.into_iter().map(|index| StreamEvent::BlockEnd { index }).collect();
     let stop = match reason {
-      Some(reason) => buffered::stop_reason(Some(reason)),
+      Some(reason) => buffered::map_stop_reason(Some(reason)),
       None => StopReason::Unknown,
     };
     out.push(StreamEvent::Stop(stop));
@@ -215,10 +206,10 @@ impl Decoder {
 }
 
 /// Maps an exception frame: the type is the code, the payload is the message when it is not JSON.
-fn exception_error(exception: &str, data: &str) -> Error {
+fn decode_exception_error(exception: &str, data: &str) -> Error {
   let message = serde_json::from_str::<Value>(data)
     .ok()
     .and_then(|value| value.get("message").and_then(Value::as_str).map(str::to_owned))
     .unwrap_or_else(|| data.to_owned());
-  Error::in_band(Some(exception.to_owned()), message)
+  Error::from_in_band(Some(exception.to_owned()), message)
 }

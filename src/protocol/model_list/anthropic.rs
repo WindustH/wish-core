@@ -22,8 +22,8 @@
 use serde_json::Value;
 
 use crate::Error;
-use crate::protocol::lexical;
 use crate::protocol::model_list::{Model, ModelCatalog, ModelListProtocol};
+use crate::protocol::read_scalar_text;
 
 /// Reads one page.
 ///
@@ -46,7 +46,7 @@ pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
       id: id.to_owned(),
       name: entry.get("display_name").and_then(Value::as_str).map(str::to_owned),
       owner: None,
-      created_at: entry.get("created_at").and_then(lexical),
+      created_at: entry.get("created_at").and_then(read_scalar_text),
       context_window: None,
       max_output_tokens: None,
     });
@@ -59,7 +59,7 @@ pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
 }
 
 /// The query of a page: the forward cursor, and the page size the wire wants spelled out.
-pub(crate) fn page_query(cursor: Option<&str>, page_size: u32) -> Vec<(String, String)> {
+pub(crate) fn build_page_query(cursor: Option<&str>, page_size: u32) -> Vec<(String, String)> {
   let mut query = Vec::new();
   if let Some(cursor) = cursor {
     query.push(("after_id".to_owned(), cursor.to_owned()));

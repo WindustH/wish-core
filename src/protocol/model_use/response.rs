@@ -19,7 +19,7 @@ use super::message::Message;
 use crate::protocol::account_state::AccountState;
 
 /// One decoded reply, normalized across the dialects.
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Response {
   /// What the model produced this turn, in the order it produced it: reasoning, text and tool calls
   /// each as their own message.
@@ -34,7 +34,7 @@ pub struct Response {
 }
 
 /// Why the model stopped, normalized across the dialects.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopReason {
   /// The model finished its answer.
   Stop,
@@ -63,7 +63,7 @@ pub enum StopReason {
 ///
 /// Every field is optional because the dialects report different subsets; a missing count is not a
 /// zero.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Usage {
   /// Input tokens billed at the full rate.
   pub input_tokens: Option<u64>,

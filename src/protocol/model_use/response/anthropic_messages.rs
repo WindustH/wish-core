@@ -30,7 +30,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
       .and_then(Value::as_str)
       .unwrap_or("upstream reported an error without a message");
     let code = error.and_then(|error| error.get("type")).and_then(Value::as_str);
-    return Err(Error::in_band(code.map(str::to_owned), message.to_owned()));
+    return Err(Error::from_in_band(code.map(str::to_owned), message.to_owned()));
   }
 
   let mut messages: Vec<Message> = Vec::new();
@@ -39,7 +39,8 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
     if content.is_empty() {
       return;
     }
-    messages.push(Message::Assistant { content: std::mem::take(content) });
+    messages
+      .push(Message::Assistant { metadata: Default::default(), content: std::mem::take(content) });
   };
   if let Some(blocks) = body.get("content").and_then(Value::as_array) {
     for block in blocks {
@@ -51,6 +52,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
           flush(&mut messages, &mut content);
           let thinking = block.get("thinking").and_then(Value::as_str).unwrap_or("");
           messages.push(Message::Reasoning {
+            metadata: Default::default(),
             plaintext: thinking.to_owned(),
             display: thinking.to_owned(),
             signature: block.get("signature").and_then(Value::as_str).unwrap_or("").to_owned(),
@@ -60,6 +62,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
         Some("redacted_thinking") => {
           flush(&mut messages, &mut content);
           messages.push(Message::Reasoning {
+            metadata: Default::default(),
             plaintext: String::new(),
             display: String::new(),
             signature: String::new(),
@@ -77,7 +80,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
   flush(&mut messages, &mut content);
   Ok(Response {
     messages,
-    stop_reason: stop_reason(body.get("stop_reason").and_then(Value::as_str)),
+    stop_reason: map_stop_reason(body.get("stop_reason").and_then(Value::as_str)),
     usage: decode_usage(body),
     account_state: None,
   })
@@ -93,11 +96,16 @@ fn decode_tool_use(block: &Value) -> Result<Message, Error> {
     .and_then(Value::as_str)
     .ok_or_else(|| Error::Malformed("tool_use block is missing `name`".to_owned()))?;
   let arguments = block.get("input").cloned().unwrap_or_else(|| json!({}));
-  Ok(Message::ToolUse { call_id: call_id.to_owned(), name: name.to_owned(), arguments })
+  Ok(Message::ToolUse {
+    metadata: Default::default(),
+    call_id: call_id.to_owned(),
+    name: name.to_owned(),
+    arguments,
+  })
 }
 
 /// Maps one wire stop reason; shared with the stream decoder so both paths agree.
-pub fn stop_reason(reason: Option<&str>) -> StopReason {
+pub fn map_stop_reason(reason: Option<&str>) -> StopReason {
   match reason {
     Some("end_turn" | "stop_sequence" | "pause_turn") => StopReason::Stop,
     Some("max_tokens") => StopReason::MaxOutputLengthExceeded,

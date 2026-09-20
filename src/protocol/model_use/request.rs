@@ -20,7 +20,7 @@ use super::message::Conversation;
 use super::tool::Tool;
 
 /// How the model should pick among the tools it was given.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum ToolChoice {
   /// The model decides; the wire's default.
   Auto,
@@ -34,13 +34,13 @@ pub enum ToolChoice {
 ///
 /// Every axis is optional: `None` leaves that decision to the service default, and a wire that has
 /// no place for an axis says so when it renders the request.
-#[derive(Clone, Default, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct ReasoningConfig {
   /// Explicit on/off switch; a wire that cannot spell "off" says so when it renders the request.
   pub enabled: Option<bool>,
   /// Depth tier, spelled the way the model spells it: every service names its own set of tiers, so
   /// an effort wire passes the word through. A wire that steers thinking with a token budget has no
-  /// tier word of its own and takes the `tier_budget` preset instead.
+  /// tier word of its own and takes the `resolve_tier_budget` preset instead.
   pub effort: Option<String>,
   /// Whether the service should also hand back a readable summary of its thoughts: the part that is
   /// meant to be shown to a reader, as opposed to the raw reasoning the model itself replays.
@@ -48,7 +48,7 @@ pub struct ReasoningConfig {
 }
 
 /// What one word of the budget preset asks for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TierBudget {
   /// Extended thinking, with this many tokens to spend.
   Tokens(u64),
@@ -61,7 +61,7 @@ pub(crate) enum TierBudget {
 /// The wires that steer thinking by token budget share one preset instead of naming tiers of their
 /// own: each word is either a token budget or `adaptive`. A word outside the preset has no control
 /// to become and is reported as a build error.
-pub(crate) fn tier_budget(effort: &str) -> Result<TierBudget, Error> {
+pub(crate) fn resolve_tier_budget(effort: &str) -> Result<TierBudget, Error> {
   match effort {
     "low" => Ok(TierBudget::Tokens(1024)),
     "medium" => Ok(TierBudget::Tokens(4096)),
@@ -78,7 +78,7 @@ pub(crate) fn tier_budget(effort: &str) -> Result<TierBudget, Error> {
 pub(crate) const ANSWER_HEADROOM: u64 = 4096;
 
 /// Whether the service should also hand back a readable summary of its thinking.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
 pub enum ReasoningSummary {
   /// Ask for one.
   Auto,
@@ -92,7 +92,7 @@ pub enum ReasoningSummary {
 /// for: the key names the prefix for the wires that route on a key, the flag asks the wires that
 /// cache at an explicit marker to end their cached prefix at the prompt tail. Wires that cache
 /// implicitly take neither.
-#[derive(Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct PromptCache {
   /// The name the keyed wires route this prefix by.
   pub key: Option<String>,
@@ -103,7 +103,11 @@ pub struct PromptCache {
 /// One call, as the caller describes it, independent of any wire.
 ///
 /// Every field is an axis a protocol can honor, reject or ignore, and the renderers say which.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Request {
+  /// Request incremental events instead of a buffered response. The protocol renders this
+  /// choice into body fields or the endpoint path, and the client selects the matching reader.
+  pub stream: bool,
   /// The service's model id.
   pub model: String,
   /// The conversation, oldest message first.

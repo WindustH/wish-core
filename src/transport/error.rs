@@ -35,7 +35,7 @@ impl TransportError {
   /// worth anything (a name that does not resolve will not start resolving unless time passes), but
   /// this layer cannot tell those apart from outside, so it considers the whole phase retryable and
   /// leaves how many attempts that is worth to the caller's policy.
-  pub fn retryable(&self) -> bool {
+  pub fn is_retryable(&self) -> bool {
     match self {
       TransportError::Connect(_) => true,
       TransportError::AwaitHeaders(_) | TransportError::ReadBody(_) => false,
@@ -64,6 +64,9 @@ impl StdError for TransportError {}
 
 impl From<TransportError> for Error {
   fn from(error: TransportError) -> Self {
-    Error::Transport(TransportFailure { retryable: error.retryable(), message: error.to_string() })
+    Error::Transport(TransportFailure {
+      retryable: error.is_retryable(),
+      message: error.to_string(),
+    })
   }
 }

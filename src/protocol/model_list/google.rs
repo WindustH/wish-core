@@ -1,7 +1,7 @@
 //! Gemini's model list: `{models: [{name, displayName, inputTokenLimit, ...}], nextPageToken}`.
 //!
 //! Conversions:
-//! - `name` is a resource name (`models/gemini-2.5-flash`) and loses the `models/` prefix, because a
+//! - `name` is a resource get_name (`models/gemini-2.5-flash`) and loses the `models/` prefix, because a
 //!   call passes the bare id back.
 //! - `displayName` becomes `name`, `inputTokenLimit` `context_window` and `outputTokenLimit`
 //!   `max_output_tokens`.
@@ -74,7 +74,7 @@ pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
 }
 
 /// The query of a page: an opaque token, and the page size the wire wants spelled out.
-pub(crate) fn page_query(cursor: Option<&str>, page_size: u32) -> Vec<(String, String)> {
+pub(crate) fn build_page_query(cursor: Option<&str>, page_size: u32) -> Vec<(String, String)> {
   let mut query = Vec::new();
   if let Some(cursor) = cursor {
     query.push(("pageToken".to_owned(), cursor.to_owned()));

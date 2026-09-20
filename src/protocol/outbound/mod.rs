@@ -17,7 +17,7 @@
 //!
 //! Deliberately absent: credentials inside a URL, because a credential in a URL is a credential
 //! in every log line that ever touches it. Material may be closer to its end than the call it is
-//! asked for: [`expired`] judges that off the credentials alone, [`Outbound::dispatch`] refuses
+//! asked for: [`is_expired`] judges that off the credentials alone, [`Outbound::dispatch`] refuses
 //! by it before anything is sent, and [`oauth`] beside it is the exchange the auth protocol's
 //! renewal option names - deciding when to refresh, and storing what the exchange rotated,
 //! stays with the caller, because this crate holds no account state. Google ADC sits
@@ -58,7 +58,7 @@ pub enum AuthProtocol {
   /// that token renews when it is a subscription's or a grant's rather than a key: `None` is
   /// material that never runs out.
   Bearer(Option<CredentialsRefreshProtocol>),
-  /// The account's key in one named header (`x-api-key`, `x-goog-api-key`). No renewal option:
+  /// The account's key in one named get_header (`x-api-key`, `x-goog-api-key`). No renewal option:
   /// every credential read from a header is a key, and a key never runs out.
   Header(&'static str),
   /// AWS SigV4: the call is signed with the account's own AWS material rather than carrying a
@@ -90,7 +90,7 @@ pub enum CredentialsRefreshProtocol {
 
 impl AuthProtocol {
   /// The name this protocol is written as in an error, when an ask cannot be served of it.
-  pub(crate) fn name(&self) -> &'static str {
+  pub(crate) fn get_name(&self) -> &'static str {
     match self {
       AuthProtocol::None => "none",
       AuthProtocol::Bearer(_) => "bearer",
@@ -164,7 +164,7 @@ impl Outbound {
 
   /// The auth protocol this target proves its calls by, for the asks that read it back - the
   /// client's credential renewal among them.
-  pub fn auth(&self) -> &AuthProtocol {
+  pub fn get_auth(&self) -> &AuthProtocol {
     &self.auth
   }
 
@@ -215,18 +215,18 @@ impl Outbound {
     match &self.auth {
       AuthProtocol::None => {}
       AuthProtocol::Bearer(_) => {
-        let key = field(material, CredentialField::ApiKey)?;
+        let key = require_field(material, CredentialField::ApiKey)?;
         insert_header(&mut headers, "authorization", &format!("Bearer {key}"));
       }
       AuthProtocol::Header(name) => {
-        let key = field(material, CredentialField::ApiKey)?;
+        let key = require_field(material, CredentialField::ApiKey)?;
         insert_header(&mut headers, name, key);
       }
       // The signed headers are written after everything else, out of the account's own material.
       AuthProtocol::SigV4 => {}
     }
     for (name, credential) in &self.material_headers {
-      insert_header(&mut headers, name, field(material, *credential)?);
+      insert_header(&mut headers, name, require_field(material, *credential)?);
     }
     for (name, value) in &draft.headers {
       insert_header(&mut headers, name, value);
@@ -240,12 +240,12 @@ impl Outbound {
         "bedrock",
         &draft.body,
         &SigV4Credentials {
-          region: field(material, CredentialField::Region)?,
-          access_key_id: field(material, CredentialField::AccessKeyId)?,
-          secret_access_key: field(material, CredentialField::SecretAccessKey)?,
+          region: require_field(material, CredentialField::Region)?,
+          access_key_id: require_field(material, CredentialField::AccessKeyId)?,
+          secret_access_key: require_field(material, CredentialField::SecretAccessKey)?,
           // The token is the one piece the material may carry or not: a permanent key has none,
           // and asking for one would refuse the accounts that never had it.
-          session_token: material.field(CredentialField::SessionToken),
+          session_token: material.get_field(CredentialField::SessionToken),
         },
       )
       .map_err(|reason| Error::Build(format!("the call could not be signed: {reason}")))?;
@@ -262,16 +262,16 @@ impl Outbound {
 /// Whether the account's material has stopped being accepted, against the `now` the caller reads.
 ///
 /// Judgment, not reporting: it answers one question - is a renewal due before the next call - and
-/// it is what `Client::credentials_expired` reads. Dispatch enforces the same expiry on its own,
+/// it is what `Client::are_credentials_expired` reads. Dispatch enforces the same expiry on its own,
 /// refusing a call over material this returns `true` for.
-pub fn expired(material: &Credentials, now: u64) -> bool {
+pub fn is_expired(material: &Credentials, now: u64) -> bool {
   material.expires_at.is_some_and(|expires_at| now >= expires_at)
 }
 
-fn field(material: &Credentials, credential: CredentialField) -> Result<&str, Error> {
-  material
-    .field(credential)
-    .ok_or_else(|| Error::Build(format!("this call needs the `{}` credential", credential.name())))
+fn require_field(material: &Credentials, credential: CredentialField) -> Result<&str, Error> {
+  material.get_field(credential).ok_or_else(|| {
+    Error::Build(format!("this call needs the `{}` credential", credential.get_name()))
+  })
 }
 
 /// Fills the `{field}` placeholders a path may carry from the account's own material.
@@ -292,14 +292,14 @@ fn fill_path(path: &str, material: &Credentials) -> Result<String, Error> {
     let credential = CredentialField::from_placeholder(name).ok_or_else(|| {
       Error::Build(format!("the target's path reads from the unknown field `{name}`"))
     })?;
-    filled.push_str(&percent_encode(field(material, credential)?));
+    filled.push_str(&percent_encode(require_field(material, credential)?));
     rest = &rest[start + end + 1..];
   }
   filled.push_str(rest);
   Ok(filled)
 }
 
-/// Sets one header, replacing an earlier entry with the same name (case-insensitive).
+/// Sets one header, replacing an earlier entry with the same get_name (case-insensitive).
 ///
 /// Replacement rather than append: `Call.headers` reaches the client through `HeaderMap::append`,
 /// so a name listed twice goes out twice, and a duplicated `content-type` is server-side confusion

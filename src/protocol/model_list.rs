@@ -65,7 +65,7 @@ pub struct ModelCatalog {
 
 /// Which service's model list a page is read by.
 ///
-/// One variant per service: the vocabulary this crate knows. [`ModelListProtocol::id`] is the same name
+/// One variant per service: the vocabulary this crate knows. [`ModelListProtocol::get_id`] is the same name
 /// in text, so the source table and any configuration boundary can carry it and
 /// [`FromStr`](std::str::FromStr) brings it back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,7 +97,7 @@ impl ModelListProtocol {
 
   /// The name this protocol is known by in text: what the source table, the documentation and a
   /// page's own [`ModelCatalog::protocol`] say.
-  pub const fn id(self) -> &'static str {
+  pub const fn get_id(self) -> &'static str {
     match self {
       ModelListProtocol::OpenAiModels => "openai_models",
       ModelListProtocol::OpenAiCodexModels => "openai_codex_models",
@@ -118,7 +118,7 @@ pub enum Unsupported {
 
 impl Unsupported {
   /// The reason in the words a caller reads back.
-  pub const fn text(self) -> &'static str {
+  pub const fn get_text(self) -> &'static str {
     match self {
       Unsupported::NoListing => "publishes no model list a request can ask for",
     }
@@ -127,14 +127,14 @@ impl Unsupported {
 
 impl std::fmt::Display for ModelListProtocol {
   fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    formatter.write_str(self.id())
+    formatter.write_str(self.get_id())
   }
 }
 
 impl std::str::FromStr for ModelListProtocol {
   type Err = Error;
 
-  /// Reads back what [`ModelListProtocol::id`] wrote, for a boundary that carries text.
+  /// Reads back what [`ModelListProtocol::get_id`] wrote, for a boundary that carries text.
   ///
   /// # Errors
   ///
@@ -143,7 +143,7 @@ impl std::str::FromStr for ModelListProtocol {
     Self::ALL
       .iter()
       .copied()
-      .find(|protocol| protocol.id() == id)
+      .find(|protocol| protocol.get_id() == id)
       .ok_or_else(|| Error::Build(format!("unknown model list protocol `{id}`")))
   }
 }
@@ -170,17 +170,17 @@ pub fn parse_catalog_page(
 
 /// The query a page of a model list is asked with: the cursor the previous page handed over, and
 /// how many models to ask for where the wire has a page size.
-pub fn page_query(
+pub fn build_page_query(
   protocol: ModelListProtocol,
   cursor: Option<&str>,
   page_size: u32,
 ) -> Result<Vec<(String, String)>, Error> {
   match protocol {
-    ModelListProtocol::OpenAiModels => Ok(openai::page_query(cursor)),
-    ModelListProtocol::OpenAiCodexModels => Ok(codex::page_query()),
-    ModelListProtocol::QwenModels => Ok(qwen::page_query(cursor, page_size)),
-    ModelListProtocol::AnthropicModels => Ok(anthropic::page_query(cursor, page_size)),
-    ModelListProtocol::GoogleModels => Ok(google::page_query(cursor, page_size)),
-    ModelListProtocol::BedrockModels => Ok(bedrock::page_query()),
+    ModelListProtocol::OpenAiModels => Ok(openai::build_page_query(cursor)),
+    ModelListProtocol::OpenAiCodexModels => Ok(codex::build_page_query()),
+    ModelListProtocol::QwenModels => Ok(qwen::build_page_query(cursor, page_size)),
+    ModelListProtocol::AnthropicModels => Ok(anthropic::build_page_query(cursor, page_size)),
+    ModelListProtocol::GoogleModels => Ok(google::build_page_query(cursor, page_size)),
+    ModelListProtocol::BedrockModels => Ok(bedrock::build_page_query()),
   }
 }

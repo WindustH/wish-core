@@ -10,7 +10,7 @@
 
 use std::collections::VecDeque;
 
-use super::payload_error;
+use super::build_payload_error;
 use crate::protocol::error::Error;
 use crate::protocol::wire::ReplyStream;
 
@@ -191,7 +191,7 @@ pub struct SseStream<S: ReplyStream> {
 impl<S: ReplyStream> SseStream<S> {
   /// Reads `reply` as SSE, bounded by the limits the reply was opened with.
   pub fn new(reply: S) -> Self {
-    let limits = reply.limits();
+    let limits = reply.get_limits();
     Self {
       reply,
       parser: SseParser::with_max_event_bytes(limits.max_event_bytes),
@@ -203,18 +203,18 @@ impl<S: ReplyStream> SseStream<S> {
   }
 
   /// Status of the reply being streamed.
-  pub fn status(&self) -> u16 {
-    self.reply.status()
+  pub fn get_status(&self) -> u16 {
+    self.reply.get_status()
   }
 
   /// `retry-after` of the reply head, in milliseconds.
-  pub fn retry_after_ms(&self) -> Option<u64> {
-    self.reply.retry_after_ms()
+  pub fn get_retry_after_ms(&self) -> Option<u64> {
+    self.reply.get_retry_after_ms()
   }
 
   /// The headers of the reply head, as received.
-  pub fn headers(&self) -> &[(String, String)] {
-    self.reply.headers()
+  pub fn get_headers(&self) -> &[(String, String)] {
+    self.reply.get_headers()
   }
 
   /// Whether that status is in the `2xx` range.
@@ -223,8 +223,8 @@ impl<S: ReplyStream> SseStream<S> {
   }
 
   /// Best-effort body of a non-`2xx` reply, for the layer that classifies it.
-  pub async fn error_body(&mut self) -> Vec<u8> {
-    self.reply.error_body().await
+  pub async fn read_error_body(&mut self) -> Vec<u8> {
+    self.reply.read_error_body().await
   }
 
   /// The next dispatch record, or `None` at the end of the body.
@@ -236,7 +236,7 @@ impl<S: ReplyStream> SseStream<S> {
         }
         self.events += 1;
         if self.events > self.max_events {
-          return Err(payload_error(&format!("stream exceeds {} events", self.max_events)));
+          return Err(build_payload_error(&format!("stream exceeds {} events", self.max_events)));
         }
         return Ok(Some(event));
       }
@@ -247,12 +247,13 @@ impl<S: ReplyStream> SseStream<S> {
       match self.reply.next().await? {
         Some(chunk) => {
           let events =
-            self.parser.feed(&chunk).map_err(|error| payload_error(&error.to_string()))?;
+            self.parser.feed(&chunk).map_err(|error| build_payload_error(&error.to_string()))?;
           self.pending.extend(events);
         }
         None => {
           self.exhausted = true;
-          let events = self.parser.finish().map_err(|error| payload_error(&error.to_string()))?;
+          let events =
+            self.parser.finish().map_err(|error| build_payload_error(&error.to_string()))?;
           self.pending.extend(events);
         }
       }

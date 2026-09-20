@@ -180,11 +180,11 @@ pub fn parse(
       name: None,
       unit: window.unit.to_owned(),
       used: None,
-      limit: window.limit.and_then(|name| value(headers, name)),
-      remaining: window.remaining.and_then(|name| value(headers, name)),
+      limit: window.limit.and_then(|name| get_header_value(headers, name)),
+      remaining: window.remaining.and_then(|name| get_header_value(headers, name)),
       used_percent: None,
       window: None,
-      resets_at: window.resets_at.and_then(|name| value(headers, name)),
+      resets_at: window.resets_at.and_then(|name| get_header_value(headers, name)),
       reached: None,
       unlimited: None,
     };
@@ -215,7 +215,7 @@ pub(crate) fn is_header_dialect(protocol: AccountStateProtocol) -> bool {
 }
 
 /// A header's value, trimmed: an empty header is a header the service did not send.
-fn value(headers: &[(String, String)], name: &str) -> Option<String> {
+fn get_header_value(headers: &[(String, String)], name: &str) -> Option<String> {
   headers
     .iter()
     .find(|(key, _)| key.eq_ignore_ascii_case(name))

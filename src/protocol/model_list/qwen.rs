@@ -62,7 +62,7 @@ pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
 }
 
 /// The query of a page: an explicit page number, because the first page is page one.
-pub(crate) fn page_query(cursor: Option<&str>, page_size: u32) -> Vec<(String, String)> {
+pub(crate) fn build_page_query(cursor: Option<&str>, page_size: u32) -> Vec<(String, String)> {
   vec![
     ("page_no".to_owned(), cursor.unwrap_or("1").to_owned()),
     ("page_size".to_owned(), page_size.to_string()),

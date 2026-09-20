@@ -45,10 +45,10 @@ use serde_json::{Map, Value, json};
 /// Headers every call carries, besides auth and `content-type`.
 pub const HEADERS: &[(&str, &str)] = &[];
 
-pub fn render(request: &Request, stream: bool) -> Result<Value, Error> {
+pub fn render(request: &Request) -> Result<Value, Error> {
   let mut body = Map::new();
   body.insert("model".into(), json!(request.model));
-  body.insert("stream".into(), json!(stream));
+  body.insert("stream".into(), json!(request.stream));
   let (instruction, rest) = split_leading_instructions(&request.conversation)?;
   body.insert("input".into(), Value::Array(render_steps(rest)?));
   if let Some(instruction) = instruction {
@@ -75,7 +75,7 @@ fn split_leading_instructions(
   let mut index = 0;
   while let Some(message) = conversation.get(index) {
     let content = match message {
-      Message::System { content } | Message::Developer { content } => content,
+      Message::System { content, .. } | Message::Developer { content, .. } => content,
       _ => break,
     };
     for block in content {
@@ -109,7 +109,7 @@ fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
         ));
       }
       // Both the developer and user instructions are the same `user_input` step on this wire.
-      Message::Developer { content } | Message::User { content } => {
+      Message::Developer { content, .. } | Message::User { content, .. } => {
         steps.push(json!({"type": "user_input", "content": render_content_blocks(content)}))
       }
       Message::Reasoning { plaintext, signature, .. } => {
@@ -117,19 +117,19 @@ fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           steps.push(step);
         }
       }
-      Message::Assistant { content } => {
+      Message::Assistant { content, .. } => {
         if !content.is_empty() {
           steps.push(render_model_output(content)?);
         }
       }
-      Message::ToolUse { call_id, name, arguments } => {
+      Message::ToolUse { call_id, name, arguments, .. } => {
         let mut step = json!({"type": "function_call", "name": name, "arguments": arguments});
         if !call_id.is_empty() {
           step["id"] = json!(call_id);
         }
         steps.push(step);
       }
-      Message::ToolResult { call_id, name, content } => {
+      Message::ToolResult { call_id, name, content, .. } => {
         let mut step = json!({"type": "function_result", "name": name, "result": content});
         if !call_id.is_empty() {
           step["call_id"] = json!(call_id);

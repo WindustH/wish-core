@@ -41,7 +41,7 @@ use serde_json::{Map, Value, json};
 const COMPACTION_MARKER: &str = r#"{"request_kind":"compaction"}"#;
 
 /// What this deployment adds to a compaction call beside what its calls always carry.
-pub(crate) fn extra_headers(
+pub(crate) fn get_extra_headers(
   variant: ResponsesApiCompatMode,
 ) -> &'static [(&'static str, &'static str)] {
   match variant.deployment {

@@ -41,7 +41,7 @@
 //!   blocks.
 
 use crate::protocol::error::Error;
-use crate::protocol::model_use::request::{ANSWER_HEADROOM, TierBudget, tier_budget};
+use crate::protocol::model_use::request::{ANSWER_HEADROOM, TierBudget, resolve_tier_budget};
 use crate::protocol::{ContentBlock, Message, ReasoningConfig, Request, Tool, ToolChoice};
 use serde_json::{Map, Value, json};
 
@@ -136,7 +136,7 @@ fn render_reasoning(config: &ReasoningConfig) -> Result<Option<Value>, Error> {
       ));
     }
     (Some(false) | None, None) => return Ok(None),
-    (_, Some(effort)) => match tier_budget(effort)? {
+    (_, Some(effort)) => match resolve_tier_budget(effort)? {
       TierBudget::Tokens(budget_tokens) => {
         json!({"type": "enabled", "budget_tokens": budget_tokens})
       }
@@ -152,7 +152,7 @@ fn split_leading_instructions(conversation: &[Message]) -> Result<(Vec<Value>, &
   let mut index = 0;
   while let Some(message) = conversation.get(index) {
     let content = match message {
-      Message::System { content } | Message::Developer { content } => content,
+      Message::System { content, .. } | Message::Developer { content, .. } => content,
       _ => break,
     };
     for block in content {
@@ -200,13 +200,13 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           "the converse wire cannot carry a compacted conversation".to_owned(),
         ));
       }
-      Message::User { content } => {
-        for block in user_blocks(content)? {
+      Message::User { content, .. } => {
+        for block in render_user_blocks(content)? {
           push(&mut turns, &mut current, &mut blocks, "user", block);
         }
       }
-      Message::Assistant { content } => {
-        for block in assistant_blocks(content)? {
+      Message::Assistant { content, .. } => {
+        for block in render_assistant_blocks(content)? {
           push(&mut turns, &mut current, &mut blocks, "assistant", block);
         }
       }
@@ -230,7 +230,7 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           json!({"reasoningContent": content}),
         );
       }
-      Message::ToolUse { call_id, name, arguments } => {
+      Message::ToolUse { call_id, name, arguments, .. } => {
         if call_id.is_empty() {
           return Err(Error::Build(
             "a tool use needs a `toolUseId` on the converse wire".to_owned(),
@@ -261,7 +261,7 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
             "toolResult": {
               "toolUseId": call_id,
               "status": "success",
-              "content": tool_result_blocks(content),
+              "content": render_tool_result_blocks(content),
             }
           }),
         );
@@ -280,13 +280,13 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   Ok(turns)
 }
 
-fn user_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
+fn render_user_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
   let mut blocks: Vec<Value> = Vec::new();
   for block in content {
     match block {
       ContentBlock::Text { text } => blocks.push(json!({"text": text})),
       ContentBlock::Image { mime_type, data_base64 } => {
-        let Some(format) = image_format(mime_type) else {
+        let Some(format) = resolve_image_format(mime_type) else {
           return Err(Error::Build(format!(
             "image media type cannot be expressed on the converse wire: {mime_type}"
           )));
@@ -298,7 +298,7 @@ fn user_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
   Ok(blocks)
 }
 
-fn assistant_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
+fn render_assistant_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
   let mut blocks: Vec<Value> = Vec::new();
   for block in content {
     match block {
@@ -331,7 +331,7 @@ fn render_tool_choice(choice: ToolChoice) -> Value {
   }
 }
 
-fn tool_result_blocks(content: &Value) -> Value {
+fn render_tool_result_blocks(content: &Value) -> Value {
   let block = match content {
     Value::Object(_) => json!({"json": content}),
     Value::String(text) => json!({"text": text}),
@@ -340,7 +340,7 @@ fn tool_result_blocks(content: &Value) -> Value {
   Value::Array(vec![block])
 }
 
-fn image_format(mime_type: &str) -> Option<&'static str> {
+fn resolve_image_format(mime_type: &str) -> Option<&'static str> {
   match mime_type {
     "image/png" => Some("png"),
     "image/jpeg" => Some("jpeg"),
@@ -348,4 +348,9 @@ fn image_format(mime_type: &str) -> Option<&'static str> {
     "image/webp" => Some("webp"),
     _ => None,
   }
+}
+
+/// The streaming endpoint for the same request body.
+pub fn resolve_stream_path(path: &str) -> String {
+  if path.ends_with("/converse") { format!("{path}-stream") } else { path.to_owned() }
 }

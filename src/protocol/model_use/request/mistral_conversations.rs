@@ -44,17 +44,17 @@ use crate::protocol::{ContentBlock, Message, ReasoningConfig, Request, Tool, Too
 /// Headers every call carries, besides auth and `content-type`.
 pub const HEADERS: &[(&str, &str)] = &[];
 
-pub fn render(request: &Request, stream: bool) -> Result<Value, Error> {
+pub fn render(request: &Request) -> Result<Value, Error> {
   let mut body = Map::new();
   body.insert("model".into(), json!(request.model));
   // Nothing is kept server-side: the entries below are the whole conversation.
   body.insert("store".into(), json!(false));
   // Functions are ours to run, so the model has to stop and hand a call back.
   body.insert("handoff_execution".into(), json!("client"));
-  if stream {
+  if request.stream {
     body.insert("stream".into(), json!(true));
   }
-  if let Some(instructions) = instructions(&request.conversation)? {
+  if let Some(instructions) = render_instructions(&request.conversation)? {
     body.insert("instructions".into(), json!(instructions));
   }
   if !request.tools.is_empty() {
@@ -72,17 +72,17 @@ pub fn render(request: &Request, stream: bool) -> Result<Value, Error> {
   if !completion.is_empty() {
     body.insert("completion_args".into(), Value::Object(completion));
   }
-  body.insert("inputs".into(), Value::Array(inputs(&request.conversation)?));
+  body.insert("inputs".into(), Value::Array(render_inputs(&request.conversation)?));
   Ok(Value::Object(body))
 }
 
 /// The wire's one place for standing instructions: every `System` and `Developer` message, in
 /// conversation order, joined into one string.
-fn instructions(conversation: &[Message]) -> Result<Option<String>, Error> {
+fn render_instructions(conversation: &[Message]) -> Result<Option<String>, Error> {
   let mut text = String::new();
   for message in conversation {
     let content = match message {
-      Message::System { content } | Message::Developer { content } => content,
+      Message::System { content, .. } | Message::Developer { content, .. } => content,
       _ => continue,
     };
     for block in content {
@@ -102,7 +102,7 @@ fn instructions(conversation: &[Message]) -> Result<Option<String>, Error> {
 }
 
 /// The history as entries, in conversation order.
-fn inputs(conversation: &[Message]) -> Result<Vec<Value>, Error> {
+fn render_inputs(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   let mut entries: Vec<Value> = Vec::new();
   let mut pending_reasoning: Option<String> = None;
   for message in conversation {
@@ -113,17 +113,17 @@ fn inputs(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           "the mistral conversations wire cannot carry a compacted conversation".to_owned(),
         ));
       }
-      Message::User { content } => {
+      Message::User { content, .. } => {
         pending_reasoning = None;
-        entries.push(message_input("user", content, None)?);
+        entries.push(render_message_input("user", content, None)?);
       }
-      Message::Assistant { content } => {
-        entries.push(message_input("assistant", content, pending_reasoning.take())?);
+      Message::Assistant { content, .. } => {
+        entries.push(render_message_input("assistant", content, pending_reasoning.take())?);
       }
       Message::Reasoning { plaintext, .. } => {
         pending_reasoning.get_or_insert_with(String::new).push_str(plaintext);
       }
-      Message::ToolUse { call_id, name, arguments } => {
+      Message::ToolUse { call_id, name, arguments, .. } => {
         pending_reasoning = None;
         entries.push(json!({
           "object": "entry",
@@ -156,14 +156,14 @@ fn inputs(conversation: &[Message]) -> Result<Vec<Value>, Error> {
 
 /// One `message.input` entry: text alone travels as a string, anything else as chunks, and a
 /// replayed thought is the first chunk.
-fn message_input(
+fn render_message_input(
   role: &str,
   content: &[ContentBlock],
   reasoning: Option<String>,
 ) -> Result<Value, Error> {
   let mut chunks: Vec<Value> = Vec::new();
   if let Some(reasoning) = reasoning.filter(|reasoning| !reasoning.is_empty()) {
-    chunks.push(thinking_chunk(&reasoning));
+    chunks.push(render_thinking_chunk(&reasoning));
   }
   let mut text: Vec<&str> = Vec::new();
   for block in content {
@@ -195,7 +195,7 @@ fn message_input(
 }
 
 /// The chunk a replayed thought travels in on this wire.
-fn thinking_chunk(reasoning: &str) -> Value {
+fn render_thinking_chunk(reasoning: &str) -> Value {
   json!({
     "type": "thinking",
     "closed": true,

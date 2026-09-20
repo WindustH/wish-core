@@ -2,7 +2,7 @@
 //!
 //! Conversions:
 //! - `data[].id` is the id, `owned_by` is `owner`, and `created` is `created_at`, read with
-//!   `lexical` so a gateway writing a string does not lose the timestamp.
+//!   `read_scalar_text` so a gateway writing a string does not lose the timestamp.
 //! - `context_length` is read as `context_window` where a gateway adds it; the standard entry has
 //!   none, and a model listed without a size is still a model.
 //! - `last_id` becomes `next_cursor` when `has_more` is true, and `page_query` sends it back as
@@ -25,8 +25,8 @@
 use serde_json::Value;
 
 use crate::Error;
-use crate::protocol::lexical;
 use crate::protocol::model_list::{Model, ModelCatalog, ModelListProtocol};
+use crate::protocol::read_scalar_text;
 
 /// Reads the list body.
 ///
@@ -53,7 +53,7 @@ pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
       id: id.to_owned(),
       name: None,
       owner: entry.get("owned_by").and_then(Value::as_str).map(str::to_owned),
-      created_at: entry.get("created").and_then(lexical),
+      created_at: entry.get("created").and_then(read_scalar_text),
       context_window: entry.get("context_length").and_then(Value::as_u64),
       max_output_tokens: None,
     });
@@ -64,13 +64,13 @@ pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
   Ok(ModelCatalog {
     protocol: ModelListProtocol::OpenAiModels,
     models,
-    next_cursor: next_cursor(body),
+    next_cursor: parse_next_cursor(body),
     warnings,
   })
 }
 
 /// The next page, when the envelope claims one: an id on its own does not.
-fn next_cursor(body: &Value) -> Option<String> {
+fn parse_next_cursor(body: &Value) -> Option<String> {
   match body.get("has_more").and_then(Value::as_bool) {
     Some(true) => body.get("last_id").and_then(Value::as_str).map(str::to_owned),
     _ => None,
@@ -78,6 +78,6 @@ fn next_cursor(body: &Value) -> Option<String> {
 }
 
 /// The query of a page: `after`, once a cursor exists to continue from.
-pub(crate) fn page_query(cursor: Option<&str>) -> Vec<(String, String)> {
+pub(crate) fn build_page_query(cursor: Option<&str>) -> Vec<(String, String)> {
   cursor.map(|cursor| vec![("after".to_owned(), cursor.to_owned())]).unwrap_or_default()
 }

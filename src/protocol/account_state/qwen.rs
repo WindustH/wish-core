@@ -27,7 +27,7 @@ use crate::Error;
 use crate::protocol::account_state::{
   AccountState, AccountStateProtocol, Failure, FailureKind, QuotaWindow,
 };
-use crate::protocol::lexical;
+use crate::protocol::read_scalar_text;
 
 /// Reads the workspace quota body.
 ///
@@ -40,7 +40,7 @@ pub fn parse_workspace_quota(body: &Value) -> Result<AccountState, Error> {
   };
   let mut warnings = Vec::new();
   let mut failure = None;
-  let code = body.get("code").and_then(lexical);
+  let code = body.get("code").and_then(read_scalar_text);
   if code.as_deref() != Some("200") {
     failure = Some(Failure {
       kind: FailureKind::Unknown,
@@ -67,8 +67,8 @@ pub fn parse_workspace_quota(body: &Value) -> Result<AccountState, Error> {
       id: id.to_owned(),
       name: None,
       unit: unit.to_owned(),
-      used: used.and_then(lexical),
-      limit: limit.and_then(lexical),
+      used: used.and_then(read_scalar_text),
+      limit: limit.and_then(read_scalar_text),
       remaining: None,
       used_percent: None,
       window: Some(json!({ "duration": 1, "unit": "minutes" })),
@@ -89,8 +89,8 @@ pub fn parse_workspace_quota(body: &Value) -> Result<AccountState, Error> {
       // The amounts are the service's own decimals in the currency it names, so the unit is that
       // currency rather than a minor unit of it.
       unit: currency.unwrap_or("currency").to_lowercase(),
-      used: data.get("monthly_spend").and_then(lexical),
-      limit: data.get("monthly_budget").and_then(lexical),
+      used: data.get("monthly_spend").and_then(read_scalar_text),
+      limit: data.get("monthly_budget").and_then(read_scalar_text),
       remaining: None,
       used_percent: None,
       window: None,

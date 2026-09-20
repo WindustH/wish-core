@@ -62,7 +62,7 @@ impl Decoder {
 
     // OpenAI-compatible servers may push a terminal error object mid-stream.
     if let Some(error) = payload.get("error").filter(|error| error.is_object()) {
-      return Err(Error::in_band(
+      return Err(Error::from_in_band(
         error.get("code").or_else(|| error.get("type")).and_then(Value::as_str).map(str::to_owned),
         error
           .get("message")
@@ -72,11 +72,11 @@ impl Decoder {
       ));
     }
     if payload.get("usage").is_some_and(|usage| !usage.is_null()) {
-      out.push(StreamEvent::Usage(buffered::usage(&payload)));
+      out.push(StreamEvent::Usage(buffered::parse_usage(&payload)));
     }
     // The same refusal the buffered decoder reads, arriving as a chunk.
     if self.mode == ChatCompletionApiCompatMode::MiniMax
-      && let Some(error) = buffered::refusal_error(&payload)
+      && let Some(error) = buffered::decode_refusal_error(&payload)
     {
       return Err(error);
     }
@@ -89,8 +89,10 @@ impl Decoder {
     };
     if let Some(content) = delta.get("content").filter(|content| !content.is_null()) {
       match content {
-        Value::String(text) => self.text_delta(text, &mut out),
-        Value::Array(chunks) if self.mode.is_mistral() => self.chunk_deltas(chunks, &mut out)?,
+        Value::String(text) => self.emit_text_delta(text, &mut out),
+        Value::Array(chunks) if self.mode.is_mistral() => {
+          self.decode_chunk_deltas(chunks, &mut out)?
+        }
         Value::Array(_) => {
           return Err(Error::Malformed(
             "`content` is a chunk list, which this variant does not read".to_owned(),
@@ -115,7 +117,7 @@ impl Decoder {
     }
     if let Some(fragments) = delta.get("tool_calls").and_then(Value::as_array) {
       for fragment in fragments {
-        self.tool_fragment(fragment, &mut out)?;
+        self.decode_tool_fragment(fragment, &mut out)?;
       }
     }
     Ok(out)
@@ -135,13 +137,13 @@ impl Decoder {
     let out: Vec<StreamEvent> = indices
       .into_iter()
       .map(|index| StreamEvent::BlockEnd { index })
-      .chain([StreamEvent::Stop(buffered::stop_reason(Some(finish), self.mode))])
+      .chain([StreamEvent::Stop(buffered::map_stop_reason(Some(finish), self.mode))])
       .collect();
     Ok(out)
   }
 
   /// One text delta, ignoring the empty ones a chunk list is full of.
-  fn text_delta(&mut self, text: &str, out: &mut Vec<StreamEvent>) {
+  fn emit_text_delta(&mut self, text: &str, out: &mut Vec<StreamEvent>) {
     if text.is_empty() {
       return;
     }
@@ -150,11 +152,15 @@ impl Decoder {
   }
 
   /// One `content` chunk list: text chunks stream text, thought chunks stream reasoning.
-  fn chunk_deltas(&mut self, chunks: &[Value], out: &mut Vec<StreamEvent>) -> Result<(), Error> {
+  fn decode_chunk_deltas(
+    &mut self,
+    chunks: &[Value],
+    out: &mut Vec<StreamEvent>,
+  ) -> Result<(), Error> {
     for chunk in chunks {
-      if buffered::chunk_type(chunk) == Some("text") {
+      if buffered::get_chunk_type(chunk) == Some("text") {
         if let Some(text) = chunk.get("text").and_then(Value::as_str) {
-          self.text_delta(text, out);
+          self.emit_text_delta(text, out);
         }
         continue;
       }
@@ -198,7 +204,11 @@ impl Decoder {
     index
   }
 
-  fn tool_fragment(&mut self, fragment: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
+  fn decode_tool_fragment(
+    &mut self,
+    fragment: &Value,
+    out: &mut Vec<StreamEvent>,
+  ) -> Result<(), Error> {
     let upstream = match fragment.get("index").and_then(Value::as_u64) {
       Some(index) => u32::try_from(index).map_err(|_| {
         Error::Malformed(format!("tool_calls delta index {index} does not fit u32"))
