@@ -8,8 +8,6 @@
 use std::future::Future;
 use std::time::Duration;
 
-use crate::protocol::error::Error;
-
 /// Bounded attempt policy for one logical call.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RetryPolicy {
@@ -62,25 +60,38 @@ impl RetryPolicy {
   }
 }
 
-/// Runs one operation under a policy: the attempt is replaced while the failure looks transient and
-/// attempts are left.
-///
-/// One attempt is whatever the caller hands over, which is what lets a buffered read and a streamed
-/// one share the policy without sharing a definition of "delivered nothing yet".
-pub(crate) async fn retry<T, F, Fut>(policy: &RetryPolicy, mut attempt: F) -> Result<T, Error>
+/// The caller decides whether repeating its operation is safe and useful.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetryDecision {
+  Stop,
+  Retry { minimum_delay_ms: Option<u64> },
+}
+
+/// Retry an operation with caller-owned error classification. Attempt numbers start at one.
+/// Even a zero max_attempts value permits the initial attempt, but no retries.
+/// Dropping this future cancels local waiting; it cannot undo an operation's external effects.
+pub async fn retry<T, E, F, Fut, Decide>(
+  policy: &RetryPolicy,
+  mut attempt: F,
+  mut decide: Decide,
+) -> Result<T, E>
 where
   F: FnMut(u32) -> Fut,
-  Fut: Future<Output = Result<T, Error>>,
+  Fut: Future<Output = Result<T, E>>,
+  Decide: FnMut(&E) -> RetryDecision,
 {
   let mut number = 1;
   loop {
     match attempt(number).await {
       Ok(value) => return Ok(value),
       Err(error) => {
-        if number >= policy.max_attempts || !error.is_retryable() {
+        if number >= policy.max_attempts {
           return Err(error);
         }
-        let delay = policy.calculate_backoff_ms(number, error.get_retry_after_ms());
+        let RetryDecision::Retry { minimum_delay_ms } = decide(&error) else {
+          return Err(error);
+        };
+        let delay = policy.calculate_backoff_ms(number, minimum_delay_ms);
         tokio::time::sleep(Duration::from_millis(delay)).await;
         number += 1;
       }

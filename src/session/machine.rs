@@ -1,8 +1,9 @@
 use super::*;
 use super::{edit::SessionEdit, state::SessionAction};
+use crate::session::statistics::{CallObservation, ModelCallStatus};
 use crate::{
   Error,
-  agent::{ToolCall, ToolOutcome},
+  executor::tool::{ToolCall, ToolOutcome},
   protocol::{
     Response,
     model_use::{response::StopReason, stream::PartialResponse},
@@ -15,14 +16,41 @@ impl Session {
   pub(crate) fn advance(&mut self) -> Result<SessionAction, SessionError> {
     self.update(move |edit| edit.advance())
   }
-  pub(crate) fn accept_response(&mut self, response: Response) -> Result<(), SessionError> {
-    self.update(move |edit| edit.accept_response(response))
+  pub(crate) fn accept_response(
+    &mut self,
+    response: Response,
+    observation: CallObservation,
+  ) -> Result<(), SessionError> {
+    self.update(move |edit| {
+      edit.complete_model_call(observation, ModelCallStatus::Completed)?;
+      edit.accept_response(response)?;
+      edit.record.active_model_call = None;
+      Ok(())
+    })
   }
   pub(crate) fn accept_interruption(
     &mut self,
     partial: PartialResponse,
+    observation: CallObservation,
   ) -> Result<(), SessionError> {
-    self.update(move |edit| edit.accept_interruption(partial))
+    self.update(move |edit| {
+      edit.complete_model_call(observation, ModelCallStatus::Interrupted)?;
+      edit.accept_interruption(partial)?;
+      edit.record.active_model_call = None;
+      Ok(())
+    })
+  }
+  pub(crate) fn fail_model_call(
+    &mut self,
+    outcome: RunOutcome,
+    observation: CallObservation,
+  ) -> Result<(), SessionError> {
+    self.update(move |edit| {
+      edit.complete_model_call(observation, ModelCallStatus::Failed)?;
+      edit.finish_run(outcome)?;
+      edit.record.active_model_call = None;
+      Ok(())
+    })
   }
   pub(crate) fn start_tool(&mut self, call: &ToolCall) -> Result<(), SessionError> {
     let call = call.clone();
@@ -64,10 +92,6 @@ impl SessionEdit<'_, '_> {
           self.finish_run(RunOutcome::Completed)?;
           return Ok(SessionAction::Finished(RunOutcome::Completed));
         }
-        if completed_turns >= self.record.config.run.max_turns {
-          self.finish_run(RunOutcome::TurnLimit)?;
-          return Ok(SessionAction::Finished(RunOutcome::TurnLimit));
-        }
         let turn = completed_turns + 1;
         let queue_start = self.record.queue_head;
         let generation = self.load_generation(self.record.active)?;
@@ -87,6 +111,7 @@ impl SessionEdit<'_, '_> {
           self.record_event(SessionEvent::InputsConsumed { queue_start, queue_end })?;
         }
         let request = Arc::new(self.build_request()?);
+        self.start_model_call(request.conversation.len() as u64)?;
         self.transition_to(SessionState::CallingModel { turn })?;
         self.record_event(SessionEvent::TurnStarted { turn })?;
         Ok(SessionAction::CallModel(request))

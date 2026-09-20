@@ -1,16 +1,19 @@
 //! Persistent sessions: small immutable entries, paged generations/history and transactional state.
+mod calls;
 mod config;
+mod control;
 mod edit;
 mod event;
 mod generation;
-mod generations;
 mod history;
 mod machine;
 mod outcome;
 mod queue;
 pub(crate) mod state;
+pub mod statistics;
 
 pub use config::{RunOptions, SessionConfig, ToolMode};
+pub use control::SessionHandle;
 pub use event::SessionEvent;
 pub use generation::{Generation, GenerationId, GenerationStatus};
 pub use history::{Entry, EntryId, EntryOrigin, EventId, HistoryItem, HistoryRecord};
@@ -18,6 +21,7 @@ pub use outcome::RunOutcome;
 pub use queue::SessionSender;
 pub use state::{SessionPhase, SessionState, ToolExecution};
 
+use crate::session::statistics::{ModelCallId, ModelCallRecord, Timestamp};
 use crate::{
   protocol::{Message, Request},
   storage::{ListId, OwnerGuard, ReadList, Storage, StorageError, StorageOptions},
@@ -62,6 +66,10 @@ struct SessionRecord {
   queue_head: u64,
   #[serde(default)]
   next_list_id: u64,
+  #[serde(default)]
+  model_calls: Option<ListId>,
+  #[serde(default)]
+  active_model_call: Option<ModelCallId>,
 }
 
 /// A single running owner backed by transactional storage. Other tasks use SessionSender.
@@ -69,6 +77,7 @@ pub struct Session {
   storage: Storage,
   key: String,
   _owner: OwnerGuard,
+  control: control::SessionControl,
   record: SessionRecord,
 }
 impl Session {
@@ -80,6 +89,7 @@ impl Session {
     let key = Self::build_key(id);
     let owner = storage.claim_owner(&key)?;
     let target = key.clone();
+    let recorded_at = Timestamp::now();
     let record = storage.transaction(move |tx| -> Result<_, SessionError> {
       let key = target;
       let mut record = SessionRecord {
@@ -95,7 +105,10 @@ impl Session {
         queue: ListId(format!("{key}/queue")),
         queue_head: 0,
         next_list_id: 0,
+        model_calls: Some(ListId(format!("{key}/model_calls"))),
+        active_model_call: None,
       };
+      tx.create_list::<ModelCallRecord>(record.model_calls.as_ref().unwrap())?;
       tx.create_list::<Entry>(&record.entries)?;
       tx.create_list::<SessionEvent>(&record.events)?;
       tx.create_list::<HistoryRecord>(&record.history)?;
@@ -111,7 +124,7 @@ impl Session {
           &Generation { id, status, entries, config: config.clone(), source: None },
         )?;
       }
-      let mut edit = SessionEdit { record: &mut record, tx, key: &key };
+      let mut edit = SessionEdit { record: &mut record, tx, key: &key, recorded_at };
       edit.record_event(SessionEvent::Created(Box::new(config)))?;
       tx.create_object(&key, &record)?;
       Ok(record)
@@ -121,22 +134,32 @@ impl Session {
   pub fn load(storage: Storage, id: &str) -> Result<Self, SessionError> {
     let key = Self::build_key(id);
     let owner = storage.claim_owner(&key)?;
-    let stored = storage.open_object::<SessionRecord>(&key).load()?;
-    Ok(Self::from_record(storage, key, owner, (*stored).clone()))
+    let target = key.clone();
+    let record = storage.transaction(move |tx| -> Result<_, SessionError> {
+      let mut record = (*tx.load_object::<SessionRecord>(&target)?).clone();
+      if record.model_calls.is_none() {
+        let list = ListId(format!("{target}/model_calls"));
+        tx.create_list::<ModelCallRecord>(&list)?;
+        record.model_calls = Some(list);
+        tx.save_object(&target, &record)?;
+      }
+      Ok(record)
+    })?;
+    Ok(Self::from_record(storage, key, owner, record))
   }
   fn build_key(id: &str) -> String {
     format!("session/{}", hex::encode(id.as_bytes()))
   }
   fn from_record(storage: Storage, key: String, owner: OwnerGuard, record: SessionRecord) -> Self {
-    Self { storage, key, _owner: owner, record }
+    Self { storage, key, _owner: owner, record, control: Default::default() }
   }
+  /// Import request content and settings; session tool selection is always Auto.
   pub fn from_request(request: Request) -> Result<Self, SessionError> {
     edit::validate_tool_pairs(request.conversation.iter())?;
     let config = SessionConfig {
       model: request.model,
       stream: request.stream,
       tools: request.tools,
-      tool_choice: request.tool_choice,
       max_output_tokens: request.max_output_tokens,
       reasoning: request.reasoning,
       cache: request.cache,
@@ -157,8 +180,9 @@ impl Session {
   ) -> Result<R, SessionError> {
     let mut record = self.record.clone();
     let key = self.key.clone();
+    let recorded_at = Timestamp::now();
     let (result, record) = self.storage.transaction(move |tx| -> Result<_, SessionError> {
-      let result = apply(&mut SessionEdit { record: &mut record, tx, key: &key })?;
+      let result = apply(&mut SessionEdit { record: &mut record, tx, key: &key, recorded_at })?;
       tx.save_object(&key, &record)?;
       Ok((result, record))
     })?;
@@ -235,6 +259,16 @@ impl Session {
   pub fn get_queue_head(&self) -> u64 {
     self.record.queue_head
   }
+  pub fn create_handle(&self) -> SessionHandle {
+    SessionHandle { sender: self.create_sender(), control: self.control.clone() }
+  }
+  /// Request interruption of the active run; no effect while no executor is running.
+  pub fn interrupt(&self) -> bool {
+    self.control.interrupt()
+  }
+  pub(crate) fn begin_run_control(&self) -> control::RunRegistration {
+    self.control.begin_run()
+  }
   pub fn create_sender(&self) -> SessionSender {
     SessionSender { storage: self.storage.clone(), key: self.key.clone() }
   }
@@ -264,11 +298,12 @@ impl Session {
     })
   }
   pub fn build_request(&self) -> Result<Request, SessionError> {
+    let recorded_at = Timestamp::now();
     let mut record = self.record.clone();
     let key = self.key.clone();
-    self
-      .storage
-      .transaction(move |tx| SessionEdit { record: &mut record, tx, key: &key }.build_request())
+    self.storage.transaction(move |tx| {
+      SessionEdit { record: &mut record, tx, key: &key, recorded_at }.build_request()
+    })
   }
   pub fn create_context_entry(&mut self, message: Message) -> Result<EntryId, SessionError> {
     self.update(move |edit| {
@@ -280,18 +315,42 @@ impl Session {
   pub(crate) fn require_stable(&self) -> Result<(), SessionError> {
     if self.record.state.is_stable() { Ok(()) } else { Err(SessionError::Busy) }
   }
-  pub(crate) fn record_events(&mut self, events: Vec<SessionEvent>) -> Result<(), SessionError> {
+  pub(crate) fn record_events(
+    &mut self,
+    events: Vec<(Timestamp, SessionEvent)>,
+  ) -> Result<(), SessionError> {
     if events.is_empty() {
       return Ok(());
     }
     let record = self.record.clone();
     self.storage.transaction(move |tx| -> Result<(), SessionError> {
+      let (timestamps, events): (Vec<_>, Vec<_>) = events.into_iter().unzip();
+      if let Some(id) = record.active_model_call {
+        let list = record.model_calls.as_ref().expect("session initializes call list");
+        let mut call = (*tx
+          .get_item::<ModelCallRecord>(list, id.0)?
+          .ok_or_else(|| StorageError::Corrupt("missing model call record".into()))?)
+        .clone();
+        for (timestamp, event) in timestamps.iter().zip(&events) {
+          if let SessionEvent::ModelStream(event) = event {
+            call.first_event_at.get_or_insert(*timestamp);
+            match event {
+              crate::protocol::StreamEvent::Usage(usage) => call.usage = *usage,
+              crate::protocol::StreamEvent::Stop(reason) => call.stop_reason = Some(*reason),
+              _ => {}
+            }
+          }
+        }
+        tx.set_item(list, id.0, &call)?;
+      }
       let first_event = tx.append_items(&record.events, &events)?;
       let first_sequence = tx.list_len::<HistoryRecord>(&record.history)?;
       let history: Vec<_> = events
         .iter()
         .enumerate()
         .map(|(offset, _)| HistoryRecord {
+          recorded_at: Some(timestamps[offset]),
+          model_call_id: record.active_model_call,
           sequence: first_sequence + offset as u64,
           generation: record.active,
           item: HistoryItem::Event(EventId(first_event + offset as u64)),

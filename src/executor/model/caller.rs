@@ -1,6 +1,6 @@
 use crate::{
   Error,
-  client::{CallResponse, Client},
+  executor::model::{CallResponse, Client},
   protocol::{Request, StreamAccumulator, StreamEvent, wire::Transport},
 };
 use std::future::Future;
@@ -33,13 +33,15 @@ pub trait ModelStream: Send {
 }
 
 impl<T: Transport + Sync> ModelCaller for Client<T> {
-  type Stream = crate::client::EventStream<T::Stream>;
+  type Stream = crate::executor::model::client::EventStream<T::Stream>;
   async fn call(&self, request: &Request) -> Result<CallResponse<Self::Stream>, Error> {
     Client::call(self, request).await
   }
 }
 
-impl<S: crate::protocol::wire::ReplyStream> ModelStream for crate::client::EventStream<S> {
+impl<S: crate::protocol::wire::ReplyStream> ModelStream
+  for crate::executor::model::client::EventStream<S>
+{
   fn create_accumulator(&self) -> StreamAccumulator {
     self.create_accumulator()
   }

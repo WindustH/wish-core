@@ -1,5 +1,6 @@
 use super::GenerationId;
 use crate::protocol::Message;
+use crate::session::statistics::{ModelCallId, Timestamp};
 
 /// IDs are local to one session and are never reused.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -21,6 +22,12 @@ pub struct Entry {
   pub id: EntryId,
   pub origin: EntryOrigin,
   pub message: Message,
+  /// Time this entry was created, before dispatching its storage transaction. Legacy rows lack it.
+  #[serde(default)]
+  pub recorded_at: Option<Timestamp>,
+  /// Originating model call, shared by all its response/replay messages.
+  #[serde(default)]
+  pub model_call_id: Option<ModelCallId>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -35,6 +42,11 @@ pub struct HistoryRecord {
   pub sequence: u64,
   pub generation: GenerationId,
   pub item: HistoryItem,
+  /// Event creation/receipt time, retained across batched writes. None for legacy history.
+  #[serde(default)]
+  pub recorded_at: Option<Timestamp>,
+  #[serde(default)]
+  pub model_call_id: Option<ModelCallId>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]

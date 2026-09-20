@@ -12,10 +12,11 @@ impl SessionSender {
   pub fn enqueue_message(&self, message: Message) -> Result<EntryId, SessionError> {
     validate_input(&message)?;
     let key = self.key.clone();
+    let recorded_at = crate::session::statistics::Timestamp::now();
     self.storage.transaction(move |tx| {
       let stored = tx.load_object::<SessionRecord>(&key)?;
       let mut record = (*stored).clone();
-      SessionEdit { record: &mut record, tx, key: &key }.append_input(message)
+      SessionEdit { record: &mut record, tx, key: &key, recorded_at }.append_input(message)
     })
   }
 }

@@ -1,5 +1,5 @@
 use super::{EventId, RunOutcome};
-use crate::agent::{ToolCall, ToolOutcome};
+use crate::executor::tool::{ToolCall, ToolOutcome};
 use crate::protocol::Request;
 use crate::storage::ListId;
 use std::sync::Arc;

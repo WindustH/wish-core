@@ -1,0 +1,8 @@
+//! Model requests, streaming, token counting, provider discovery.
+mod caller;
+pub mod client;
+mod execute;
+
+pub use caller::{ModelCaller, ModelStream};
+pub use client::{CallResponse, Client, EventStream};
+pub(super) use execute::{ModelResult, execute_model};

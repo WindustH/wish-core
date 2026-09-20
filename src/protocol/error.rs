@@ -51,7 +51,7 @@ pub enum Error {
   Transport(TransportFailure),
   /// The material had already run out before anything was sent: the outbound join refused it,
   /// because its expiry had passed against the `now` the caller read. The move is a renewal
-  /// ([`Client::refresh_credentials`](crate::client::Client::refresh_credentials), or an ADC
+  /// ([`Client::refresh_credentials`](crate::executor::model::client::Client::refresh_credentials), or an ADC
   /// exchange) and material installed afresh - the same call over the same material will be
   /// refused the same way.
   #[error("credential renewal needed: the material expired at {expires_at}")]

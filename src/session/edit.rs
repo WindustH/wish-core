@@ -5,6 +5,7 @@ pub(super) struct SessionEdit<'a, 'db> {
   pub record: &'a mut SessionRecord,
   pub tx: &'a mut Transaction<'db>,
   pub key: &'a str,
+  pub recorded_at: Timestamp,
 }
 impl SessionEdit<'_, '_> {
   pub fn create_list<T: crate::storage::StoredValue>(&mut self) -> Result<ListId, SessionError> {
@@ -25,14 +26,38 @@ impl SessionEdit<'_, '_> {
     Ok(self.tx.set_item(&self.record.generations, generation.id.0 as u64, generation)?)
   }
   pub fn record_event(&mut self, event: SessionEvent) -> Result<(), SessionError> {
+    let model_call_id = match &event {
+      SessionEvent::Created(_)
+      | SessionEvent::ContextEntryCreated { .. }
+      | SessionEvent::MetadataUpdated(_)
+      | SessionEvent::ConfigUpdated(_)
+      | SessionEvent::MessageQueued { .. }
+      | SessionEvent::InputsConsumed { .. }
+      | SessionEvent::GenerationPrepared { .. }
+      | SessionEvent::GenerationActivated { .. } => None,
+      _ => self.record.active_model_call,
+    };
     let id = EventId(self.tx.append_item(&self.record.events, &event)?);
-    self.record_history(HistoryItem::Event(id))
+    self.record_history_with_call(HistoryItem::Event(id), model_call_id)
   }
   pub fn record_history(&mut self, item: HistoryItem) -> Result<(), SessionError> {
+    self.record_history_with_call(item, self.record.active_model_call)
+  }
+  fn record_history_with_call(
+    &mut self,
+    item: HistoryItem,
+    model_call_id: Option<ModelCallId>,
+  ) -> Result<(), SessionError> {
     let sequence = self.tx.list_len::<HistoryRecord>(&self.record.history)?;
     self.tx.append_item(
       &self.record.history,
-      &HistoryRecord { sequence, generation: self.record.active, item },
+      &HistoryRecord {
+        sequence,
+        generation: self.record.active,
+        item,
+        recorded_at: Some(self.recorded_at),
+        model_call_id,
+      },
     )?;
     Ok(())
   }
@@ -42,7 +67,20 @@ impl SessionEdit<'_, '_> {
     origin: EntryOrigin,
   ) -> Result<EntryId, SessionError> {
     let id = EntryId(self.tx.list_len::<Entry>(&self.record.entries)? as usize);
-    self.tx.append_item(&self.record.entries, &Entry { id, origin, message })?;
+    self.tx.append_item(
+      &self.record.entries,
+      &Entry {
+        id,
+        origin,
+        message,
+        recorded_at: Some(self.recorded_at),
+        model_call_id: if matches!(origin, EntryOrigin::Model | EntryOrigin::Interrupted) {
+          self.record.active_model_call
+        } else {
+          None
+        },
+      },
+    )?;
     Ok(id)
   }
   pub fn append_message(

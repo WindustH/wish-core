@@ -1,91 +1,39 @@
-use super::{ModelCaller, ModelStream, RunControl, ToolCall, ToolExecutor, ToolOutcome};
+use super::{CallResponse, ModelCaller, ModelStream};
+use crate::executor::{ExecutionControl, observe::notify_observers};
 use crate::session::{
-  HistoryItem, RunOutcome, Session, SessionError, SessionEvent, SessionState, ToolMode,
-  state::SessionAction,
+  RunOutcome, Session, SessionError, SessionEvent,
+  statistics::{CallObservation, Timestamp},
 };
 use crate::{
   Error,
-  client::CallResponse,
   protocol::{
     Request, Response, StreamAccumulator,
     model_use::stream::{PartialResponse, StreamEnd, StreamFinalization, ToolExecutionState},
   },
 };
 use futures_util::{
-  future::{Either, join_all, select},
+  future::{Either, select},
   pin_mut,
 };
 
-/// Drive a session until idle or suspended. Resume a suspended session explicitly before calling.
-/// Observers receive events from this invocation. Stream events are delivered immediately and
-/// persisted in batches; other events are recorded before delivery. Use history for older records.
-/// Signal cancellation and await completion; dropping this future during I/O leaves an active
-/// state that rejects another run rather than silently repeating potentially effective work.
-pub async fn run(
+pub(in crate::executor) async fn execute_model(
   model_caller: &impl ModelCaller,
+  request: &Request,
   session: &mut Session,
-  executor: &impl ToolExecutor,
-  control: &RunControl,
-  mut observe: impl FnMut(&SessionEvent) + Send,
-) -> Result<RunOutcome, SessionError> {
-  session.require_stable()?;
-  if matches!(session.get_state(), SessionState::Suspended { .. }) {
-    return Err(SessionError::Suspended);
-  }
-  let mut cursor = session.get_history().len()?;
-  loop {
-    session.collect_inputs()?;
-    notify_observers(session, &mut cursor, &mut observe)?;
-    if control.is_cancelled() && matches!(session.get_state(), SessionState::Ready { .. }) {
-      session.finish_run(RunOutcome::Interrupted)?;
-    }
-    let action = session.advance()?;
-    notify_observers(session, &mut cursor, &mut observe)?;
-    match action {
-      SessionAction::Finished(outcome) => return Ok(outcome),
-      SessionAction::CallModel(request) => {
-        let result =
-          call_model(model_caller, &request, session, control, &mut cursor, &mut observe).await?;
-        match result {
-          ModelResult::Complete(response) => session.accept_response(response)?,
-          ModelResult::Interrupted(partial) => session.accept_interruption(partial)?,
-          ModelResult::Failed(outcome) => session.finish_run(outcome)?,
-        }
-      }
-      SessionAction::ExecuteTools(calls) => {
-        execute_tools(executor, session, &calls, control, &mut cursor, &mut observe).await?;
-        session.complete_tools()?;
-      }
-    }
-  }
-}
-
-fn notify_observers(
-  session: &Session,
+  control: &ExecutionControl,
   cursor: &mut u64,
-  observe: &mut impl FnMut(&SessionEvent),
-) -> Result<(), SessionError> {
-  let history = session.get_history();
-  let end = history.len()?;
-  while *cursor < end {
-    let page = history.read_page(*cursor, crate::storage::PAGE_SIZE as usize)?;
-    for record in &page.items {
-      if let HistoryItem::Event(id) = record.item {
-        let event = session
-          .get_event(id)?
-          .ok_or_else(|| crate::storage::StorageError::Corrupt("missing event".into()))?;
-        // Stream events were already delivered live by receive_stream.
-        if !matches!(&*event, SessionEvent::ModelStream(_)) {
-          observe(&event);
-        }
-      }
-    }
-    *cursor += page.items.len() as u64;
-  }
-  Ok(())
+  observe: &mut (impl FnMut(&SessionEvent) + Send),
+) -> Result<(ModelResult, CallObservation), SessionError> {
+  let mut observation = CallObservation::default();
+  let started = std::time::Instant::now();
+  let result =
+    call_model(model_caller, request, session, control, cursor, observe, &mut observation).await?;
+  observation.finished_at = Some(Timestamp::now());
+  observation.elapsed_ms = Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+  Ok((result, observation))
 }
 
-enum ModelResult {
+pub(in crate::executor) enum ModelResult {
   Complete(Response),
   Interrupted(PartialResponse),
   Failed(RunOutcome),
@@ -95,9 +43,10 @@ async fn call_model(
   model_caller: &impl ModelCaller,
   request: &Request,
   session: &mut Session,
-  control: &RunControl,
+  control: &ExecutionControl,
   cursor: &mut u64,
   observe: &mut (impl FnMut(&SessionEvent) + Send),
+  observation: &mut CallObservation,
 ) -> Result<ModelResult, SessionError> {
   let opened = {
     let opening = model_caller.call(request);
@@ -111,9 +60,13 @@ async fn call_model(
   Ok(match opened {
     None => finalize_interruption(StreamAccumulator::new()),
     Some(Err(error)) => ModelResult::Failed(RunOutcome::Failed(error)),
-    Some(Ok(CallResponse::Complete(response))) => ModelResult::Complete(*response),
+    Some(Ok(CallResponse::Complete(response))) => {
+      observation.usage = response.usage;
+      observation.stop_reason = Some(response.stop_reason);
+      ModelResult::Complete(*response)
+    }
     Some(Ok(CallResponse::Stream(stream))) => {
-      receive_stream(stream, session, control, cursor, observe).await?
+      receive_stream(stream, session, control, cursor, observe, observation).await?
     }
   })
 }
@@ -138,9 +91,10 @@ fn finalize_failed_stream(accumulator: StreamAccumulator, error: Error) -> Model
 async fn receive_stream(
   mut stream: impl ModelStream,
   session: &mut Session,
-  control: &RunControl,
+  control: &ExecutionControl,
   cursor: &mut u64,
   observe: &mut (impl FnMut(&SessionEvent) + Send),
+  observation: &mut CallObservation,
 ) -> Result<ModelResult, SessionError> {
   let mut accumulator = stream.create_accumulator();
   let mut batch = StreamEventBatch::default();
@@ -183,11 +137,18 @@ async fn receive_stream(
         Some(Err(error)) => return Ok(finalize_failed_stream(accumulator, error)),
         Some(Ok(None)) => break,
         Some(Ok(Some(event))) => {
+          let received_at = Timestamp::now();
+          observation.first_event_at.get_or_insert(received_at);
+          match &event {
+            crate::protocol::StreamEvent::Usage(usage) => observation.usage = *usage,
+            crate::protocol::StreamEvent::Stop(reason) => observation.stop_reason = Some(*reason),
+            _ => {}
+          }
           if let Err(error) = accumulator.feed(event.clone()) {
             return Ok(finalize_failed_stream(accumulator, error));
           }
           let event = SessionEvent::ModelStream(event);
-          batch.push(event.clone())?;
+          batch.push(received_at, event.clone())?;
           observe(&event);
           if batch.is_full() {
             batch.flush(session)?;
@@ -216,19 +177,19 @@ async fn receive_stream(
 
 #[derive(Default)]
 struct StreamEventBatch {
-  events: Vec<SessionEvent>,
+  events: Vec<(Timestamp, SessionEvent)>,
   bytes: usize,
   deadline: Option<tokio::time::Instant>,
 }
 impl StreamEventBatch {
-  fn push(&mut self, event: SessionEvent) -> Result<(), SessionError> {
+  fn push(&mut self, received_at: Timestamp, event: SessionEvent) -> Result<(), SessionError> {
     self.bytes = self.bytes.saturating_add(
       serde_json::to_vec(&event).map_err(crate::storage::StorageError::from)?.len(),
     );
     self
       .deadline
       .get_or_insert_with(|| tokio::time::Instant::now() + std::time::Duration::from_millis(100));
-    self.events.push(event);
+    self.events.push((received_at, event));
     Ok(())
   }
   fn is_full(&self) -> bool {
@@ -242,65 +203,4 @@ impl StreamEventBatch {
     self.deadline = None;
     Ok(())
   }
-}
-
-async fn execute_tools(
-  executor: &impl ToolExecutor,
-  session: &mut Session,
-  calls: &[ToolCall],
-  control: &RunControl,
-  cursor: &mut u64,
-  observe: &mut (impl FnMut(&SessionEvent) + Send),
-) -> Result<(), SessionError> {
-  match session.get_config().run.tools {
-    ToolMode::Serial => {
-      let mut unknown = false;
-      for call in calls {
-        let outcome = if unknown || control.is_cancelled() {
-          ToolOutcome::Cancelled
-        } else if !is_registered(session, call) {
-          ToolOutcome::Failed(format!("unknown tool: {}", call.name))
-        } else {
-          session.start_tool(call)?;
-          notify_observers(session, cursor, observe)?;
-          // A ToolStarted observer can request cancellation before any external effect.
-          if control.is_cancelled() {
-            ToolOutcome::Cancelled
-          } else {
-            executor.execute(call, control).await
-          }
-        };
-        unknown |= matches!(outcome, ToolOutcome::Unknown(_));
-        session.accept_tool_outcome(call, outcome)?;
-        notify_observers(session, cursor, observe)?;
-      }
-    }
-    ToolMode::Parallel => {
-      let mut futures = Vec::new();
-      for call in calls {
-        let registered = is_registered(session, call);
-        if registered && !control.is_cancelled() {
-          session.start_tool(call)?;
-          notify_observers(session, cursor, observe)?;
-        }
-        futures.push(async move {
-          if control.is_cancelled() {
-            ToolOutcome::Cancelled
-          } else if !registered {
-            ToolOutcome::Failed(format!("unknown tool: {}", call.name))
-          } else {
-            executor.execute(call, control).await
-          }
-        });
-      }
-      for (call, outcome) in calls.iter().zip(join_all(futures).await) {
-        session.accept_tool_outcome(call, outcome)?;
-        notify_observers(session, cursor, observe)?;
-      }
-    }
-  }
-  Ok(())
-}
-fn is_registered(session: &Session, call: &ToolCall) -> bool {
-  session.get_config().tools.iter().any(|tool| tool.name == call.name)
 }

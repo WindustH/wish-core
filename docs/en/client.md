@@ -1,6 +1,6 @@
 # Client
 
-`src/client.rs` is one upstream, ready to call: a `ModelUseProtocol` (one wire's renderer, reader, stream
+`src/executor/model/client.rs` is one upstream, ready to call: a `ModelUseProtocol` (one wire's renderer, reader, stream
 decoder and error envelope), an [`Outbound`](protocol/outbound.md) target (where calls go, how
 they are proven), `Credentials` (the account's material, placed at dispatch time) and a
 `Transport` (one attempt each). It deliberately does nothing else - and owns the retry loop, the
@@ -80,7 +80,7 @@ divide fails the ask it cannot serve, with the reason its feature states. `Limit
 set on the transport, bound the attempt - the caller's facts, because only the caller knows its
 own network.
 
-The [agent](agent.md) layer builds an in-memory tool loop on this client, keeping retries here.
+The [executor](executor.md) drives the persistent Session state machine using this client; model retry decisions remain in `executor::model`, using the shared `utils::retry` mechanism.
 
 For explicit interruption, keep this accumulator outside pending reads, abort the stream, then call
 `accumulator.interrupt(ToolExecutionState::NotStarted)` if none of its tools ran. The protocol

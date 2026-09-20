@@ -6,7 +6,10 @@ use crate::{
 pub enum RunOutcome {
   Completed,
   Interrupted,
-  TurnLimit,
+  /// Historical persisted outcome only. The runner no longer enforces a turn limit.
+  #[doc(hidden)]
+  #[serde(rename = "TurnLimit")]
+  LegacyTurnLimit,
   /// The response was not accepted. The caller decides whether to continue or compact.
   ModelStopped(Box<Response>),
   Failed(Error),

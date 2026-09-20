@@ -1,7 +1,7 @@
 # Session
 
 `session` owns configuration, metadata (any JSON value), execution state, durable input,
-generations and history. `agent` executes its model/tool actions; [storage](storage.md) owns
+generations and history. `executor` executes its model/tool actions; [storage](storage.md) owns
 SQLite and caching.
 
 ```text
@@ -30,7 +30,10 @@ let page = session.get_history().read_page(0, 128)?;
 ```
 
 `Session::new(config)` uses an in-memory SQLite database for ephemeral use. `from_request`
-imports paired stable history into one. Use `create`/`load` for persistence.
+imports paired stable history into one. Session requests always use `ToolChoice::Auto`, including
+when the imported request selected another strategy. `RunOptions` only controls tool execution mode;
+there is no maximum turn count. Old serialized config fields are ignored. Historical `TurnLimit`
+outcomes remain readable as `LegacyTurnLimit` but are never produced by the runner. Use `create`/`load` for persistence.
 
 All getters for long collections return read-only, lazy handles. `get_history`, `get_entries`,
 `get_events`, `get_generations`, `get_generation_entries` and `get_message_queue` support bounded
@@ -45,8 +48,9 @@ atomically commits the message, queue reference and `MessageQueued` event withou
 execution. The runner consumes a fixed queue prefix at a stable boundary. Suspended sessions
 require explicit `resume()` before consuming more input.
 
-Events and state changes commit before the observer is notified. Stream deltas append only their
-own event/history rows, without rewriting the session header. `SessionState::Suspended` references
+Ordinary events and state changes commit before the observer is notified. Stream events are
+notified immediately, then batched with their history rows and call observations, without rewriting
+the session header. `SessionState::Suspended` references
 the final `Finished` event; use `get_event` to inspect the stored outcome. History is a permanent
 record of facts; active generation is the model's context projection.
 
@@ -66,4 +70,24 @@ and garbage collection are not implemented.
 
 Restarting restores committed data and phase. A session interrupted by a crash during model/tool
 I/O remains active and returns `SessionError::Busy`; automatic recovery/reexecution of external
-effects is not implemented. Graceful interruption remains handled by the [agent](agent.md).
+effects is not implemented. Graceful interruption remains handled by the [executor](executor.md).
+
+Messages have creation timestamps on `Entry`; event timestamps live on `HistoryRecord`, preserving
+receipt time across batch writes. Both also carry an optional originating `model_call_id`.
+`get_model_calls()` pages logical model calls, and `get_model_call(id)` retrieves their shared
+usage, times and status. See [call statistics](statistics.md). Message metadata remains application-owned.
+
+## Session control
+
+`create_handle()` returns a cloneable `SessionHandle` with `enqueue_message(message)` and
+`interrupt()`. Use it while the executor holds `&mut Session`. `Session::interrupt()` exposes
+the same intention directly when the session is available. Interruption returns true when a run
+is registered (including repeated requests), false when idle, suspended without a runner, or after
+the runner has exited. Acknowledgement is not completion: await `executor::run` to finish cleanup.
+
+A request targets only the current run. No interrupt is queued for a future run, and a new run gets
+fresh execution cancellation state. Registration is removed on return, error, or future drop.
+Dropping a future still leaves active persisted work unreconciled; it is not graceful shutdown.
+Handles belong to a live Session owner. After dropping/loading that owner, create a new control
+handle; old handles cannot interrupt its replacement. SessionSender remains available for durable
+input alone, including while the owner is absent. Interrupt intentions are not persisted.

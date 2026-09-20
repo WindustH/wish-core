@@ -37,8 +37,8 @@ use crate::protocol::{
   Message, Request, Response, StreamAccumulator, StreamEvent, UpstreamCompaction,
   UpstreamCompactionRequest, http_error, model_use::request::openai_responses::ResponsesDeployment,
 };
-use crate::retry::{RetryPolicy, retry};
 use crate::transport::{BedrockStream, SseEvent, SseStream};
+use crate::utils::retry::{RetryDecision, RetryPolicy, retry};
 
 /// The response mode selected by `Request::stream`.
 pub enum CallResponse<S> {
@@ -173,7 +173,7 @@ impl<T: Transport> Client<T> {
         "no token-count protocol configured",
       )
     })?;
-    retry(&self.retry, |_| self.attempt_token_count(protocol, request)).await
+    retry(&self.retry, |_| self.attempt_token_count(protocol, request), classify_retry).await
   }
 
   async fn attempt_token_count(
@@ -305,7 +305,7 @@ impl<T: Transport> Client<T> {
     if request.stream {
       self.stream_with_retries(request).await.map(CallResponse::Stream)
     } else {
-      retry(&self.retry, |_| self.attempt(request))
+      retry(&self.retry, |_| self.attempt(request), classify_retry)
         .await
         .map(|response| CallResponse::Complete(Box::new(response)))
     }
@@ -326,7 +326,7 @@ impl<T: Transport> Client<T> {
     &self,
     request: &UpstreamCompactionRequest,
   ) -> Result<UpstreamCompaction, Error> {
-    retry(&self.retry, |_| self.attempt_upstream_compaction(request)).await
+    retry(&self.retry, |_| self.attempt_upstream_compaction(request), classify_retry).await
   }
 
   /// Reads one page of the model list this upstream serves, over the protocol named when the
@@ -801,4 +801,13 @@ fn decode_streamed_upstream_compaction(response: Response) -> Result<UpstreamCom
     account_state: response.account_state,
     warnings: Vec::new(),
   })
+}
+
+// Protocol retryability belongs to the client; utils does not interpret network errors.
+fn classify_retry(error: &Error) -> RetryDecision {
+  if error.is_retryable() {
+    RetryDecision::Retry { minimum_delay_ms: error.get_retry_after_ms() }
+  } else {
+    RetryDecision::Stop
+  }
 }

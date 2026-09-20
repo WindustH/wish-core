@@ -1,5 +1,5 @@
 use super::{EntryId, GenerationId, RunOutcome, SessionConfig, SessionPhase};
-use crate::agent::{ToolCall, ToolOutcome};
+use crate::executor::tool::{ToolCall, ToolOutcome};
 use crate::protocol::{
   StreamEvent,
   account_state::AccountState,
@@ -11,7 +11,8 @@ use crate::protocol::{
 use crate::storage::ListId;
 use serde_json::Value;
 
-/// Owned records are appended to history before observers are notified.
+/// Owned event payloads. HistoryRecord carries the timestamp and originating model call.
+/// Stream events are observed immediately and then persisted in batches.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub enum SessionEvent {
   Created(Box<SessionConfig>),
