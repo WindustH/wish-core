@@ -7,7 +7,7 @@
 //! the stream - beside the per-protocol shapes that translate each of them, [`upstream_compaction`], the
 //! call that asks a service to stand in for a conversation that grew too long, [`account_state`], the
 //! bodies a service reports about the key that reached it, and [`model_list`], the pages it lists
-//! its models in. [`wire`] is the attempt contract a transport implements, and [`error`] with
+//! its models in. [`token_count`] counts model inputs without generating output. [`wire`] is the attempt contract a transport implements, and [`error`] with
 //! [`http_error`] is the failure vocabulary every layer speaks.
 //!
 //! What the reading conventions share lives here, at the top.
@@ -18,6 +18,7 @@ pub mod http_error;
 pub mod model_list;
 pub mod model_use;
 pub mod outbound;
+pub mod token_count;
 pub mod upstream_compaction;
 pub mod wire;
 
@@ -26,6 +27,7 @@ pub use model_use::request::{PromptCache, ReasoningConfig, ReasoningSummary, Req
 pub use model_use::response::{Response, StopReason, Usage};
 pub use model_use::stream::{BlockKind, StreamAccumulator, StreamEvent};
 pub use model_use::tool::Tool;
+pub use token_count::{TokenCount, TokenCountProtocol};
 pub use upstream_compaction::{UpstreamCompaction, UpstreamCompactionRequest};
 
 use serde_json::Value;

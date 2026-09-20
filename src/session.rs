@@ -280,11 +280,25 @@ impl Session {
   pub(crate) fn require_stable(&self) -> Result<(), SessionError> {
     if self.record.state.is_stable() { Ok(()) } else { Err(SessionError::Busy) }
   }
-  pub(crate) fn record_event(&mut self, event: SessionEvent) -> Result<(), SessionError> {
-    let mut record = self.record.clone();
-    let key = self.key.clone();
-    self
-      .storage
-      .transaction(move |tx| SessionEdit { record: &mut record, tx, key: &key }.record_event(event))
+  pub(crate) fn record_events(&mut self, events: Vec<SessionEvent>) -> Result<(), SessionError> {
+    if events.is_empty() {
+      return Ok(());
+    }
+    let record = self.record.clone();
+    self.storage.transaction(move |tx| -> Result<(), SessionError> {
+      let first_event = tx.append_items(&record.events, &events)?;
+      let first_sequence = tx.list_len::<HistoryRecord>(&record.history)?;
+      let history: Vec<_> = events
+        .iter()
+        .enumerate()
+        .map(|(offset, _)| HistoryRecord {
+          sequence: first_sequence + offset as u64,
+          generation: record.active,
+          item: HistoryItem::Event(EventId(first_event + offset as u64)),
+        })
+        .collect();
+      tx.append_items(&record.history, &history)?;
+      Ok(())
+    })
   }
 }

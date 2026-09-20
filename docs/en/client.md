@@ -85,3 +85,10 @@ The [agent](agent.md) layer builds an in-memory tool loop on this client, keepin
 For explicit interruption, keep this accumulator outside pending reads, abort the stream, then call
 `accumulator.interrupt(ToolExecutionState::NotStarted)` if none of its tools ran. The protocol
 returns eligible content with tool results already paired; see [interrupted streams](protocol/model-use.md#interrupted-streams).
+
+## Token counting
+
+Configure `with_token_count(TokenCountProtocol)` explicitly, then call `count_tokens(&request)`.
+This reuses the client's endpoint, credentials, transport and retry policy. It sends a buffered
+count request even when `request.stream` is true; it does not generate a response or change a
+session. See [token counting](protocol/token-count.md) for supported pairings and request mapping.

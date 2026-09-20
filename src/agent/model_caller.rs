@@ -5,9 +5,10 @@ use crate::{
 };
 use std::future::Future;
 
-/// A model executes the response mode declared by Request::stream.
+/// Executes model requests; the target model is selected by Request::model.
+/// Returns a complete response or a stream according to Request::stream.
 /// Retries remain in the client and end before it hands out the first event.
-pub trait Model: Sync {
+pub trait ModelCaller: Sync {
   type Stream: ModelStream;
   fn call(
     &self,
@@ -31,7 +32,7 @@ pub trait ModelStream: Send {
   }
 }
 
-impl<T: Transport + Sync> Model for Client<T> {
+impl<T: Transport + Sync> ModelCaller for Client<T> {
   type Stream = crate::client::EventStream<T::Stream>;
   async fn call(&self, request: &Request) -> Result<CallResponse<Self::Stream>, Error> {
     Client::call(self, request).await

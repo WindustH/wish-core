@@ -25,6 +25,8 @@ pub enum StorageError {
   StartWorker(std::io::Error),
   #[error("storage worker is closed")]
   Closed,
+  #[error("WAL checkpoint could not complete because the database is busy")]
+  CheckpointBusy,
   #[error("storage operations cannot be nested; use the transaction provided to the closure")]
   NestedOperation,
   #[error("storage operation panicked and was rolled back")]

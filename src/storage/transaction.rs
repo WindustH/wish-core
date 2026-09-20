@@ -111,18 +111,38 @@ impl Transaction<'_> {
     list: &ListId,
     value: &T,
   ) -> Result<u64, StorageError> {
-    let position = self.list_len::<T>(list)?;
-    if position >= i64::MAX as u64 {
-      return Err(StorageError::InvalidRange);
+    self.append_items(list, std::slice::from_ref(value))
+  }
+  /// Append a batch and return its starting position. Empty batches return the current length.
+  /// Reuses one INSERT statement and updates the list length once.
+  pub fn append_items<T: StoredValue>(
+    &mut self,
+    list: &ListId,
+    values: &[T],
+  ) -> Result<u64, StorageError> {
+    let start = self.list_len::<T>(list)?;
+    let end = start
+      .checked_add(values.len() as u64)
+      .filter(|end| *end <= i64::MAX as u64)
+      .ok_or(StorageError::InvalidRange)?;
+    if values.is_empty() {
+      return Ok(start);
     }
-    let bytes = serde_json::to_vec(value)?;
-    self.sql.execute(
-      "INSERT INTO wish_items(list,position,value) VALUES(?1,?2,?3)",
-      params![list.0, position as i64, bytes],
-    )?;
-    self.sql.execute("UPDATE wish_lists SET length=length+1 WHERE name=?1", [&list.0])?;
-    self.mark_item_changed(list, position);
-    Ok(position)
+    // Encode before modifying the list, so encoding errors never leave a partial batch.
+    let encoded = values.iter().map(serde_json::to_vec).collect::<Result<Vec<_>, _>>()?;
+    let mut statement =
+      self.sql.prepare("INSERT INTO wish_items(list,position,value) VALUES(?1,?2,?3)")?;
+    for (offset, bytes) in encoded.iter().enumerate() {
+      statement.execute(params![list.0, (start + offset as u64) as i64, bytes])?;
+    }
+    drop(statement);
+    self
+      .sql
+      .execute("UPDATE wish_lists SET length=?1 WHERE name=?2", params![end as i64, list.0])?;
+    for position in start..end {
+      self.mark_item_changed(list, position);
+    }
+    Ok(start)
   }
   pub fn set_item<T: StoredValue>(
     &mut self,

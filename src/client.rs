@@ -63,6 +63,7 @@ pub struct Client<T> {
   account_state: Option<AccountStateProtocol>,
   upstream_compaction: Option<UpstreamCompactionProtocol>,
   model_list: Option<ModelListProtocol>,
+  token_count: Option<crate::protocol::TokenCountProtocol>,
 }
 
 impl<T: Transport> Client<T> {
@@ -80,6 +81,7 @@ impl<T: Transport> Client<T> {
       account_state: None,
       upstream_compaction: None,
       model_list: None,
+      token_count: None,
     }
   }
 
@@ -141,6 +143,64 @@ impl<T: Transport> Client<T> {
       _ => "is served only on the openai responses wire",
     };
     Err(Error::build_unsupported("upstream compaction", compaction.get_id(), reason))
+  }
+
+  /// Explicitly enable a token-count endpoint. Generation compatibility alone does not imply
+  /// availability. Unsupported protocol/deployment pairings fail before any network request.
+  pub fn with_token_count(
+    mut self,
+    protocol: crate::protocol::TokenCountProtocol,
+  ) -> Result<Self, Error> {
+    protocol.validate_model_use(self.model_use)?;
+    self.token_count = Some(protocol);
+    Ok(self)
+  }
+
+  pub fn get_token_count_protocol(&self) -> Option<crate::protocol::TokenCountProtocol> {
+    self.token_count
+  }
+
+  /// Count the input of a model request without generating output. Never falls back to an
+  /// estimate. The provider count can differ from eventual usage and is not billed usage.
+  pub async fn count_tokens(
+    &self,
+    request: &Request,
+  ) -> Result<crate::protocol::TokenCount, Error> {
+    let protocol = self.token_count.ok_or_else(|| {
+      Error::build_unsupported(
+        "token counting",
+        self.model_use.get_name(),
+        "no token-count protocol configured",
+      )
+    })?;
+    retry(&self.retry, |_| self.attempt_token_count(protocol, request)).await
+  }
+
+  async fn attempt_token_count(
+    &self,
+    protocol: crate::protocol::TokenCountProtocol,
+    request: &Request,
+  ) -> Result<crate::protocol::TokenCount, Error> {
+    let path = protocol.resolve_path(&self.outbound.resolve_path(&request.model))?;
+    let body = Self::serialize_body(crate::protocol::token_count::request::render(
+      protocol,
+      self.model_use,
+      request,
+    )?)?;
+    let call = self.outbound.dispatch(
+      self.build_draft(path, self.build_headers(&[]), body),
+      &self.credentials,
+      self.get_current_time(),
+    )?;
+    let reply = self.transport.execute(&call).await?;
+    if !reply.is_success() {
+      return Err(
+        self
+          .decode_upstream_error(reply.status, &reply.body)
+          .with_retry_after(reply.get_retry_after_ms()),
+      );
+    }
+    crate::protocol::token_count::response::decode(protocol, &Self::decode_reply_body(&reply)?)
   }
 
   /// Names the model-list protocol this upstream serves, for [`Client::get_model_list`].

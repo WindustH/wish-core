@@ -54,6 +54,12 @@ impl<T: StoredValue> StoredList<T> {
     let value = value.clone();
     self.storage.transaction(move |tx| tx.append_item(&id, &value))
   }
+  /// Append a batch in one transaction, returning the first position.
+  pub fn append_items(&self, values: &[T]) -> Result<u64, StorageError> {
+    let id = self.id.clone();
+    let values = values.to_vec();
+    self.storage.transaction(move |tx| tx.append_items(&id, &values))
+  }
   pub fn set(&self, position: u64, value: &T) -> Result<(), StorageError> {
     let id = self.id.clone();
     let value = value.clone();

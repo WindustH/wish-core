@@ -23,8 +23,12 @@ struct Database {
   owners: HashSet<String>,
 }
 type Job = Box<dyn FnOnce(&mut Database) + Send>;
+enum Command {
+  Run(Job),
+  Shutdown(mpsc::SyncSender<Result<(), StorageError>>),
+}
 struct Worker {
-  sender: Option<mpsc::Sender<Job>>,
+  sender: Option<mpsc::Sender<Command>>,
   thread: Option<thread::JoinHandle<()>>,
   id: thread::ThreadId,
 }
@@ -56,7 +60,7 @@ impl Storage {
     Self::start_worker(Source::Memory, options)
   }
   fn start_worker(source: Source, options: StorageOptions) -> Result<Self, StorageError> {
-    let (sender, receiver) = mpsc::channel::<Job>();
+    let (sender, receiver) = mpsc::channel::<Command>();
     let (ready, result) = mpsc::sync_channel(1);
     let thread = thread::Builder::new()
       .name("wish-storage".into())
@@ -71,8 +75,17 @@ impl Storage {
         if ready.send(Ok(thread::current().id())).is_err() {
           return;
         }
-        while let Ok(job) = receiver.recv() {
-          job(&mut database);
+        while let Ok(command) = receiver.recv() {
+          match command {
+            Command::Run(job) => job(&mut database),
+            Command::Shutdown(reply) => {
+              let result = database.flush().and_then(|_| {
+                database.connection.close().map_err(|(_, error)| StorageError::from(error))
+              });
+              let _ = reply.send(result);
+              break;
+            }
+          }
         }
       })
       .map_err(StorageError::StartWorker)?;
@@ -99,11 +112,11 @@ impl Storage {
       .sender
       .as_ref()
       .ok_or(StorageError::Closed)?
-      .send(Box::new(move |database| {
+      .send(Command::Run(Box::new(move |database| {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(database)))
           .map_err(|_| StorageError::OperationPanicked);
         let _ = sender.send(result);
-      }))
+      })))
       .map_err(|_| StorageError::Closed)?;
     receiver.recv().map_err(|_| StorageError::Closed)?
   }
@@ -150,6 +163,30 @@ impl Storage {
     self.dispatch(|database| database.cache.clear())
   }
 
+  /// Wait for earlier storage commands and synchronize committed WAL data.
+  /// Call after awaiting agent runs: their pending stream batches belong to the runners.
+  pub fn flush(&self) -> Result<(), StorageError> {
+    self.dispatch(Database::flush)?
+  }
+
+  /// Close this storage worker for every cloned handle. Await all runs/producers first.
+  /// Commands queued before shutdown finish; later commands fail with Closed.
+  /// Errors are reported even though the worker still closes.
+  pub fn shutdown(&self) -> Result<(), StorageError> {
+    if thread::current().id() == self.worker.id {
+      return Err(StorageError::NestedOperation);
+    }
+    let (reply, result) = mpsc::sync_channel(1);
+    self
+      .worker
+      .sender
+      .as_ref()
+      .ok_or(StorageError::Closed)?
+      .send(Command::Shutdown(reply))
+      .map_err(|_| StorageError::Closed)?;
+    result.recv().map_err(|_| StorageError::Closed)?
+  }
+
   pub(crate) fn claim_owner(&self, name: &str) -> Result<OwnerGuard, StorageError> {
     let name = name.to_owned();
     let target = name.clone();
@@ -172,20 +209,30 @@ impl Drop for OwnerGuard {
   fn drop(&mut self) {
     let name = self.name.clone();
     if let Some(sender) = &self.storage.worker.sender {
-      let _ = sender.send(Box::new(move |database| {
+      let _ = sender.send(Command::Run(Box::new(move |database| {
         database.owners.remove(&name);
-      }));
+      })));
     }
   }
 }
 impl Database {
+  fn flush(&mut self) -> Result<(), StorageError> {
+    let busy: i64 =
+      self.connection.query_row("PRAGMA wal_checkpoint(FULL)", [], |row| row.get(0))?;
+    if busy != 0 {
+      return Err(StorageError::CheckpointBusy);
+    }
+    Ok(())
+  }
+
   fn open(source: Source, options: StorageOptions) -> Result<Self, StorageError> {
     let mut connection = match source {
       Source::File(path) => Connection::open(path)?,
       Source::Memory => Connection::open_in_memory()?,
     };
-    connection
-      .execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")?;
+    connection.execute_batch(
+      "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+    )?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if !(0..=2).contains(&version) {
       return Err(StorageError::SchemaVersion(version));

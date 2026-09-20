@@ -7,7 +7,7 @@ successful in-memory mutation.
 
 ```text
 StoredObject<T>                 StoredList<T> / ReadList<T>
- load / create / save             get / read_page / append / set
+ load / create / save             get / read_page / append / append_items / set
             \                       /
              +-- command channel -----+
                          |
@@ -45,7 +45,7 @@ Cache eviction never affects durable data.
 
 Open one Storage per database, then clone its handle for other tasks. A dedicated thread owns the
 connection and an ordinary byte-bounded LRU cache. Neither is protected by a shared mutex; callers
-communicate through channels. SQLite uses WAL and FULL synchronous durability. APIs synchronously
+communicate through channels. SQLite uses WAL and NORMAL synchronization. APIs synchronously
 wait for replies; different sessions may still await model/tool work concurrently. Dropping the
 last handle closes the channel and joins the worker. No external-writer cache checks or revision
 conflict protocol are maintained.
@@ -53,3 +53,19 @@ conflict protocol are maintained.
 Schema version 2 removes the old revision column. Version 1 databases upgrade transactionally
 without rewriting message/history data. Type names still reject opening an object/list as the
 wrong Rust type.
+
+`StoredList::append_items` and `Transaction::append_items` append a batch using one prepared
+INSERT and one list-length update, returning its starting position. Elements remain separate rows.
+An empty batch returns the current length. Propagate transaction errors to roll back the batch.
+
+`Storage::flush()` waits for earlier storage commands and performs a FULL WAL checkpoint;
+it reports checkpoint/SQL errors. It does not drain batches still owned by an agent runner.
+`Storage::shutdown()` performs the same synchronization and explicitly closes the connection
+for all cloned handles. Commands ahead of shutdown finish; later commands return `Closed`.
+Shutdown errors are reported, and the worker still closes. Stop producers and await runners first.
+Dropping handles is cleanup, not an error-reporting substitute for explicit shutdown.
+
+NORMAL avoids a WAL sync for each commit. Recent committed transactions may be lost on power
+loss or OS crash; transactions remain atomic. Agent stream batches still in memory may also be
+lost on process termination. Ordinary object/list writes still wait for their SQL commit;
+there is no general background write-behind cache.

@@ -87,6 +87,19 @@ pub fn render(request: &Request, mode: MessagesApiCompatMode) -> Result<Value, E
   let max_tokens = request.max_output_tokens.ok_or_else(|| {
     Error::Build("max_tokens is required on the anthropic messages wire".to_owned())
   })?;
+  render_body(request, mode, Some(max_tokens))
+}
+
+pub(crate) fn render_for_token_count(request: &Request) -> Result<Value, Error> {
+  render_body(request, MessagesApiCompatMode::Official, None)
+}
+
+// Counting uses exactly the same inputs, without an output cap or streaming controls.
+fn render_body(
+  request: &Request,
+  mode: MessagesApiCompatMode,
+  max_tokens: Option<u64>,
+) -> Result<Value, Error> {
   if request.tool_choice == Some(ToolChoice::None) {
     return Err(Error::Build(
       "tool_choice `none` cannot be expressed on the anthropic messages wire".to_owned(),
@@ -102,7 +115,9 @@ pub fn render(request: &Request, mode: MessagesApiCompatMode) -> Result<Value, E
   let breakpoints = request.cache.as_ref().is_some_and(|cache| cache.breakpoints);
   let mut body = Map::new();
   body.insert("model".into(), json!(request.model));
-  body.insert("max_tokens".into(), json!(max_tokens));
+  if let Some(max_tokens) = max_tokens {
+    body.insert("max_tokens".into(), json!(max_tokens));
+  }
   if !system.is_empty() {
     let system = system.join("\n");
     if breakpoints {
@@ -112,14 +127,17 @@ pub fn render(request: &Request, mode: MessagesApiCompatMode) -> Result<Value, E
     }
   }
   body.insert("messages".into(), Value::Array(messages));
-  if request.stream {
+  if request.stream && max_tokens.is_some() {
     body.insert("stream".into(), json!(true));
   }
   if let Some(reasoning) = &request.reasoning {
     render_reasoning(mode, reasoning, &mut body)?;
   }
-  if let Some(budget_tokens) =
-    body.get("thinking").and_then(|thinking| thinking.get("budget_tokens")).and_then(Value::as_u64)
+  if let Some(max_tokens) = max_tokens
+    && let Some(budget_tokens) = body
+      .get("thinking")
+      .and_then(|thinking| thinking.get("budget_tokens"))
+      .and_then(Value::as_u64)
   {
     // The model refuses to answer at or below the tokens it thinks with: a cap that tight is raised
     // instead of failing the call.
