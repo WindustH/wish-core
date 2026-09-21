@@ -112,3 +112,8 @@ Dropping a future still leaves active persisted work unreconciled; it is not gra
 Handles belong to a live Session owner. After dropping/loading that owner, create a new control
 handle; old handles cannot interrupt its replacement. SessionSender remains available for durable
 input alone, including while the owner is absent. Interrupt intentions are not persisted.
+
+`SessionHandle::build_context_snapshot()` reads committed active context in one storage
+transaction, including while the executor owns the session. An unfinished tool batch
+and its assistant turn are excluded. The returned request does not include queued input
+and does not mutate session state; applications can use it for stateless questions.

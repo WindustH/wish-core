@@ -51,7 +51,9 @@ pub enum CallResponse<S> {
 ///
 /// Generic over the transport rather than holding a `dyn`: a trait method returning `impl Future`
 /// is not object safe, and there is exactly one transport in flight per client anyway.
+#[derive(Clone)]
 pub struct Client<T> {
+  stream_observer: Option<super::StreamObserverFactory>,
   model_use: ModelUseProtocol,
   outbound: Outbound,
   credentials: Credentials,
@@ -67,6 +69,11 @@ pub struct Client<T> {
 }
 
 impl<T: Transport> Client<T> {
+  /// Observe every physical stream attempt, including retries and streamed compaction.
+  pub fn with_stream_observer(mut self, observer: super::StreamObserverFactory) -> Self {
+    self.stream_observer = Some(observer);
+    self
+  }
   pub fn get_model_use_protocol(&self) -> ModelUseProtocol {
     self.model_use
   }
@@ -76,6 +83,7 @@ impl<T: Transport> Client<T> {
   /// have a builder of their own.
   pub fn new(model_use: ModelUseProtocol, outbound: Outbound, transport: T) -> Self {
     Self {
+      stream_observer: None,
       model_use,
       outbound,
       credentials: Credentials::default(),
@@ -485,6 +493,7 @@ impl<T: Transport> Client<T> {
     request: &UpstreamCompactionRequest,
   ) -> Result<UpstreamCompaction, Error> {
     let call = self.build_upstream_compaction_call(request)?;
+    let observer = self.stream_observer.as_ref().map(|factory| factory(&request.model));
     let reply = self.transport.execute_stream(&call).await?;
     // The responses wire is the only one with this call, and it is served over SSE.
     let mut source = WireEventSource::Sse(SseStream::new(reply));
@@ -504,6 +513,9 @@ impl<T: Transport> Client<T> {
       match source.next().await? {
         Some(wire_event) => {
           for event in decoder.feed(wire_event.event.as_deref(), &wire_event.data)? {
+            if let Some(observer) = &observer {
+              observer.observe(&event);
+            }
             stopped |= matches!(event, StreamEvent::Stop(_));
             accumulator.feed(event)?;
           }
@@ -573,6 +585,7 @@ impl<T: Transport> Client<T> {
   async fn open_stream(&self, request: &Request) -> Result<EventStream<T::Stream>, Error> {
     let decoder = self.model_use.create_stream_decoder()?;
     let call = self.build_model_use_call(request)?;
+    let observer = self.stream_observer.as_ref().map(|factory| factory(&request.model));
     let reply = self.transport.execute_stream(&call).await?;
     let mut source = match self.model_use {
       ModelUseProtocol::BedrockConverse => WireEventSource::Bedrock(BedrockStream::new(reply)),
@@ -588,6 +601,7 @@ impl<T: Transport> Client<T> {
     }
     let account_state = self.parse_account_state_reading(source.get_headers(), None)?;
     Ok(EventStream {
+      observer,
       source,
       decoder,
       pending: VecDeque::new(),
@@ -726,6 +740,7 @@ impl<S: ReplyStream> WireEventSource<S> {
 
 /// One streamed call in flight: body wire events decoded into the protocol's normalized events.
 pub struct EventStream<S: ReplyStream> {
+  observer: Option<Box<dyn super::StreamObserver>>,
   protocol: ModelUseProtocol,
   source: WireEventSource<S>,
   decoder: StreamDecoder,
@@ -770,13 +785,20 @@ impl<S: ReplyStream> EventStream<S> {
       match self.source.next().await? {
         Some(wire_event) => {
           let events = self.decoder.feed(wire_event.event.as_deref(), &wire_event.data)?;
+          for event in &events {
+            if let Some(observer) = &self.observer {
+              observer.observe(event);
+            }
+          }
           if events.iter().any(|event| matches!(event, StreamEvent::Stop(_))) {
             self.done = true;
+            self.observer.take();
           }
           self.pending.extend(events);
         }
         None => {
           let events = self.decoder.finish()?;
+          self.observer.take();
           self.pending.extend(events);
           self.done = true;
         }

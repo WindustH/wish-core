@@ -103,3 +103,83 @@ impl SessionTransaction<'_, '_> {
     Ok(())
   }
 }
+
+impl SessionSender {
+  /// Move a pending input before another pending input, or to the end.
+  /// Validation and writes share one transaction with enqueue/consume/cancel.
+  pub fn move_queued_input(
+    &self,
+    entry: EntryId,
+    before: Option<EntryId>,
+  ) -> Result<(), SessionError> {
+    let key = self.key.clone();
+    let recorded_at = crate::session::statistics::Timestamp::now();
+    self.storage.transaction(move |tx| {
+      let stored = tx.load_object::<SessionRecord>(&key)?;
+      let mut record = (*stored).clone();
+      let mut position = record.queue_head;
+      let end = tx.list_len::<EntryId>(&record.queue)?;
+      let mut pending = Vec::new();
+      while position < end {
+        let page = tx.read_page::<EntryId>(&record.queue, position, PAGE_SIZE as usize)?;
+        position += page.items.len() as u64;
+        pending.extend(page.items.iter().map(|item| **item));
+      }
+      let source =
+        pending.iter().position(|id| *id == entry).ok_or(SessionError::InvalidEntry(entry))?;
+      if let Some(target) = before {
+        if !pending.contains(&target) {
+          return Err(SessionError::InvalidEntry(target));
+        }
+      }
+      if before == Some(entry) {
+        return Ok(());
+      }
+      let original = pending.clone();
+      pending.remove(source);
+      let destination = before
+        .and_then(|target| pending.iter().position(|id| *id == target))
+        .unwrap_or(pending.len());
+      pending.insert(destination, entry);
+      if pending == original {
+        return Ok(());
+      }
+      for (offset, id) in pending.iter().enumerate() {
+        if *id != original[offset] {
+          tx.set_item(&record.queue, record.queue_head + offset as u64, id)?;
+        }
+      }
+      SessionTransaction { record: &mut record, tx, key: &key, recorded_at }
+        .record_event(SessionEvent::InputMoved { entry, before })
+    })
+  }
+  /// Atomically remove a pending input, including while a model or tool is running.
+  /// A consumed entry cannot be removed; its original content always remains stored.
+  pub fn cancel_queued_input(&self, entry: EntryId) -> Result<(), SessionError> {
+    let key = self.key.clone();
+    let recorded_at = crate::session::statistics::Timestamp::now();
+    self.storage.transaction(move |tx| {
+      let stored = tx.load_object::<SessionRecord>(&key)?;
+      let mut record = (*stored).clone();
+      let mut position = record.queue_head;
+      let end = tx.list_len::<EntryId>(&record.queue)?;
+      while position < end {
+        let page = tx.read_page::<EntryId>(&record.queue, position, PAGE_SIZE as usize)?;
+        for (offset, item) in page.items.iter().enumerate() {
+          if **item == entry {
+            tx.remove_item::<EntryId>(&record.queue, position + offset as u64)?;
+            return SessionTransaction { record: &mut record, tx, key: &key, recorded_at }
+              .record_event(SessionEvent::InputCancelled { entry });
+          }
+        }
+        position += page.items.len() as u64;
+      }
+      Err(SessionError::InvalidEntry(entry))
+    })
+  }
+}
+impl Session {
+  pub fn cancel_queued_input(&mut self, entry: EntryId) -> Result<(), SessionError> {
+    self.create_sender().cancel_queued_input(entry)
+  }
+}

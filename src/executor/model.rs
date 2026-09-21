@@ -3,6 +3,8 @@ mod caller;
 pub mod client;
 mod continuation;
 mod execute;
+mod observer;
+pub use observer::{StreamObserver, StreamObserverFactory};
 pub mod tokens;
 
 pub use caller::{ModelCaller, ModelStream};

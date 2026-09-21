@@ -115,6 +115,14 @@ impl ShellTool {
     }
     Ok(())
   }
+  /// Wait for an execution returned by start and read its final status without inline output.
+  /// Applications can enqueue this result as a background completion notification.
+  pub async fn wait_for_completion(&self, id: &str) -> Result<Value, ShellError> {
+    let execution = self.get_execution(id)?;
+    // Unknown is a terminal outcome too; retain the diagnostic in the returned snapshot.
+    let _ = execution.wait_for_exit().await;
+    read_output(&execution, 0, 0, DataEncoding::Utf8).await
+  }
   pub async fn run(&self, operation: ShellOperation, control: &ExecutionControl) -> ToolOutcome {
     if control.is_cancelled() {
       return ToolOutcome::Cancelled;
@@ -392,6 +400,9 @@ async fn read_output(
   let mut output = json!({"execution_id":execution.id, "process":snapshot, "output_path":execution.output_path,
     "output_bytes":total, "next_offset":next_offset, "eof":snapshot.status != Status::Running && next_offset >= total,
     "encoding":encoding, "text":text, "lossy":lossy});
+  if next_offset < total {
+    output["output_notice"] = "Output limited. Read only the needed range or search output_path. Use poll with next_offset to continue; avoid reading the entire file or repeating broad commands.".into();
+  }
   attach_edit(&mut output, &snapshot);
   Ok(output)
 }

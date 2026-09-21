@@ -16,6 +16,7 @@ use crate::protocol::wire::{Call, Limits, Method, Reply, Transport, parse_retry_
 use super::{Proxy, TransportError, build_payload_error, build_read_error, truncate};
 
 /// Attempts HTTP calls with `reqwest`.
+#[derive(Clone)]
 pub struct ReqwestTransport {
   client: reqwest::Client,
   limits: Limits,

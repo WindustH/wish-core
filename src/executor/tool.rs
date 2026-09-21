@@ -13,6 +13,11 @@ pub struct ToolCall {
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub enum ToolOutcome {
   Success(Value),
+  /// Extra model input, appended after all results in this tool batch to preserve tool pairing.
+  SuccessWithInput {
+    output: Value,
+    input: Vec<crate::protocol::ContentBlock>,
+  },
   Failed(String),
   Cancelled,
   Unknown(String),
@@ -21,7 +26,9 @@ pub enum ToolOutcome {
 impl ToolOutcome {
   pub(crate) fn encode_content(&self) -> Value {
     match self {
-      Self::Success(value) => json!({"status": "success", "output": value}),
+      Self::Success(value) | Self::SuccessWithInput { output: value, .. } => {
+        json!({"status": "success", "output": value})
+      }
       Self::Failed(message) => json!({"status": "failed", "message": message}),
       Self::Cancelled => json!({"status": "cancelled"}),
       Self::Unknown(message) => json!({"status": "unknown", "message": message}),

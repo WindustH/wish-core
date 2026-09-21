@@ -271,6 +271,7 @@ impl SessionTransaction<'_, '_> {
     let length = self.tx.list_len::<ToolExecution>(&batch)?;
     let mut start = 0;
     let mut unknown = false;
+    let mut inputs = Vec::new();
     while start < length {
       let page = self.tx.read_page::<ToolExecution>(&batch, start, PAGE_SIZE as usize)?;
       for execution in &page.items {
@@ -279,6 +280,9 @@ impl SessionTransaction<'_, '_> {
           .as_ref()
           .ok_or_else(|| StorageError::Corrupt("unsettled tool batch".into()))?;
         unknown |= matches!(outcome, ToolOutcome::Unknown(_));
+        if let ToolOutcome::SuccessWithInput { input, .. } = outcome {
+          inputs.push((execution.call.clone(), input.clone()));
+        }
         self.append_message(
           Message::ToolResult {
             metadata: Default::default(),
@@ -290,6 +294,15 @@ impl SessionTransaction<'_, '_> {
         )?;
       }
       start += page.items.len() as u64;
+    }
+    for (call, content) in inputs {
+      self.append_message(
+        Message::User {
+          metadata: serde_json::json!({"tool_call_id": call.call_id, "tool_name": call.name}),
+          content,
+        },
+        EntryOrigin::Tool,
+      )?;
     }
     if unknown {
       self.record_event(SessionEvent::StableBoundary { turn })?;

@@ -89,6 +89,7 @@ impl SessionTransaction<'_, '_> {
       | SessionEvent::ContextEntryCreated { .. }
       | SessionEvent::MetadataUpdated(_)
       | SessionEvent::ConfigUpdated(_)
+      | SessionEvent::InputMoved { .. }
       | SessionEvent::MessageQueued { .. }
       | SessionEvent::InputsConsumed { .. }
       | SessionEvent::GenerationPrepared { .. }

@@ -133,3 +133,17 @@ old messages into active context; results arrive as an ordinary tool result for 
 Blocking storage queries run outside the async executor thread. Cancellation before launch skips
 the operation; cancellation during a read waits for its completion and returns Cancelled.
 See [history queries](history.md) for indexing, pagination and metadata behavior.
+
+## Local images and completion notifications
+
+`tool::view_image::ViewImageTool` reads an absolute PNG/JPEG/GIF/WebP path (up to
+20 MiB) and returns `ToolOutcome::SuccessWithInput`. The session stores all tool
+results first, then appends the supplemental native image input. This preserves
+call/result pairing for parallel batches. Applications own file snapshots and
+model capability projection; wish-server supplies both without erasing stored images.
+
+`ShellTool::wait_for_completion(execution_id)` waits for a terminal process snapshot
+and returns file/status metadata without loading output. Applications can turn this
+into a durable session notification and decide whether to wake execution. Core does
+not automatically enqueue notifications. Truncated output results include a notice
+advising bounded reads or searches.

@@ -2,3 +2,4 @@
 //! supply the implementation (or an application dispatcher) to executor::run.
 pub mod search_history;
 pub mod shell;
+pub mod view_image;

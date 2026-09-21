@@ -51,3 +51,30 @@ impl SessionConfig {
     }
   }
 }
+
+impl crate::session::SessionHandle {
+  /// Atomically snapshot committed context without borrowing the running session.
+  /// An in-flight tool batch is excluded as a whole, including its assistant turn.
+  pub fn build_context_snapshot(&self) -> Result<Request, SessionError> {
+    let key = self.sender.key.clone();
+    self.sender.storage.transaction(move |tx| {
+      let mut record =
+        (*tx.load_object::<crate::session::persistence::SessionRecord>(&key)?).clone();
+      let pending_tools =
+        matches!(record.state, crate::session::SessionState::ExecutingTools { .. });
+      let mut request =
+        SessionTransaction { record: &mut record, tx, key: &key, recorded_at: Timestamp::now() }
+          .build_request()?;
+      if pending_tools {
+        while matches!(
+          request.conversation.last(),
+          Some(Message::Assistant { .. } | Message::Reasoning { .. } | Message::ToolUse { .. })
+        ) {
+          request.conversation.pop();
+        }
+      }
+      crate::session::context::validate_tool_pairs(request.conversation.iter())?;
+      Ok(request)
+    })
+  }
+}

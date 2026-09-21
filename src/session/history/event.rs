@@ -45,6 +45,13 @@ pub enum SessionEvent {
   ResponseRejected(Box<crate::protocol::Response>),
   MetadataUpdated(Value),
   ConfigUpdated(Box<SessionConfig>),
+  InputMoved {
+    entry: EntryId,
+    before: Option<EntryId>,
+  },
+  InputCancelled {
+    entry: EntryId,
+  },
   MessageQueued {
     entry: EntryId,
   },

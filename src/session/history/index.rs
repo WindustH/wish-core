@@ -81,6 +81,8 @@ fn get_event_type(event: &SessionEvent) -> &'static str {
     SessionEvent::MetadataUpdated(..) => "MetadataUpdated",
     SessionEvent::ConfigUpdated(..) => "ConfigUpdated",
     SessionEvent::MessageQueued { .. } => "MessageQueued",
+    SessionEvent::InputMoved { .. } => "InputMoved",
+    SessionEvent::InputCancelled { .. } => "InputCancelled",
     SessionEvent::InputsConsumed { .. } => "InputsConsumed",
     SessionEvent::StateChanged { .. } => "StateChanged",
     SessionEvent::TurnStarted { .. } => "TurnStarted",

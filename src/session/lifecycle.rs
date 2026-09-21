@@ -114,3 +114,30 @@ impl Session {
     Ok(session)
   }
 }
+
+impl Session {
+  /// Permanently delete an inactive session and all its stored history and generations.
+  pub fn delete(&mut self) -> Result<(), SessionError> {
+    self.require_stable()?;
+    let key = self.key.clone();
+    self.storage.transaction(move |tx| tx.delete_namespace(&key))?;
+    Ok(())
+  }
+}
+
+impl Session {
+  /// Import a complete, protocol-valid conversation at an inactive boundary.
+  pub fn import_history(
+    &mut self,
+    messages: Vec<crate::protocol::Message>,
+  ) -> Result<(), SessionError> {
+    self.require_stable()?;
+    validate_tool_pairs(messages.iter())?;
+    self.update(move |transaction| {
+      for message in messages {
+        transaction.append_message(message, EntryOrigin::Imported)?;
+      }
+      Ok(())
+    })
+  }
+}

@@ -161,6 +161,33 @@ impl Transaction<'_> {
     self.mark_item_changed(list, position);
     Ok(())
   }
+  /// Remove one list position and shift the suffix left in this transaction.
+  pub fn remove_item<T: StoredValue>(
+    &mut self,
+    list: &ListId,
+    position: u64,
+  ) -> Result<(), StorageError> {
+    let length = self.list_len::<T>(list)?;
+    if position >= length {
+      return Err(StorageError::InvalidRange);
+    }
+    self.sql.execute(
+      "DELETE FROM wish_items WHERE list=?1 AND position=?2",
+      params![list.0, position as i64],
+    )?;
+    let mut statement = self
+      .sql
+      .prepare("UPDATE wish_items SET position=position-1 WHERE list=?1 AND position=?2")?;
+    for source in position + 1..length {
+      statement.execute(params![list.0, source as i64])?;
+    }
+    drop(statement);
+    self.sql.execute("UPDATE wish_lists SET length=length-1 WHERE name=?1", [&list.0])?;
+    for changed in position..length {
+      self.mark_item_changed(list, changed);
+    }
+    Ok(())
+  }
   fn mark_item_changed(&mut self, list: &ListId, position: u64) {
     self.dirty.insert(CacheKey::Item(list.0.clone(), position));
     self.dirty.insert(CacheKey::Page(list.0.clone(), position / PAGE_SIZE));
@@ -223,5 +250,25 @@ impl Transaction<'_> {
       position += count as u64;
     }
     Ok(Page { start, items, next: (end < length).then_some(end) })
+  }
+}
+
+impl Transaction<'_> {
+  /// Remove an object's namespace, including its lists and derived history indexes.
+  /// Namespace matching is literal and only includes descendants separated by `/`.
+  pub fn delete_namespace(&mut self, namespace: &str) -> Result<(), StorageError> {
+    let prefix = format!("{namespace}/");
+    // Eviction before commit is safe on rollback: it only discards cached values.
+    self.cache.clear();
+    self
+      .sql
+      .execute("DELETE FROM wish_history_index WHERE substr(list,1,length(?1))=?1", [&prefix])?;
+    self.sql.execute("DELETE FROM wish_items WHERE substr(list,1,length(?1))=?1", [&prefix])?;
+    self.sql.execute("DELETE FROM wish_lists WHERE substr(name,1,length(?1))=?1", [&prefix])?;
+    self.sql.execute(
+      "DELETE FROM wish_objects WHERE name=?1 OR substr(name,1,length(?2))=?2",
+      rusqlite::params![namespace, prefix],
+    )?;
+    Ok(())
   }
 }

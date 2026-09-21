@@ -14,6 +14,16 @@ impl SessionHandle {
   pub fn enqueue_message(&self, message: Message) -> Result<EntryId, SessionError> {
     self.sender.enqueue_message(message)
   }
+  pub fn move_queued_input(
+    &self,
+    entry: EntryId,
+    before: Option<EntryId>,
+  ) -> Result<(), SessionError> {
+    self.sender.move_queued_input(entry, before)
+  }
+  pub fn cancel_queued_input(&self, entry: EntryId) -> Result<(), SessionError> {
+    self.sender.cancel_queued_input(entry)
+  }
   /// Request interruption of the current run. False means there is no active run.
   /// True acknowledges the request, not completion; await the executor to finish cleanup.
   pub fn interrupt(&self) -> bool {
