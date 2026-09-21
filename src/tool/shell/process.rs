@@ -1,3 +1,4 @@
+use super::edit::{EditCapture, EditResult};
 use super::{KillMode, ShellError, platform::ProcessTree};
 use crate::executor::ExecutionControl;
 use serde::Serialize;
@@ -24,6 +25,8 @@ pub(super) struct Snapshot {
   pub error: Option<String>,
   pub initial_input_bytes: usize,
   pub initial_input_error: Option<String>,
+  #[serde(skip)]
+  pub edit: Option<Arc<EditResult>>,
 }
 impl Default for Snapshot {
   fn default() -> Self {
@@ -34,6 +37,7 @@ impl Default for Snapshot {
       error: None,
       initial_input_bytes: 0,
       initial_input_error: None,
+      edit: None,
     }
   }
 }
@@ -147,6 +151,7 @@ pub(super) async fn supervise(
   mut kills: mpsc::UnboundedReceiver<KillMode>,
   grace: Duration,
   initial_input: Option<tokio::task::JoinHandle<()>>,
+  edit: Option<EditCapture>,
 ) {
   let mut killed = false;
   let mut deadline = None;
@@ -182,19 +187,26 @@ pub(super) async fn supervise(
     let _ = initial_input.await;
   }
   execution.stdin.lock().await.take();
-  execution.state.send_modify(|snapshot| match result.and_then(|status| cleanup.map(|_| status)) {
-    Ok(status) => {
-      snapshot.status = if killed { Status::Killed } else { Status::Exited };
-      snapshot.exit_code = status.code();
-      #[cfg(unix)]
-      {
-        use std::os::unix::process::ExitStatusExt;
-        snapshot.term_signal = status.signal();
+  let edit = match edit {
+    Some(edit) => Some(Arc::new(edit.finish().await)),
+    None => None,
+  };
+  execution.state.send_modify(|snapshot| {
+    snapshot.edit = edit;
+    match result.and_then(|status| cleanup.map(|_| status)) {
+      Ok(status) => {
+        snapshot.status = if killed { Status::Killed } else { Status::Exited };
+        snapshot.exit_code = status.code();
+        #[cfg(unix)]
+        {
+          use std::os::unix::process::ExitStatusExt;
+          snapshot.term_signal = status.signal();
+        }
       }
-    }
-    Err(error) => {
-      snapshot.status = Status::Unknown;
-      snapshot.error = Some(error.to_string());
+      Err(error) => {
+        snapshot.status = Status::Unknown;
+        snapshot.error = Some(error.to_string());
+      }
     }
   });
 }

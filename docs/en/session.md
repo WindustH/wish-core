@@ -5,6 +5,27 @@ generations and history. `executor` executes its model/tool actions; [storage](s
 SQLite and caching.
 
 ```text
+session.rs          Session definition and public exports
+session/
+ +-- lifecycle      create / load / import
+ +-- config         settings and metadata
+ +-- control        handles and interruption intentions
+ +-- queue          durable input and consumption
+ +-- machine/       state, next actions and run outcomes
+ +-- context/       generations, compaction, requests and validation
+ +-- history/       message entries, events and their ordered history
+ +-- statistics/    model call records and usage observations
+ +-- persistence    stored header and SessionTransaction
+ +-- error          session errors
+```
+
+Each area contains its types and operations. `SessionTransaction` methods are implemented in
+the area that owns the operation, while `persistence` owns the shared transaction boundary.
+State, messages, events and call observations can therefore commit together. Session creation
+and loading register the original storage type names; moving Rust modules does not rename
+database kinds or require rewriting existing records.
+
+```text
 Session header                 independently stored, paged collections
  +-- metadata / config
  +-- state ------------------> current tool batch / final outcome event

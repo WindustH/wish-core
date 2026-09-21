@@ -1,8 +1,7 @@
 use crate::protocol::model_use::{
-  request::{PromptCache, ReasoningConfig, ToolChoice},
+  request::{PromptCache, ReasoningConfig},
   tool::Tool,
 };
-use crate::protocol::{Message, Request};
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default)]
 pub enum ToolMode {
@@ -42,17 +41,36 @@ impl SessionConfig {
       compaction: None,
     }
   }
+}
 
-  pub(crate) fn build_request(&self, conversation: Vec<Message>) -> Request {
-    Request {
-      model: self.model.clone(),
-      stream: self.stream,
-      tools: self.tools.clone(),
-      tool_choice: Some(ToolChoice::Auto),
-      max_output_tokens: self.max_output_tokens,
-      reasoning: self.reasoning.clone(),
-      cache: self.cache.clone(),
-      conversation,
+use super::{Session, SessionError, SessionEvent};
+use serde_json::Value;
+impl Session {
+  pub fn get_metadata(&self) -> &Value {
+    &self.record.metadata
+  }
+  pub fn set_metadata(&mut self, value: Value) -> Result<(), SessionError> {
+    self.update(move |transaction| {
+      transaction.record.metadata = value.clone();
+      transaction.record_event(SessionEvent::MetadataUpdated(value))
+    })
+  }
+  pub fn get_config(&self) -> &SessionConfig {
+    &self.record.config
+  }
+  pub fn set_config(&mut self, config: SessionConfig) -> Result<(), SessionError> {
+    self.require_stable()?;
+    if let Some(compaction) = &config.compaction {
+      compaction.validate()?;
     }
+    self.update(move |transaction| {
+      for id in [transaction.record.active, transaction.record.standby] {
+        let mut generation = transaction.load_generation(id)?;
+        generation.config = config.clone();
+        transaction.save_generation(&generation)?;
+      }
+      transaction.record.config = config.clone();
+      transaction.record_event(SessionEvent::ConfigUpdated(Box::new(config)))
+    })
   }
 }

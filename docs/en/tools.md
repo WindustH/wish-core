@@ -29,7 +29,7 @@ should have its own ShellTool and capture directory; clones intentionally share 
 
 | Operation | Inputs | Behavior |
 | --- | --- | --- |
-| `start` (default) | `command`, `timeout`, `data`, `encoding`, `interactive` | Run a script; return completion or a background execution ID. |
+| `start` (default) | `command`, `edit`, `timeout`, `data`, `encoding`, `interactive` | Run a script; return completion or a background execution ID. |
 | `poll` | `execution_id`, `offset`, `max_bytes`, `wait_ms`, `encoding` | Read merged output by raw byte offset, optionally wait for new bytes. |
 | `write` | `execution_id`, `data`, `encoding`, `close` | Feed stdin and optionally close it; return the actual accepted byte count. |
 | `kill` | `execution_id`, `mode` | Terminate the process group/job and wait for the supervised child to be reaped. |
@@ -55,6 +55,19 @@ next_offset, eof, text and return_reason. Nonzero command exits are successful t
 whose process.exit_code reports the failure. Text decoding is lossy when needed; use base64
 encoding to read exact bytes, including across UTF-8 boundaries. max_bytes limits each read, not
 captured output. Small foreground results remain pollable too.
+
+For file edits, pass `edit` as an absolute file path. The tool reads the file before launch and
+after completion; a missing file counts as empty. Results include `edit` with `path` and `status`:
+`pending` while running, then `complete` with `changed`, `binary`, and `diff`. Text diffs use
+imara-diff's Histogram algorithm, indentation-aware hunk placement, and unified format with three
+context lines. Unchanged text produces an empty diff. Binary/non-UTF-8 files report whether bytes
+changed and set `diff` to null. A final read failure returns `status: "failed"` and `error` alongside
+the normal process result; an initial read failure prevents launch.
+
+Background starts return a pending edit; `poll` or `kill` retrieves the final diff. Completion,
+nonzero exit, and interruption all capture actual file changes. The final result is retained, so
+later polls do not include subsequent edits. Only the named file's contents are compared; file
+permissions and concurrent writers are not tracked.
 
 Stdin defaults to the null device. Initial data is decoded as UTF-8 or base64, written and closed
 unless interactive=true. Initial input precedes subsequent writes; later writes serialize on the

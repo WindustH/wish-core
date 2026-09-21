@@ -1,6 +1,10 @@
-use super::edit::{SessionEdit, ToolPairValidator};
-use super::{Entry, EntryId, EntryOrigin, Session, SessionConfig, SessionError, SessionEvent};
-use crate::storage::{ListId, PAGE_SIZE};
+use super::validation::ToolPairValidator;
+use crate::session::persistence::SessionTransaction;
+use crate::session::{
+  Entry, EntryId, EntryOrigin, Session, SessionConfig, SessionError, SessionEvent,
+};
+use crate::storage::{ListId, PAGE_SIZE, ReadList, StorageError};
+use std::sync::Arc;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GenerationId(pub usize);
@@ -33,14 +37,38 @@ impl Session {
     entries: impl IntoIterator<Item = EntryId> + Send + 'static,
   ) -> Result<(), SessionError> {
     self.require_stable()?;
-    self.update(move |edit| edit.prepare_generation(entries))
+    self.update(move |transaction| transaction.prepare_generation(entries))
   }
   pub fn activate_standby_generation(&mut self) -> Result<(), SessionError> {
     self.require_stable()?;
-    self.update(move |edit| edit.activate_generation())
+    self.update(move |transaction| transaction.activate_generation())
+  }
+  pub fn get_generations(&self) -> ReadList<Generation> {
+    self.storage.open_list(&self.record.generations).read_only()
+  }
+  pub fn get_active_generation(&self) -> Result<Arc<Generation>, SessionError> {
+    self.load_generation(self.record.active)
+  }
+  pub fn get_standby_generation(&self) -> Result<Arc<Generation>, SessionError> {
+    self.load_generation(self.record.standby)
+  }
+  pub(in crate::session) fn load_generation(
+    &self,
+    id: GenerationId,
+  ) -> Result<Arc<Generation>, SessionError> {
+    self
+      .get_generations()
+      .get(id.0 as u64)?
+      .ok_or_else(|| StorageError::Corrupt("missing generation".into()).into())
+  }
+  pub fn get_generation_entries(
+    &self,
+    id: GenerationId,
+  ) -> Result<ReadList<EntryId>, SessionError> {
+    Ok(self.storage.open_list(&self.load_generation(id)?.entries).read_only())
   }
 }
-impl SessionEdit<'_, '_> {
+impl SessionTransaction<'_, '_> {
   fn prepare_generation(
     &mut self,
     entries: impl IntoIterator<Item = EntryId>,
@@ -141,5 +169,15 @@ impl SessionEdit<'_, '_> {
     )?;
     self.record.standby = id;
     self.record_event(SessionEvent::GenerationActivated { previous: active.id, active: standby.id })
+  }
+  pub fn load_generation(&mut self, id: GenerationId) -> Result<Generation, SessionError> {
+    self
+      .tx
+      .get_item::<Generation>(&self.record.generations, id.0 as u64)?
+      .map(|item| (*item).clone())
+      .ok_or_else(|| StorageError::Corrupt("missing generation".into()).into())
+  }
+  pub fn save_generation(&mut self, generation: &Generation) -> Result<(), SessionError> {
+    Ok(self.tx.set_item(&self.record.generations, generation.id.0 as u64, generation)?)
   }
 }

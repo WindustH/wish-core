@@ -1,5 +1,9 @@
-use super::*;
+use super::{ModelCallId, ModelCallRecord, Timestamp};
+use crate::session::persistence::{SessionRecord, SessionTransaction};
 use crate::session::statistics::{CallObservation, ModelCallPurpose, ModelCallStatus};
+use crate::session::{Session, SessionError, SessionEvent};
+use crate::storage::{ReadList, StorageError, Transaction};
+use std::sync::Arc;
 
 impl Session {
   pub fn get_model_calls(&self) -> ReadList<ModelCallRecord> {
@@ -14,9 +18,19 @@ impl Session {
   ) -> Result<Option<Arc<ModelCallRecord>>, SessionError> {
     Ok(self.get_model_calls().get(id.0)?)
   }
+  pub(crate) fn start_compaction_call(&mut self) -> Result<(), SessionError> {
+    self.update(|transaction| transaction.start_model_call(0, ModelCallPurpose::CompactionSummary))
+  }
+  pub(crate) fn complete_compaction_call(
+    &mut self,
+    observation: CallObservation,
+    status: ModelCallStatus,
+  ) -> Result<(), SessionError> {
+    self.update(move |transaction| transaction.complete_model_call(observation, status))
+  }
 }
-impl SessionEdit<'_, '_> {
-  pub(super) fn start_model_call(
+impl SessionTransaction<'_, '_> {
+  pub(in crate::session) fn start_model_call(
     &mut self,
     input_entry_count: u64,
     purpose: ModelCallPurpose,
@@ -46,7 +60,7 @@ impl SessionEdit<'_, '_> {
     self.record.active_model_call = Some(id);
     Ok(())
   }
-  pub(super) fn complete_model_call(
+  pub(in crate::session) fn complete_model_call(
     &mut self,
     observation: CallObservation,
     status: ModelCallStatus,
@@ -72,4 +86,31 @@ impl SessionEdit<'_, '_> {
     self.tx.set_item(list, id.0, &call)?;
     Ok(())
   }
+}
+
+pub(in crate::session) fn record_stream_usage(
+  tx: &mut Transaction<'_>,
+  record: &SessionRecord,
+  timestamps: &[Timestamp],
+  events: &[SessionEvent],
+) -> Result<(), SessionError> {
+  if let Some(id) = record.active_model_call {
+    let list = record.model_calls.as_ref().expect("session initializes call list");
+    let mut call = (*tx
+      .get_item::<ModelCallRecord>(list, id.0)?
+      .ok_or_else(|| StorageError::Corrupt("missing model call record".into()))?)
+    .clone();
+    for (timestamp, event) in timestamps.iter().zip(events) {
+      if let SessionEvent::ModelStream(event) = event {
+        call.first_event_at.get_or_insert(*timestamp);
+        match event {
+          crate::protocol::StreamEvent::Usage(usage) => call.usage = *usage,
+          crate::protocol::StreamEvent::Stop(reason) => call.stop_reason = Some(*reason),
+          _ => {}
+        }
+      }
+    }
+    tx.set_item(list, id.0, &call)?;
+  }
+  Ok(())
 }

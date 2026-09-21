@@ -1,4 +1,5 @@
 //! Stateful shell tool: start, poll, write and kill. One instance owns its executions.
+mod edit;
 mod operation;
 mod platform;
 mod process;

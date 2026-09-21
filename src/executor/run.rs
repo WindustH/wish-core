@@ -5,7 +5,7 @@ use super::{
   tool::{self, ToolExecutor},
 };
 use crate::session::{
-  RunOutcome, Session, SessionError, SessionEvent, SessionState, state::SessionAction,
+  RunOutcome, Session, SessionAction, SessionError, SessionEvent, SessionState,
 };
 
 /// Drive a session until idle or suspended. Resume a suspended session explicitly before calling.

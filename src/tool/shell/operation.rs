@@ -7,7 +7,12 @@ use serde::{Deserialize, Serialize};
 pub enum ShellOperation {
   Start {
     command: String,
-    /// Soft wait seconds; -1 or omission selects ShellConfig.soft_timeout, 0 returns immediately.
+    /// Absolute file path to compare before launch and after the command finishes.
+    #[serde(default)]
+    edit: Option<std::path::PathBuf>,
+    /// Seconds to wait for completion before returning execution_id while the command continues
+    /// in the background. Expiry never terminates the command. -1 or omission uses the configured
+    /// default; 0 starts the command and returns without waiting for completion.
     #[serde(default)]
     timeout: Option<f64>,
     #[serde(default)]
@@ -86,7 +91,8 @@ pub(super) fn build_specification() -> crate::protocol::Tool {
       "properties": {
         "operation":{"type":"string","enum":["start","poll","write","kill"],"default":"start"},
         "command":{"type":"string","description":"Shell script for start."},
-        "timeout":{"type":"number","description":"Soft wait seconds for start; -1 uses default, 0 returns immediately."},
+        "edit":{"type":"string","description":"Optional absolute file path for start when editing a file. Capture its contents before launch and after completion, treating a missing file as empty, and return a unified diff in edit. For a background command, edit stays pending until completion; poll or kill retrieves the final diff."},
+        "timeout":{"type":"number","description":"Seconds to wait for the command to finish before returning. If it is still running when this time expires, return execution_id and let the command continue in the background; do not terminate it. Use poll to read further output, or kill to stop it. Omit or use -1 for the configured default. Use 0 to start the command and return without waiting for completion."},
         "execution_id":{"type":"string","description":"Required by poll, write and kill."},
         "data":{"type":"string","description":"Initial stdin for start, or data for write."},
         "encoding":{"type":"string","enum":["utf8","base64"],"default":"utf8"},

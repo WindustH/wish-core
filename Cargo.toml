@@ -28,6 +28,7 @@ hex = "0.4"
 # rustls, so nothing new enters the tree.
 ring = "0.17"
 base64 = "0.22"
+imara-diff = { version = "0.2", features = ["unified_diff"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

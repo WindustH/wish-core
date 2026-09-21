@@ -1,4 +1,3 @@
-use super::{EntryId, GenerationId, RunOutcome, SessionConfig, SessionPhase};
 use crate::executor::tool::{ToolCall, ToolOutcome};
 use crate::protocol::{
   StreamEvent,
@@ -8,6 +7,7 @@ use crate::protocol::{
     stream::PartialResponse,
   },
 };
+use crate::session::{EntryId, GenerationId, RunOutcome, SessionConfig, SessionPhase};
 use crate::storage::ListId;
 use serde_json::Value;
 
@@ -30,7 +30,7 @@ pub enum SessionEvent {
   ContextCompacted {
     previous: GenerationId,
     active: GenerationId,
-    reason: super::CompactionReason,
+    reason: crate::session::CompactionReason,
     removed_entries: u64,
     measurement: crate::executor::model::tokens::TokenMeasurement,
   },

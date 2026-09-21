@@ -2,7 +2,8 @@ use super::cache::Cache;
 use super::{ListId, StorageError, StoredList, StoredObject, StoredValue, Transaction};
 use rusqlite::Connection;
 use std::{
-  collections::HashSet,
+  any::TypeId,
+  collections::{HashMap, HashSet},
   path::{Path, PathBuf},
   sync::{Arc, mpsc},
   thread,
@@ -21,6 +22,7 @@ struct Database {
   connection: Connection,
   cache: Cache,
   owners: HashSet<String>,
+  type_names: HashMap<TypeId, &'static str>,
 }
 type Job = Box<dyn FnOnce(&mut Database) + Send>;
 enum Command {
@@ -133,9 +135,14 @@ impl Storage {
     self
       .dispatch(move |database| {
         let sql = database.connection.transaction().map_err(StorageError::from).map_err(E::from)?;
-        let mut tx = Transaction { sql, cache: &mut database.cache, dirty: HashSet::new() };
+        let mut tx = Transaction {
+          sql,
+          cache: &mut database.cache,
+          dirty: HashSet::new(),
+          type_names: &mut database.type_names,
+        };
         let result = edit(&mut tx)?;
-        let Transaction { sql, cache, dirty } = tx;
+        let Transaction { sql, cache, dirty, .. } = tx;
         sql.commit().map_err(StorageError::from).map_err(E::from)?;
         for key in dirty {
           cache.invalidate(&key);
@@ -252,6 +259,11 @@ impl Database {
       PRAGMA user_version=2;",
     )?;
     tx.commit()?;
-    Ok(Self { connection, cache: Cache::new(options.cache_capacity_bytes), owners: HashSet::new() })
+    Ok(Self {
+      connection,
+      cache: Cache::new(options.cache_capacity_bytes),
+      owners: HashSet::new(),
+      type_names: HashMap::new(),
+    })
   }
 }

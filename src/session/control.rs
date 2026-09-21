@@ -1,5 +1,5 @@
 //! Session-scoped control intentions. Execution cancellation is owned by the executor.
-use super::{EntryId, SessionError, SessionSender};
+use super::{EntryId, Session, SessionError, SessionSender};
 use crate::protocol::Message;
 use tokio::sync::watch;
 
@@ -65,5 +65,18 @@ impl RunRegistration {
 impl Drop for RunRegistration {
   fn drop(&mut self) {
     self.0.send_replace(None);
+  }
+}
+
+impl Session {
+  pub fn create_handle(&self) -> SessionHandle {
+    SessionHandle { sender: self.create_sender(), control: self.control.clone() }
+  }
+  /// Request interruption of the active run; no effect while no executor is running.
+  pub fn interrupt(&self) -> bool {
+    self.control.interrupt()
+  }
+  pub(crate) fn begin_run_control(&self) -> RunRegistration {
+    self.control.begin_run()
   }
 }

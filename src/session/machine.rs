@@ -1,11 +1,20 @@
-use super::*;
-use super::{edit::SessionEdit, state::SessionAction};
+//! Session state transitions; executor performs the actions selected here.
+mod outcome;
+mod state;
+pub use outcome::RunOutcome;
+pub(crate) use state::SessionAction;
+pub use state::{SessionPhase, SessionState, ToolExecution};
+
+use super::persistence::SessionTransaction;
+use super::statistics;
+use super::{Entry, EntryId, EntryOrigin, EventId, Session, SessionError, SessionEvent};
 use crate::session::statistics::{CallObservation, ModelCallStatus};
+use crate::storage::StorageError;
 use crate::{
   Error,
   executor::tool::{ToolCall, ToolOutcome},
   protocol::{
-    Response,
+    Message, Response,
     model_use::{response::StopReason, stream::PartialResponse},
   },
   storage::PAGE_SIZE,
@@ -14,17 +23,17 @@ use std::{collections::HashSet, sync::Arc};
 
 impl Session {
   pub(crate) fn advance(&mut self) -> Result<SessionAction, SessionError> {
-    self.update(move |edit| edit.advance())
+    self.update(move |transaction| transaction.advance())
   }
   pub(crate) fn accept_response(
     &mut self,
     response: Response,
     observation: CallObservation,
   ) -> Result<(), SessionError> {
-    self.update(move |edit| {
-      edit.complete_model_call(observation, ModelCallStatus::Completed)?;
-      edit.accept_response(response)?;
-      edit.record.active_model_call = None;
+    self.update(move |transaction| {
+      transaction.complete_model_call(observation, ModelCallStatus::Completed)?;
+      transaction.accept_response(response)?;
+      transaction.record.active_model_call = None;
       Ok(())
     })
   }
@@ -33,10 +42,10 @@ impl Session {
     partial: PartialResponse,
     observation: CallObservation,
   ) -> Result<(), SessionError> {
-    self.update(move |edit| {
-      edit.complete_model_call(observation, ModelCallStatus::Interrupted)?;
-      edit.accept_interruption(partial)?;
-      edit.record.active_model_call = None;
+    self.update(move |transaction| {
+      transaction.complete_model_call(observation, ModelCallStatus::Interrupted)?;
+      transaction.accept_interruption(partial)?;
+      transaction.record.active_model_call = None;
       Ok(())
     })
   }
@@ -45,16 +54,16 @@ impl Session {
     outcome: RunOutcome,
     observation: CallObservation,
   ) -> Result<(), SessionError> {
-    self.update(move |edit| {
-      edit.complete_model_call(observation, ModelCallStatus::Failed)?;
-      edit.finish_run(outcome)?;
-      edit.record.active_model_call = None;
+    self.update(move |transaction| {
+      transaction.complete_model_call(observation, ModelCallStatus::Failed)?;
+      transaction.finish_run(outcome)?;
+      transaction.record.active_model_call = None;
       Ok(())
     })
   }
   pub(crate) fn start_tool(&mut self, call: &ToolCall) -> Result<(), SessionError> {
     let call = call.clone();
-    self.update(move |edit| edit.update_tool(&call, None))
+    self.update(move |transaction| transaction.update_tool(&call, None))
   }
   pub(crate) fn accept_tool_outcome(
     &mut self,
@@ -62,16 +71,44 @@ impl Session {
     outcome: ToolOutcome,
   ) -> Result<(), SessionError> {
     let call = call.clone();
-    self.update(move |edit| edit.update_tool(&call, Some(outcome)))
+    self.update(move |transaction| transaction.update_tool(&call, Some(outcome)))
   }
   pub(crate) fn complete_tools(&mut self) -> Result<(), SessionError> {
-    self.update(move |edit| edit.complete_tools())
+    self.update(move |transaction| transaction.complete_tools())
   }
   pub(crate) fn finish_run(&mut self, outcome: RunOutcome) -> Result<(), SessionError> {
-    self.update(move |edit| edit.finish_run(outcome))
+    self.update(move |transaction| transaction.finish_run(outcome))
+  }
+  pub fn get_state(&self) -> &SessionState {
+    &self.record.state
+  }
+  pub fn resume(&mut self) -> Result<(), SessionError> {
+    self.require_stable()?;
+    self.update(move |transaction| {
+      transaction.transition_to(SessionState::Ready { completed_turns: 0, needs_model: true })
+    })
+  }
+  pub(crate) fn require_stable(&self) -> Result<(), SessionError> {
+    if self.record.state.is_stable() { Ok(()) } else { Err(SessionError::Busy) }
+  }
+  pub(crate) fn begin_compaction(&mut self) -> Result<(), SessionError> {
+    self.require_stable()?;
+    self.update(|transaction| {
+      let resume = Box::new(transaction.record.state.clone());
+      transaction.transition_to(SessionState::Compacting { resume })
+    })
+  }
+  pub(crate) fn end_compaction(&mut self) -> Result<(), SessionError> {
+    self.update(|transaction| {
+      let SessionState::Compacting { resume } = transaction.record.state.clone() else {
+        return Err(SessionError::Busy);
+      };
+      transaction.record.active_model_call = None;
+      transaction.transition_to(*resume)
+    })
   }
 }
-impl SessionEdit<'_, '_> {
+impl SessionTransaction<'_, '_> {
   fn advance(&mut self) -> Result<SessionAction, SessionError> {
     match self.record.state.clone() {
       SessionState::Idle => Ok(SessionAction::Finished(RunOutcome::Completed)),
@@ -93,23 +130,7 @@ impl SessionEdit<'_, '_> {
           return Ok(SessionAction::Finished(RunOutcome::Completed));
         }
         let turn = completed_turns + 1;
-        let queue_start = self.record.queue_head;
-        let generation = self.load_generation(self.record.active)?;
-        while self.record.queue_head < queue_end {
-          let page = self.tx.read_page::<EntryId>(
-            &self.record.queue,
-            self.record.queue_head,
-            PAGE_SIZE as usize,
-          )?;
-          for id in &page.items {
-            self.tx.append_item(&generation.entries, id.as_ref())?;
-            self.record_history(HistoryItem::Message(**id))?;
-          }
-          self.record.queue_head += page.items.len() as u64;
-        }
-        if queue_start != queue_end {
-          self.record_event(SessionEvent::InputsConsumed { queue_start, queue_end })?;
-        }
+        self.consume_inputs(queue_end)?;
         let request = Arc::new(self.build_request()?);
         self.start_model_call(
           request.conversation.len() as u64,
@@ -289,5 +310,11 @@ impl SessionEdit<'_, '_> {
       self.transition_to(SessionState::Suspended { outcome: event })?;
     }
     self.record_event(SessionEvent::Finished(outcome))
+  }
+  pub fn transition_to(&mut self, next: SessionState) -> Result<(), SessionError> {
+    let from = self.record.state.get_phase();
+    let to = next.get_phase();
+    self.record.state = next;
+    self.record_event(SessionEvent::StateChanged { from, to })
   }
 }

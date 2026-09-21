@@ -1,8 +1,10 @@
 //! Persisted observations of logical model calls. Counts belong to a call, not each message.
+mod calls;
 use crate::{
   protocol::{StopReason, Usage},
   session::GenerationId,
 };
+pub(super) use calls::record_stream_usage;
 
 /// Unix time in milliseconds. Ordering is defined by history sequence numbers, not wall time.
 #[derive(

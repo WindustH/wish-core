@@ -1,5 +1,7 @@
 use super::{
-  DataEncoding, KillMode, ShellConfig, ShellError, ShellOperation, operation,
+  DataEncoding, KillMode, ShellConfig, ShellError, ShellOperation,
+  edit::{EditCapture, EditResult},
+  operation,
   platform::{self, ProcessTree},
   process::{self, Execution, Snapshot, Status},
 };
@@ -118,14 +120,23 @@ impl ShellTool {
       return ToolOutcome::Cancelled;
     }
     let result = match operation {
-      ShellOperation::Start { command, timeout, data, encoding, interactive } => {
+      ShellOperation::Start { command, timeout, data, encoding, interactive, edit } => {
         let timeout = match timeout {
           None | Some(-1.0) => Ok(self.inner.config.soft_timeout),
           Some(seconds) => Duration::try_from_secs_f64(seconds)
             .map_err(|error| ShellError::InvalidArguments(error.to_string())),
         };
         match (timeout, data.map(|data| encoding.decode(data)).transpose()) {
-          (Ok(timeout), Ok(data)) => self.start(command, timeout, data, interactive, control).await,
+          (Ok(timeout), Ok(data)) => {
+            let edit = match edit {
+              Some(path) => EditCapture::capture(path).await.map(Some),
+              None => Ok(None),
+            };
+            match edit {
+              Ok(edit) => self.start(command, timeout, data, interactive, edit, control).await,
+              Err(error) => Err(error),
+            }
+          }
           (Err(error), _) | (_, Err(error)) => Err(error),
         }
       }
@@ -151,10 +162,11 @@ impl ShellTool {
         }
       }
       ShellOperation::Kill { execution_id, mode } => match self.get_execution(&execution_id) {
-        Ok(execution) => execution
-          .terminate(mode)
-          .await
-          .map(|snapshot| json!({"execution_id": execution_id, "process": snapshot})),
+        Ok(execution) => execution.terminate(mode).await.map(|snapshot| {
+          let mut output = json!({"execution_id": execution_id, "process": snapshot});
+          attach_edit(&mut output, &snapshot);
+          output
+        }),
         Err(error) => Err(error),
       },
     };
@@ -170,6 +182,7 @@ impl ShellTool {
     command: String,
     data: Option<Vec<u8>>,
     interactive: bool,
+    edit: Option<EditCapture>,
     control: &ExecutionControl,
   ) -> Result<Arc<Execution>, ShellError> {
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -207,7 +220,10 @@ impl ShellTool {
     let mut child = builder.spawn()?;
     let group = ProcessTree::attach(&child)?;
     let (kills, receiver) = mpsc::unbounded_channel();
-    let (state, _) = watch::channel(Snapshot::default());
+    let (state, _) = watch::channel(Snapshot {
+      edit: edit.as_ref().map(|edit| Arc::new(EditResult::Pending { path: edit.path.clone() })),
+      ..Snapshot::default()
+    });
     let (initial_input_done, _) = watch::channel(data.is_none());
     let execution = Arc::new(Execution {
       id: id.clone(),
@@ -243,6 +259,7 @@ impl ShellTool {
       receiver,
       self.inner.config.kill_grace,
       initial_input,
+      edit,
     ));
     Ok(execution)
   }
@@ -252,10 +269,11 @@ impl ShellTool {
     timeout: Duration,
     data: Option<Vec<u8>>,
     interactive: bool,
+    edit: Option<EditCapture>,
     control: &ExecutionControl,
   ) -> Result<Value, ShellError> {
     let deadline = resolve_deadline(timeout)?;
-    let execution = self.spawn(command, data, interactive, control).await?;
+    let execution = self.spawn(command, data, interactive, edit, control).await?;
     let mut foreground = Foreground { execution: execution.clone(), returned: false };
     let reason = loop {
       if control.is_cancelled() {
@@ -371,7 +389,15 @@ async fn read_output(
     }
     DataEncoding::Base64 => (base64::engine::general_purpose::STANDARD.encode(&bytes), false),
   };
-  Ok(json!({"execution_id":execution.id, "process":snapshot, "output_path":execution.output_path,
+  let mut output = json!({"execution_id":execution.id, "process":snapshot, "output_path":execution.output_path,
     "output_bytes":total, "next_offset":next_offset, "eof":snapshot.status != Status::Running && next_offset >= total,
-    "encoding":encoding, "text":text, "lossy":lossy}))
+    "encoding":encoding, "text":text, "lossy":lossy});
+  attach_edit(&mut output, &snapshot);
+  Ok(output)
+}
+
+fn attach_edit(output: &mut Value, snapshot: &Snapshot) {
+  if let Some(edit) = &snapshot.edit {
+    output["edit"] = json!(edit);
+  }
 }
