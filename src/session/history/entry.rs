@@ -22,10 +22,8 @@ pub struct Entry {
   pub id: EntryId,
   pub origin: EntryOrigin,
   pub message: Message,
-  /// Time this entry was created, before dispatching its storage transaction. Legacy rows lack it.
-  #[serde(default)]
-  pub recorded_at: Option<Timestamp>,
+  /// Time this entry was created, before dispatching its storage transaction.
+  pub recorded_at: Timestamp,
   /// Originating model call, shared by all its response/replay messages.
-  #[serde(default)]
   pub model_call_id: Option<ModelCallId>,
 }

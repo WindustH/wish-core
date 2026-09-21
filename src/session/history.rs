@@ -1,5 +1,9 @@
 //! Complete message/event history, independent of the active context.
 mod entry;
+mod index;
+pub mod query;
+mod reader;
+pub use reader::HistoryReader;
 mod event;
 pub use entry::{Entry, EntryId, EntryOrigin};
 pub use event::SessionEvent;
@@ -23,10 +27,8 @@ pub struct HistoryRecord {
   pub sequence: u64,
   pub generation: GenerationId,
   pub item: HistoryItem,
-  /// Event creation/receipt time, retained across batched writes. None for legacy history.
-  #[serde(default)]
-  pub recorded_at: Option<Timestamp>,
-  #[serde(default)]
+  /// Event creation/receipt time, retained across batched writes.
+  pub recorded_at: Timestamp,
   pub model_call_id: Option<ModelCallId>,
 }
 
@@ -65,7 +67,7 @@ impl Session {
         .iter()
         .enumerate()
         .map(|(offset, _)| HistoryRecord {
-          recorded_at: Some(timestamps[offset]),
+          recorded_at: timestamps[offset],
           model_call_id: record.active_model_call,
           sequence: first_sequence + offset as u64,
           generation: record.active,
@@ -73,6 +75,9 @@ impl Session {
         })
         .collect();
       tx.append_items(&record.history, &history)?;
+      for (item, event) in history.iter().zip(&events) {
+        index::index_event_record(tx, &record.history, item, event)?;
+      }
       Ok(())
     })
   }
@@ -102,15 +107,20 @@ impl SessionTransaction<'_, '_> {
     model_call_id: Option<ModelCallId>,
   ) -> Result<(), SessionError> {
     let sequence = self.tx.list_len::<HistoryRecord>(&self.record.history)?;
-    self.tx.append_item(
+    let record = HistoryRecord {
+      sequence,
+      generation: self.record.active,
+      item,
+      recorded_at: self.recorded_at,
+      model_call_id,
+    };
+    self.tx.append_item(&self.record.history, &record)?;
+    index::index_record(
+      self.tx,
       &self.record.history,
-      &HistoryRecord {
-        sequence,
-        generation: self.record.active,
-        item,
-        recorded_at: Some(self.recorded_at),
-        model_call_id,
-      },
+      &self.record.entries,
+      &self.record.events,
+      &record,
     )?;
     Ok(())
   }
@@ -126,7 +136,7 @@ impl SessionTransaction<'_, '_> {
         id,
         origin,
         message,
-        recorded_at: Some(self.recorded_at),
+        recorded_at: self.recorded_at,
         model_call_id: if matches!(
           origin,
           EntryOrigin::Model | EntryOrigin::Interrupted | EntryOrigin::Summary

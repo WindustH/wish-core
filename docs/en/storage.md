@@ -50,9 +50,8 @@ wait for replies; different sessions may still await model/tool work concurrentl
 last handle closes the channel and joins the worker. No external-writer cache checks or revision
 conflict protocol are maintained.
 
-Schema version 2 removes the old revision column. Version 1 databases upgrade transactionally
-without rewriting message/history data. Type names still reject opening an object/list as the
-wrong Rust type.
+Storage creates schema version 3 and rejects other existing versions; it does not migrate old
+data. Current Rust type names reject opening an object/list as the wrong type.
 
 `StoredList::append_items` and `Transaction::append_items` append a batch using one prepared
 INSERT and one list-length update, returning its starting position. Elements remain separate rows.

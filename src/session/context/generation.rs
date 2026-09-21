@@ -24,7 +24,6 @@ pub struct Generation {
   pub entries: ListId,
   pub config: SessionConfig,
   /// First entry still eligible for summarization; prior summaries are never summarized again.
-  #[serde(default)]
   pub compaction_cursor: u64,
   /// The stable source prefix captured when standby was prepared.
   pub(crate) source: Option<(GenerationId, u64)>,

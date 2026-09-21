@@ -5,6 +5,7 @@ use crate::storage::{ListId, StorageError, Transaction};
 use serde_json::Value;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SessionRecord {
   pub(super) metadata: Value,
   pub(super) config: SessionConfig,
@@ -17,11 +18,8 @@ pub(super) struct SessionRecord {
   pub(super) generations: ListId,
   pub(super) queue: ListId,
   pub(super) queue_head: u64,
-  #[serde(default)]
   pub(super) next_list_id: u64,
-  #[serde(default)]
-  pub(super) model_calls: Option<ListId>,
-  #[serde(default)]
+  pub(super) model_calls: ListId,
   pub(super) active_model_call: Option<ModelCallId>,
 }
 
@@ -57,15 +55,4 @@ impl SessionTransaction<'_, '_> {
     self.tx.create_list::<T>(&list)?;
     Ok(list)
   }
-}
-
-/// Preserve the existing on-disk kind strings when implementation modules move.
-/// Register before creating/loading records; the mapping is shared by all storage handles.
-pub(super) fn register_storage_types(tx: &mut Transaction<'_>) {
-  tx.register_type_name::<SessionRecord>("wish_core::session::SessionRecord");
-  tx.register_type_name::<super::Generation>("wish_core::session::generation::Generation");
-  tx.register_type_name::<super::Entry>("wish_core::session::history::Entry");
-  tx.register_type_name::<super::EntryId>("wish_core::session::history::EntryId");
-  tx.register_type_name::<super::SessionEvent>("wish_core::session::event::SessionEvent");
-  tx.register_type_name::<super::ToolExecution>("wish_core::session::state::ToolExecution");
 }

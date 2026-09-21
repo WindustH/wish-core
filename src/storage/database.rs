@@ -2,8 +2,7 @@ use super::cache::Cache;
 use super::{ListId, StorageError, StoredList, StoredObject, StoredValue, Transaction};
 use rusqlite::Connection;
 use std::{
-  any::TypeId,
-  collections::{HashMap, HashSet},
+  collections::HashSet,
   path::{Path, PathBuf},
   sync::{Arc, mpsc},
   thread,
@@ -22,7 +21,6 @@ struct Database {
   connection: Connection,
   cache: Cache,
   owners: HashSet<String>,
-  type_names: HashMap<TypeId, &'static str>,
 }
 type Job = Box<dyn FnOnce(&mut Database) + Send>;
 enum Command {
@@ -135,14 +133,9 @@ impl Storage {
     self
       .dispatch(move |database| {
         let sql = database.connection.transaction().map_err(StorageError::from).map_err(E::from)?;
-        let mut tx = Transaction {
-          sql,
-          cache: &mut database.cache,
-          dirty: HashSet::new(),
-          type_names: &mut database.type_names,
-        };
+        let mut tx = Transaction { sql, cache: &mut database.cache, dirty: HashSet::new() };
         let result = edit(&mut tx)?;
-        let Transaction { sql, cache, dirty, .. } = tx;
+        let Transaction { sql, cache, dirty } = tx;
         sql.commit().map_err(StorageError::from).map_err(E::from)?;
         for key in dirty {
           cache.invalidate(&key);
@@ -241,13 +234,10 @@ impl Database {
       "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
     )?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if !(0..=2).contains(&version) {
+    if !matches!(version, 0 | 3) {
       return Err(StorageError::SchemaVersion(version));
     }
     let tx = connection.transaction()?;
-    if version == 1 {
-      tx.execute_batch("ALTER TABLE wish_objects DROP COLUMN revision;")?;
-    }
     tx.execute_batch(
       "CREATE TABLE IF NOT EXISTS wish_objects (
       name TEXT PRIMARY KEY,kind TEXT NOT NULL,value BLOB NOT NULL);
@@ -256,14 +246,10 @@ impl Database {
       CREATE TABLE IF NOT EXISTS wish_items (
       list TEXT NOT NULL REFERENCES wish_lists(name),position INTEGER NOT NULL CHECK(position>=0),
       value BLOB NOT NULL,PRIMARY KEY(list,position)) WITHOUT ROWID;
-      PRAGMA user_version=2;",
+      PRAGMA user_version=3;",
     )?;
+    super::search::create_schema(&tx)?;
     tx.commit()?;
-    Ok(Self {
-      connection,
-      cache: Cache::new(options.cache_capacity_bytes),
-      owners: HashSet::new(),
-      type_names: HashMap::new(),
-    })
+    Ok(Self { connection, cache: Cache::new(options.cache_capacity_bytes), owners: HashSet::new() })
   }
 }

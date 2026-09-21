@@ -69,6 +69,7 @@ pub struct UpstreamCompactionRequest {
 }
 
 /// What a service handed back in place of a conversation.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct UpstreamCompaction {
   /// The items to start the next call with, in the order they have to travel: the compacted history,
   /// preceded by whatever the service handed back verbatim beside it.

@@ -15,6 +15,10 @@ use serde_json::Value;
 /// Stream events are observed immediately and then persisted in batches.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub enum SessionEvent {
+  UpstreamCompactionStarted {
+    generation: GenerationId,
+  },
+  UpstreamCompactionCompleted(Box<crate::protocol::upstream_compaction::UpstreamCompaction>),
   CompactionSummaryStarted {
     source_start: u64,
     source_end: u64,

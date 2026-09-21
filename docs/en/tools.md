@@ -101,3 +101,35 @@ The external shell black-box suite runs natively on Unix or Windows. On a Linux 
 Windows Rust target, MinGW and Wine installed, run it with `WISH_CORE_SHELL_TARGET=x86_64-pc-windows-gnu`
 and `WISH_CORE_SHELL_RUNNER=wine`; Wine state stays in its temporary test directory; Mono/Gecko installer entry points are disabled.
 Wine is opt-in and is never started by the default test command.
+
+## History search
+
+`tool::search_history::SearchHistoryTool::new(&session)` binds the `search_history` tool to that
+session's permanent history. Register its specification in SessionConfig.tools and delegate to it
+from the application's tool dispatcher, alongside shell or other tools. It does not take a session
+ID in tool arguments and cannot search another session.
+
+```rust
+let history_tool = wish_core::tool::search_history::SearchHistoryTool::new(&session);
+let mut config = session.get_config().clone();
+config.tools.push(history_tool.get_specification());
+session.set_config(config)?;
+```
+
+```json
+{"operation":"search","query":{"text":"历史决策","mode":"substring","limit":10},"filter":{"message_types":["user","assistant"],"since":1700000000000,"until":1800000000000}}
+```
+
+Use `query` with `filter` and `page` to browse matching records. An omitted filter defaults to
+messages; an explicit empty filter includes events too. Use `read` with a returned `sequence`
+and optional `before`/`after` counts to expand the original content. Example:
+
+```json
+{"operation":"read","sequence":42,"before":2,"after":3}
+```
+
+Compression does not remove the historical messages this tool reads. Retrieval does not insert
+old messages into active context; results arrive as an ordinary tool result for the model to review.
+Blocking storage queries run outside the async executor thread. Cancellation before launch skips
+the operation; cancellation during a read waits for its completion and returns Cancelled.
+See [history queries](history.md) for indexing, pagination and metadata behavior.

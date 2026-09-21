@@ -1,27 +1,14 @@
 use super::cache::{Cache, CacheKey, CachedValue};
 use super::{ListId, PAGE_SIZE, Page, StorageError, StoredValue};
 use rusqlite::{OptionalExtension, params};
-use std::{
-  any::{TypeId, type_name},
-  collections::{HashMap, HashSet},
-  sync::Arc,
-};
+use std::{any::type_name, collections::HashSet, sync::Arc};
 
 pub struct Transaction<'a> {
   pub(crate) sql: rusqlite::Transaction<'a>,
   pub(crate) cache: &'a mut Cache,
-  pub(crate) type_names: &'a mut HashMap<TypeId, &'static str>,
   pub(crate) dirty: HashSet<CacheKey>,
 }
 impl Transaction<'_> {
-  /// Session initialization pins persisted identities independently of Rust module paths.
-  pub(crate) fn register_type_name<T: StoredValue>(&mut self, name: &'static str) {
-    self.type_names.insert(TypeId::of::<T>(), name);
-  }
-  fn get_type_name<T: StoredValue>(&self) -> &'static str {
-    self.type_names.get(&TypeId::of::<T>()).copied().unwrap_or_else(type_name::<T>)
-  }
-
   fn load_cached<T: Send + Sync + 'static>(&mut self, key: &CacheKey) -> Option<Arc<T>> {
     if self.dirty.contains(key) {
       return None;
@@ -41,7 +28,7 @@ impl Transaction<'_> {
     let bytes = serde_json::to_vec(value)?;
     let changed = self.sql.execute(
       "INSERT OR IGNORE INTO wish_objects(name,kind,value) VALUES(?1,?2,?3)",
-      params![name, self.get_type_name::<T>(), bytes],
+      params![name, type_name::<T>(), bytes],
     )?;
     if changed == 0 {
       return Err(StorageError::AlreadyExists(name.into()));
@@ -61,7 +48,7 @@ impl Transaction<'_> {
       })
       .optional()?
       .ok_or_else(|| StorageError::NotFound(name.into()))?;
-    if kind != self.get_type_name::<T>() {
+    if kind != type_name::<T>() {
       return Err(StorageError::TypeMismatch(name.into()));
     }
     let value = Arc::new(serde_json::from_slice::<T>(&bytes)?);
@@ -78,7 +65,7 @@ impl Transaction<'_> {
   pub fn create_list<T: StoredValue>(&mut self, list: &ListId) -> Result<(), StorageError> {
     let changed = self.sql.execute(
       "INSERT OR IGNORE INTO wish_lists(name,kind,length) VALUES(?1,?2,0)",
-      params![list.0, self.get_type_name::<T>()],
+      params![list.0, type_name::<T>()],
     )?;
     if changed == 0 {
       return Err(StorageError::AlreadyExists(list.0.clone()));
@@ -93,7 +80,7 @@ impl Transaction<'_> {
       })
       .optional()?
       .ok_or_else(|| StorageError::NotFound(list.0.clone()))?;
-    if kind != self.get_type_name::<T>() {
+    if kind != type_name::<T>() {
       return Err(StorageError::TypeMismatch(list.0.clone()));
     }
     u64::try_from(length).map_err(|_| StorageError::Corrupt("negative length".into()))

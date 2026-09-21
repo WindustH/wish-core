@@ -160,6 +160,10 @@ impl<T: Transport> Client<T> {
     Ok(self)
   }
 
+  pub fn get_upstream_compaction_protocol(&self) -> Option<UpstreamCompactionProtocol> {
+    self.upstream_compaction
+  }
+
   pub fn get_token_count_protocol(&self) -> Option<crate::protocol::TokenCountProtocol> {
     self.token_count
   }

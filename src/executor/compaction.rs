@@ -1,4 +1,5 @@
-//! Incremental standby summaries and atomic, protocol-validated context replacement.
+//! Upstream compaction or incremental standby summaries, with validated atomic cutover.
+mod upstream;
 use super::model::tokens::{TokenMeasurement, TokenMeasurementSource};
 use super::{
   ExecutionControl,
@@ -106,17 +107,25 @@ pub(super) async fn maintain(
       (call.last_request_input_tokens? >= config.trigger_tokens).then_some(CompactionReason::Usage)
     })
   });
-  let standby = session.get_standby_generation()?;
+  let upstream = caller.supports_upstream_compaction();
+  if upstream && reason.is_none() {
+    return Ok(None);
+  }
   let fixed = request
     .conversation
     .iter()
     .take_while(|message| matches!(message, Message::System { .. } | Message::Developer { .. }))
     .count();
-  let processed = standby
-    .source
-    .filter(|(id, _)| *id == active.id)
-    .map(|(_, end)| end as usize)
-    .unwrap_or((active.compaction_cursor as usize).max(fixed));
+  let processed = if upstream {
+    0
+  } else {
+    let standby = session.get_standby_generation()?;
+    standby
+      .source
+      .filter(|(id, _)| *id == active.id)
+      .map(|(_, end)| end as usize)
+      .unwrap_or((active.compaction_cursor as usize).max(fixed))
+  };
   // Only previously sent, completed input is eligible. The newest response/tool results stay raw.
   let eligible = last.as_ref().map(|call| call.input_entry_count as usize).unwrap_or(0);
   if reason.is_none() && (eligible <= processed || processed >= request.conversation.len()) {
@@ -125,7 +134,22 @@ pub(super) async fn maintain(
   session.begin_compaction()?;
   notify_observers(session, cursor, observe)?;
   let result = async {
-    if let Some(reason) = reason {
+    if upstream {
+      upstream::replace_context(
+        caller,
+        session,
+        control,
+        cursor,
+        observe,
+        upstream::Plan {
+          request,
+          fixed,
+          reason: reason.expect("upstream compaction requires a trigger"),
+          sizing: Sizing { config: &config, calibration },
+        },
+      )
+      .await
+    } else if let Some(reason) = reason {
       replace_context(
         caller,
         session,

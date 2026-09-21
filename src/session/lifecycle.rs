@@ -1,5 +1,5 @@
 use super::context::validate_tool_pairs;
-use super::persistence::{SessionRecord, SessionTransaction, register_storage_types};
+use super::persistence::{SessionRecord, SessionTransaction};
 use super::statistics::{ModelCallRecord, Timestamp};
 use super::{
   Entry, EntryId, EntryOrigin, Generation, GenerationId, GenerationStatus, HistoryRecord, Session,
@@ -23,7 +23,6 @@ impl Session {
     let target = key.clone();
     let recorded_at = Timestamp::now();
     let record = storage.transaction(move |tx| -> Result<_, SessionError> {
-      register_storage_types(tx);
       let key = target;
       let mut record = SessionRecord {
         metadata: Value::Null,
@@ -38,10 +37,10 @@ impl Session {
         queue: ListId(format!("{key}/queue")),
         queue_head: 0,
         next_list_id: 0,
-        model_calls: Some(ListId(format!("{key}/model_calls"))),
+        model_calls: ListId(format!("{key}/model_calls")),
         active_model_call: None,
       };
-      tx.create_list::<ModelCallRecord>(record.model_calls.as_ref().unwrap())?;
+      tx.create_list::<ModelCallRecord>(&record.model_calls)?;
       tx.create_list::<Entry>(&record.entries)?;
       tx.create_list::<SessionEvent>(&record.events)?;
       tx.create_list::<HistoryRecord>(&record.history)?;
@@ -76,14 +75,7 @@ impl Session {
     let owner = storage.claim_owner(&key)?;
     let target = key.clone();
     let record = storage.transaction(move |tx| -> Result<_, SessionError> {
-      register_storage_types(tx);
-      let mut record = (*tx.load_object::<SessionRecord>(&target)?).clone();
-      if record.model_calls.is_none() {
-        let list = ListId(format!("{target}/model_calls"));
-        tx.create_list::<ModelCallRecord>(&list)?;
-        record.model_calls = Some(list);
-        tx.save_object(&target, &record)?;
-      }
+      let record = (*tx.load_object::<SessionRecord>(&target)?).clone();
       Ok(record)
     })?;
     Ok(Self::from_record(storage, key, owner, record))

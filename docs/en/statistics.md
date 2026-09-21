@@ -2,9 +2,10 @@
 
 `session::statistics::ModelCallRecord` describes one logical agent model call. Client retries and executor output continuations remain inside
 that call; these records do not count individual network attempts or direct token-count API calls.
-The purpose distinguishes `Conversation` from `CompactionSummary` (legacy records default to
-Conversation). Summary entries link to their summary call; its input boundary is zero because
-its prompt is constructed independently from a source span.
+The purpose distinguishes `Conversation`, `CompactionSummary` and `UpstreamCompaction`. Summary entries link to their summary call; its input boundary
+is zero because its prompt is constructed independently from a source span. Upstream compaction
+records the full active input length and links its opaque entries to that call. Neither compaction
+purpose supplies the conversation usage used to trigger the next compaction.
 Each session has a paged list, exposed by `get_model_calls()` and `get_model_call(id)`.
 
 ```text
@@ -45,9 +46,6 @@ survives interruption, stream errors and rejected responses. These records prese
 existing Usage representation; they do not reinterpret billing, estimate missing tokens, or supply
 provider-level calibration aggregates yet.
 
-Legacy Entry/history JSON loads missing timestamps and call IDs as `None`. Loading an older
-session creates its empty call list transactionally. Historical calls and times are not invented.
-
 For output continuation, usage sums the distinct requests while retaining unknown totals when any
 request omits a field. The input boundary describes the initial Session request; continuation
 instructions and additional request-local context remain internal to the model executor.
@@ -55,7 +53,7 @@ instructions and additional request-local context remain internal to the model e
 it is not summed across continuations. It is `None` when that request omitted input usage or no
 request completed. If a later continuation fails or is interrupted, the previous completed
 request's reading remains. This describes an actual sent request, not the size of a newly edited
-context. Legacy records load this field as `None`.
+context.
 
 `last_request_estimated_tokens` stores the local estimate of that same physical request when
 compaction is configured. Its ratio with actual input usage calibrates later fallback estimates;

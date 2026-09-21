@@ -41,6 +41,7 @@ pub enum ModelCallPurpose {
   #[default]
   Conversation,
   CompactionSummary,
+  UpstreamCompaction,
 }
 
 /// One logical call, including retries performed internally by ModelCaller.
@@ -48,7 +49,6 @@ pub enum ModelCallPurpose {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ModelCallRecord {
   pub id: ModelCallId,
-  #[serde(default)]
   pub purpose: ModelCallPurpose,
   pub generation: GenerationId,
   pub model: String,
@@ -67,10 +67,8 @@ pub struct ModelCallRecord {
   pub usage: Usage,
   /// Input size reported by the last completed physical request in this logical call.
   /// Unlike `usage.input_tokens`, this is not summed across output continuations.
-  #[serde(default)]
   pub last_request_input_tokens: Option<u64>,
   /// Fallback estimate of that same physical request, for subsequent estimate calibration.
-  #[serde(default)]
   pub last_request_estimated_tokens: Option<u64>,
   pub stop_reason: Option<StopReason>,
 }

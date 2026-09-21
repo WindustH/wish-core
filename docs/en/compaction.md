@@ -5,6 +5,45 @@ segment_tokens, estimator: Default::default() })`. Budgets are input tokens, inc
 instructions and tools; require `0 < target_tokens < trigger_tokens` and `segment_tokens > 0`.
 Disabled by default. Applications choose budgets for their model's context window and output reserve.
 
+## Upstream compaction
+
+When `ModelCaller::supports_upstream_compaction()` is true, the executor skips local standby
+summarization. `Client` reports this capability when configured with `with_upstream_compaction`;
+custom callers implement the capability and `compact_upstream` together.
+
+```text
+usage trigger / context rejection / manual request
+                       |
+       send the whole active context to upstream compact
+                       |
+       fixed prefix + returned opaque body + latest User message
+                       |
+          validate protocol and measure the new request
+                       |
+          atomically append a fresh active generation
+```
+
+Leading System/Developer entries and the most recent User entry are reused verbatim, including
+metadata. Only returned `UpstreamCompaction` items form the body; echoed messages are not copied
+into the new context. If there is no User message, that last part is omitted. Queued input remains
+queued and is consumed normally by the executor. A later compaction sends the previous opaque
+body as part of the full active context.
+
+This path neither promotes nor seeds a standby generation. The existing standby handle remains
+empty for compatibility with session APIs; any previously prepared local context is cleared on
+successful cutover. Old generations and history remain available. The compaction cursor points
+after the opaque body, before the retained user message.
+
+The three parts are indivisible: exceeding the target reports failure instead of deleting the
+opaque body or latest user message. Unsupported response structure, provider/count errors and
+cancellation preserve the active generation, without falling back to local summaries. Calls have
+purpose `UpstreamCompaction`; their usage and timing are recorded separately from conversation
+occupancy. Start/completion events retain the upstream response, account reading and warnings.
+
+## Local compaction
+
+Callers without upstream compaction continue to use incremental standby summaries:
+
 ```text
 completed conversation request -> actual input usage
               |

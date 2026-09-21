@@ -6,11 +6,17 @@ use crate::storage::{ReadList, StorageError, Transaction};
 use std::sync::Arc;
 
 impl Session {
+  pub(crate) fn start_upstream_compaction_call(
+    &mut self,
+    input_entry_count: u64,
+  ) -> Result<(), SessionError> {
+    self.update(move |transaction| {
+      transaction.start_model_call(input_entry_count, ModelCallPurpose::UpstreamCompaction)
+    })
+  }
+
   pub fn get_model_calls(&self) -> ReadList<ModelCallRecord> {
-    self
-      .storage
-      .open_list(self.record.model_calls.as_ref().expect("session initializes call list"))
-      .read_only()
+    self.storage.open_list(&self.record.model_calls).read_only()
   }
   pub fn get_model_call(
     &self,
@@ -35,7 +41,7 @@ impl SessionTransaction<'_, '_> {
     input_entry_count: u64,
     purpose: ModelCallPurpose,
   ) -> Result<(), SessionError> {
-    let list = self.record.model_calls.as_ref().expect("session initializes call list");
+    let list = &self.record.model_calls;
     let id = ModelCallId(self.tx.list_len::<ModelCallRecord>(list)?);
     self.tx.append_item(
       list,
@@ -69,7 +75,7 @@ impl SessionTransaction<'_, '_> {
       .record
       .active_model_call
       .ok_or_else(|| StorageError::Corrupt("missing active model call".into()))?;
-    let list = self.record.model_calls.as_ref().expect("session initializes call list");
+    let list = &self.record.model_calls;
     let mut call = (*self
       .tx
       .get_item::<ModelCallRecord>(list, id.0)?
@@ -95,7 +101,7 @@ pub(in crate::session) fn record_stream_usage(
   events: &[SessionEvent],
 ) -> Result<(), SessionError> {
   if let Some(id) = record.active_model_call {
-    let list = record.model_calls.as_ref().expect("session initializes call list");
+    let list = &record.model_calls;
     let mut call = (*tx
       .get_item::<ModelCallRecord>(list, id.0)?
       .ok_or_else(|| StorageError::Corrupt("missing model call record".into()))?)

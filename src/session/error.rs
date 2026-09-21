@@ -3,6 +3,8 @@ use crate::storage::StorageError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
+  #[error("invalid history query: {0}")]
+  InvalidHistoryQuery(String),
   #[error(transparent)]
   Storage(#[from] StorageError),
   #[error("operation requires a stable session boundary")]

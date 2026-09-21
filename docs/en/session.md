@@ -21,9 +21,7 @@ session/
 
 Each area contains its types and operations. `SessionTransaction` methods are implemented in
 the area that owns the operation, while `persistence` owns the shared transaction boundary.
-State, messages, events and call observations can therefore commit together. Session creation
-and loading register the original storage type names; moving Rust modules does not rename
-database kinds or require rewriting existing records.
+State, messages, events and call observations can therefore commit together.
 
 ```text
 Session header                 independently stored, paged collections
@@ -53,8 +51,7 @@ let page = session.get_history().read_page(0, 128)?;
 `Session::new(config)` uses an in-memory SQLite database for ephemeral use. `from_request`
 imports paired stable history into one. Session requests always use `ToolChoice::Auto`, including
 when the imported request selected another strategy. `RunOptions` only controls tool execution mode;
-there is no maximum turn count. Old serialized config fields are ignored. Historical `TurnLimit`
-outcomes remain readable as `LegacyTurnLimit` but are never produced by the runner. Use `create`/`load` for persistence.
+there is no maximum turn count. Unknown config fields are rejected. Use `create`/`load` for persistence.
 
 All getters for long collections return read-only, lazy handles. `get_history`, `get_entries`,
 `get_events`, `get_generations`, `get_generation_entries` and `get_message_queue` support bounded
@@ -97,6 +94,9 @@ Messages have creation timestamps on `Entry`; event timestamps live on `HistoryR
 receipt time across batch writes. Both also carry an optional originating `model_call_id`.
 `get_model_calls()` pages logical model calls, and `get_model_call(id)` retrieves their shared
 usage, times and status. See [call statistics](statistics.md). Message metadata remains application-owned.
+
+Use a [HistoryReader](history.md) for indexed message-type/time filters, full-text search and
+selective expansion, including across compaction.
 
 ## Session control
 

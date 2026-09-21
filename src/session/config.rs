@@ -11,11 +11,13 @@ pub enum ToolMode {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RunOptions {
   pub tools: ToolMode,
 }
 /// Session settings. Conversation is resolved from the active generation for each call.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct SessionConfig {
   pub model: String,
   pub stream: bool,

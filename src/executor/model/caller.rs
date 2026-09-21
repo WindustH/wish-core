@@ -9,6 +9,17 @@ use std::future::Future;
 /// Returns a complete response or a stream according to Request::stream.
 /// Retries remain in the client and end before it hands out the first event.
 pub trait ModelCaller: Sync {
+  /// Capability is explicit; configured compaction errors must not fall back to local summaries.
+  fn supports_upstream_compaction(&self) -> bool {
+    false
+  }
+  fn compact_upstream(
+    &self,
+    _request: &crate::protocol::upstream_compaction::UpstreamCompactionRequest,
+  ) -> impl Future<Output = Result<crate::protocol::upstream_compaction::UpstreamCompaction, Error>> + Send
+  {
+    async { Err(Error::Build("upstream compaction is not configured".into())) }
+  }
   /// None means no count endpoint is configured. Configured endpoint failures remain errors.
   fn count_tokens(
     &self,
@@ -54,6 +65,16 @@ pub trait ModelStream: Send {
 }
 
 impl<T: Transport + Sync> ModelCaller for Client<T> {
+  fn supports_upstream_compaction(&self) -> bool {
+    self.get_upstream_compaction_protocol().is_some()
+  }
+  async fn compact_upstream(
+    &self,
+    request: &crate::protocol::upstream_compaction::UpstreamCompactionRequest,
+  ) -> Result<crate::protocol::upstream_compaction::UpstreamCompaction, Error> {
+    Client::compact_upstream(self, request).await
+  }
+
   async fn count_tokens(
     &self,
     request: &Request,
