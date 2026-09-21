@@ -57,6 +57,10 @@ async fn run_session(
   loop {
     session.collect_inputs()?;
     notify_observers(session, &mut cursor, &mut observe)?;
+    if matches!(session.get_state(), SessionState::Ready { .. }) {
+      super::compaction::maintain(model_caller, session, control, &mut cursor, &mut observe, None)
+        .await?;
+    }
     if control.is_cancelled() && matches!(session.get_state(), SessionState::Ready { .. }) {
       session.finish_run(RunOutcome::Interrupted)?;
     }
@@ -68,10 +72,33 @@ async fn run_session(
         let (result, observation) =
           model::execute_model(model_caller, &request, session, control, &mut cursor, &mut observe)
             .await?;
+        let context_rejected = match &result {
+          ModelResult::Complete(response) => {
+            response.stop_reason == crate::protocol::StopReason::ContextLengthExceeded
+          }
+          ModelResult::Failed(outcome) => outcome.is_context_length_exceeded(),
+          _ => false,
+        };
         match result {
           ModelResult::Complete(response) => session.accept_response(response, observation)?,
           ModelResult::Interrupted(partial) => session.accept_interruption(partial, observation)?,
           ModelResult::Failed(outcome) => session.fail_model_call(outcome, observation)?,
+        }
+        if context_rejected && session.get_config().compaction.is_some() && !control.is_cancelled()
+        {
+          let previous = session.get_active_generation()?.id;
+          super::compaction::maintain(
+            model_caller,
+            session,
+            control,
+            &mut cursor,
+            &mut observe,
+            Some(crate::session::CompactionReason::ContextRejected),
+          )
+          .await?;
+          if session.get_active_generation()?.id != previous {
+            session.resume()?;
+          }
         }
       }
       SessionAction::ExecuteTools(calls) => {

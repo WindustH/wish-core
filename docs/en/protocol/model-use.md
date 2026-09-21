@@ -89,3 +89,11 @@ later part. Replay eligibility is tied to the source protocol and does not guara
 to another provider/model. Excluded content remains in the partial record for inspection; it is
 not included in the next request. Normal completion remains strict, and stream failures retain
 an empty context fragment.
+
+`StreamAccumulator::finish_output_limit()` closes a stream with an explicit
+`MaxOutputLengthExceeded` stop using the same certified-block replay rules. Its PartialResponse
+has `IncompleteReason::OutputLimit`, distinct from local cancellation or transport failure.
+`get_continuation_messages()` projects only text/reasoning for executor continuation; tool calls
+must be reissued and signatures bound to discarded tool calls are omitted. Buffered output-limit
+responses use `PartialResponse::from_output_limit` with conservative block-completeness assumptions.
+Normal `finish()` remains strict. See [executor continuation](../executor.md).

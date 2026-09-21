@@ -19,6 +19,9 @@ pub struct Generation {
   pub status: GenerationStatus,
   pub entries: ListId,
   pub config: SessionConfig,
+  /// First entry still eligible for summarization; prior summaries are never summarized again.
+  #[serde(default)]
+  pub compaction_cursor: u64,
   /// The stable source prefix captured when standby was prepared.
   pub(crate) source: Option<(GenerationId, u64)>,
 }
@@ -50,7 +53,8 @@ impl SessionEdit<'_, '_> {
     // The first unconsumed ID is enough to classify input entries; do not load the whole queue.
     let pending = self.tx.get_item::<EntryId>(&self.record.queue, self.record.queue_head)?;
     let mut validator = ToolPairValidator::default();
-    for id in entries {
+    let mut compaction_cursor = 0;
+    for (position, id) in entries.into_iter().enumerate() {
       let entry = self
         .tx
         .get_item::<Entry>(&self.record.entries, id.0 as u64)?
@@ -60,11 +64,17 @@ impl SessionEdit<'_, '_> {
         return Err(SessionError::PendingInput(id));
       }
       validator.accept(&entry.message)?;
+      if entry.origin == EntryOrigin::Summary
+        || matches!(entry.message, crate::protocol::Message::UpstreamCompaction { .. })
+      {
+        compaction_cursor = position as u64 + 1;
+      }
       self.tx.append_item(&list, &id)?;
     }
     validator.finish()?;
     let entry_count = self.tx.list_len::<EntryId>(&list)?;
     standby.entries = list.clone();
+    standby.compaction_cursor = compaction_cursor;
     standby.source = Some((active.id, source_length));
     self.save_generation(&standby)?;
     self.record_event(SessionEvent::GenerationPrepared {
@@ -126,6 +136,7 @@ impl SessionEdit<'_, '_> {
         entries,
         config: self.record.config.clone(),
         source: None,
+        compaction_cursor: 0,
       },
     )?;
     self.record.standby = id;

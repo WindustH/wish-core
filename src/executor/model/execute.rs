@@ -1,3 +1,4 @@
+use super::continuation::{Continuation, SegmentObservation, combine_usage};
 use super::{CallResponse, ModelCaller, ModelStream};
 use crate::executor::{ExecutionControl, observe::notify_observers};
 use crate::session::{
@@ -24,17 +25,77 @@ pub(in crate::executor) async fn execute_model(
   cursor: &mut u64,
   observe: &mut (impl FnMut(&SessionEvent) + Send),
 ) -> Result<(ModelResult, CallObservation), SessionError> {
-  let mut observation = CallObservation::default();
   let started = std::time::Instant::now();
-  let result =
-    call_model(model_caller, request, session, control, cursor, observe, &mut observation).await?;
-  observation.finished_at = Some(Timestamp::now());
-  observation.elapsed_ms = Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
-  Ok((result, observation))
+  let mut continuation = Continuation::new(request);
+  let mut first_event_at = None;
+  let mut last_request_input_tokens = None;
+  let mut last_request_estimated_tokens = None;
+  loop {
+    let mut observation = SegmentObservation {
+      call: CallObservation::default(),
+      previous_usage: continuation.usage,
+      index_offset: continuation.next_index,
+      next_index: continuation.next_index,
+    };
+    let mut result = call_model(
+      model_caller,
+      &continuation.request,
+      session,
+      control,
+      cursor,
+      observe,
+      &mut observation,
+    )
+    .await?;
+    first_event_at = first_event_at.or(observation.first_event_at);
+    continuation.next_index = observation.next_index;
+    let usage = combine_usage(continuation.usage, observation.usage);
+    if matches!(result, SegmentResult::Complete(_) | SegmentResult::OutputLimited(_)) {
+      last_request_input_tokens = observation.usage.input_tokens;
+      last_request_estimated_tokens = session
+        .get_config()
+        .compaction
+        .as_ref()
+        .map(|config| config.estimator.estimate_request(&continuation.request));
+    }
+    if let SegmentResult::OutputLimited(partial) = result {
+      continuation.extend(partial.get_continuation_messages());
+      continuation.usage = Some(usage);
+      continue;
+    }
+
+    match &mut result {
+      SegmentResult::Complete(response) => {
+        continuation.messages.append(&mut response.messages);
+        response.messages = continuation.messages;
+        response.usage = usage;
+      }
+      SegmentResult::Interrupted(partial) => {
+        partial.prepend_replay_messages(continuation.messages);
+        partial.usage = usage;
+      }
+      SegmentResult::Failed(RunOutcome::StreamFailed(partial)) => partial.usage = usage,
+      _ => {}
+    }
+    observation.call.first_event_at = first_event_at;
+    observation.call.usage = usage;
+    observation.call.last_request_input_tokens = last_request_input_tokens;
+    observation.call.last_request_estimated_tokens = last_request_estimated_tokens;
+    observation.call.finished_at = Some(Timestamp::now());
+    observation.call.elapsed_ms = Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+    let result = match result {
+      SegmentResult::Complete(response) => ModelResult::Complete(response),
+      SegmentResult::Interrupted(partial) => ModelResult::Interrupted(partial),
+      SegmentResult::Failed(outcome) => ModelResult::Failed(outcome),
+      SegmentResult::OutputLimited(_) => unreachable!("handled within the model executor"),
+    };
+    return Ok((result, observation.call));
+  }
 }
 
-pub(in crate::executor) enum ModelResult {
+enum SegmentResult {
   Complete(Response),
+  OutputLimited(PartialResponse),
   Interrupted(PartialResponse),
   Failed(RunOutcome),
 }
@@ -46,8 +107,8 @@ async fn call_model(
   control: &ExecutionControl,
   cursor: &mut u64,
   observe: &mut (impl FnMut(&SessionEvent) + Send),
-  observation: &mut CallObservation,
-) -> Result<ModelResult, SessionError> {
+  observation: &mut SegmentObservation,
+) -> Result<SegmentResult, SessionError> {
   let opened = {
     let opening = model_caller.call(request);
     let cancelled = control.wait_for_cancellation();
@@ -59,11 +120,18 @@ async fn call_model(
   };
   Ok(match opened {
     None => finalize_interruption(StreamAccumulator::new()),
-    Some(Err(error)) => ModelResult::Failed(RunOutcome::Failed(error)),
+    Some(Err(error)) => SegmentResult::Failed(RunOutcome::Failed(error)),
     Some(Ok(CallResponse::Complete(response))) => {
       observation.usage = response.usage;
       observation.stop_reason = Some(response.stop_reason);
-      ModelResult::Complete(*response)
+      if response.stop_reason == crate::protocol::StopReason::MaxOutputLengthExceeded {
+        match PartialResponse::from_output_limit(*response, model_caller.get_model_use_protocol()) {
+          Ok(partial) => SegmentResult::OutputLimited(partial),
+          Err(error) => SegmentResult::Failed(RunOutcome::Failed(error)),
+        }
+      } else {
+        SegmentResult::Complete(*response)
+      }
     }
     Some(Ok(CallResponse::Stream(stream))) => {
       receive_stream(stream, session, control, cursor, observe, observation).await?
@@ -71,20 +139,20 @@ async fn call_model(
   })
 }
 
-fn finalize_interruption(accumulator: StreamAccumulator) -> ModelResult {
+fn finalize_interruption(accumulator: StreamAccumulator) -> SegmentResult {
   match accumulator.finalize(StreamEnd::Interrupted { tools: ToolExecutionState::NotStarted }) {
-    Ok(StreamFinalization::Incomplete(partial)) => ModelResult::Interrupted(*partial),
+    Ok(StreamFinalization::Incomplete(partial)) => SegmentResult::Interrupted(*partial),
     Ok(StreamFinalization::Complete(_)) => unreachable!("interruption cannot complete a response"),
-    Err(error) => ModelResult::Failed(RunOutcome::Failed(error)),
+    Err(error) => SegmentResult::Failed(RunOutcome::Failed(error)),
   }
 }
-fn finalize_failed_stream(accumulator: StreamAccumulator, error: Error) -> ModelResult {
+fn finalize_failed_stream(accumulator: StreamAccumulator, error: Error) -> SegmentResult {
   match accumulator.finalize(StreamEnd::Failed(error)) {
     Ok(StreamFinalization::Incomplete(partial)) => {
-      ModelResult::Failed(RunOutcome::StreamFailed(partial))
+      SegmentResult::Failed(RunOutcome::StreamFailed(partial))
     }
     Ok(StreamFinalization::Complete(_)) => unreachable!("failed stream cannot complete a response"),
-    Err(error) => ModelResult::Failed(RunOutcome::Failed(error)),
+    Err(error) => SegmentResult::Failed(RunOutcome::Failed(error)),
   }
 }
 
@@ -94,8 +162,8 @@ async fn receive_stream(
   control: &ExecutionControl,
   cursor: &mut u64,
   observe: &mut (impl FnMut(&SessionEvent) + Send),
-  observation: &mut CallObservation,
-) -> Result<ModelResult, SessionError> {
+  observation: &mut SegmentObservation,
+) -> Result<SegmentResult, SessionError> {
   let mut accumulator = stream.create_accumulator();
   let mut batch = StreamEventBatch::default();
   let result = async {
@@ -147,7 +215,11 @@ async fn receive_stream(
           if let Err(error) = accumulator.feed(event.clone()) {
             return Ok(finalize_failed_stream(accumulator, error));
           }
-          let event = SessionEvent::ModelStream(event);
+          let event = match observation.map_event(event) {
+            Ok(Some(event)) => SessionEvent::ModelStream(event),
+            Ok(None) => continue,
+            Err(error) => return Ok(finalize_failed_stream(accumulator, error)),
+          };
           batch.push(received_at, event.clone())?;
           observe(&event);
           if batch.is_full() {
@@ -160,10 +232,16 @@ async fn receive_stream(
     if control.is_cancelled() {
       return Ok(finalize_interruption(accumulator));
     }
+    if observation.stop_reason == Some(crate::protocol::StopReason::MaxOutputLengthExceeded) {
+      return Ok(match accumulator.finish_output_limit() {
+        Ok(partial) => SegmentResult::OutputLimited(partial),
+        Err(error) => SegmentResult::Failed(RunOutcome::Failed(error)),
+      });
+    }
     Ok(match accumulator.finalize(StreamEnd::Complete) {
-      Ok(StreamFinalization::Complete(response)) => ModelResult::Complete(*response),
+      Ok(StreamFinalization::Complete(response)) => SegmentResult::Complete(*response),
       Ok(StreamFinalization::Incomplete(_)) => unreachable!("complete finalization is strict"),
-      Err(error) => ModelResult::Failed(RunOutcome::Failed(error)),
+      Err(error) => SegmentResult::Failed(RunOutcome::Failed(error)),
     })
   }
   .await;
@@ -203,4 +281,10 @@ impl StreamEventBatch {
     self.deadline = None;
     Ok(())
   }
+}
+
+pub(in crate::executor) enum ModelResult {
+  Complete(Response),
+  Interrupted(PartialResponse),
+  Failed(RunOutcome),
 }

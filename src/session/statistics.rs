@@ -34,11 +34,20 @@ pub enum ModelCallStatus {
   Failed,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ModelCallPurpose {
+  #[default]
+  Conversation,
+  CompactionSummary,
+}
+
 /// One logical call, including retries performed internally by ModelCaller.
 /// A Running record after restart has an unknown outcome; it must not be automatically retried.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ModelCallRecord {
   pub id: ModelCallId,
+  #[serde(default)]
+  pub purpose: ModelCallPurpose,
   pub generation: GenerationId,
   pub model: String,
   pub stream: bool,
@@ -54,6 +63,13 @@ pub struct ModelCallRecord {
   pub status: ModelCallStatus,
   /// Missing fields remain None. Cumulative stream updates replace previous usage.
   pub usage: Usage,
+  /// Input size reported by the last completed physical request in this logical call.
+  /// Unlike `usage.input_tokens`, this is not summed across output continuations.
+  #[serde(default)]
+  pub last_request_input_tokens: Option<u64>,
+  /// Fallback estimate of that same physical request, for subsequent estimate calibration.
+  #[serde(default)]
+  pub last_request_estimated_tokens: Option<u64>,
   pub stop_reason: Option<StopReason>,
 }
 
@@ -63,5 +79,7 @@ pub(crate) struct CallObservation {
   pub finished_at: Option<Timestamp>,
   pub elapsed_ms: Option<u64>,
   pub usage: Usage,
+  pub last_request_input_tokens: Option<u64>,
+  pub last_request_estimated_tokens: Option<u64>,
   pub stop_reason: Option<StopReason>,
 }

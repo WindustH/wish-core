@@ -11,6 +11,7 @@ pub enum SessionPhase {
   CallingModel,
   ExecutingTools,
   Suspended,
+  Compacting,
 }
 
 /// Progress belongs to the session; live network futures belong to the runner.
@@ -21,6 +22,7 @@ pub enum SessionState {
   CallingModel { turn: usize },
   ExecutingTools { turn: usize, batch: ListId },
   Suspended { outcome: EventId },
+  Compacting { resume: Box<SessionState> },
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -38,6 +40,7 @@ impl SessionState {
       Self::CallingModel { .. } => SessionPhase::CallingModel,
       Self::ExecutingTools { .. } => SessionPhase::ExecutingTools,
       Self::Suspended { .. } => SessionPhase::Suspended,
+      Self::Compacting { .. } => SessionPhase::Compacting,
     }
   }
   pub fn is_stable(&self) -> bool {

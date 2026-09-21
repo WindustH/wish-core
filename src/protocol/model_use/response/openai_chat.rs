@@ -72,7 +72,9 @@ pub fn decode(body: &Value, mode: ChatCompletionApiCompatMode) -> Result<Respons
     _ => {}
   }
   let mut tool_uses: Vec<Message> = Vec::new();
-  if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+  if decode_stop_reason(choice, mode) != StopReason::MaxOutputLengthExceeded
+    && let Some(calls) = message.get("tool_calls").and_then(Value::as_array)
+  {
     for call in calls {
       tool_uses.push(decode_tool_use(call)?);
     }

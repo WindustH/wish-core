@@ -37,8 +37,8 @@ values are never published. Use the supplied `Transaction` inside the closure: c
 storage handle there returns `NestedOperation` instead of waiting on itself.
 
 Lists store each element as its own row under `(list, position)`. Reads use indexed position
-ranges, not OFFSET. Logical pages contain 128 elements; `read_page(start, limit)` accepts 1–128,
-including reads across a page boundary. `Page::next` is the next position. Pagination sees the
+ranges, not OFFSET. Cache pages contain 128 elements; `read_page(start, limit)` accepts any positive
+limit and reads across cache pages, returning at most the remaining items. `Page::next` is the next position. Pagination sees the
 list at each read; callers needing a fixed view should retain the initial length. The cache
 retains decoded objects, individual items and pages, with a configurable approximate byte budget.
 Cache eviction never affects durable data.

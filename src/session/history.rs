@@ -14,6 +14,7 @@ pub enum EntryOrigin {
   Tool,
   Interrupted,
   Context,
+  Summary,
 }
 
 /// Immutable content. Context-only entries need not appear in the conversation transcript.

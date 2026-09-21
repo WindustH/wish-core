@@ -1,7 +1,10 @@
 # Call statistics
 
-`session::statistics::ModelCallRecord` describes one logical agent model call. Client retries remain inside
+`session::statistics::ModelCallRecord` describes one logical agent model call. Client retries and executor output continuations remain inside
 that call; these records do not count individual network attempts or direct token-count API calls.
+The purpose distinguishes `Conversation` from `CompactionSummary` (legacy records default to
+Conversation). Summary entries link to their summary call; its input boundary is zero because
+its prompt is constructed independently from a source span.
 Each session has a paged list, exposed by `get_model_calls()` and `get_model_call(id)`.
 
 ```text
@@ -44,3 +47,16 @@ provider-level calibration aggregates yet.
 
 Legacy Entry/history JSON loads missing timestamps and call IDs as `None`. Loading an older
 session creates its empty call list transactionally. Historical calls and times are not invented.
+
+For output continuation, usage sums the distinct requests while retaining unknown totals when any
+request omits a field. The input boundary describes the initial Session request; continuation
+instructions and additional request-local context remain internal to the model executor.
+`last_request_input_tokens` separately records the last completed physical request's input usage;
+it is not summed across continuations. It is `None` when that request omitted input usage or no
+request completed. If a later continuation fails or is interrupted, the previous completed
+request's reading remains. This describes an actual sent request, not the size of a newly edited
+context. Legacy records load this field as `None`.
+
+`last_request_estimated_tokens` stores the local estimate of that same physical request when
+compaction is configured. Its ratio with actual input usage calibrates later fallback estimates;
+summary calls are excluded from conversation calibration and trigger decisions.

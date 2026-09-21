@@ -54,6 +54,7 @@ pub enum StreamEnd {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub enum IncompleteReason {
+  OutputLimit,
   Interrupted { tools: ToolExecutionState },
   Failed(crate::Error),
 }
@@ -74,11 +75,81 @@ pub struct PartialResponse {
   pub account_state: Option<AccountState>,
   pub upstream_stop: Option<StopReason>,
   /// Ready to append: includes protocol-generated results for retained tool calls.
-  /// Empty on stream failure; explicit interruption preserves eligible content.
+  /// Empty on stream failure; interruption and output limits preserve eligible content.
   messages: Vec<Message>,
 }
 
 impl PartialResponse {
+  /// Buffered replies carry no per-block completion certificates. Conservatively discard tool
+  /// calls and opaque reasoning at an output limit, while preserving text and transparent thought.
+  pub fn from_output_limit(
+    response: super::Response,
+    protocol: Option<ModelUseProtocol>,
+  ) -> Result<Self, crate::Error> {
+    if response.stop_reason != StopReason::MaxOutputLengthExceeded {
+      return Err(crate::Error::Build("expected an output-limited response".into()));
+    }
+    let blocks: Vec<_> = response
+      .messages
+      .into_iter()
+      .enumerate()
+      .map(|(index, message)| {
+        let replay = match &message {
+          Message::Assistant { .. } => ReplayDisposition::Replayable,
+          Message::Reasoning { plaintext, signature, ciphertext, .. } => {
+            classify_reasoning_replay(protocol, false, plaintext, signature, ciphertext)
+          }
+          _ => ReplayDisposition::Incomplete,
+        };
+        PartialBlock {
+          index: index as u32,
+          closed: false,
+          content: PartialContent::Message(message),
+          replay,
+        }
+      })
+      .collect();
+    let messages = build_context_fragment(&blocks, ToolExecutionState::NotStarted);
+    Ok(Self {
+      reason: IncompleteReason::OutputLimit,
+      blocks,
+      messages,
+      usage: response.usage,
+      account_state: response.account_state,
+      upstream_stop: Some(response.stop_reason),
+    })
+  }
+
+  /// Add output retained by an enclosing executor before this interrupted request began.
+  pub(crate) fn prepend_replay_messages(&mut self, mut prefix: Vec<Message>) {
+    prefix.append(&mut self.messages);
+    self.messages = prefix;
+  }
+
+  /// Text/reasoning projection for automatic continuation. Tool invocations from a capped
+  /// response are not executable and must be reissued; their paired signature is omitted too.
+  pub fn get_continuation_messages(&self) -> Vec<Message> {
+    self
+      .messages
+      .iter()
+      .enumerate()
+      .filter_map(|(index, message)| match message {
+        Message::Assistant { .. } => Some(message.clone()),
+        Message::Reasoning { plaintext, signature, .. } => {
+          if plaintext.is_empty()
+            && !signature.is_empty()
+            && matches!(self.messages.get(index + 1), Some(Message::ToolUse { .. }))
+          {
+            None
+          } else {
+            Some(message.clone())
+          }
+        }
+        _ => None,
+      })
+      .collect()
+  }
+
   /// A complete context fragment, including tool-result pairing. Never execute its tool calls.
   pub fn get_replay_messages(&self) -> &[Message] {
     &self.messages
@@ -159,6 +230,16 @@ impl StreamAccumulator {
   /// The caller supplies execution facts. The returned context fragment is already tool-paired.
   pub fn interrupt(self, tools: ToolExecutionState) -> PartialResponse {
     self.build_partial_response(IncompleteReason::Interrupted { tools })
+  }
+
+  /// Finalize an upstream output limit using the same block-level replay rules as interruption.
+  pub fn finish_output_limit(self) -> Result<PartialResponse, crate::Error> {
+    if self.stop_reason != Some(StopReason::MaxOutputLengthExceeded) {
+      return Err(crate::Error::Build(
+        "output-limit finalization requires an upstream output limit".into(),
+      ));
+    }
+    Ok(self.build_partial_response(IncompleteReason::OutputLimit))
   }
 
   fn build_partial_response(self, reason: IncompleteReason) -> PartialResponse {
@@ -254,6 +335,9 @@ impl StreamAccumulator {
     }
     let messages = match reason {
       IncompleteReason::Interrupted { tools } => build_context_fragment(&blocks, tools),
+      IncompleteReason::OutputLimit => {
+        build_context_fragment(&blocks, ToolExecutionState::NotStarted)
+      }
       IncompleteReason::Failed(_) => Vec::new(),
     };
     PartialResponse {

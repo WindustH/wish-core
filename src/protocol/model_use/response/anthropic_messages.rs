@@ -69,7 +69,10 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
             ciphertext: block.get("data").and_then(Value::as_str).unwrap_or("").to_owned(),
           });
         }
-        Some("tool_use") => {
+        Some("tool_use")
+          if map_stop_reason(body.get("stop_reason").and_then(Value::as_str))
+            != StopReason::MaxOutputLengthExceeded =>
+        {
           flush(&mut messages, &mut content);
           messages.push(decode_tool_use(block)?);
         }

@@ -9,6 +9,27 @@ use std::future::Future;
 /// Returns a complete response or a stream according to Request::stream.
 /// Retries remain in the client and end before it hands out the first event.
 pub trait ModelCaller: Sync {
+  /// None means no count endpoint is configured. Configured endpoint failures remain errors.
+  fn count_tokens(
+    &self,
+    _request: &Request,
+  ) -> impl Future<Output = Result<Option<crate::protocol::TokenCount>, Error>> + Send {
+    async { Ok(None) }
+  }
+  /// Validate a replacement context with the same renderer used for actual model calls.
+  fn validate_request(&self, request: &Request) -> Result<(), Error> {
+    crate::protocol::model_use::context::find_boundaries(&request.conversation)?;
+    match self.get_model_use_protocol() {
+      Some(protocol) => protocol.render(request).map(|_| ()),
+      None => {
+        Err(Error::Build("compaction requires a protocol or a custom request validator".into()))
+      }
+    }
+  }
+  /// Supplies reasoning replay semantics for buffered output-limit responses.
+  fn get_model_use_protocol(&self) -> Option<crate::protocol::model_use::ModelUseProtocol> {
+    None
+  }
   type Stream: ModelStream;
   fn call(
     &self,
@@ -33,6 +54,19 @@ pub trait ModelStream: Send {
 }
 
 impl<T: Transport + Sync> ModelCaller for Client<T> {
+  async fn count_tokens(
+    &self,
+    request: &Request,
+  ) -> Result<Option<crate::protocol::TokenCount>, Error> {
+    if self.get_token_count_protocol().is_some() {
+      Client::count_tokens(self, request).await.map(Some)
+    } else {
+      Ok(None)
+    }
+  }
+  fn get_model_use_protocol(&self) -> Option<crate::protocol::model_use::ModelUseProtocol> {
+    Some(Client::get_model_use_protocol(self))
+  }
   type Stream = crate::executor::model::client::EventStream<T::Stream>;
   async fn call(&self, request: &Request) -> Result<CallResponse<Self::Stream>, Error> {
     Client::call(self, request).await

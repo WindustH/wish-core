@@ -1,6 +1,7 @@
 use super::{Storage, StorageError, StoredValue};
 use std::{marker::PhantomData, sync::Arc};
 
+/// Internal cache page size, not a limit on the number of items a read may return.
 pub const PAGE_SIZE: u64 = 128;
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ListId(pub String);
@@ -45,6 +46,7 @@ impl<T: StoredValue> StoredList<T> {
     let id = self.id.clone();
     self.storage.transaction(move |tx| tx.get_item::<T>(&id, position))
   }
+  /// Reads up to `limit` items across cache pages. `limit` must be positive.
   pub fn read_page(&self, start: u64, limit: usize) -> Result<Page<T>, StorageError> {
     let id = self.id.clone();
     self.storage.transaction(move |tx| tx.read_page::<T>(&id, start, limit))
@@ -87,6 +89,7 @@ impl<T: StoredValue> ReadList<T> {
   pub fn get(&self, position: u64) -> Result<Option<Arc<T>>, StorageError> {
     self.0.get(position)
   }
+  /// Reads up to `limit` items across cache pages. `limit` must be positive.
   pub fn read_page(&self, start: u64, limit: usize) -> Result<Page<T>, StorageError> {
     self.0.read_page(start, limit)
   }

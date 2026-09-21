@@ -65,8 +65,8 @@ prepare_standby_generation(entry IDs)    activate_standby_generation()
 Both operations are atomic and require stable state. Preparation validates tool pairing and
 rejects unconsumed queued entries. Replacement references are stored in a fresh list; preparation
 events retain the list ID and its original length. Activation preserves the entries appended
-since preparation. Old history and sealed generations remain readable. Automatic summarization
-and garbage collection are not implemented.
+since preparation. Old history and sealed generations remain readable. Automatic summarization and cutover use the separate [compaction](compaction.md) workflow.
+Garbage collection is not implemented.
 
 Restarting restores committed data and phase. A session interrupted by a crash during model/tool
 I/O remains active and returns `SessionError::Busy`; automatic recovery/reexecution of external

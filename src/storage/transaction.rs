@@ -165,14 +165,15 @@ impl Transaction<'_> {
     self.dirty.insert(CacheKey::Item(list.0.clone(), position));
     self.dirty.insert(CacheKey::Page(list.0.clone(), position / PAGE_SIZE));
   }
-  /// Indexed position ranges, never OFFSET scans. A call returns at most PAGE_SIZE values.
+  /// Reads up to `limit` values across cache pages using indexed position ranges, never OFFSET scans.
+  /// `limit` must be positive; the result is truncated at the end of the list.
   pub fn read_page<T: StoredValue>(
     &mut self,
     list: &ListId,
     start: u64,
     limit: usize,
   ) -> Result<Page<T>, StorageError> {
-    if limit == 0 || limit > PAGE_SIZE as usize {
+    if limit == 0 {
       return Err(StorageError::InvalidRange);
     }
     let length = self.list_len::<T>(list)?;

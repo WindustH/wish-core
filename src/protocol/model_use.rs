@@ -10,6 +10,7 @@
 //! state: rendering is a function of the request alone, reading a body needs nothing else, and a
 //! stream decoder is stateful and belongs to exactly one stream.
 
+pub mod context;
 pub mod message;
 pub mod request;
 pub mod response;

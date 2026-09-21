@@ -38,7 +38,11 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
             messages.push(Message::Assistant { metadata: Default::default(), content });
           }
         }
-        Some("function_call") => messages.push(decode_function_call(item)?),
+        Some("function_call")
+          if decode_stop_reason(body, false) != StopReason::MaxOutputLengthExceeded =>
+        {
+          messages.push(decode_function_call(item)?)
+        }
         _ => {}
       }
     }

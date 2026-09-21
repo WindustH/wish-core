@@ -18,3 +18,20 @@ pub enum RunOutcome {
   /// A tool may have caused a side effect; explicit caller reconciliation is required.
   ToolOutcomeUnknown,
 }
+impl RunOutcome {
+  pub(crate) fn is_context_length_exceeded(&self) -> bool {
+    match self {
+      Self::Failed(error) => error.is_context_length_exceeded(),
+      Self::ModelStopped(response) => {
+        response.stop_reason == crate::protocol::StopReason::ContextLengthExceeded
+      }
+      Self::StreamFailed(partial) => match &partial.reason {
+        crate::protocol::model_use::stream::IncompleteReason::Failed(error) => {
+          error.is_context_length_exceeded()
+        }
+        _ => false,
+      },
+      _ => false,
+    }
+  }
+}

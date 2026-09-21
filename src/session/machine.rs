@@ -111,12 +111,17 @@ impl SessionEdit<'_, '_> {
           self.record_event(SessionEvent::InputsConsumed { queue_start, queue_end })?;
         }
         let request = Arc::new(self.build_request()?);
-        self.start_model_call(request.conversation.len() as u64)?;
+        self.start_model_call(
+          request.conversation.len() as u64,
+          statistics::ModelCallPurpose::Conversation,
+        )?;
         self.transition_to(SessionState::CallingModel { turn })?;
         self.record_event(SessionEvent::TurnStarted { turn })?;
         Ok(SessionAction::CallModel(request))
       }
-      SessionState::CallingModel { .. } => Err(SessionError::Busy),
+      SessionState::CallingModel { .. } | SessionState::Compacting { .. } => {
+        Err(SessionError::Busy)
+      }
       SessionState::ExecutingTools { batch, .. } => {
         let mut calls = Vec::new();
         let length = self.tx.list_len::<ToolExecution>(&batch)?;

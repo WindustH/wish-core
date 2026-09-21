@@ -62,6 +62,30 @@ pub enum Error {
 }
 
 impl Error {
+  /// Explicit upstream context rejection, never inferred from a generic 400/413 response.
+  pub fn is_context_length_exceeded(&self) -> bool {
+    let Self::Upstream { status, code, message, .. } = self else {
+      return false;
+    };
+    if code.as_deref().is_some_and(|code| {
+      matches!(
+        code,
+        "context_length_exceeded" | "model_context_window_exceeded" | "prompt_too_long"
+      )
+    }) {
+      return true;
+    }
+    if !matches!(status, None | Some(400) | Some(413)) {
+      return false;
+    }
+    let message = message.to_ascii_lowercase();
+    message.contains("prompt is too long")
+      || message.contains("exceeds the maximum context length")
+      || message.contains("exceeded model token limit")
+      || (message.contains("input token count")
+        && message.contains("exceeds")
+        && message.contains("maximum"))
+  }
   /// An ask a protocol cannot serve, with the reason its feature states.
   pub(crate) fn build_unsupported(
     feature: &'static str,

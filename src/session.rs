@@ -1,5 +1,6 @@
 //! Persistent sessions: small immutable entries, paged generations/history and transactional state.
 mod calls;
+mod compaction;
 mod config;
 mod control;
 mod edit;
@@ -12,6 +13,7 @@ mod queue;
 pub(crate) mod state;
 pub mod statistics;
 
+pub use compaction::{CompactionConfig, CompactionReason};
 pub use config::{RunOptions, SessionConfig, ToolMode};
 pub use control::SessionHandle;
 pub use event::SessionEvent;
@@ -49,6 +51,8 @@ pub enum SessionError {
   StaleGeneration,
   #[error("session must be explicitly resumed before running")]
   Suspended,
+  #[error("invalid compaction configuration: {0}")]
+  InvalidCompaction(String),
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -86,6 +90,9 @@ impl Session {
     Self::create(Storage::open_in_memory(StorageOptions::default())?, "default", config)
   }
   pub fn create(storage: Storage, id: &str, config: SessionConfig) -> Result<Self, SessionError> {
+    if let Some(compaction) = &config.compaction {
+      compaction.validate()?;
+    }
     let key = Self::build_key(id);
     let owner = storage.claim_owner(&key)?;
     let target = key.clone();
@@ -121,7 +128,14 @@ impl Session {
         tx.create_list::<EntryId>(&entries)?;
         tx.append_item(
           &record.generations,
-          &Generation { id, status, entries, config: config.clone(), source: None },
+          &Generation {
+            id,
+            status,
+            entries,
+            config: config.clone(),
+            source: None,
+            compaction_cursor: 0,
+          },
         )?;
       }
       let mut edit = SessionEdit { record: &mut record, tx, key: &key, recorded_at };
@@ -164,6 +178,7 @@ impl Session {
       reasoning: request.reasoning,
       cache: request.cache,
       run: Default::default(),
+      compaction: None,
     };
     let mut session = Self::new(config)?;
     session.update(move |edit| {
@@ -203,6 +218,9 @@ impl Session {
   }
   pub fn set_config(&mut self, config: SessionConfig) -> Result<(), SessionError> {
     self.require_stable()?;
+    if let Some(compaction) = &config.compaction {
+      compaction.validate()?;
+    }
     self.update(move |edit| {
       for id in [edit.record.active, edit.record.standby] {
         let mut generation = edit.load_generation(id)?;

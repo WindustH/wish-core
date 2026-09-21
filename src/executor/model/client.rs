@@ -67,6 +67,10 @@ pub struct Client<T> {
 }
 
 impl<T: Transport> Client<T> {
+  pub fn get_model_use_protocol(&self) -> ModelUseProtocol {
+    self.model_use
+  }
+
   /// Builds a client from its required axes: the protocol to speak, the outbound target, and the
   /// transport to send by. Credentials, the retry policy, the clock and the read protocols each
   /// have a builder of their own.

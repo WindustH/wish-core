@@ -25,6 +25,8 @@ pub struct SessionConfig {
   pub reasoning: Option<ReasoningConfig>,
   pub cache: Option<PromptCache>,
   pub run: RunOptions,
+  #[serde(default)]
+  pub compaction: Option<super::CompactionConfig>,
 }
 
 impl SessionConfig {
@@ -37,6 +39,7 @@ impl SessionConfig {
       reasoning: None,
       cache: None,
       run: RunOptions::default(),
+      compaction: None,
     }
   }
 

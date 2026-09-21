@@ -117,3 +117,34 @@ control for application shutdown; explicitly cancelling it remains sticky for al
 Observers can interrupt synchronously before the next effect. On every exit (including future
 drop), the child scope is cancelled and the session registration is removed. Tool implementations
 still receive `&ExecutionControl` and must cooperate with cancellation rather than be abandoned.
+
+## Automatic output continuation
+
+`executor/model` handles `MaxOutputLengthExceeded` as a request to continue generating. It retains
+protocol-approved text/reasoning, appends it and a continuation instruction to a private request,
+and calls the same model again with the original tools and output settings. The instruction never
+enters Session history. This works for buffered and streamed responses; direct `Client::call` still
+returns the provider's original response and stop reason.
+
+Session sees one logical call and one final response. Returned message order is preserved across
+segments. Stream block indices are offset across segments; intermediate output-limit Stop events
+are suppressed and usage notifications reflect cumulative observed usage. Intermediate tool calls
+are not executed: they must be reissued in full. Incomplete opaque reasoning is dropped according
+to protocol replay rules. Buffered replies have no block completion certificates, so tool calls
+and opaque reasoning are conservatively omitted when capped.
+
+Cancellation returns an interruption containing eligible output from all segments so far. There
+is no continuation count limit. Empty or repeated fragments do not stop continuation and repeated
+content is not deduplicated; another output-limit response always requests continuation.
+When configured, the outer executor handles explicit context-window rejection through
+[compaction](compaction.md) and retries with a changed generation. Output continuation itself
+does not compact context or promise byte-exact continuation by the model.
+
+Usage is summed across requests, including the repeated input. A total field remains unknown if
+any constituent request omitted that field (or the sum overflows). Cumulative usage events within
+one request replace prior readings instead of being added. ModelCallRecord remains a single
+logical-call record; intermediate requests do not create session generations, entries or calls.
+
+[Compaction](compaction.md) prepares standby summaries at stable boundaries and switches generations
+on actual usage thresholds or explicit upstream context rejection. Session state is `Compacting`
+during its I/O; tools are settled before this phase starts.

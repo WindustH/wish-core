@@ -74,7 +74,10 @@ impl SessionEdit<'_, '_> {
         origin,
         message,
         recorded_at: Some(self.recorded_at),
-        model_call_id: if matches!(origin, EntryOrigin::Model | EntryOrigin::Interrupted) {
+        model_call_id: if matches!(
+          origin,
+          EntryOrigin::Model | EntryOrigin::Interrupted | EntryOrigin::Summary
+        ) {
           self.record.active_model_call
         } else {
           None
