@@ -11,9 +11,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2.0.20"
 # Parses the HTTP-date form of a `retry-after` header.
 httpdate = "1"
-# The library declares only the capabilities it needs (timers for per-attempt timeouts, channels for
-# streaming); whoever runs the program owns the runtime itself.
-tokio = { version = "1", features = ["sync", "time"] }
+# The application owns the runtime; built-in tools use its process and file I/O facilities.
+tokio = { version = "1", features = ["sync", "time", "rt", "process", "fs", "io-util", "macros"] }
 # Byte-level stream reading, for bodies that must stay under a ceiling while being read.
 futures-util = "0.3"
 # HTTP client. `default-features = false` on purpose: rustls instead of system OpenSSL and `stream`
@@ -29,3 +28,9 @@ hex = "0.4"
 # rustls, so nothing new enters the tree.
 ring = "0.17"
 base64 = "0.22"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }

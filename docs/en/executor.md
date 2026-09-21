@@ -148,3 +148,6 @@ logical-call record; intermediate requests do not create session generations, en
 [Compaction](compaction.md) prepares standby summaries at stable boundaries and switches generations
 on actual usage thresholds or explicit upstream context rejection. Session state is `Compacting`
 during its I/O; tools are settled before this phase starts.
+
+Built-in implementations live under `tool`; see [built-in tools](tools.md) for the shell's
+start/poll/write/kill interface and lifetime management.

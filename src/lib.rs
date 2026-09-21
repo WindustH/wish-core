@@ -13,6 +13,7 @@
 pub mod executor;
 pub mod session;
 pub mod storage;
+pub mod tool;
 pub mod utils;
 
 pub mod protocol;

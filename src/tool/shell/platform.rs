@@ -1,0 +1,84 @@
+use std::{
+  io,
+  path::{Path, PathBuf},
+};
+use tokio::process::Command;
+
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+mod windows;
+#[cfg(unix)]
+pub(super) use unix::ProcessTree;
+#[cfg(windows)]
+pub(super) use windows::ProcessTree;
+
+pub(super) fn default_program() -> PathBuf {
+  #[cfg(windows)]
+  {
+    std::env::var_os("COMSPEC").map(PathBuf::from).unwrap_or_else(|| "cmd.exe".into())
+  }
+  #[cfg(not(windows))]
+  {
+    "/bin/sh".into()
+  }
+}
+pub(super) fn default_args() -> Vec<String> {
+  #[cfg(windows)]
+  {
+    vec!["/D".into(), "/S".into(), "/C".into()]
+  }
+  #[cfg(not(windows))]
+  {
+    vec!["-c".into()]
+  }
+}
+pub(super) fn configure_command(builder: &mut Command, program: &Path, command: &str) {
+  #[cfg(unix)]
+  {
+    let _ = program;
+    builder.arg(command).process_group(0);
+  }
+  #[cfg(windows)]
+  {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED};
+    // cmd parses /C itself rather than using CRT argument decoding. /S strips the outer quotes;
+    // interior quotes and metacharacters are the caller's shell script and must remain untouched.
+    if program
+      .file_name()
+      .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("cmd.exe"))
+    {
+      builder.as_std_mut().raw_arg(format!("\"{command}\""));
+    } else {
+      builder.arg(command);
+    }
+    builder.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+  }
+  #[cfg(not(any(unix, windows)))]
+  {
+    let _ = program;
+    builder.arg(command);
+  }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(super) struct ProcessTree;
+#[cfg(not(any(unix, windows)))]
+impl ProcessTree {
+  pub fn attach(_: &tokio::process::Child) -> io::Result<Self> {
+    Err(io::Error::new(
+      io::ErrorKind::Unsupported,
+      "shell process supervision requires Unix or Windows",
+    ))
+  }
+  pub fn signal(&self, _: bool) -> io::Result<()> {
+    Ok(())
+  }
+  pub fn disarm(&mut self) {}
+}
+
+// Kept here so all platform constructors report a missing child handle consistently.
+pub(super) fn missing_process() -> io::Error {
+  io::Error::other("spawned child has no process handle")
+}

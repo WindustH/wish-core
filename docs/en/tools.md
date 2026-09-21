@@ -1,0 +1,90 @@
+# Built-in tools
+
+`tool` contains implementations; `executor::tool` contains the execution contract and dispatch
+logic. Applications register specifications in SessionConfig and pass a ToolExecutor to `run`.
+The built-in `tool::shell::ShellTool` implements that contract directly. An application can also
+delegate to it from a dispatcher that includes its own tools.
+
+```rust
+use wish_core::tool::shell::{ShellConfig, ShellTool};
+
+let shell = ShellTool::new(ShellConfig::new(workspace, capture_directory)).await?;
+let mut config = SessionConfig::new(model);
+config.tools.push(shell.get_specification());
+let mut session = Session::new(config)?;
+// Enqueue input, then:
+let outcome = executor::run(&model_caller, &mut session, &shell, &control, observer).await?;
+// Keep shell alive across runs so execution IDs remain available.
+shell.shutdown().await?;
+```
+
+Use an application-owned Tokio runtime with I/O and time enabled (`enable_all()`). Linux, macOS and BSD use Unix process groups; Windows uses Job Objects. The default is
+`/bin/sh -c` on Unix and `%COMSPEC% /D /S /C` (falling back to cmd.exe) on Windows. Program, leading
+arguments, working directory and environment overrides are configurable. PowerShell can be selected
+with program=pwsh.exe and arguments such as `-NoProfile -NonInteractive -Command`. Command text is passed
+as one argument. Commands inherit the application's environment and OS permissions. Each session
+should have its own ShellTool and capture directory; clones intentionally share execution access.
+
+## Shell operations
+
+| Operation | Inputs | Behavior |
+| --- | --- | --- |
+| `start` (default) | `command`, `timeout`, `data`, `encoding`, `interactive` | Run a script; return completion or a background execution ID. |
+| `poll` | `execution_id`, `offset`, `max_bytes`, `wait_ms`, `encoding` | Read merged output by raw byte offset, optionally wait for new bytes. |
+| `write` | `execution_id`, `data`, `encoding`, `close` | Feed stdin and optionally close it; return the actual accepted byte count. |
+| `kill` | `execution_id`, `mode` | Terminate the process group/job and wait for the supervised child to be reaped. |
+
+```text
+start -> foreground wait -- exit -------> inline result
+                 |       -- output -----> execution ID + captured prefix
+                 |       -- soft timeout -> execution ID + captured prefix
+                 |                              |
+                 |                         poll / write / kill
+                 |
+                 +-- interrupt -> terminate group, reap, return captured output
+```
+
+Timeout is a soft wait in seconds: omitted or `-1` uses the configured default (10 seconds), `0`
+returns immediately. It does not kill the command. Crossing the inline budget (default 64 KiB)
+also returns early without killing it. There is no hard runtime or capture-size limit. Output is
+written directly to an execution-specific `output.log`, with stdout/stderr sharing the same file.
+Terminal and interrupted captures are retained; removal is up to the application.
+
+Results include execution_id, process status, exit code/signal, output_path, output_bytes,
+next_offset, eof, text and return_reason. Nonzero command exits are successful tool operations
+whose process.exit_code reports the failure. Text decoding is lossy when needed; use base64
+encoding to read exact bytes, including across UTF-8 boundaries. max_bytes limits each read, not
+captured output. Small foreground results remain pollable too.
+
+Stdin defaults to the null device. Initial data is decoded as UTF-8 or base64, written and closed
+unless interactive=true. Initial input precedes subsequent writes; later writes serialize on the
+stdin pipe. A write timeout (default 10 seconds) reports accepted_bytes and timed_out; retry only
+the remaining bytes. Cancellation similarly reports any accepted bytes and leaves an existing
+background command running. No PTY is allocated.
+
+A foreground interruption terminates the process group/job, waits for reaping and returns a result
+with return_reason=interrupted and captured output. The executor then finishes the interrupted
+session turn. Already-background commands survive session interruption. Cancelling a poll does
+not kill its command. On Unix, graceful kill sends SIGTERM followed by SIGKILL after the configured grace; force kill
+sends SIGKILL immediately. On Windows, graceful kill attempts CTRL_BREAK_EVENT for the child
+console group, then terminates its Job Object after the grace. If no shared console is available,
+it terminates the job immediately. Force kill always terminates the job. Windows children are
+created suspended, assigned to a kill-on-close Job Object, and only then resumed; job assignment
+failure stops startup without running an unsupervised script. Ordinary descendants are cleaned up when the supervised
+shell exits too; Unix commands that deliberately escape the process group are outside this supervision. Windows
+jobs do not grant breakaway permission.
+
+Call shutdown to stop and await all owned executions before shutting down the runtime. It also
+prevents new starts. Dropping the last ShellTool sends force-kill requests; dropping an unfinished
+supervisor kills its process group/job. These drop paths do not replace awaiting shutdown. Registry
+locks cover handle lookup/insertion only; stdin has its own asynchronous serialization.
+
+This ports the old shell's four operations and soft background handoff. It does not implement
+old wishd's process adoption after restart, persistent execution indexing, stdin audit log or
+background-completion session notifications. Captures survive on disk, but live execution IDs
+belong to this ShellTool instance.
+
+The external shell black-box suite runs natively on Unix or Windows. On a Linux host with the
+Windows Rust target, MinGW and Wine installed, run it with `WISH_CORE_SHELL_TARGET=x86_64-pc-windows-gnu`
+and `WISH_CORE_SHELL_RUNNER=wine`; Wine state stays in its temporary test directory; Mono/Gecko installer entry points are disabled.
+Wine is opt-in and is never started by the default test command.
