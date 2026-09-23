@@ -8,7 +8,7 @@ pub use state::{SessionPhase, SessionState, ToolExecution};
 use super::persistence::SessionTransaction;
 use super::statistics;
 use super::{Entry, EntryId, EntryOrigin, EventId, Session, SessionError, SessionEvent};
-use crate::session::statistics::{CallObservation, ModelCallStatus};
+use crate::session::statistics::{CallObservation, ModelCallRecord, ModelCallStatus};
 use crate::storage::StorageError;
 use crate::{
   Error,
@@ -76,8 +76,14 @@ impl Session {
   pub(crate) fn complete_tools(&mut self) -> Result<(), SessionError> {
     self.update(move |transaction| transaction.complete_tools())
   }
-  pub(crate) fn finish_run(&mut self, outcome: RunOutcome) -> Result<(), SessionError> {
+  pub fn finish_run(&mut self, outcome: RunOutcome) -> Result<(), SessionError> {
     self.update(move |transaction| transaction.finish_run(outcome))
+  }
+  pub fn settle_interrupted(&mut self) -> Result<(), SessionError> {
+    if self.record.state.is_stable() {
+      return Ok(());
+    }
+    self.update(|transaction| transaction.settle_interrupted())
   }
   pub fn get_state(&self) -> &SessionState {
     &self.record.state
@@ -316,6 +322,23 @@ impl SessionTransaction<'_, '_> {
     self.transition_to(SessionState::Ready { completed_turns: turn, needs_model })
   }
   fn finish_run(&mut self, outcome: RunOutcome) -> Result<(), SessionError> {
+    if let Some(id) = self.record.active_model_call {
+      let list = &self.record.model_calls;
+      if let Some(call) = self.tx.get_item::<ModelCallRecord>(list, id.0)? {
+        let mut call = (*call).clone();
+        if call.status == ModelCallStatus::Running {
+          call.status = if matches!(outcome, RunOutcome::Interrupted) {
+            ModelCallStatus::Interrupted
+          } else {
+            ModelCallStatus::Failed
+          };
+          call.finished_at = Some(self.recorded_at);
+          call.elapsed_ms = Some(self.recorded_at.0.saturating_sub(call.started_at.0));
+          self.tx.set_item(list, id.0, &call)?;
+        }
+      }
+      self.record.active_model_call = None;
+    }
     if matches!(outcome, RunOutcome::Completed) {
       self.transition_to(SessionState::Idle)?;
     } else {
@@ -324,10 +347,149 @@ impl SessionTransaction<'_, '_> {
     }
     self.record_event(SessionEvent::Finished(outcome))
   }
+  pub(in crate::session) fn settle_interrupted(&mut self) -> Result<(), SessionError> {
+    match self.record.state.clone() {
+      SessionState::Idle | SessionState::Ready { .. } | SessionState::Suspended { .. } => Ok(()),
+      SessionState::CallingModel { turn } => {
+        self.record_event(SessionEvent::StableBoundary { turn })?;
+        self.finish_run(RunOutcome::Interrupted)
+      }
+      SessionState::ExecutingTools { batch, .. } => {
+        let length = self.tx.list_len::<ToolExecution>(&batch)?;
+        let mut start = 0;
+        while start < length {
+          let page = self.tx.read_page::<ToolExecution>(&batch, start, PAGE_SIZE as usize)?;
+          for (offset, item) in page.items.iter().enumerate() {
+            if item.outcome.is_none() {
+              let mut updated = (**item).clone();
+              updated.outcome = Some(ToolOutcome::Cancelled);
+              self.tx.set_item(&batch, start + offset as u64, &updated)?;
+            }
+          }
+          start += page.items.len() as u64;
+        }
+        self.complete_tools()?;
+        if !matches!(self.record.state, SessionState::Suspended { .. }) {
+          self.finish_run(RunOutcome::Interrupted)?;
+        }
+        Ok(())
+      }
+      SessionState::Compacting { resume } => {
+        self.transition_to(*resume)?;
+        if !self.record.state.is_stable() {
+          self.settle_interrupted()?;
+        } else if !matches!(self.record.state, SessionState::Suspended { .. }) {
+          self.finish_run(RunOutcome::Interrupted)?;
+        }
+        Ok(())
+      }
+    }
+  }
   pub fn transition_to(&mut self, next: SessionState) -> Result<(), SessionError> {
     let from = self.record.state.get_phase();
     let to = next.get_phase();
     self.record.state = next;
     self.record_event(SessionEvent::StateChanged { from, to })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::protocol::{ContentBlock, Message, Response, model_use::response::StopReason};
+  use crate::session::statistics::ModelCallStatus;
+  use serde_json::json;
+
+  fn test_config() -> crate::session::SessionConfig {
+    crate::session::SessionConfig {
+      model: "test-model".into(),
+      stream: false,
+      tools: vec![crate::protocol::Tool {
+        name: "test_tool".into(),
+        description: "a tool".into(),
+        input_schema: json!({"type":"object"}),
+      }],
+      max_output_tokens: None,
+      reasoning: Default::default(),
+      cache: None,
+      run: Default::default(),
+      compaction: None,
+    }
+  }
+
+  #[test]
+  fn test_settle_calling_model() {
+    let mut session = Session::new(test_config()).unwrap();
+    let handle = session.create_handle();
+    handle
+      .enqueue_message(Message::User {
+        metadata: json!({}),
+        content: vec![ContentBlock::Text { text: "hello".into() }],
+      })
+      .unwrap();
+    session.resume().unwrap();
+    let action = session.advance().unwrap();
+    assert!(matches!(action, SessionAction::CallModel(_)));
+    assert!(!session.get_state().is_stable());
+
+    // Settle interrupted
+    session.settle_interrupted().unwrap();
+    assert!(session.get_state().is_stable());
+    assert!(matches!(session.get_state(), SessionState::Suspended { .. }));
+
+    let calls = session.get_model_calls();
+    let call = calls.get(0).unwrap().unwrap();
+    assert_eq!(call.status, ModelCallStatus::Interrupted);
+
+    // After settling, we can resume cleanly
+    session.resume().unwrap();
+    assert!(session.get_state().is_stable());
+  }
+
+  #[test]
+  fn test_settle_executing_tools() {
+    let mut session = Session::new(test_config()).unwrap();
+    let handle = session.create_handle();
+    handle
+      .enqueue_message(Message::User {
+        metadata: json!({}),
+        content: vec![ContentBlock::Text { text: "run tool".into() }],
+      })
+      .unwrap();
+    session.resume().unwrap();
+    let action = session.advance().unwrap();
+    assert!(matches!(action, SessionAction::CallModel(_)));
+
+    // Model responds with tool call
+    let response = Response {
+      messages: vec![Message::ToolUse {
+        metadata: json!({}),
+        call_id: "call_1".into(),
+        name: "test_tool".into(),
+        arguments: json!({"param": "val"}),
+      }],
+      stop_reason: StopReason::ToolUse,
+      usage: Default::default(),
+      account_state: None,
+    };
+    session
+      .accept_response(response, crate::session::statistics::CallObservation::default())
+      .unwrap();
+    assert!(!session.get_state().is_stable());
+    assert_eq!(session.get_state().get_phase(), SessionPhase::ExecutingTools);
+
+    // Settle while executing tools
+    session.settle_interrupted().unwrap();
+    assert!(session.get_state().is_stable());
+    assert!(matches!(session.get_state(), SessionState::Suspended { .. }));
+
+    // Verify tool pairing in context snapshot!
+    let snapshot = session.create_handle().build_context_snapshot().unwrap();
+    let last = snapshot.conversation.last().unwrap();
+    assert!(matches!(last, Message::ToolResult { call_id, .. } if call_id == "call_1"));
+
+    // Can resume cleanly
+    session.resume().unwrap();
+    assert!(session.get_state().is_stable());
   }
 }

@@ -81,8 +81,8 @@ impl ShellTool {
     config.capture_dir = tokio::fs::canonicalize(&config.capture_dir).await?;
     Ok(Self { inner: Arc::new(Runtime { config, registry: Mutex::new(Registry::default()) }) })
   }
-  pub fn get_specification(&self) -> crate::protocol::Tool {
-    operation::build_specification()
+  pub fn get_specifications(&self) -> Vec<crate::protocol::Tool> {
+    operation::build_specifications()
   }
   fn lock_registry(&self) -> Result<std::sync::MutexGuard<'_, Registry>, ShellError> {
     self
@@ -362,10 +362,7 @@ impl ShellTool {
 }
 impl ToolExecutor for ShellTool {
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
-    if call.name != "shell" {
-      return ToolOutcome::Failed(format!("unknown tool: {}", call.name));
-    }
-    match ShellOperation::parse(call.arguments.clone()) {
+    match ShellOperation::parse_call(&call.name, call.arguments.clone()) {
       Ok(operation) => self.run(operation, control).await,
       Err(error) => ToolOutcome::Failed(error.to_string()),
     }

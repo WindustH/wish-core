@@ -1,0 +1,18 @@
+{
+  "listen": "127.0.0.1:9780",
+  "data_dir": "data",
+  "bearer_token_env": "WISH_HTTP_TOKEN",
+  "providers": {
+    "openai": {
+      "protocol": "openai_responses",
+      "base_url": "https://api.openai.com",
+      "path": "/v1/responses",
+      "auth": "bearer",
+      "api_key_env": "OPENAI_API_KEY",
+      "token_count": "openai_responses",
+      "compaction": "openai_responses",
+      "model_list": "openai_models",
+      "model_list_path": "/v1/models"
+    }
+  }
+}

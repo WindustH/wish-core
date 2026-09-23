@@ -53,7 +53,10 @@ impl Transaction<'_> {
     page: IndexPage,
     search: Option<SearchText>,
   ) -> Result<Vec<IndexHit>, StorageError> {
-    let mut predicates = vec!["h.list=?".to_string(), "h.sequence<?".to_string()];
+    let mut predicates = vec![
+      "h.list=(SELECT id FROM wish_list_keys WHERE name=?)".to_string(),
+      "h.sequence<?".to_string(),
+    ];
     let mut values = vec![Value::Text(list.into()), integer(page.end)?];
     for (column, value) in [("item_kind", filter.item_kind), ("tool_name", filter.tool_name)] {
       if let Some(value) = value {

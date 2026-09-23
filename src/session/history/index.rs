@@ -45,8 +45,14 @@ pub(super) fn index_record(
       row.message_type = Some(kind);
       // History search output is a projection of existing history, and its arguments repeat the
       // query itself. Keep it filterable, but do not index these duplicate retrieval documents.
-      row.text =
-        if row.tool_name.as_deref() == Some("search_history") { String::new() } else { text };
+      row.text = if matches!(
+        row.tool_name.as_deref(),
+        Some("history_search" | "history_read" | "history_query")
+      ) {
+        String::new()
+      } else {
+        text
+      };
     }
     HistoryItem::Event(id) => {
       let event = tx

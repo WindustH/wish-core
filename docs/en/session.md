@@ -67,8 +67,8 @@ execution. The runner consumes a fixed queue prefix at a stable boundary. Suspen
 require explicit `resume()` before consuming more input.
 
 Ordinary events and state changes commit before the observer is notified. Stream events are
-notified immediately, then batched with their history rows and call observations, without rewriting
-the session header. `SessionState::Suspended` references
+notified immediately but are not written to history or the events list. Final responses,
+explicit interruption fragments and call observations are persisted at completion. `SessionState::Suspended` references
 the final `Finished` event; use `get_event` to inspect the stored outcome. History is a permanent
 record of facts; active generation is the model's context projection.
 
@@ -91,7 +91,7 @@ I/O remains active and returns `SessionError::Busy`; automatic recovery/reexecut
 effects is not implemented. Graceful interruption remains handled by the [executor](executor.md).
 
 Messages have creation timestamps on `Entry`; event timestamps live on `HistoryRecord`, preserving
-receipt time across batch writes. Both also carry an optional originating `model_call_id`.
+receipt time for persisted events. Both also carry an optional originating `model_call_id`.
 `get_model_calls()` pages logical model calls, and `get_model_call(id)` retrieves their shared
 usage, times and status. See [call statistics](statistics.md). Message metadata remains application-owned.
 
@@ -117,3 +117,9 @@ input alone, including while the owner is absent. Interrupt intentions are not p
 transaction, including while the executor owns the session. An unfinished tool batch
 and its assistant turn are excluded. The returned request does not include queued input
 and does not mutate session state; applications can use it for stateless questions.
+
+Applications can use `executor::run_with_boundary` to apply pending configuration at stable
+execution boundaries. The callback receives the owned Session and returns whether settings
+changed. A changed configuration discards any pending standby summary built for the previous
+settings; current model/tool work finishes before the callback runs. `executor::run` retains
+its existing behavior with a no-op callback.

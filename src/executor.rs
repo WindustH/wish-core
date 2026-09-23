@@ -7,4 +7,4 @@ mod run;
 pub mod tool;
 
 pub use control::ExecutionControl;
-pub use run::run;
+pub use run::{run, run_with_boundary};

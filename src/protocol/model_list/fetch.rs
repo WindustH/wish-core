@@ -11,6 +11,7 @@ use crate::protocol::http_error;
 use crate::protocol::model_list::{
   ModelCatalog, ModelListProtocol, Unsupported, build_page_query, parse_catalog_page,
 };
+use crate::protocol::outbound::AuthProtocol;
 use crate::protocol::outbound::Credentials;
 use crate::protocol::wire::Transport;
 
@@ -28,6 +29,8 @@ pub struct ModelListQuery {
   pub cursor: Option<String>,
   /// How many models to ask for, where the wire has a page size.
   pub page_size: u32,
+  /// Read an OpenAI-shaped catalog without a key (for local servers with no authentication).
+  pub unauthenticated: bool,
 }
 
 impl ModelListQuery {
@@ -38,6 +41,7 @@ impl ModelListQuery {
       path: path.to_owned(),
       cursor: None,
       page_size: DEFAULT_PAGE_SIZE,
+      unauthenticated: false,
     }
   }
 }
@@ -57,9 +61,14 @@ pub async fn fetch<T: Transport>(
   credentials: &Credentials,
   now: u64,
 ) -> Result<ModelCatalog, Error> {
-  let source = find_source(protocol).ok_or_else(|| {
-    Error::build_unsupported("model list", protocol, Unsupported::NoListing.get_text())
-  })?;
+  let mut source = find_source(protocol)
+    .ok_or_else(|| {
+      Error::build_unsupported("model list", protocol, Unsupported::NoListing.get_text())
+    })?
+    .clone();
+  if query.unauthenticated && protocol == ModelListProtocol::OpenAiModels {
+    source.auth = AuthProtocol::None;
+  }
   let wire_query = build_page_query(protocol, query.cursor.as_deref(), query.page_size)?;
   let call =
     source.build_call(Some(&query.base_url), Some(&query.path), &wire_query, credentials, now)?;

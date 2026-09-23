@@ -234,19 +234,20 @@ impl Database {
       "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
     )?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if !matches!(version, 0 | 3) {
+    if !matches!(version, 0 | 3 | 4) {
       return Err(StorageError::SchemaVersion(version));
     }
     let tx = connection.transaction()?;
+    super::migration::normalize_list_keys(&tx, version)?;
     tx.execute_batch(
       "CREATE TABLE IF NOT EXISTS wish_objects (
       name TEXT PRIMARY KEY,kind TEXT NOT NULL,value BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS wish_lists (
       name TEXT PRIMARY KEY,kind TEXT NOT NULL,length INTEGER NOT NULL CHECK(length>=0));
       CREATE TABLE IF NOT EXISTS wish_items (
-      list TEXT NOT NULL REFERENCES wish_lists(name),position INTEGER NOT NULL CHECK(position>=0),
+      list INTEGER NOT NULL REFERENCES wish_list_keys(id),position INTEGER NOT NULL CHECK(position>=0),
       value BLOB NOT NULL,PRIMARY KEY(list,position)) WITHOUT ROWID;
-      PRAGMA user_version=3;",
+      PRAGMA user_version=4;",
     )?;
     super::search::create_schema(&tx)?;
     tx.commit()?;

@@ -1,7 +1,39 @@
 use super::cache::{Cache, CacheKey, CachedValue};
 use super::{ListId, PAGE_SIZE, Page, StorageError, StoredValue};
 use rusqlite::{OptionalExtension, params};
-use std::{any::type_name, collections::HashSet, sync::Arc};
+use std::{any::type_name, borrow::Cow, collections::HashSet, sync::Arc};
+
+// SQLite kinds were written when the session engine was a `wish_core` library. Keep that
+// namespace stable now that the same types live in the `wish` executable.
+fn stored_kind<T>() -> Cow<'static, str> {
+  let name = type_name::<T>();
+  let crate_name = module_path!().split("::").next().unwrap();
+  let Some(path) = name.strip_prefix(crate_name).and_then(|rest| rest.strip_prefix("::")) else {
+    return Cow::Borrowed(name);
+  };
+  if crate_name == "wish_core"
+    || !["executor::", "protocol::", "session::", "storage::", "tool::", "transport::", "utils::"]
+      .iter()
+      .any(|module| path.starts_with(module))
+  {
+    Cow::Borrowed(name)
+  } else {
+    Cow::Owned(format!("wish_core::{path}"))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::stored_kind;
+
+  #[test]
+  fn executable_keeps_existing_session_kind_names() {
+    assert_eq!(
+      stored_kind::<crate::session::SessionConfig>(),
+      "wish_core::session::config::SessionConfig"
+    );
+  }
+}
 
 pub struct Transaction<'a> {
   pub(crate) sql: rusqlite::Transaction<'a>,
@@ -28,7 +60,7 @@ impl Transaction<'_> {
     let bytes = serde_json::to_vec(value)?;
     let changed = self.sql.execute(
       "INSERT OR IGNORE INTO wish_objects(name,kind,value) VALUES(?1,?2,?3)",
-      params![name, type_name::<T>(), bytes],
+      params![name, stored_kind::<T>().as_ref(), bytes],
     )?;
     if changed == 0 {
       return Err(StorageError::AlreadyExists(name.into()));
@@ -48,7 +80,7 @@ impl Transaction<'_> {
       })
       .optional()?
       .ok_or_else(|| StorageError::NotFound(name.into()))?;
-    if kind != type_name::<T>() {
+    if kind != stored_kind::<T>() {
       return Err(StorageError::TypeMismatch(name.into()));
     }
     let value = Arc::new(serde_json::from_slice::<T>(&bytes)?);
@@ -65,11 +97,12 @@ impl Transaction<'_> {
   pub fn create_list<T: StoredValue>(&mut self, list: &ListId) -> Result<(), StorageError> {
     let changed = self.sql.execute(
       "INSERT OR IGNORE INTO wish_lists(name,kind,length) VALUES(?1,?2,0)",
-      params![list.0, type_name::<T>()],
+      params![list.0, stored_kind::<T>().as_ref()],
     )?;
     if changed == 0 {
       return Err(StorageError::AlreadyExists(list.0.clone()));
     }
+    self.sql.execute("INSERT INTO wish_list_keys(name) VALUES(?1)", [&list.0])?;
     Ok(())
   }
   pub fn list_len<T: StoredValue>(&self, list: &ListId) -> Result<u64, StorageError> {
@@ -80,7 +113,7 @@ impl Transaction<'_> {
       })
       .optional()?
       .ok_or_else(|| StorageError::NotFound(list.0.clone()))?;
-    if kind != type_name::<T>() {
+    if kind != stored_kind::<T>() {
       return Err(StorageError::TypeMismatch(list.0.clone()));
     }
     u64::try_from(length).map_err(|_| StorageError::Corrupt("negative length".into()))
@@ -98,7 +131,7 @@ impl Transaction<'_> {
       return Ok(Some(value));
     }
     let bytes: Vec<u8> = self.sql.query_row(
-      "SELECT value FROM wish_items WHERE list=?1 AND position=?2",
+      "SELECT value FROM wish_items WHERE list=(SELECT id FROM wish_list_keys WHERE name=?1) AND position=?2",
       params![list.0, position as i64],
       |row| row.get(0),
     )?;
@@ -131,7 +164,7 @@ impl Transaction<'_> {
     // Encode before modifying the list, so encoding errors never leave a partial batch.
     let encoded = values.iter().map(serde_json::to_vec).collect::<Result<Vec<_>, _>>()?;
     let mut statement =
-      self.sql.prepare("INSERT INTO wish_items(list,position,value) VALUES(?1,?2,?3)")?;
+      self.sql.prepare("INSERT INTO wish_items(list,position,value) VALUES((SELECT id FROM wish_list_keys WHERE name=?1),?2,?3)")?;
     for (offset, bytes) in encoded.iter().enumerate() {
       statement.execute(params![list.0, (start + offset as u64) as i64, bytes])?;
     }
@@ -155,7 +188,7 @@ impl Transaction<'_> {
     }
     let bytes = serde_json::to_vec(value)?;
     self.sql.execute(
-      "UPDATE wish_items SET value=?1 WHERE list=?2 AND position=?3",
+      "UPDATE wish_items SET value=?1 WHERE list=(SELECT id FROM wish_list_keys WHERE name=?2) AND position=?3",
       params![bytes, list.0, position as i64],
     )?;
     self.mark_item_changed(list, position);
@@ -172,12 +205,12 @@ impl Transaction<'_> {
       return Err(StorageError::InvalidRange);
     }
     self.sql.execute(
-      "DELETE FROM wish_items WHERE list=?1 AND position=?2",
+      "DELETE FROM wish_items WHERE list=(SELECT id FROM wish_list_keys WHERE name=?1) AND position=?2",
       params![list.0, position as i64],
     )?;
     let mut statement = self
       .sql
-      .prepare("UPDATE wish_items SET position=position-1 WHERE list=?1 AND position=?2")?;
+      .prepare("UPDATE wish_items SET position=position-1 WHERE list=(SELECT id FROM wish_list_keys WHERE name=?1) AND position=?2")?;
     for source in position + 1..length {
       statement.execute(params![list.0, source as i64])?;
     }
@@ -217,7 +250,7 @@ impl Transaction<'_> {
       let page = if let Some(page) = self.load_cached::<Vec<Arc<T>>>(&key) {
         page
       } else {
-        let mut statement = self.sql.prepare("SELECT position,value FROM wish_items WHERE list=?1 AND position>=?2 AND position<?3 ORDER BY position")?;
+        let mut statement = self.sql.prepare("SELECT position,value FROM wish_items WHERE list=(SELECT id FROM wish_list_keys WHERE name=?1) AND position>=?2 AND position<?3 ORDER BY position")?;
         let rows = statement.query_map(
           params![
             list.0,
@@ -262,8 +295,9 @@ impl Transaction<'_> {
     self.cache.clear();
     self
       .sql
-      .execute("DELETE FROM wish_history_index WHERE substr(list,1,length(?1))=?1", [&prefix])?;
-    self.sql.execute("DELETE FROM wish_items WHERE substr(list,1,length(?1))=?1", [&prefix])?;
+      .execute("DELETE FROM wish_history_index WHERE list IN (SELECT id FROM wish_list_keys WHERE substr(name,1,length(?1))=?1)", [&prefix])?;
+    self.sql.execute("DELETE FROM wish_items WHERE list IN (SELECT id FROM wish_list_keys WHERE substr(name,1,length(?1))=?1)", [&prefix])?;
+    self.sql.execute("DELETE FROM wish_list_keys WHERE substr(name,1,length(?1))=?1", [&prefix])?;
     self.sql.execute("DELETE FROM wish_lists WHERE substr(name,1,length(?1))=?1", [&prefix])?;
     self.sql.execute(
       "DELETE FROM wish_objects WHERE name=?1 OR substr(name,1,length(?2))=?2",

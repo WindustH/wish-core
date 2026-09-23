@@ -5,7 +5,7 @@ an executor owns the session, across generation switches, and after dropping the
 `HistoryReader::open(storage, session_id)` opens the same read interface without claiming ownership.
 
 ```text
-UI / search_history tool
+UI / history_* tools
           |
      HistoryReader
           |
@@ -83,8 +83,8 @@ Objects and arrays are retained as metadata but are not scalar equality operands
 
 Secondary tables hold filter columns and extracted text; FTS5 uses that text as external content.
 The authoritative messages, events and history remain individual existing storage elements.
-Ordinary writes and index updates share one transaction. Stream-event batches retain their batch
-commit and project event fields directly, without rereading every new event payload.
+Ordinary writes and index updates share one transaction. New ModelStream deltas are live-only;
+legacy stored stream events remain readable and searchable without renumbering history.
 
 Queries load only matching history references; explicit expansion loads original payloads through
 existing storage/cache APIs. No read-time backfill is performed. Short substring and unindexed
@@ -93,4 +93,4 @@ metadata queries may scan index rows, without loading the full message history.
 `Session::rebuild_history_index()` explicitly rebuilds that session's derived rows in one atomic
 transaction, reading current-format history in bounded pages.
 No query-result cache or separate search service is required. Searches cover committed history;
-stream events awaiting the existing persistence batch are not visible yet.
+new live stream deltas are not included. Completed responses and interruption fragments are retained.

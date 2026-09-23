@@ -3,15 +3,15 @@ mod upstream;
 use super::model::tokens::{TokenMeasurement, TokenMeasurementSource};
 use super::{
   ExecutionControl,
-  model::{self, ModelCaller, ModelResult},
+  model::{self, ModelCaller, ModelStream},
   observe::notify_observers,
 };
 use crate::{
   Error,
   protocol::{ContentBlock, Message, Request, StopReason, model_use::context::find_boundaries},
   session::{
-    CompactionConfig, CompactionReason, EntryId, RunOutcome, Session, SessionError, SessionEvent,
-    statistics::{ModelCallPurpose, ModelCallStatus},
+    CompactionConfig, CompactionReason, EntryId, GenerationId, RunOutcome, Session, SessionError, SessionEvent,
+    statistics::{CallObservation, ModelCallPurpose, ModelCallStatus, Timestamp},
   },
 };
 use futures_util::{
@@ -62,20 +62,13 @@ pub async fn compact(
   Ok(outcome.unwrap_or(RunOutcome::Completed))
 }
 
-pub(super) async fn maintain(
-  caller: &impl ModelCaller,
-  session: &mut Session,
-  control: &ExecutionControl,
-  cursor: &mut u64,
-  observe: &mut (impl FnMut(&SessionEvent) + Send),
+pub(super) fn check_compaction_reason(
+  session: &Session,
   forced: Option<CompactionReason>,
-) -> Result<Option<RunOutcome>, SessionError> {
+) -> Result<Option<(CompactionReason, Option<f64>, Request, usize)>, SessionError> {
   let Some(config) = session.get_config().compaction.clone() else {
     return Ok(None);
   };
-  if control.is_cancelled() {
-    return Ok(Some(RunOutcome::Interrupted));
-  }
   let active = session.get_active_generation()?;
   let request = session.build_request()?;
   let calls = session.get_model_calls();
@@ -107,30 +100,27 @@ pub(super) async fn maintain(
       (call.last_request_input_tokens? >= config.trigger_tokens).then_some(CompactionReason::Usage)
     })
   });
-  let upstream = caller.supports_upstream_compaction();
-  if upstream && reason.is_none() {
-    return Ok(None);
-  }
   let fixed = request
     .conversation
     .iter()
     .take_while(|message| matches!(message, Message::System { .. } | Message::Developer { .. }))
     .count();
-  let processed = if upstream {
-    0
-  } else {
-    let standby = session.get_standby_generation()?;
-    standby
-      .source
-      .filter(|(id, _)| *id == active.id)
-      .map(|(_, end)| end as usize)
-      .unwrap_or((active.compaction_cursor as usize).max(fixed))
-  };
-  // Only previously sent, completed input is eligible. The newest response/tool results stay raw.
-  let eligible = last.as_ref().map(|call| call.input_entry_count as usize).unwrap_or(0);
-  if reason.is_none() && (eligible <= processed || processed >= request.conversation.len()) {
-    return Ok(None);
-  }
+  Ok(reason.map(|r| (r, calibration, request, fixed)))
+}
+
+pub(super) async fn cutover_compaction(
+  caller: &impl ModelCaller,
+  session: &mut Session,
+  control: &ExecutionControl,
+  cursor: &mut u64,
+  observe: &mut (impl FnMut(&SessionEvent) + Send),
+  reason: CompactionReason,
+  calibration: Option<f64>,
+  request: Request,
+  fixed: usize,
+) -> Result<Option<RunOutcome>, SessionError> {
+  let config = session.get_config().compaction.clone().expect("compaction config present");
+  let upstream = caller.supports_upstream_compaction();
   session.begin_compaction()?;
   notify_observers(session, cursor, observe)?;
   let result = async {
@@ -144,12 +134,26 @@ pub(super) async fn maintain(
         upstream::Plan {
           request,
           fixed,
-          reason: reason.expect("upstream compaction requires a trigger"),
+          reason,
           sizing: Sizing { config: &config, calibration },
         },
       )
       .await
-    } else if let Some(reason) = reason {
+    } else {
+      while let Some(plan) = plan_standby_summary(caller, session, control).await? {
+        let started_at = Timestamp::now();
+        session.record_events(vec![(
+          started_at,
+          SessionEvent::CompactionSummaryStarted {
+            source_start: plan.start,
+            source_end: plan.end,
+            measurement: plan.measurement.clone(),
+          },
+        )])?;
+        notify_observers(session, cursor, observe)?;
+        let res = execute_standby_summary(caller, control, plan).await?;
+        commit_standby_summary(session, res, cursor, observe)?;
+      }
       replace_context(
         caller,
         session,
@@ -158,17 +162,6 @@ pub(super) async fn maintain(
         request,
         fixed,
         reason,
-      )
-      .await
-    } else {
-      prepare_summary(
-        caller,
-        session,
-        control,
-        cursor,
-        observe,
-        Sizing { config: &config, calibration },
-        SummaryPlan { request, start: processed, eligible },
       )
       .await
     }
@@ -187,7 +180,68 @@ pub(super) async fn maintain(
   Ok(outcome)
 }
 
-enum Failure {
+pub(super) async fn maintain(
+  caller: &impl ModelCaller,
+  session: &mut Session,
+  control: &ExecutionControl,
+  cursor: &mut u64,
+  observe: &mut (impl FnMut(&SessionEvent) + Send),
+  forced: Option<CompactionReason>,
+) -> Result<Option<RunOutcome>, SessionError> {
+  if control.is_cancelled() {
+    return Ok(Some(RunOutcome::Interrupted));
+  }
+  if let Some((reason, calibration, request, fixed)) = check_compaction_reason(session, forced)? {
+    return cutover_compaction(
+      caller,
+      session,
+      control,
+      cursor,
+      observe,
+      reason,
+      calibration,
+      request,
+      fixed,
+    )
+    .await;
+  }
+  if caller.supports_upstream_compaction() {
+    return Ok(None);
+  }
+  let plan = match plan_standby_summary(caller, session, control).await {
+    Ok(plan) => plan,
+    Err(Failure::Outcome(outcome)) => {
+      session.finish_run(outcome.clone())?;
+      return Ok(Some(outcome));
+    }
+    Err(Failure::Session(err)) => return Err(err),
+  };
+  if let Some(plan) = plan {
+    session.record_events(vec![(
+      Timestamp::now(),
+      SessionEvent::CompactionSummaryStarted {
+        source_start: plan.start,
+        source_end: plan.end,
+        measurement: plan.measurement.clone(),
+      },
+    )])?;
+    notify_observers(session, cursor, observe)?;
+    let result = execute_standby_summary(caller, control, plan).await;
+    match result {
+      Ok(res) => {
+        commit_standby_summary(session, res, cursor, observe)?;
+      }
+      Err(Failure::Outcome(outcome)) => {
+        session.finish_run(outcome.clone())?;
+        return Ok(Some(outcome));
+      }
+      Err(Failure::Session(err)) => return Err(err),
+    }
+  }
+  Ok(None)
+}
+
+pub(crate) enum Failure {
   Session(SessionError),
   Outcome(RunOutcome),
 }
@@ -245,82 +299,187 @@ struct Sizing<'a> {
   config: &'a CompactionConfig,
   calibration: Option<f64>,
 }
-struct SummaryPlan {
-  request: Request,
-  start: usize,
-  eligible: usize,
+pub(crate) struct StandbySummaryPlan {
+  pub summary_request: Request,
+  pub generation: GenerationId,
+  pub start: u64,
+  pub end: u64,
+  pub measurement: TokenMeasurement,
 }
-async fn prepare_summary(
+
+pub(crate) struct StandbySummaryResult {
+  pub generation: GenerationId,
+  pub start: u64,
+  pub end: u64,
+  pub summary: Message,
+  pub response: crate::protocol::Response,
+  pub observation: CallObservation,
+}
+
+pub(crate) async fn plan_standby_summary(
   caller: &impl ModelCaller,
-  session: &mut Session,
+  session: &Session,
   control: &ExecutionControl,
-  cursor: &mut u64,
-  observe: &mut (impl FnMut(&SessionEvent) + Send),
-  sizing: Sizing<'_>,
-  plan: SummaryPlan,
-) -> Result<(), Failure> {
-  let Sizing { config, calibration } = sizing;
-  let SummaryPlan { request, start, eligible } = plan;
+) -> Result<Option<StandbySummaryPlan>, Failure> {
+  let Some(config) = session.get_config().compaction.clone() else {
+    return Ok(None);
+  };
+  if caller.supports_upstream_compaction() {
+    return Ok(None);
+  }
+  if control.is_cancelled() {
+    return Ok(None);
+  }
+  let active = session.get_active_generation()?;
+  let request = session.build_request()?;
+  let calls = session.get_model_calls();
+  let mut last = None;
+  for position in (0..calls.len()?).rev() {
+    let Some(call) = calls.get(position)? else {
+      continue;
+    };
+    if call.generation != active.id {
+      break;
+    }
+    if call.model == request.model
+      && call.purpose == ModelCallPurpose::Conversation
+      && matches!(call.status, ModelCallStatus::Completed)
+    {
+      last = Some(call);
+      break;
+    }
+  }
+  let calibration = last.as_ref().and_then(|call| {
+    call
+      .last_request_input_tokens
+      .zip(call.last_request_estimated_tokens)
+      .filter(|(_, estimate)| *estimate > 0)
+      .map(|(actual, estimate)| actual as f64 / estimate as f64)
+  });
+  let fixed = request
+    .conversation
+    .iter()
+    .take_while(|message| matches!(message, Message::System { .. } | Message::Developer { .. }))
+    .count();
+  let standby = session.get_standby_generation()?;
+  let processed = standby
+    .source
+    .filter(|(id, _)| *id == active.id)
+    .map(|(_, end)| end as usize)
+    .unwrap_or((active.compaction_cursor as usize).max(fixed));
+  let eligible = last.as_ref().map(|call| call.input_entry_count as usize).unwrap_or(0);
+  if eligible <= processed || processed >= request.conversation.len() {
+    return Ok(None);
+  }
   let boundaries = find_boundaries(&request.conversation)?;
-  // Choose a closed span. Counting the actual summary request includes its instructions/images.
-  for end in boundaries.into_iter().filter(|end| *end > start && *end <= eligible) {
-    if request.conversation[start..end]
+  for end in boundaries.into_iter().filter(|end| *end > processed && *end <= eligible) {
+    if request.conversation[processed..end]
       .iter()
       .any(|message| matches!(message, Message::UpstreamCompaction { .. }))
     {
-      // Opaque upstream context is already compressed and cannot be summarized as readable text.
-      return Ok(());
+      return Ok(None);
     }
-    let summary_request = build_summary_request(&request, &request.conversation[start..end]);
+    let summary_request = build_summary_request(&request, &request.conversation[processed..end]);
     caller.validate_request(&summary_request)?;
-    let measurement = measure(caller, control, config, &summary_request, calibration).await?;
+    let measurement = measure(caller, control, &config, &summary_request, calibration).await?;
     if measurement.tokens < config.segment_tokens {
       continue;
     }
-    session.record_events(vec![(
-      crate::session::statistics::Timestamp::now(),
-      SessionEvent::CompactionSummaryStarted {
-        source_start: start as u64,
-        source_end: end as u64,
-        measurement,
-      },
-    )])?;
-    notify_observers(session, cursor, observe)?;
-    session.start_compaction_call()?;
-    let (result, observation) =
-      model::execute_model(caller, &summary_request, session, control, cursor, observe).await?;
-    let status = match &result {
-      ModelResult::Complete(_) => ModelCallStatus::Completed,
-      ModelResult::Interrupted(_) => ModelCallStatus::Interrupted,
-      ModelResult::Failed(_) => ModelCallStatus::Failed,
-    };
-    session.complete_compaction_call(observation, status)?;
-    let response = match result {
-      ModelResult::Complete(response) if response.stop_reason == StopReason::Stop => response,
-      ModelResult::Complete(response) => {
-        return Err(Failure::Outcome(RunOutcome::ModelStopped(Box::new(response))));
+    return Ok(Some(StandbySummaryPlan {
+      summary_request,
+      generation: active.id,
+      start: processed as u64,
+      end: end as u64,
+      measurement,
+    }));
+  }
+  Ok(None)
+}
+
+pub(crate) async fn execute_standby_summary(
+  caller: &impl ModelCaller,
+  control: &ExecutionControl,
+  plan: StandbySummaryPlan,
+) -> Result<StandbySummaryResult, Failure> {
+  let started = std::time::Instant::now();
+  check_cancelled(control)?;
+  let calling = caller.call(&plan.summary_request);
+  let cancelled = control.wait_for_cancellation();
+  pin_mut!(calling, cancelled);
+  let call_res = match select(cancelled, calling).await {
+    Either::Left(_) => return Err(Failure::Outcome(RunOutcome::Interrupted)),
+    Either::Right((res, _)) => res?,
+  };
+  let response = match call_res {
+    model::CallResponse::Complete(resp) => *resp,
+    model::CallResponse::Stream(mut stream) => {
+      let mut accumulator = stream.create_accumulator();
+      while let Some(event) = stream.next().await? {
+        accumulator.feed(event)?;
       }
-      ModelResult::Interrupted(_) => return Err(Failure::Outcome(RunOutcome::Interrupted)),
-      ModelResult::Failed(outcome) => return Err(Failure::Outcome(outcome)),
-    };
-    let mut content = Vec::new();
-    for message in &response.messages {
-      match message {
-        Message::Assistant { content: blocks, .. } => content.extend(blocks.clone()),
-        Message::Reasoning { .. } => {}
-        _ => {
-          return Err(
-            Error::Malformed("summary response contains non-assistant content".into()).into(),
-          );
+      match accumulator.finalize(crate::protocol::model_use::stream::StreamEnd::Complete)? {
+        crate::protocol::model_use::stream::StreamFinalization::Complete(resp) => *resp,
+        crate::protocol::model_use::stream::StreamFinalization::Incomplete(_) => {
+          return Err(Error::Malformed("incomplete summary stream".into()).into());
         }
       }
     }
-    check_cancelled(control)?;
-    let summary = Message::User { metadata: Default::default(), content };
-    let generation = session.get_active_generation()?.id;
-    session.save_compaction_summary(generation, start as u64, end as u64, summary, response)?;
+  };
+  if response.stop_reason != StopReason::Stop {
+    return Err(Failure::Outcome(RunOutcome::ModelStopped(Box::new(response))));
+  }
+  let mut content = Vec::new();
+  for message in &response.messages {
+    match message {
+      Message::Assistant { content: blocks, .. } => content.extend(blocks.clone()),
+      Message::Reasoning { .. } => {}
+      _ => {
+        return Err(
+          Error::Malformed("summary response contains non-assistant content".into()).into(),
+        );
+      }
+    }
+  }
+  check_cancelled(control)?;
+  let summary = Message::User { metadata: Default::default(), content };
+  let observation = CallObservation {
+    first_event_at: None,
+    finished_at: Some(Timestamp::now()),
+    elapsed_ms: Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+    usage: response.usage,
+    last_request_input_tokens: Some(plan.measurement.tokens),
+    last_request_estimated_tokens: None,
+    stop_reason: Some(response.stop_reason),
+  };
+  Ok(StandbySummaryResult {
+    generation: plan.generation,
+    start: plan.start,
+    end: plan.end,
+    summary,
+    response,
+    observation,
+  })
+}
+
+pub(crate) fn commit_standby_summary(
+  session: &mut Session,
+  result: StandbySummaryResult,
+  cursor: &mut u64,
+  observe: &mut (impl FnMut(&SessionEvent) + Send),
+) -> Result<(), SessionError> {
+  let active = session.get_active_generation()?;
+  if active.id != result.generation {
     return Ok(());
   }
+  session.record_completed_compaction_call(result.observation)?;
+  session.save_compaction_summary(
+    result.generation,
+    result.start,
+    result.end,
+    result.summary,
+    result.response,
+  )?;
+  notify_observers(session, cursor, observe)?;
   Ok(())
 }
 

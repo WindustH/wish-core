@@ -24,7 +24,7 @@ impl ViewImageTool {
   pub fn get_specification(&self) -> Tool {
     Tool {
       name: "view_image".into(),
-      description: "View a local PNG, JPEG, GIF or WebP image using its absolute file path. Use this to inspect screenshots, image attachments or images created by tools. The image is retained in context. The application sends native image input when supported, otherwise a file notice; do not claim to have viewed an image when only its notice is available. Use shell to convert other formats or resize images.".into(),
+      description: "View a local image using its absolute file path. The image is retained in context. The application sends native image input when supported, otherwise a file notice.".into(),
       input_schema: json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","description":"Absolute path to a local image file."}}}),
     }
   }

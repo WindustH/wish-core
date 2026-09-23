@@ -12,7 +12,7 @@ use crate::storage::ListId;
 use serde_json::Value;
 
 /// Owned event payloads. HistoryRecord carries the timestamp and originating model call.
-/// Stream events are observed immediately and then persisted in batches.
+/// ModelStream is delivered live only by the executor; legacy stored variants remain readable.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub enum SessionEvent {
   UpstreamCompactionStarted {

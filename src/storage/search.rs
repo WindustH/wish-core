@@ -23,7 +23,10 @@ pub(crate) struct IndexRecord {
 }
 impl Transaction<'_> {
   pub(crate) fn reset_history_index(&self, list: &str) -> Result<(), StorageError> {
-    self.sql.execute("DELETE FROM wish_history_index WHERE list=?1", [list])?;
+    self.sql.execute(
+      "DELETE FROM wish_history_index WHERE list=(SELECT id FROM wish_list_keys WHERE name=?1)",
+      [list],
+    )?;
     Ok(())
   }
 
@@ -38,7 +41,7 @@ impl Transaction<'_> {
     let model_call = row.model_call.map(to_integer).transpose()?;
     self.sql.execute("INSERT INTO wish_history_index
       (list,sequence,recorded_at,generation,item_kind,message_type,event_type,origin,model_call,tool_name,metadata,text)
-      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT(list,sequence) DO NOTHING",
+      VALUES ((SELECT id FROM wish_list_keys WHERE name=?1),?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT(list,sequence) DO NOTHING",
       params![list,sequence,recorded_at,generation,row.item_kind,row.message_type,row.event_type,
         row.origin,model_call,row.tool_name,row.metadata,row.text])?;
     Ok(())

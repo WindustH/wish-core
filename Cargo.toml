@@ -3,6 +3,10 @@ name = "wish-core"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "wish"
+path = "src/main.rs"
+
 [dependencies]
 serde = { version = "1", features = ["derive", "rc"] }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
@@ -12,7 +16,10 @@ thiserror = "2.0.20"
 # Parses the HTTP-date form of a `retry-after` header.
 httpdate = "1"
 # The application owns the runtime; built-in tools use its process and file I/O facilities.
-tokio = { version = "1", features = ["sync", "time", "rt", "process", "fs", "io-util", "macros"] }
+tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "net", "signal", "process", "fs", "io-util", "macros"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+axum = "0.8"
+uuid = { version = "1", features = ["v4"] }
 # Byte-level stream reading, for bodies that must stay under a ceiling while being read.
 futures-util = "0.3"
 # HTTP client. `default-features = false` on purpose: rustls instead of system OpenSSL and `stream`

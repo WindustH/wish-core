@@ -24,15 +24,47 @@ impl Session {
   ) -> Result<Option<Arc<ModelCallRecord>>, SessionError> {
     Ok(self.get_model_calls().get(id.0)?)
   }
-  pub(crate) fn start_compaction_call(&mut self) -> Result<(), SessionError> {
-    self.update(|transaction| transaction.start_model_call(0, ModelCallPurpose::CompactionSummary))
-  }
+
   pub(crate) fn complete_compaction_call(
     &mut self,
     observation: CallObservation,
     status: ModelCallStatus,
   ) -> Result<(), SessionError> {
     self.update(move |transaction| transaction.complete_model_call(observation, status))
+  }
+  pub(crate) fn record_completed_compaction_call(
+    &mut self,
+    observation: CallObservation,
+  ) -> Result<(), SessionError> {
+    self.update(move |transaction| {
+      let list = &transaction.record.model_calls;
+      let id = ModelCallId(transaction.tx.list_len::<ModelCallRecord>(list)?);
+      let started_at = match (observation.finished_at, observation.elapsed_ms) {
+        (Some(finished), Some(elapsed)) => Timestamp(finished.0.saturating_sub(elapsed)),
+        _ => transaction.recorded_at,
+      };
+      transaction.tx.append_item(
+        list,
+        &ModelCallRecord {
+          id,
+          purpose: ModelCallPurpose::CompactionSummary,
+          generation: transaction.record.active,
+          model: transaction.record.config.model.clone(),
+          stream: false,
+          input_entry_count: 0,
+          started_at,
+          first_event_at: observation.first_event_at,
+          finished_at: observation.finished_at,
+          elapsed_ms: observation.elapsed_ms,
+          status: ModelCallStatus::Completed,
+          usage: observation.usage,
+          last_request_input_tokens: observation.last_request_input_tokens,
+          last_request_estimated_tokens: observation.last_request_estimated_tokens,
+          stop_reason: observation.stop_reason,
+        },
+      )?;
+      Ok(())
+    })
   }
 }
 impl SessionTransaction<'_, '_> {

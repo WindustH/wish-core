@@ -10,7 +10,7 @@ use wish_core::tool::shell::{ShellConfig, ShellTool};
 
 let shell = ShellTool::new(ShellConfig::new(workspace, capture_directory)).await?;
 let mut config = SessionConfig::new(model);
-config.tools.push(shell.get_specification());
+config.tools.extend(shell.get_specifications());
 let mut session = Session::new(config)?;
 // Enqueue input, then:
 let outcome = executor::run(&model_caller, &mut session, &shell, &control, observer).await?;
@@ -27,12 +27,12 @@ should have its own ShellTool and capture directory; clones intentionally share 
 
 ## Shell operations
 
-| Operation | Inputs | Behavior |
-| --- | --- | --- |
-| `start` (default) | `command`, `edit`, `timeout`, `data`, `encoding`, `interactive` | Run a script; return completion or a background execution ID. |
-| `poll` | `execution_id`, `offset`, `max_bytes`, `wait_ms`, `encoding` | Read merged output by raw byte offset, optionally wait for new bytes. |
-| `write` | `execution_id`, `data`, `encoding`, `close` | Feed stdin and optionally close it; return the actual accepted byte count. |
-| `kill` | `execution_id`, `mode` | Terminate the process group/job and wait for the supervised child to be reaped. |
+| Tool | Required Inputs | Optional Inputs | Behavior |
+| --- | --- | --- | --- |
+| `shell_start` | `command` | `edit`, `timeout`, `data`, `encoding`, `interactive` | Run a script; return completion or a background execution ID. |
+| `shell_poll` | `execution_id` | `offset`, `max_bytes`, `wait_ms`, `encoding` | Read merged output by raw byte offset, optionally wait for new bytes. |
+| `shell_write` | `execution_id`, `data` | `encoding`, `close` | Feed stdin and optionally close it; return the actual accepted byte count. |
+| `shell_kill` | `execution_id` | `mode` | Terminate the process group/job and wait for the supervised child to be reaped. |
 
 ```text
 start -> foreground wait -- exit -------> inline result
@@ -104,28 +104,32 @@ Wine is opt-in and is never started by the default test command.
 
 ## History search
 
-`tool::search_history::SearchHistoryTool::new(&session)` binds the `search_history` tool to that
-session's permanent history. Register its specification in SessionConfig.tools and delegate to it
+`tool::search_history::SearchHistoryTool::new(&session)` provides atomic history query tools (`history_search`, `history_read`, `history_query`) bound to that
+session's permanent history. Register its specifications in `SessionConfig.tools` and delegate to it
 from the application's tool dispatcher, alongside shell or other tools. It does not take a session
 ID in tool arguments and cannot search another session.
 
 ```rust
 let history_tool = wish_core::tool::search_history::SearchHistoryTool::new(&session);
 let mut config = session.get_config().clone();
-config.tools.push(history_tool.get_specification());
+config.tools.extend(history_tool.get_specifications());
 session.set_config(config)?;
 ```
 
+| Tool | Required Inputs | Optional Inputs | Behavior |
+| --- | --- | --- | --- |
+| `history_search` | `text` | `mode`, `limit`, `filter` | Full-text and substring search over committed history. |
+| `history_read` | `sequence` | `before`, `after` | Read original record at sequence with neighbor expansion. |
+| `history_query` | None | `filter`, `page` | Chronological filtered and paged history queries. |
+
+Search example:
 ```json
-{"operation":"search","query":{"text":"历史决策","mode":"substring","limit":10},"filter":{"message_types":["user","assistant"],"since":1700000000000,"until":1800000000000}}
+{"text":"历史决策","mode":"substring","limit":10,"filter":{"message_types":["user","assistant"],"since":1700000000000,"until":1800000000000}}
 ```
 
-Use `query` with `filter` and `page` to browse matching records. An omitted filter defaults to
-messages; an explicit empty filter includes events too. Use `read` with a returned `sequence`
-and optional `before`/`after` counts to expand the original content. Example:
-
+Read example:
 ```json
-{"operation":"read","sequence":42,"before":2,"after":3}
+{"sequence":42,"before":2,"after":3}
 ```
 
 Compression does not remove the historical messages this tool reads. Retrieval does not insert
@@ -140,7 +144,7 @@ See [history queries](history.md) for indexing, pagination and metadata behavior
 20 MiB) and returns `ToolOutcome::SuccessWithInput`. The session stores all tool
 results first, then appends the supplemental native image input. This preserves
 call/result pairing for parallel batches. Applications own file snapshots and
-model capability projection; wish-server supplies both without erasing stored images.
+model capability projection; the server module supplies both without erasing stored images.
 
 `ShellTool::wait_for_completion(execution_id)` waits for a terminal process snapshot
 and returns file/status metadata without loading output. Applications can turn this
