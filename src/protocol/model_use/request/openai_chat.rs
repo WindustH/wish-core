@@ -6,8 +6,10 @@
 //! - `User` content is a plain string when text-only, otherwise a parts array with images nested
 //!   under `image_url.url` as data URLs.
 //! - `Assistant` text merges with the `ToolUse` messages that follow it into one assistant message
-//!   with `tool_calls` (`content: null` when there is no text); an orphan `ToolUse` becomes a
-//!   standalone assistant message.
+//!   with `tool_calls` (`content: null` when there is no text); `ToolUse` messages with no text
+//!   ahead of them are one assistant turn too - consecutive ones (with replayed `Reasoning`
+//!   between) share a single assistant message, because the wire insists every `tool_calls`
+//!   message is followed by its tool replies.
 //! - `ToolResult` becomes `{"role": "tool", "tool_call_id", "content"}`, passing a string payload
 //!   through and stringifying anything else.
 //! - `Reasoning` is replayed on the assistant turn that follows it: under `reasoning_content` for
@@ -277,13 +279,36 @@ fn render_messages(
         index += used;
       }
       Message::ToolUse { call_id, name, arguments, .. } => {
+        // A turn that called tools without writing text still is one assistant turn. Parallel
+        // calls arrive as consecutive `ToolUse` messages, and the wire answers each `tool_calls`
+        // message with its tool replies immediately: a second assistant message before them is
+        // rejected upstream, so the whole run shares one message here.
+        let mut reasoning = pending_reasoning.take().unwrap_or_default();
+        let mut tool_calls = vec![render_tool_use(call_id, name, arguments)];
+        let mut used = 0;
+        while let Some(following) = conversation.get(index + 1 + used) {
+          match following {
+            Message::ToolUse { call_id, name, arguments, .. } => {
+              tool_calls.push(render_tool_use(call_id, name, arguments));
+              used += 1;
+            }
+            Message::Reasoning { plaintext, .. } => {
+              if !matches!(mode, ChatCompletionApiCompatMode::Official) {
+                reasoning.push_str(plaintext);
+              }
+              used += 1;
+            }
+            _ => break,
+          }
+        }
         let mut message = json!({
           "role": "assistant",
           "content": Value::Null,
-          "tool_calls": [render_tool_use(call_id, name, arguments)],
+          "tool_calls": tool_calls,
         });
-        attach_reasoning(&mut message, pending_reasoning.take(), mode);
+        attach_reasoning(&mut message, (!reasoning.is_empty()).then_some(reasoning), mode);
         messages.push(message);
+        index += used;
       }
       Message::Reasoning { plaintext, .. } => {
         // Replayed reasoning is dropped before the official wire, which has no field for it.
@@ -446,5 +471,113 @@ fn render_tool_choice(choice: ToolChoice, mode: ChatCompletionApiCompatMode) -> 
     ToolChoice::None => "none",
     ToolChoice::Required if mode.is_mistral() => "any",
     ToolChoice::Required => "required",
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use serde_json::Value;
+
+  fn user(text: &str) -> Message {
+    Message::User {
+      metadata: Value::Null,
+      content: vec![ContentBlock::Text { text: text.to_owned() }],
+    }
+  }
+  fn assistant(text: &str) -> Message {
+    Message::Assistant {
+      metadata: Value::Null,
+      content: vec![ContentBlock::Text { text: text.to_owned() }],
+    }
+  }
+  fn tool_use(id: &str) -> Message {
+    Message::ToolUse {
+      metadata: Value::Null,
+      call_id: id.to_owned(),
+      name: "shell_start".to_owned(),
+      arguments: json!({ "command": "pwd" }),
+    }
+  }
+  fn tool_result(id: &str) -> Message {
+    Message::ToolResult {
+      metadata: Value::Null,
+      call_id: id.to_owned(),
+      name: "shell_start".to_owned(),
+      content: json!("done"),
+    }
+  }
+  fn reasoning(text: &str) -> Message {
+    Message::Reasoning {
+      metadata: Value::Null,
+      replay_item: None,
+      plaintext: text.to_owned(),
+      display: text.to_owned(),
+      signature: String::new(),
+      ciphertext: String::new(),
+    }
+  }
+
+  fn call_ids(message: &Value) -> Vec<&str> {
+    message["tool_calls"]
+      .as_array()
+      .unwrap()
+      .iter()
+      .map(|call| call["id"].as_str().unwrap())
+      .collect()
+  }
+
+  #[test]
+  fn parallel_calls_without_text_share_one_assistant_message() {
+    let conversation = vec![
+      user("Run two commands."),
+      tool_use("call_a"),
+      tool_use("call_b"),
+      tool_result("call_a"),
+      tool_result("call_b"),
+      user("continue"),
+    ];
+    let messages = render_messages(&conversation, ChatCompletionApiCompatMode::Official).unwrap();
+    assert_eq!(messages.len(), 5, "user, one assistant turn, two tool replies, user");
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["content"], Value::Null);
+    assert_eq!(call_ids(&messages[1]), vec!["call_a", "call_b"]);
+    assert_eq!(messages[2]["role"], "tool");
+    assert_eq!(messages[2]["tool_call_id"], "call_a");
+    assert_eq!(messages[3]["role"], "tool");
+    assert_eq!(messages[3]["tool_call_id"], "call_b");
+    assert_eq!(messages[4]["role"], "user");
+  }
+
+  #[test]
+  fn replayed_reasoning_between_parallel_calls_joins_their_message() {
+    let conversation = vec![
+      user("Run two commands."),
+      tool_use("call_a"),
+      reasoning("thinking"),
+      tool_use("call_b"),
+      tool_result("call_a"),
+      tool_result("call_b"),
+    ];
+    let messages = render_messages(&conversation, ChatCompletionApiCompatMode::DeepSeek).unwrap();
+    assert_eq!(messages.len(), 4);
+    assert_eq!(call_ids(&messages[1]), vec!["call_a", "call_b"]);
+    assert_eq!(messages[1][REASONING_FIELD], json!("thinking"));
+  }
+
+  #[test]
+  fn assistant_text_still_merges_the_calls_that_follow_it() {
+    let conversation = vec![
+      user("Run two commands."),
+      assistant("I will run both."),
+      tool_use("call_a"),
+      tool_use("call_b"),
+      tool_result("call_a"),
+      tool_result("call_b"),
+    ];
+    let messages = render_messages(&conversation, ChatCompletionApiCompatMode::Official).unwrap();
+    assert_eq!(messages.len(), 4);
+    assert_eq!(messages[1]["content"], json!("I will run both."));
+    assert_eq!(call_ids(&messages[1]), vec!["call_a", "call_b"]);
   }
 }
