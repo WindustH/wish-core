@@ -1,7 +1,10 @@
+use crate::server::error::ApiError;
 use crate::server::provider::ProviderConfig;
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 use crate::session::{CompactionConfig, SessionConfig};
+use crate::transport::Proxy;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -10,7 +13,78 @@ pub struct Config {
   pub data_dir: PathBuf,
   pub bearer_token_env: Option<String>,
   pub providers: BTreeMap<String, ProviderConfig>,
+  pub proxy: ProxyConfig,
   pub defaults: Defaults,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProxyConfig {
+  pub mode: ProxyMode,
+  pub url: String,
+  pub username: String,
+  pub password: String,
+}
+
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyMode {
+  #[default]
+  Environment,
+  Manual,
+  Direct,
+}
+
+impl Default for ProxyConfig {
+  fn default() -> Self {
+    Self {
+      mode: ProxyMode::Environment,
+      url: String::new(),
+      username: String::new(),
+      password: String::new(),
+    }
+  }
+}
+
+impl ProxyConfig {
+  pub fn validate(&self) -> Result<(), ApiError> {
+    if self.url.is_empty() {
+      return if matches!(self.mode, ProxyMode::Manual) {
+        Err(ApiError::bad_request("manual proxy requires a URL"))
+      } else {
+        Ok(())
+      };
+    }
+    let url = reqwest::Url::parse(&self.url)
+      .map_err(|_| ApiError::bad_request("proxy URL must be valid"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+      return Err(ApiError::bad_request("manual proxy URL must use http:// or https://"));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+      return Err(ApiError::bad_request(
+        "put proxy credentials in the username and password fields, not the URL",
+      ));
+    }
+    if self.username.is_empty() && !self.password.is_empty() {
+      return Err(ApiError::bad_request("proxy username is required when password is set"));
+    }
+    Ok(())
+  }
+
+  pub fn policy(&self, provider_enabled: bool) -> Proxy {
+    if !provider_enabled {
+      return Proxy::Disabled;
+    }
+    match self.mode {
+      ProxyMode::Environment => Proxy::Environment,
+      ProxyMode::Direct => Proxy::Disabled,
+      ProxyMode::Manual => Proxy::Manual {
+        url: self.url.clone(),
+        basic_auth: (!self.username.is_empty())
+          .then(|| (self.username.clone(), self.password.clone())),
+      },
+    }
+  }
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -57,6 +131,7 @@ impl Default for Config {
       data_dir: PathBuf::from("data"),
       bearer_token_env: None,
       providers: BTreeMap::new(),
+      proxy: ProxyConfig::default(),
       defaults: Defaults::default(),
     }
   }
@@ -67,4 +142,56 @@ pub fn read_secret(name: &str) -> Result<String, String> {
     return Err(format!("environment variable {name} is empty"));
   }
   Ok(value)
+}
+
+/// The proxy variables visible to this server process, with URL details that may carry secrets removed.
+pub fn proxy_environment() -> Value {
+  const NAMES: &[&str] = &[
+    "HTTPS_PROXY",
+    "https_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+  ];
+  let variables: Vec<Value> = NAMES
+    .iter()
+    .filter_map(|name| {
+      let raw = std::env::var_os(name)?;
+      let value = raw.to_string_lossy();
+      let (displayed, redacted) = if name.eq_ignore_ascii_case("no_proxy") {
+        (value.into_owned(), false)
+      } else {
+        display_proxy_address(&value)
+      };
+      Some(json!({"name": name, "value": displayed, "redacted": redacted}))
+    })
+    .collect();
+  json!({"variables": variables})
+}
+
+fn display_proxy_address(raw: &str) -> (String, bool) {
+  let parsed = reqwest::Url::parse(raw)
+    .ok()
+    .filter(|url| url.host_str().is_some())
+    .or_else(|| reqwest::Url::parse(&format!("http://{raw}")).ok());
+  let Some(mut url) = parsed else {
+    return ("—".to_owned(), true);
+  };
+  if url.host_str().is_none() {
+    return ("—".to_owned(), true);
+  }
+  let hidden = !url.username().is_empty()
+    || url.password().is_some()
+    || url.path() != "/"
+    || url.query().is_some()
+    || url.fragment().is_some();
+  let _ = url.set_username("");
+  let _ = url.set_password(None);
+  url.set_path("/");
+  url.set_query(None);
+  url.set_fragment(None);
+  (url.to_string(), hidden)
 }

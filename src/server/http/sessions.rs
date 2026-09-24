@@ -3,6 +3,15 @@ use crate::server::{
   error::{ApiError, blocking},
   session::{CreateSession, SessionSlot},
 };
+use crate::{
+  executor::ExecutionControl,
+  protocol::Message,
+  session::{
+    EntryId, SessionConfig,
+    history::query::{HistoryFilter, HistoryPageRequest, HistorySearch},
+  },
+  storage::{ReadList, StoredValue},
+};
 use axum::{
   Json,
   extract::{Path, Query, State},
@@ -15,15 +24,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{convert::Infallible, sync::Arc};
-use crate::{
-  executor::ExecutionControl,
-  protocol::Message,
-  session::{
-    EntryId, SessionConfig,
-    history::query::{HistoryFilter, HistoryPageRequest, HistorySearch},
-  },
-  storage::{ReadList, StoredValue},
-};
 
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -304,7 +304,10 @@ pub async fn events(
           }
         }
       };
-      Some((Ok(Event::default().event("wish").data(value.to_string())), (receiver, stop, snapshot, slot)))
+      Some((
+        Ok(Event::default().event("wish").data(value.to_string())),
+        (receiver, stop, snapshot, slot),
+      ))
     },
   );
   Ok(Sse::new(stream).keep_alive(KeepAlive::default()))

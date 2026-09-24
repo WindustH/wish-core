@@ -51,7 +51,7 @@ pub struct Model {
 }
 
 /// One page of a service's model list.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ModelCatalog {
   /// The protocol that read this page.
   pub protocol: ModelListProtocol,

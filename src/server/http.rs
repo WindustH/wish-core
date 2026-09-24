@@ -1,5 +1,6 @@
 mod ask;
 pub(crate) mod content;
+mod directories;
 mod manage;
 mod providers;
 mod sessions;
@@ -30,9 +31,12 @@ pub fn build_router(app: Arc<App>) -> Router {
     .route("/sessions/{id}/input", post(content::input))
     .route("/sessions/{id}/blobs", post(content::upload))
     .route("/sessions/{id}/blobs/{blob}", get(content::download))
+    .route("/sessions/{id}/blobs/{blob}/meta", get(content::metadata))
     .route("/sessions/{id}/history", get(content::timeline))
     .route("/config", get(manage::configuration).put(manage::save_configuration))
+    .route("/proxy-environment", get(|| async { Json(crate::server::config::proxy_environment()) }))
     .route("/defaults", get(manage::defaults))
+    .route("/directories", get(directories::list))
     .route("/events", get(manage::events))
     .route(
       "/version",
@@ -49,6 +53,14 @@ pub fn build_router(app: Arc<App>) -> Router {
     .route("/providers/{id}", get(providers::get))
     .route("/providers/{id}/models", get(providers::models))
     .route("/providers/{id}/account", get(providers::account))
+    .route(
+      "/providers/{id}/chatgpt-login",
+      post(crate::server::codex_login::start).get(crate::server::codex_login::status),
+    )
+    .route(
+      "/providers/{id}/chatgpt-login/complete",
+      post(crate::server::codex_login::complete),
+    )
     .route("/providers/{id}/call", post(providers::call))
     .route("/providers/{id}/count-tokens", post(providers::count))
     .route("/providers/{id}/compact", post(providers::compact))

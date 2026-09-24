@@ -1,19 +1,13 @@
-mod tools;
 mod live;
 pub mod selection;
+mod tools;
 use crate::server::{error::ApiError, provider::Provider};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use std::{
-  path::PathBuf,
-  sync::{Arc, Mutex, RwLock},
-};
-use tokio::sync::{Mutex as AsyncMutex, broadcast};
-use tools::SessionTools;
 use crate::{
   executor::{self, ExecutionControl},
+  protocol::StreamEvent,
   session::{
-    Entry, EntryId, Generation, HistoryReader, Session, SessionConfig, SessionEvent, SessionHandle,
+    Entry, EntryId, Generation, HistoryReader, RunOutcome, Session, SessionConfig, SessionEvent,
+    SessionHandle,
     statistics::ModelCallRecord,
   },
   storage::ReadList,
@@ -22,6 +16,14 @@ use crate::{
     view_image::ViewImageTool,
   },
 };
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+  path::PathBuf,
+  sync::{Arc, Mutex, RwLock},
+};
+use tokio::sync::{Mutex as AsyncMutex, broadcast};
+use tools::SessionTools;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -107,7 +109,8 @@ impl SessionSlot {
     let image_dir = std::path::absolute(data_dir.join("blobs").join(&descriptor.id))
       .map_err(ApiError::internal)?;
     let tasks = app.upgrade().expect("session application is alive").tasks.clone();
-    let tools = SessionTools::new(shell, &session, app.clone(), descriptor.id.clone(), image_dir.clone());
+    let tools =
+      SessionTools::new(shell, &session, app.clone(), descriptor.id.clone(), image_dir.clone());
     let status = Mutex::new(snapshot(&session));
     let (events, _) = broadcast::channel(256);
     Ok(Arc::new(Self {
@@ -225,7 +228,9 @@ impl SessionSlot {
     }
     let mut live = self.live.lock().unwrap();
     live.observe(event);
-    let _ = self.events.send(json!({"type":"session_event","event":event,"revision":live.revision}));
+    if let Some(event) = web_event(event) {
+      let _ = self.events.send(json!({"type":"session_event","event":event,"revision":live.revision}));
+    }
   }
   pub fn subscribe_live(&self) -> (broadcast::Receiver<Value>, Value) {
     // Subscription and snapshot share the publication lock: no gap or duplicate deltas.
@@ -239,19 +244,28 @@ impl SessionSlot {
     control: ExecutionControl,
     compact: bool,
   ) {
-    let model = selection::SwitchingModel::new(self.make_model(provider, self.get_descriptor().provider));
+    let model =
+      selection::SwitchingModel::new(self.make_model(provider, self.get_descriptor().provider));
     let result = if compact {
       executor::compaction::compact(&model, &mut session, &control, |event| self.observe(event))
         .await
     } else {
-      executor::run_with_boundary(&model, &mut session, &self.tools, &control, |event| self.observe(event), |session| self.apply_selection(session, &model)).await
+      executor::run_with_boundary(
+        &model,
+        &mut session,
+        &self.tools,
+        &control,
+        |event| self.observe(event),
+        |session| self.apply_selection(session, &model),
+      )
+      .await
     };
     *self.control.lock().unwrap() = None;
     if result.is_err() && !session.get_state().is_stable() {
       let _ = session.settle_interrupted();
     }
     let event = match result {
-      Ok(outcome) => json!({"type":"operation_finished","outcome":outcome}),
+      Ok(outcome) => json!({"type":"operation_finished","outcome":web_outcome(&outcome)}),
       Err(error) => json!({"type":"operation_failed","error":error.to_string()}),
     };
     {
@@ -260,8 +274,7 @@ impl SessionSlot {
       status["last_operation"] = event.clone();
     }
     {
-      self.descriptor.write().unwrap().updated_at =
-        crate::session::statistics::Timestamp::now().0;
+      self.descriptor.write().unwrap().updated_at = crate::session::statistics::Timestamp::now().0;
     }
     if let Err(error) = self.index.save_calls(&self.get_descriptor(), &self.calls) {
       eprintln!("call index: {error}");
@@ -270,6 +283,36 @@ impl SessionSlot {
       eprintln!("session index: {error}");
     }
     let _ = self.events.send(event);
+  }
+}
+/// The web only needs display deltas and a concise outcome. Opaque replay data stays
+/// in session storage, where it can be inspected without flooding every live client.
+pub(crate) fn web_event(event: &SessionEvent) -> Option<Value> {
+  match event {
+    SessionEvent::ModelStream(
+      StreamEvent::ReasoningCiphertextDelta { .. }
+      | StreamEvent::ReasoningSignatureDelta { .. }
+      | StreamEvent::ReasoningReplayItem { .. }
+      | StreamEvent::UpstreamCompaction { .. },
+    ) => None,
+    SessionEvent::Finished(outcome) => Some(json!({"Finished":web_outcome(outcome)})),
+    SessionEvent::ResponseInterrupted(_) => Some(json!({"ResponseInterrupted":{}})),
+    SessionEvent::ResponseRejected(_) => Some(json!({"ResponseRejected":{}})),
+    SessionEvent::UpstreamCompactionCompleted(_) => Some(json!({"UpstreamCompactionCompleted":{}})),
+    SessionEvent::CompactionSummary { source_start, source_end, .. } =>
+      Some(json!({"CompactionSummary":{"source_start":source_start,"source_end":source_end}})),
+    SessionEvent::ToolStarted(call) => Some(json!({"ToolStarted":{"name":call.name}})),
+    SessionEvent::ToolFinished { .. } => Some(json!({"ToolFinished":{}})),
+    SessionEvent::MetadataUpdated(_) => Some(json!({"MetadataUpdated":{}})),
+    _ => Some(json!(event)),
+  }
+}
+fn web_outcome(outcome: &RunOutcome) -> Value {
+  match outcome {
+    RunOutcome::StreamFailed(partial) => json!({"StreamFailed":{"reason":partial.reason}}),
+    RunOutcome::ModelStopped(response) =>
+      json!({"ModelStopped":{"stop_reason":response.stop_reason}}),
+    _ => json!(outcome),
   }
 }
 fn snapshot(session: &Session) -> Value {

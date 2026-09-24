@@ -4,6 +4,10 @@ use crate::server::{
   error::{ApiError, blocking},
   media::SessionModel,
 };
+use crate::{
+  executor::model::{CallResponse, ModelCaller},
+  protocol::{ContentBlock, Message},
+};
 use axum::{
   Json,
   extract::{Path, State},
@@ -15,10 +19,6 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc};
-use crate::{
-  executor::model::{CallResponse, ModelCaller},
-  protocol::{ContentBlock, Message},
-};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -94,9 +94,11 @@ pub async fn ask(
     app.index.clone(),
     app.tasks.clone(),
     slot.get_descriptor().provider,
-    Some(id),
-  );
-  let model = SessionModel::new(provider, slot.image_dir.clone()).with_client(client);
+    Some(id.clone()),
+  )
+  .with_session_id(id);
+  let model = SessionModel::new(provider, slot.get_descriptor().provider, slot.image_dir.clone())
+    .with_client(client);
   let result = tokio::select! {
     _ = app.stop.cancelled() => return Err(ApiError::conflict("server is shutting down")),
     result = model.call(&request) => result?,

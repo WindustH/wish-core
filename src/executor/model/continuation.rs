@@ -74,6 +74,7 @@ impl SegmentObservation {
       | StreamEvent::ReasoningDisplayDelta { index, .. }
       | StreamEvent::ReasoningSignatureDelta { index, .. }
       | StreamEvent::ReasoningCiphertextDelta { index, .. }
+      | StreamEvent::ReasoningReplayItem { index, .. }
       | StreamEvent::ToolUseDelta { index, .. }
       | StreamEvent::BlockEnd { index }
       | StreamEvent::BlockComplete { index }

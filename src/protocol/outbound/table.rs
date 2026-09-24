@@ -92,6 +92,7 @@ impl Source {
         })
         .collect(),
       auth: self.auth.clone(),
+      session_id: None,
     })
   }
 }

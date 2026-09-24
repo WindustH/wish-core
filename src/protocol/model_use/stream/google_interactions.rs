@@ -50,6 +50,8 @@ struct StepBlock {
   needs_terminal_fill: bool,
   /// The step object the wire sent, from `step.start` or a completed step.
   payload: Option<Value>,
+  /// True when the item came from a completed step, rather than only `step.start`.
+  completed_payload: bool,
   /// The `thought_signature` delta of this step, which outranks the payload's own signature.
   signature: Option<String>,
 }
@@ -277,6 +279,26 @@ impl Decoder {
         self.fill(index, step, &mut out);
       }
     }
+    // A completed thought item retains its original summary part boundaries and image parts for
+    // stateless replay. The display text streamed above remains independent from this payload.
+    let mut replay_items: Vec<(u32, Value)> = self
+      .steps
+      .values()
+      .filter(|block| block.kind == BlockKind::Reasoning && block.completed_payload)
+      .filter_map(|block| {
+        let mut item = block.payload.clone()?;
+        if let Some(signature) = &block.signature {
+          item["signature"] = serde_json::json!(signature);
+        }
+        Some((block.index, item))
+      })
+      .collect();
+    replay_items.sort_unstable_by_key(|(index, _)| *index);
+    out.extend(
+      replay_items
+        .into_iter()
+        .map(|(index, item)| StreamEvent::ReasoningReplayItem { index, item }),
+    );
     // Every reasoning block reports its proof before it closes: the signature delta when one came,
     // otherwise the signature the completed step carried.
     let mut proofs: Vec<(u32, String)> = self
@@ -335,6 +357,7 @@ impl Decoder {
         kind,
         needs_terminal_fill: !streamed,
         payload: None,
+        completed_payload: false,
         signature: None,
       },
     );
@@ -348,6 +371,7 @@ impl Decoder {
     match block.kind {
       BlockKind::Reasoning => {
         block.payload = Some(step.clone());
+        block.completed_payload = true;
         // Only a thought that never streamed fills its text here; its signature lands at the
         // terminal.
         if block.needs_terminal_fill {

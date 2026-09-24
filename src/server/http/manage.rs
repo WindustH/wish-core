@@ -3,6 +3,7 @@ use crate::server::{
   error::{ApiError, blocking},
   session::CreateSession,
 };
+use crate::{protocol::Message, session::EntryId};
 use axum::{
   Json,
   extract::{Path, State},
@@ -11,7 +12,6 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, atomic::Ordering};
-use crate::{protocol::Message, session::EntryId};
 
 pub async fn configuration(State(app): State<Arc<App>>) -> Json<Value> {
   Json(app.configuration.lock().await.describe())
@@ -41,8 +41,10 @@ pub async fn update_session(
   // Names belong to the descriptor, not the executing session. Do not wait
   // for the execution mutex or disturb a pending model selection.
   if input.as_object().is_some_and(|object| object.len() == 1 && object.contains_key("name")) {
-    let name = input["name"].as_str()
-      .ok_or_else(|| ApiError::bad_request("name must be a string"))?.to_owned();
+    let name = input["name"]
+      .as_str()
+      .ok_or_else(|| ApiError::bad_request("name must be a string"))?
+      .to_owned();
     return blocking(move || {
       slot.require_live()?;
       let mut descriptor = slot.descriptor.write().unwrap();
@@ -61,7 +63,8 @@ pub async fn update_session(
       drop(descriptor);
       slot.persist_index()?;
       Ok(Json(slot.describe()))
-    }).await;
+    })
+    .await;
   }
   let session = slot.session.clone().try_lock_owned();
   if session.is_err() {
@@ -70,8 +73,9 @@ pub async fn update_session(
       return Err(ApiError::conflict("only model and reasoning settings can change while running"));
     }
     let config: crate::session::SessionConfig = serde_json::from_value(
-      input.get("config").cloned().ok_or_else(|| ApiError::bad_request("config required"))?
-    ).map_err(ApiError::internal)?;
+      input.get("config").cloned().ok_or_else(|| ApiError::bad_request("config required"))?,
+    )
+    .map_err(ApiError::internal)?;
     let config = slot.configure_tools(config)?;
     return blocking(move || {
       slot.require_live()?;
@@ -81,19 +85,37 @@ pub async fn update_session(
           return Err(ApiError::conflict("session changed; reload before saving"));
         }
       }
-      let mut current = descriptor.pending_selection.as_ref().map(|p| json!(p.config))
+      let mut current = descriptor
+        .pending_selection
+        .as_ref()
+        .map(|p| json!(p.config))
         .unwrap_or_else(|| slot.status.lock().unwrap()["config"].clone());
       let mut desired = json!(config);
       for key in ["model", "reasoning", "max_output_tokens"] {
         current.as_object_mut().unwrap().remove(key);
         desired.as_object_mut().unwrap().remove(key);
       }
-      if current != desired { return Err(ApiError::conflict("only model, reasoning and output limit can change while running")); }
-      let provider = input.get("provider").map(|v| v.as_str().ok_or_else(|| ApiError::bad_request("provider must be a string"))).transpose()?
-        .unwrap_or_else(|| descriptor.pending_selection.as_ref().map(|p| p.provider.as_str()).unwrap_or(&descriptor.provider)).to_owned();
+      if current != desired {
+        return Err(ApiError::conflict(
+          "only model, reasoning and output limit can change while running",
+        ));
+      }
+      let provider = input
+        .get("provider")
+        .map(|v| v.as_str().ok_or_else(|| ApiError::bad_request("provider must be a string")))
+        .transpose()?
+        .unwrap_or_else(|| {
+          descriptor
+            .pending_selection
+            .as_ref()
+            .map(|p| p.provider.as_str())
+            .unwrap_or(&descriptor.provider)
+        })
+        .to_owned();
       app.get_provider(&provider)?;
       let mut next = descriptor.clone();
-      next.pending_selection = Some(crate::server::session::selection::PendingSelection { provider, config });
+      next.pending_selection =
+        Some(crate::server::session::selection::PendingSelection { provider, config });
       next.revision += 1;
       next.updated_at = crate::session::statistics::Timestamp::now().0;
       let status = slot.status.lock().unwrap().clone();
@@ -102,7 +124,8 @@ pub async fn update_session(
       drop(descriptor);
       slot.persist_index()?;
       Ok(Json(slot.describe()))
-    }).await;
+    })
+    .await;
   }
   let mut session = session.unwrap();
   slot.require_live()?;

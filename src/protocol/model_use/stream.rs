@@ -140,6 +140,8 @@ pub enum StreamEvent {
   /// Reasoning ciphertext (`redacted_thinking.data`, `encrypted_content`, a redacted block) appended
   /// as it arrives.
   ReasoningCiphertextDelta { index: u32, ciphertext: String },
+  /// A completed provider reasoning item whose multipart shape must survive stateless replay.
+  ReasoningReplayItem { index: u32, item: serde_json::Value },
   /// Argument JSON fragment for a tool block. `call_id` and `name` arrive at least once before the
   /// block closes.
   ToolUseDelta { index: u32, call_id: Option<String>, name: Option<String>, arguments: String },
@@ -181,6 +183,7 @@ struct Block {
   display: Option<String>,
   signature: String,
   ciphertext: String,
+  replay_item: Option<serde_json::Value>,
   call_id: Option<String>,
   name: Option<String>,
   arguments: String,
@@ -197,6 +200,7 @@ impl Block {
       display: None,
       signature: String::new(),
       ciphertext: String::new(),
+      replay_item: None,
       call_id: None,
       name: None,
       arguments: String::new(),
@@ -255,6 +259,10 @@ impl StreamAccumulator {
       }
       StreamEvent::ReasoningCiphertextDelta { index, ciphertext } => {
         self.get_block_mut(index, BlockKind::Reasoning)?.ciphertext.push_str(&ciphertext);
+        Ok(())
+      }
+      StreamEvent::ReasoningReplayItem { index, item } => {
+        self.get_block_mut(index, BlockKind::Reasoning)?.replay_item = Some(item);
         Ok(())
       }
       StreamEvent::ToolUseDelta { index, call_id, name, arguments } => {
@@ -334,6 +342,7 @@ impl StreamAccumulator {
         BlockKind::Reasoning => {
           messages.push(Message::Reasoning {
             metadata: Default::default(),
+            replay_item: block.replay_item,
             display: block.display.unwrap_or_else(|| block.plaintext.clone()),
             plaintext: block.plaintext,
             signature: block.signature,

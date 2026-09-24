@@ -6,8 +6,8 @@
 //! - The conversation becomes a `steps[]` array of `user_input`, `model_output`, `function_call`,
 //!   `function_result` and `thought` steps. Images are flat blocks
 //!   (`{"type": "image", "mime_type", "data"}`).
-//! - `Reasoning` rebuilds a `thought` step from its parts: the proof rides in `signature` and the
-//!   text in a `summary[]` entry, which is the shape the wire sends and the shape it takes back.
+//! - `Reasoning` replays the original `thought` step when it is available, preserving signed
+//!   multi-part summaries; caller-supplied reasoning is built from `signature` and `plaintext`.
 //!
 //! Constraints:
 //! - Model-generated steps must be resent exactly as received: stripping or editing a `thought` step
@@ -112,8 +112,13 @@ fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
       Message::Developer { content, .. } | Message::User { content, .. } => {
         steps.push(json!({"type": "user_input", "content": render_content_blocks(content)}))
       }
-      Message::Reasoning { plaintext, signature, .. } => {
-        if let Some(step) = render_thought(plaintext, signature) {
+      Message::Reasoning { replay_item, plaintext, signature, .. } => {
+        let step = replay_item
+          .as_ref()
+          .filter(|item| item.get("type").and_then(Value::as_str) == Some("thought"))
+          .cloned()
+          .or_else(|| render_thought(plaintext, signature));
+        if let Some(step) = step {
           steps.push(step);
         }
       }

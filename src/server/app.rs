@@ -4,6 +4,10 @@ use crate::server::{
   provider::Provider,
   session::{CreateSession, Descriptor, SessionSlot},
 };
+use crate::{
+  session::Session,
+  storage::{Storage, StorageOptions},
+};
 use std::{
   collections::BTreeMap,
   path::PathBuf,
@@ -11,15 +15,12 @@ use std::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use crate::{
-  session::Session,
-  storage::{Storage, StorageOptions},
-};
 
 pub struct App {
   pub storage: Storage,
   pub index: Arc<crate::server::management::ManagementStore>,
   pub configuration: AsyncMutex<crate::server::configuration::Configuration>,
+  pub codex_login: crate::server::codex_login::LoginManager,
   pub events: tokio::sync::broadcast::Sender<serde_json::Value>,
   pub started: std::time::Instant,
   pub providers: RwLock<BTreeMap<String, Arc<Provider>>>,
@@ -33,6 +34,7 @@ pub struct App {
 }
 impl App {
   pub async fn open(config: &Config, config_path: PathBuf) -> Result<Arc<Self>, ApiError> {
+    config.proxy.validate()?;
     tokio::fs::create_dir_all(&config.data_dir).await.map_err(ApiError::internal)?;
     let path = config.data_dir.join("wish.sqlite");
     let index_path = config.data_dir.join("management.sqlite");
@@ -45,8 +47,8 @@ impl App {
     .await?;
     let tasks = TaskTracker::new();
     let mut providers = BTreeMap::new();
-    for (id, config) in &config.providers {
-      let mut provider = Provider::build(config.clone())?;
+    for (id, provider_config) in &config.providers {
+      let mut provider = Provider::build(provider_config.clone(), &config.proxy)?;
       provider.client = crate::server::sampling::observe_client(
         &provider.client,
         index.clone(),
@@ -56,17 +58,19 @@ impl App {
       );
       providers.insert(id.clone(), Arc::new(provider));
     }
-    let configuration = crate::server::configuration::Configuration::new(config_path, config.clone())?;
+    let configuration =
+      crate::server::configuration::Configuration::new(config_path, config.clone())?;
     let (events, _) = tokio::sync::broadcast::channel(256);
     let token = config
       .bearer_token_env
       .as_ref()
       .map(|key| crate::server::config::read_secret(key).map_err(ApiError::bad_request))
       .transpose()?;
-    Ok(Arc::new(Self {
+    let app = Arc::new(Self {
       storage,
       index,
       configuration: AsyncMutex::new(configuration),
+      codex_login: crate::server::codex_login::LoginManager::default(),
       events,
       started: std::time::Instant::now(),
       providers: RwLock::new(providers),
@@ -76,7 +80,9 @@ impl App {
       stop: CancellationToken::new(),
       tasks,
       closing: Mutex::new(false),
-    }))
+    });
+    crate::server::codex_login::start_refresh_worker(&app);
+    Ok(app)
   }
   pub fn get_provider(&self, id: &str) -> Result<Arc<Provider>, ApiError> {
     self

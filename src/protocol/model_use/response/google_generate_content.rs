@@ -53,6 +53,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
           flush(messages, content);
           messages.push(Message::Reasoning {
             metadata: Default::default(),
+            replay_item: None,
             plaintext: String::new(),
             display: String::new(),
             signature: proof.to_owned(),
@@ -69,6 +70,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
           flush(&mut messages, &mut content);
           messages.push(Message::Reasoning {
             metadata: Default::default(),
+            replay_item: None,
             plaintext: text.to_owned(),
             display: text.to_owned(),
             signature: signature.to_owned(),
@@ -84,6 +86,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
         if !signature.is_empty() {
           messages.push(Message::Reasoning {
             metadata: Default::default(),
+            replay_item: None,
             plaintext: String::new(),
             display: String::new(),
             signature: signature.to_owned(),
@@ -98,6 +101,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
           flush(&mut messages, &mut content);
           messages.push(Message::Reasoning {
             metadata: Default::default(),
+            replay_item: None,
             plaintext: String::new(),
             display: String::new(),
             signature: signature.to_owned(),

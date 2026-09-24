@@ -53,6 +53,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
           let thinking = block.get("thinking").and_then(Value::as_str).unwrap_or("");
           messages.push(Message::Reasoning {
             metadata: Default::default(),
+            replay_item: None,
             plaintext: thinking.to_owned(),
             display: thinking.to_owned(),
             signature: block.get("signature").and_then(Value::as_str).unwrap_or("").to_owned(),
@@ -63,6 +64,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
           flush(&mut messages, &mut content);
           messages.push(Message::Reasoning {
             metadata: Default::default(),
+            replay_item: None,
             plaintext: String::new(),
             display: String::new(),
             signature: String::new(),

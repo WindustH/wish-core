@@ -8,7 +8,7 @@
 //!   `function_call` and `ToolResult` becomes `function_call_output` (string payload passed through,
 //!   anything else stringified).
 //! - `Reasoning` becomes a `reasoning` item: `ciphertext` -> `encrypted_content`, `plaintext` ->
-//!   `reasoning_text` content.
+//!   `reasoning_text` content, and `display` -> the required `summary` array.
 //!   The mode's `reasoning_form` decides whether encrypted reasoning is requested
 //!   (`include: ["reasoning.encrypted_content"]`), sent as plaintext reasoning or dropped entirely.
 //! - A compacted history becomes a `compaction` item, carrying the opaque payload back verbatim
@@ -30,8 +30,8 @@
 //!   anything is sent, rather than left to be turned away by the backend.
 //!
 //! Trade-offs:
-//! - `display` stays behind: a reasoning summary is the server's to write, and only the encrypted
-//!   payload has to come back.
+//! - Flat `display` text becomes one `summary_text` part when replayed; the original summary part
+//!   boundaries are not retained by the shared message representation.
 //! - `store: false` is always sent, and system text stays an input item instead of being hoisted into
 //!   the top-level `instructions` field: one ordering rule across all providers is worth more than
 //!   matching this protocol exactly. The assistant `phase` field is not modeled. Streaming adds
@@ -156,8 +156,8 @@ pub(crate) fn render_items(
       Message::ToolResult { call_id, content, .. } => {
         items.push(render_function_output_item(call_id, content))
       }
-      Message::Reasoning { plaintext, ciphertext, .. } => {
-        if let Some(item) = render_reasoning_item(plaintext, ciphertext, variant) {
+      Message::Reasoning { plaintext, display, ciphertext, .. } => {
+        if let Some(item) = render_reasoning_item(plaintext, display, ciphertext, variant) {
           items.push(item);
         }
       }
@@ -248,14 +248,21 @@ fn render_assistant_item(content: &[ContentBlock]) -> Result<Option<Value>, Erro
 
 fn render_reasoning_item(
   plaintext: &str,
+  display: &str,
   ciphertext: &str,
   variant: ResponsesApiCompatMode,
 ) -> Option<Value> {
+  let summary = if display.is_empty() {
+    Vec::new()
+  } else {
+    vec![json!({"type": "summary_text", "text": display})]
+  };
   match variant.reasoning_form {
     ReasoningForm::Ciphertext if !ciphertext.is_empty() => {
-      Some(json!({"type": "reasoning", "encrypted_content": ciphertext}))
+      Some(json!({"type": "reasoning", "summary": summary, "encrypted_content": ciphertext}))
     }
     ReasoningForm::Plaintext if !plaintext.is_empty() => Some(json!({"type": "reasoning",
+      "summary": summary,
       "content": [{"type": "reasoning_text", "text": plaintext}]})),
     _ => None,
   }

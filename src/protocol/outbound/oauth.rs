@@ -5,7 +5,7 @@
 //!   take - naming the client, the grant and the refresh token, answered with an access token, a
 //!   rotated refresh token and an id token.
 //! - The account a subscription is addressed by is the response's own field where it names one, and
-//!   the id token's `chatgpt_account_id` claim otherwise.
+//!   the id token's `https://api.openai.com/auth.chatgpt_account_id` claim otherwise.
 //! - `expires_at` is the access token's own `exp` claim: the token is read, never verified, because
 //!   the service that signed it is the one that will check it.
 //!
@@ -30,11 +30,11 @@ use crate::protocol::outbound::{AuthProtocol, Credentials, Draft, Outbound, Toke
 use crate::protocol::wire::{Method, Transport};
 
 /// Who the exchange is asked as.
-const ISSUER: &str = "https://auth.openai.com";
+pub(crate) const ISSUER: &str = "https://auth.openai.com";
 /// Where the issuer answers token requests.
 const TOKEN_PATH: &str = "/oauth/token";
 /// The client the vendor's own login flow authorises.
-const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+pub(crate) const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 /// Exchanges a refresh token for a fresh token pair.
 ///
@@ -60,7 +60,17 @@ pub async fn refresh<T: Transport>(
   });
   // The token request is dispatched through the same join every other request takes, so the
   // exchange holds no HTTP of its own: the target is a constant, the draft is the one body.
-  let target = Outbound::new(ISSUER, TOKEN_PATH, AuthProtocol::None)?;
+  let issuer = {
+    #[cfg(debug_assertions)]
+    {
+      std::env::var("WISH_TEST_CODEX_ISSUER").unwrap_or_else(|_| ISSUER.to_owned())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+      ISSUER.to_owned()
+    }
+  };
+  let target = Outbound::new(&issuer, TOKEN_PATH, AuthProtocol::None)?;
   let draft = Draft {
     method: Method::Post,
     path: None,
@@ -82,7 +92,7 @@ pub async fn refresh<T: Transport>(
 }
 
 /// Reads a token response: the pair, plus what the tokens claim about the account.
-fn decode_tokens(body: &Value) -> Result<Tokens, Error> {
+pub(crate) fn decode_tokens(body: &Value) -> Result<Tokens, Error> {
   let access_token = body
     .get("access_token")
     .and_then(Value::as_str)
@@ -103,13 +113,20 @@ fn decode_tokens(body: &Value) -> Result<Tokens, Error> {
       .filter(|value| !value.is_empty())
       .map(str::to_owned)
       .or_else(|| {
-        // One claim of an unverified JWT: the payload segment, decoded.
+        // Codex's ID token puts the account in its namespaced auth claim.
         id_token
           .and_then(|token| token.split('.').nth(1))
           .and_then(decode_base64url)
           .and_then(|payload| serde_json::from_slice::<Value>(&payload).ok())
-          .and_then(|claims| claims.get("chatgpt_account_id").cloned())
-          .and_then(|found| found.as_str().map(str::to_owned))
+          .and_then(|claims| {
+            claims
+              .get("https://api.openai.com/auth")
+              .and_then(|auth| auth.get("chatgpt_account_id"))
+              .or_else(|| claims.get("chatgpt_account_id"))
+              .and_then(Value::as_str)
+              .filter(|value| !value.is_empty())
+              .map(str::to_owned)
+          })
       }),
     // The same one-claim read for the lifetime, in seconds since the epoch.
     expires_at: access_token
@@ -118,7 +135,16 @@ fn decode_tokens(body: &Value) -> Result<Tokens, Error> {
       .and_then(decode_base64url)
       .and_then(|payload| serde_json::from_slice::<Value>(&payload).ok())
       .and_then(|claims| claims.get("exp").cloned())
-      .and_then(|exp| exp.as_u64()),
+      .and_then(|exp| exp.as_u64())
+      .or_else(|| {
+        body.get("expires_in").and_then(Value::as_u64).map(|seconds| {
+          std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_add(seconds)
+        })
+      }),
   })
 }
 

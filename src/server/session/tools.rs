@@ -1,9 +1,4 @@
 use crate::server::{app::App, error::blocking};
-use serde_json::json;
-use std::{
-  path::PathBuf,
-  sync::{Weak, atomic::Ordering},
-};
 use crate::{
   executor::{
     ExecutionControl,
@@ -12,6 +7,11 @@ use crate::{
   protocol::{ContentBlock, Message},
   session::{Session, SessionHandle},
   tool::{search_history::SearchHistoryTool, shell::ShellTool, view_image::ViewImageTool},
+};
+use serde_json::json;
+use std::{
+  path::PathBuf,
+  sync::{Weak, atomic::Ordering},
 };
 
 pub struct SessionTools {

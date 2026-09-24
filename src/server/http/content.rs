@@ -1,7 +1,11 @@
+mod input;
 use crate::server::{
   app::App,
   error::{ApiError, blocking},
   session::SessionSlot,
+};
+use crate::session::history::query::{
+  HistoryContent, HistoryCursor, HistoryFilter, HistoryKind, HistoryOrder, HistoryPageRequest,
 };
 use axum::{
   Json,
@@ -9,17 +13,11 @@ use axum::{
   extract::{Path, Query, State},
   http::{HeaderMap, StatusCode, header},
 };
-use base64::Engine;
+use input::Input;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use crate::{
-  protocol::{ContentBlock, Message},
-  session::history::query::{
-    HistoryCursor, HistoryFilter, HistoryKind, HistoryOrder, HistoryPageRequest,
-  },
-};
 #[derive(Serialize, Deserialize)]
 pub struct Blob {
   pub id: String,
@@ -90,22 +88,6 @@ pub async fn download(
     .insert(header::HeaderName::from_static("x-content-type-options"), "nosniff".parse().unwrap());
   Ok((headers, body))
 }
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Attachment {
-  id: String,
-  kind: String,
-  name: Option<String>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Input {
-  pub text: String,
-  #[serde(default)]
-  pub attachments: Vec<Attachment>,
-  #[serde(default)]
-  pub metadata: Value,
-}
 pub async fn input(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
@@ -114,45 +96,7 @@ pub async fn input(
   app.require_open()?;
   let slot = app.get_session(&id).await?;
   slot.require_live()?;
-  let mut content = Vec::new();
-  if !input.text.is_empty() {
-    content.push(ContentBlock::Text { text: input.text.clone() });
-  }
-  for attachment in &input.attachments {
-    if !valid_blob(&attachment.id) {
-      return Err(ApiError::bad_request("invalid attachment id"));
-    }
-    let dir = app.data_dir.join("blobs").join(&id);
-    let blob: Blob = serde_json::from_slice(
-      &tokio::fs::read(dir.join(format!("{}.json", attachment.id)))
-        .await
-        .map_err(|_| ApiError::not_found())?,
-    )
-    .map_err(ApiError::internal)?;
-    match attachment.kind.as_str() {
-      "image" => {
-        if !blob.mime_type.starts_with("image/") {
-          return Err(ApiError::bad_request("attachment is not a supported image"));
-        }
-        let bytes = tokio::fs::read(&blob.path).await.map_err(ApiError::internal)?;
-        content.push(ContentBlock::Image {
-          mime_type: blob.mime_type,
-          data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-        });
-      }
-      "file" => content.push(ContentBlock::Text {
-        text: format!("Attached file {}: {}", json!(attachment.name), json!(blob.path)),
-      }),
-      _ => return Err(ApiError::bad_request("attachment kind must be image or file")),
-    }
-  }
-  if content.is_empty() {
-    return Err(ApiError::bad_request("message is empty"));
-  }
-  let message = Message::User {
-    metadata: json!({"custom":input.metadata,"attachments":input.attachments,"input_text":input.text}),
-    content,
-  };
+  let message = input::message(&app, &id, input).await?;
   let owner = slot.clone();
   let entry = blocking(move || Ok(owner.handle.enqueue_message(message)?)).await?;
   let _ = app.events.send(json!({"type":"session_changed","id":id}));
@@ -256,26 +200,65 @@ pub async fn timeline(
     let mut has_more = page.next.is_some();
     if query.include_outcomes {
       let outcomes = reader.query_history(
-        HistoryFilter { kind: Some(HistoryKind::Event), event_types: vec!["Finished".into()], ..Default::default() },
+        HistoryFilter {
+          kind: Some(HistoryKind::Event),
+          event_types: vec!["Finished".into()],
+          ..Default::default()
+        },
         HistoryPageRequest { limit: query.limit, order, cursor },
       )?;
       has_more |= outcomes.next.is_some();
       matches.extend(outcomes.items);
       matches.sort_by_key(|item| item.record.sequence);
-      if order == HistoryOrder::NewestFirst { matches.reverse(); }
+      if order == HistoryOrder::NewestFirst {
+        matches.reverse();
+      }
       has_more |= matches.len() > query.limit;
       matches.truncate(query.limit);
     }
     let next = if has_more {
-      matches.last().map(|item| HistoryCursor { end_sequence: page.end_sequence, after_sequence: item.record.sequence, order })
-    } else { None };
+      matches.last().map(|item| HistoryCursor {
+        end_sequence: page.end_sequence,
+        after_sequence: item.record.sequence,
+        order,
+      })
+    } else {
+      None
+    };
     let mut items = Vec::new();
     for item in &matches {
       if let Some(item) = reader.read_history_item(item.record.sequence)? {
-        items.push(item);
+        if let HistoryContent::Event(event) = &item.content {
+          if let Some(event) = crate::server::session::web_event(event) {
+            items.push(json!({"record":item.record,"content":{"kind":"event","value":event}}));
+          }
+        } else {
+          items.push(json!(item));
+        }
       }
     }
     Ok(Json(json!({"items":items,"next":next,"end_sequence":page.end_sequence})))
   })
   .await
+}
+
+#[derive(Serialize)]
+pub struct BlobMetadata {
+  id: String,
+  mime_type: String,
+  byte_count: usize,
+}
+pub async fn metadata(
+  State(app): State<Arc<App>>,
+  Path((id, blob)): Path<(String, String)>,
+) -> Result<Json<BlobMetadata>, ApiError> {
+  app.get_session(&id).await?.require_live()?;
+  if !valid_blob(&blob) {
+    return Err(ApiError::not_found());
+  }
+  let bytes = tokio::fs::read(app.data_dir.join("blobs").join(id).join(format!("{blob}.json")))
+    .await
+    .map_err(|_| ApiError::not_found())?;
+  let item: Blob = serde_json::from_slice(&bytes).map_err(ApiError::internal)?;
+  Ok(Json(BlobMetadata { id: item.id, mime_type: item.mime_type, byte_count: item.byte_count }))
 }

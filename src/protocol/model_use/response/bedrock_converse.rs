@@ -66,6 +66,7 @@ fn decode_reasoning(block: &Value) -> Option<Message> {
   if let Some(ciphertext) = reasoning.get("redactedContent").and_then(Value::as_str) {
     return Some(Message::Reasoning {
       metadata: Default::default(),
+      replay_item: None,
       plaintext: String::new(),
       display: String::new(),
       signature: String::new(),
@@ -85,6 +86,7 @@ fn decode_reasoning(block: &Value) -> Option<Message> {
     .unwrap_or("");
   Some(Message::Reasoning {
     metadata: Default::default(),
+    replay_item: None,
     plaintext: text.to_owned(),
     display: text.to_owned(),
     signature: signature.to_owned(),

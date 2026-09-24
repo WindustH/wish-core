@@ -48,7 +48,7 @@ impl ManagementStore {
       .query_row("SELECT record FROM sessions WHERE id=?1", [id], |r| r.get(0))
       .optional()?
       .ok_or_else(ApiError::not_found)?;
-    serde_json::from_str(&value).map_err(ApiError::internal)
+    serde_json::from_str(&value).map(project_session_record).map_err(ApiError::internal)
   }
   pub fn list(&self, q: SessionQuery) -> Result<Value, ApiError> {
     if q.limit == 0 {
@@ -76,7 +76,7 @@ impl ManagementStore {
     )?;
     let mut items = Vec::new();
     for row in rows {
-      items.push(serde_json::from_str::<Value>(&row?).map_err(ApiError::internal)?);
+      items.push(project_session_record(serde_json::from_str::<Value>(&row?).map_err(ApiError::internal)?));
     }
     let more = items.len() > q.limit;
     items.truncate(q.limit);
@@ -89,6 +89,19 @@ impl ManagementStore {
   pub fn count(&self) -> Result<i64, ApiError> {
     Ok(self.0.lock().unwrap().query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))?)
   }
+}
+fn project_session_record(mut record: Value) -> Value {
+  if let Some(outcome) = record.pointer_mut("/status/last_operation/outcome") {
+    if let Some(partial) = outcome.get_mut("StreamFailed") {
+      let reason = partial.get("reason").cloned().unwrap_or(Value::Null);
+      *partial = json!({"reason":reason});
+    }
+    if let Some(response) = outcome.get_mut("ModelStopped") {
+      let stop_reason = response.get("stop_reason").cloned().unwrap_or(Value::Null);
+      *response = json!({"stop_reason":stop_reason});
+    }
+  }
+  record
 }
 impl From<rusqlite::Error> for ApiError {
   fn from(e: rusqlite::Error) -> Self {
@@ -139,7 +152,10 @@ impl ManagementStore {
 }
 
 impl ManagementStore {
-  pub fn save_stream_sample(&self, sample: &crate::server::sampling::Sample) -> Result<(), ApiError> {
+  pub fn save_stream_sample(
+    &self,
+    sample: &crate::server::sampling::Sample,
+  ) -> Result<(), ApiError> {
     self.0.lock().unwrap().execute("INSERT INTO stream_samples(attempt_id,session,provider,model,at_ms,duration_ms,output_bytes) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![sample.attempt_id,sample.session,sample.provider,sample.model,sample.at_ms as i64,sample.duration_ms as i64,sample.output_bytes as i64])?;
     Ok(())
   }

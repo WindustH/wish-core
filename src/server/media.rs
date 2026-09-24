@@ -1,5 +1,13 @@
 //! Request-time image projection. Stored conversation always retains the original images.
 use crate::server::provider::{ModelClient, Provider};
+use crate::{
+  Error,
+  executor::model::{CallResponse, ModelCaller},
+  protocol::{
+    ContentBlock, Message, Request, TokenCount, UpstreamCompaction, UpstreamCompactionRequest,
+    model_use::ModelUseProtocol,
+  },
+};
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use std::{
@@ -7,14 +15,6 @@ use std::{
   sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
-  },
-};
-use crate::{
-  Error,
-  executor::model::{CallResponse, ModelCaller},
-  protocol::{
-    ContentBlock, Message, Request, TokenCount, UpstreamCompaction, UpstreamCompactionRequest,
-    model_use::ModelUseProtocol,
   },
 };
 
@@ -42,13 +42,20 @@ pub fn apply_agent_instructions(messages: &mut Vec<Message>) {
 }
 pub struct SessionModel {
   provider: Arc<Provider>,
+  provider_id: String,
   client: ModelClient,
   directory: PathBuf,
   rejected: AtomicBool,
 }
 impl SessionModel {
-  pub fn new(provider: Arc<Provider>, directory: PathBuf) -> Self {
-    Self { client: provider.client.clone(), provider, directory, rejected: AtomicBool::new(false) }
+  pub fn new(provider: Arc<Provider>, provider_id: String, directory: PathBuf) -> Self {
+    Self {
+      client: provider.client.clone(),
+      provider,
+      provider_id,
+      directory,
+      rejected: AtomicBool::new(false),
+    }
   }
   pub fn with_client(mut self, client: ModelClient) -> Self {
     self.client = client;
@@ -79,7 +86,8 @@ impl SessionModel {
           let bytes = base64::engine::general_purpose::STANDARD
             .decode(data_base64)
             .map_err(|error| Error::Build(format!("invalid stored image: {error}")))?;
-          let path = self.directory.join(format!("{:x}", Sha256::digest(&bytes)));
+          let image_id = format!("{:x}", Sha256::digest(&bytes));
+          let path = self.directory.join(&image_id);
           if save {
             save_image(&self.directory, data_base64)?;
           }
@@ -92,7 +100,7 @@ impl SessionModel {
           };
           projected.push(ContentBlock::Text {
             text: format!(
-              "[Image attachment]\n{notice}\nSession-local blob path: {}",
+              "[Image sha256:{image_id}]\n{notice}\nSession-local blob path: {}",
               serde_json::json!(path)
             ),
           });
@@ -111,10 +119,11 @@ impl SessionModel {
     let mut request = request.clone();
     apply_agent_instructions(&mut request.conversation);
     // File writes run outside the async runtime workers; validation below performs no I/O.
-    let (mut messages, model, provider, directory, rejected) = (
+    let (mut messages, model, provider, provider_id, directory, rejected) = (
       request.conversation,
       request.model.clone(),
       self.provider.clone(),
+      self.provider_id.clone(),
       self.directory.clone(),
       self.rejected.load(Ordering::Relaxed),
     );
@@ -122,6 +131,7 @@ impl SessionModel {
       let projection = Self {
         client: provider.client.clone(),
         provider,
+        provider_id,
         directory,
         rejected: AtomicBool::new(rejected),
       };
@@ -131,6 +141,17 @@ impl SessionModel {
     .map_err(|e| Error::Build(e.to_string()))??;
     request.conversation = conversation;
     Ok((request, images))
+  }
+  fn with_model_context(&self, error: Error, model: &str) -> Error {
+    match error {
+      Error::Upstream { status, code, message, retry_after_ms } => Error::Upstream {
+        status,
+        code,
+        message: format!("provider `{}` model `{model}`: {message}", self.provider_id),
+        retry_after_ms,
+      },
+      other => other,
+    }
   }
 }
 pub fn save_image(directory: &std::path::Path, data: &str) -> Result<PathBuf, Error> {
@@ -187,7 +208,9 @@ impl ModelCaller for SessionModel {
   }
   async fn count_tokens(&self, request: &Request) -> Result<Option<TokenCount>, Error> {
     let (request, _) = self.prepare(request).await?;
-    ModelCaller::count_tokens(&self.client, &request).await
+    ModelCaller::count_tokens(&self.client, &request)
+      .await
+      .map_err(|error| self.with_model_context(error, &request.model))
   }
   async fn compact_upstream(
     &self,
@@ -206,17 +229,17 @@ impl ModelCaller for SessionModel {
     projected.conversation = request.conversation.clone();
     let (projected, _) = self.prepare(&projected).await?;
     self
-      .provider
       .client
       .compact_upstream(&UpstreamCompactionRequest {
         model: request.model.clone(),
         conversation: projected.conversation,
       })
       .await
+      .map_err(|error| self.with_model_context(error, &request.model))
   }
   async fn call(&self, original: &Request) -> Result<CallResponse<Self::Stream>, Error> {
     let (request, images) = self.prepare(original).await?;
-    match self.client.call(&request).await {
+    let result = match self.client.call(&request).await {
       // Client has not handed out any event; partial stream failures never enter this branch.
       Err(error) if images && rejects_images(&error) => {
         self.rejected.store(true, Ordering::Relaxed);
@@ -224,6 +247,7 @@ impl ModelCaller for SessionModel {
         self.client.call(&request).await
       }
       result => result,
-    }
+    };
+    result.map_err(|error| self.with_model_context(error, &request.model))
   }
 }

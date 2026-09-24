@@ -99,6 +99,7 @@ fn decode_reasoning(chunks: &[Value]) -> Result<Option<Message>, Error> {
   }
   Ok(Some(Message::Reasoning {
     metadata: Default::default(),
+    replay_item: None,
     plaintext: plaintext.clone(),
     display: plaintext,
     signature: String::new(),

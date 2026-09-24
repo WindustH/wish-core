@@ -2,11 +2,10 @@
 //!
 //! Conversions:
 //! - The wire has no block events and no terminal marker: the body ending IS the terminal. Parts
-//!   number blocks as they arrive: consecutive thought chunks stream into one reasoning block,
-//!   consecutive text chunks into one text block, and switching kinds closes the other side first,
-//!   so blocks follow wire order exactly like the buffered decoder's part list.
+//!   number blocks as they arrive: unsigned thought chunks continue one reasoning block, a signed
+//!   thought closes before the next thought part, and consecutive text chunks share a text block.
 //! - A `thought: true` part streams reasoning text; its `thoughtSignature` is held back and emitted
-//!   as the block's proof when the block closes (the last signature on the block wins).
+//!   as that block's proof when it closes.
 //! - A signature riding on a text or `functionCall` part becomes a signature-only reasoning block
 //!   of its own, emitted after the open text block closes and before the part it belongs to opens
 //!   its own block, so the request side can attach it to the next part again.
@@ -108,6 +107,11 @@ impl Decoder {
     if part.get("thought") == Some(&Value::Bool(true)) {
       if let Some(text) = part.get("text").and_then(Value::as_str) {
         self.close_text(out);
+        // A signature seals the previous thought part. Reusing its block for the next part would
+        // concatenate their text and replace the first proof with the second one.
+        if self.open_reasoning.as_ref().is_some_and(|open| open.signature.is_some()) {
+          self.close_reasoning(out);
+        }
         let index = match &mut self.open_reasoning {
           Some(open) => open.index,
           None => {
@@ -201,6 +205,7 @@ impl Decoder {
       open.signature = Some(signature.to_owned());
       return;
     }
+    self.close_reasoning(out);
     self.signature_only(signature, out);
   }
 

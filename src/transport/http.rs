@@ -20,6 +20,7 @@ use super::{Proxy, TransportError, build_payload_error, build_read_error, trunca
 pub struct ReqwestTransport {
   client: reqwest::Client,
   limits: Limits,
+  stream_total: Option<std::time::Duration>,
 }
 
 impl ReqwestTransport {
@@ -47,7 +48,13 @@ impl ReqwestTransport {
     };
     let client =
       builder.build().map_err(|error| Error::Build(format!("client build failed: {error}")))?;
-    Ok(Self { client, limits })
+    Ok(Self { client, limits, stream_total: None })
+  }
+
+  /// Override the wall-clock limit only for streamed responses. Buffered calls keep `limits.total`.
+  pub fn with_stream_total(mut self, total: std::time::Duration) -> Self {
+    self.stream_total = Some(total);
+    self
   }
 
   /// Renders one request: the caller's header list verbatim, nothing added behind its back.
@@ -107,9 +114,11 @@ impl Transport for ReqwestTransport {
   }
 
   async fn execute_stream(&self, call: &Call) -> Result<HttpBodyStream, Error> {
-    let total_deadline = tokio::time::Instant::now() + self.limits.total;
+    let mut limits = self.limits;
+    limits.total = self.stream_total.unwrap_or(limits.total);
+    let total_deadline = tokio::time::Instant::now() + limits.total;
     let headers_deadline =
-      (tokio::time::Instant::now() + self.limits.first_byte).min(total_deadline);
+      (tokio::time::Instant::now() + limits.first_byte).min(total_deadline);
     let response =
       match tokio::time::timeout_at(headers_deadline, self.build_request(call)?.send()).await {
         Ok(Ok(response)) => response,
@@ -121,7 +130,7 @@ impl Transport for ReqwestTransport {
           );
         }
       };
-    Ok(HttpBodyStream::from_http_response(response, self.limits))
+    Ok(HttpBodyStream::from_http_response(response, limits))
   }
 }
 

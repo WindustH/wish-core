@@ -86,6 +86,7 @@ pub(crate) fn decode_reasoning(item: &Value) -> Option<Message> {
   }
   Some(Message::Reasoning {
     metadata: Default::default(),
+    replay_item: None,
     plaintext,
     display,
     signature: String::new(),

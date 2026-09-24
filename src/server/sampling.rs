@@ -1,5 +1,8 @@
 //! One-second observations of received output, separate from provider-reported billing usage.
 use crate::server::{management::ManagementStore, provider::ModelClient};
+use crate::{
+  executor::model::StreamObserver, protocol::StreamEvent, session::statistics::Timestamp,
+};
 use serde::Serialize;
 use std::sync::{
   Arc,
@@ -10,9 +13,6 @@ use tokio::{
   time::{Duration, Instant, MissedTickBehavior},
 };
 use tokio_util::task::TaskTracker;
-use crate::{
-  executor::model::StreamObserver, protocol::StreamEvent, session::statistics::Timestamp,
-};
 
 #[derive(Clone, Serialize)]
 pub struct Sample {

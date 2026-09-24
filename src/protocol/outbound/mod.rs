@@ -128,6 +128,7 @@ pub struct Outbound {
   headers: Vec<(String, String)>,
   material_headers: Vec<(&'static str, CredentialField)>,
   auth: AuthProtocol,
+  session_id: Option<String>,
 }
 
 impl Outbound {
@@ -153,6 +154,7 @@ impl Outbound {
       headers: Vec::new(),
       material_headers: Vec::new(),
       auth,
+      session_id: None,
     })
   }
 
@@ -160,6 +162,24 @@ impl Outbound {
   pub fn with_header(mut self, name: &str, value: &str) -> Self {
     insert_header(&mut self.headers, name, value);
     self
+  }
+
+  /// Place one header from credential material at dispatch time.
+  pub fn with_credential_header(mut self, name: &'static str, credential: CredentialField) -> Self {
+    self.material_headers.push((name, credential));
+    self
+  }
+
+  /// Bind `{session}` header templates to a conversation. Without one, each standalone
+  /// dispatch gets a fresh ID, shared by all template headers on that call.
+  pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+    self.session_id = Some(session_id.into());
+    self
+  }
+
+  /// The conversation identity bound by the server, when this target has one.
+  pub fn session_id(&self) -> Option<&str> {
+    self.session_id.as_deref()
   }
 
   /// The auth protocol this target proves its calls by, for the asks that read it back - the
@@ -212,6 +232,13 @@ impl Outbound {
       separator = '&';
     }
     let mut headers = self.headers.clone();
+    if headers.iter().any(|(_, value)| value.contains("{session}")) {
+      let fallback = self.session_id.is_none().then(|| uuid::Uuid::new_v4().to_string());
+      let session = self.session_id.as_deref().or(fallback.as_deref()).unwrap();
+      for (_, value) in &mut headers {
+        *value = value.replace("{session}", session);
+      }
+    }
     match &self.auth {
       AuthProtocol::None => {}
       AuthProtocol::Bearer(_) => {

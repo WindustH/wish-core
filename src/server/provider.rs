@@ -1,8 +1,9 @@
-use crate::server::{config::read_secret, error::ApiError};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use crate::server::{
+  config::{ProxyConfig, read_secret},
+  error::ApiError,
+};
 use crate::{
-  executor::model::Client,
+  executor::model::{Client, client::CodeAgentIdentity},
   protocol::{
     TokenCountProtocol,
     account_state::AccountStateProtocol,
@@ -15,13 +16,20 @@ use crate::{
         openai_responses::{ReasoningForm, ResponsesApiCompatMode, ResponsesDeployment},
       },
     },
-    outbound::{AuthProtocol, Credentials, Outbound},
+    outbound::{AuthProtocol, CredentialField, Credentials, CredentialsRefreshProtocol, Outbound},
     upstream_compaction::UpstreamCompactionProtocol,
   },
-  transport::{Proxy, ReqwestTransport},
+  transport::ReqwestTransport,
 };
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub type ModelClient = Client<ReqwestTransport>;
+
+// Keep these defaults in step with the official stable CLI releases. Provider headers can
+// override either value without changing the request-body identity fields.
+const CODEX_USER_AGENT: &str = "codex_cli_rs/0.156.1";
+const CLAUDE_USER_AGENT: &str = "claude-cli/2.1.278 (external, cli)";
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +41,10 @@ pub struct ProviderConfig {
   #[serde(default = "enabled")]
   pub proxy_enabled: bool,
   pub api_key: Option<String>,
+  #[serde(default)]
+  pub refresh_token: Option<String>,
+  #[serde(default)]
+  pub expires_at: Option<u64>,
   #[serde(default)]
   pub credentials: BTreeMap<String, String>,
   pub model_list_base_url: Option<String>,
@@ -71,9 +83,12 @@ pub enum Auth {
 pub struct Provider {
   pub client: ModelClient,
   pub config: ProviderConfig,
+  /// Pages read for `GET /providers/{id}/models`, so reopening a picker does not reread the
+  /// service. Rebuilt providers start empty; see [`crate::server::catalog`].
+  pub catalog: crate::server::catalog::CatalogCache,
 }
 impl Provider {
-  pub fn build(config: ProviderConfig) -> Result<Self, ApiError> {
+  pub fn build(config: ProviderConfig, proxy: &ProxyConfig) -> Result<Self, ApiError> {
     if let Some(id) = &config.preset {
       if crate::server::presets::find(id).is_none() {
         return Err(ApiError::bad_request(format!("unknown provider preset: {id}")));
@@ -81,18 +96,58 @@ impl Provider {
     }
     let auth = match config.auth {
       Auth::None => AuthProtocol::None,
+      Auth::Bearer if config.preset.as_deref() == Some("openai_codex") => {
+        AuthProtocol::Bearer(Some(CredentialsRefreshProtocol::OAuth))
+      }
       Auth::Bearer => AuthProtocol::Bearer(None),
       Auth::AnthropicKey => AuthProtocol::Header("x-api-key"),
       Auth::GoogleKey => AuthProtocol::Header("x-goog-api-key"),
       Auth::SigV4 => AuthProtocol::SigV4,
     };
     let mut outbound = Outbound::new(&config.base_url, &config.path, auth)?;
+    // Existing saved provider configs keep their own header maps when a preset is updated.
+    // Apply current preset defaults here, then let explicit config headers override them.
+    match config.preset.as_deref() {
+      Some("opencode_go") => {
+        outbound = outbound
+          .with_header("x-opencode-session", "{session}")
+          .with_header("user-agent", &format!("wish/{}", env!("CARGO_PKG_VERSION")));
+      }
+      Some("openai_codex") => {
+        outbound = outbound
+          .with_header("user-agent", CODEX_USER_AGENT)
+          .with_header("session-id", "{session}")
+          .with_header("thread-id", "{session}")
+          .with_header("x-client-request-id", "{session}")
+          .with_credential_header("chatgpt-account-id", CredentialField::AccountId);
+      }
+      Some("openai") => {
+        outbound = outbound
+          .with_header("user-agent", CODEX_USER_AGENT)
+          .with_header("originator", "codex_cli_rs");
+        if config.protocol == "openai_responses" {
+          outbound = outbound
+            .with_header("session-id", "{session}")
+            .with_header("thread-id", "{session}")
+            .with_header("x-client-request-id", "{session}");
+        }
+      }
+      Some("anthropic") => {
+        outbound = outbound
+          .with_header("user-agent", CLAUDE_USER_AGENT)
+          .with_header("x-app", "cli")
+          .with_header("x-claude-code-session-id", "{session}");
+      }
+      _ => {}
+    }
     for (key, value) in &config.headers {
       outbound = outbound.with_header(key, value);
     }
     let mut credentials = Credentials::default();
     if config.enabled {
       credentials.api_key = config.api_key.clone().unwrap_or_default();
+      credentials.refresh_token = config.refresh_token.clone();
+      credentials.expires_at = config.expires_at;
       if let Some(name) = &config.api_key_env {
         credentials.api_key = read_secret(name).map_err(ApiError::bad_request)?;
       }
@@ -121,12 +176,19 @@ impl Provider {
     let mut client = Client::new(
       parse_protocol(&config.protocol)?,
       outbound,
-      ReqwestTransport::new(
-        Default::default(),
-        if config.proxy_enabled { Proxy::Environment } else { Proxy::Disabled },
-      )?,
+      ReqwestTransport::new(Default::default(), proxy.policy(config.proxy_enabled))?
+        .with_stream_total(std::time::Duration::from_secs(30 * 60)),
     )
     .with_credentials(credentials);
+    match config.preset.as_deref() {
+      Some("openai" | "openai_codex") => {
+        client = client.with_code_agent_identity(CodeAgentIdentity::Codex);
+      }
+      Some("anthropic") => {
+        client = client.with_code_agent_identity(CodeAgentIdentity::Claude);
+      }
+      _ => {}
+    }
     if let Some(value) = &config.token_count {
       client = client.with_token_count(match value.as_str() {
         "openai_responses" => TokenCountProtocol::OpenAiResponses,
@@ -152,7 +214,7 @@ impl Provider {
         value.parse::<AccountStateProtocol>().map_err(|e| ApiError::bad_request(e.to_string()))?,
       );
     }
-    Ok(Self { client, config })
+    Ok(Self { client, config, catalog: Default::default() })
   }
   pub fn describe(&self, id: &str) -> serde_json::Value {
     // Static headers may contain credentials too. Never serialize provider config to HTTP.

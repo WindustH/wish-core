@@ -1,7 +1,7 @@
 //! Coalesced current-turn preview. No token/chunk log, and no disk persistence.
+use crate::{protocol::StreamEvent, session::SessionEvent};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use crate::{protocol::StreamEvent, session::SessionEvent};
 
 #[derive(Default)]
 pub(super) struct LivePreview {

@@ -1,4 +1,8 @@
 use crate::server::{app::App, error::ApiError};
+use crate::{
+  executor::model::CallResponse,
+  protocol::{Request, UpstreamCompactionRequest, model_list::ModelListQuery},
+};
 use axum::{
   Json,
   extract::{Path, Query, State},
@@ -10,10 +14,6 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{convert::Infallible, sync::Arc};
-use crate::{
-  executor::model::CallResponse,
-  protocol::{Request, UpstreamCompactionRequest, model_list::ModelListQuery},
-};
 
 pub async fn list(State(app): State<Arc<App>>) -> Json<Value> {
   Json(
@@ -124,7 +124,8 @@ pub async fn models(
   }
   let catalog = tokio::select! {
     _=app.stop.cancelled()=>return Err(ApiError::conflict("server is shutting down")),
-    result=provider.client.get_model_list(&page)=>result?,
+    // Cached while fresh, and one fetch in flight at a time; see the catalog module.
+    result=provider.catalog.page(&provider.client, &page)=>result?,
   };
   Ok(Json(
     json!({"protocol":catalog.protocol.get_id(),"items":catalog.models.into_iter().map(|m|json!({

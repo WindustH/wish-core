@@ -46,6 +46,13 @@ pub enum CallResponse<S> {
   Stream(S),
 }
 
+/// Request identifiers used by the official coding client for this provider preset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeAgentIdentity {
+  Codex,
+  Claude,
+}
+
 /// One model-use protocol bound to one configured endpoint, the read protocols named beside it,
 /// and one transport.
 ///
@@ -54,6 +61,7 @@ pub enum CallResponse<S> {
 #[derive(Clone)]
 pub struct Client<T> {
   stream_observer: Option<super::StreamObserverFactory>,
+  code_agent_identity: Option<CodeAgentIdentity>,
   model_use: ModelUseProtocol,
   outbound: Outbound,
   credentials: Credentials,
@@ -84,6 +92,7 @@ impl<T: Transport> Client<T> {
   pub fn new(model_use: ModelUseProtocol, outbound: Outbound, transport: T) -> Self {
     Self {
       stream_observer: None,
+      code_agent_identity: None,
       model_use,
       outbound,
       credentials: Credentials::default(),
@@ -97,6 +106,13 @@ impl<T: Transport> Client<T> {
     }
   }
 
+  /// Apply the coding client's body identifiers to model requests for this provider.
+  #[must_use]
+  pub fn with_code_agent_identity(mut self, identity: CodeAgentIdentity) -> Self {
+    self.code_agent_identity = Some(identity);
+    self
+  }
+
   /// The account's material, placed into every call this client makes.
   ///
   /// A client whose plan names a credential and whose material carries none fails the call when
@@ -105,6 +121,13 @@ impl<T: Transport> Client<T> {
   #[must_use]
   pub fn with_credentials(mut self, credentials: Credentials) -> Self {
     self.credentials = credentials;
+    self
+  }
+
+  /// Bind provider header templates to one conversation, including token count and compaction.
+  #[must_use]
+  pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+    self.outbound = self.outbound.with_session_id(session_id);
     self
   }
 
@@ -393,14 +416,43 @@ impl<T: Transport> Client<T> {
 
   /// Internal: one attempt of [`Client::call`]: render, resolve, build, execute, then decode or report.
   fn build_model_use_call(&self, request: &Request) -> Result<Call, Error> {
-    let body = Self::serialize_body(self.model_use.render(request)?)?;
+    let session_id = self
+      .outbound
+      .session_id()
+      .map(str::to_owned)
+      .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let mut body = self.model_use.render(request)?;
+    self.apply_code_agent_identity(&mut body, &session_id);
+    let body = Self::serialize_body(body)?;
     let path =
       self.model_use.resolve_request_path(request, self.outbound.resolve_path(&request.model));
-    self.outbound.dispatch(
+    self.outbound.clone().with_session_id(session_id).dispatch(
       self.build_draft(path, self.build_headers(&[]), body),
       &self.credentials,
       self.get_current_time(),
     )
+  }
+
+  fn apply_code_agent_identity(&self, body: &mut Value, session_id: &str) {
+    let Some(object) = body.as_object_mut() else { return };
+    match (self.code_agent_identity, self.model_use) {
+      (Some(CodeAgentIdentity::Codex), ModelUseProtocol::OpenAiResponses(..)) => {
+        object
+          .entry("prompt_cache_key".to_owned())
+          .or_insert_with(|| serde_json::json!(session_id));
+        object.insert(
+          "client_metadata".to_owned(),
+          serde_json::json!({"session_id": session_id, "thread_id": session_id}),
+        );
+      }
+      (Some(CodeAgentIdentity::Claude), ModelUseProtocol::AnthropicMessages(..)) => {
+        object.insert(
+          "metadata".to_owned(),
+          serde_json::json!({"user_id": serde_json::json!({"session_id": session_id}).to_string()}),
+        );
+      }
+      _ => {}
+    }
   }
 
   async fn attempt(&self, request: &Request) -> Result<Response, Error> {
@@ -445,9 +497,17 @@ impl<T: Transport> Client<T> {
         ));
       }
     };
-    let body =
-      Self::serialize_body(upstream_compaction_wire::openai_responses::render(request, variant)?)?;
-    self.outbound.dispatch(
+    let mut body = upstream_compaction_wire::openai_responses::render(request, variant)?;
+    let session_id = self
+      .outbound
+      .session_id()
+      .map(str::to_owned)
+      .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if variant.deployment == ResponsesDeployment::Codex {
+      self.apply_code_agent_identity(&mut body, &session_id);
+    }
+    let body = Self::serialize_body(body)?;
+    self.outbound.clone().with_session_id(session_id).dispatch(
       self.build_draft(
         path,
         self.build_headers(upstream_compaction_wire::openai_responses::get_extra_headers(variant)),

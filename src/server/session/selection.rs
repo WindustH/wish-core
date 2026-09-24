@@ -52,14 +52,16 @@ impl ModelCaller for SwitchingModel {
 }
 impl SessionSlot {
   pub fn make_model(&self, provider: Arc<Provider>, provider_id: String) -> SessionModel {
+    let session_id = self.get_descriptor().id;
     let client = crate::server::sampling::observe_client(
       &provider.client,
       self.index.clone(),
       self.tasks.clone(),
-      provider_id,
-      Some(self.get_descriptor().id),
-    );
-    SessionModel::new(provider, self.image_dir.clone()).with_client(client)
+      provider_id.clone(),
+      Some(session_id.clone()),
+    )
+    .with_session_id(session_id);
+    SessionModel::new(provider, provider_id, self.image_dir.clone()).with_client(client)
   }
   pub fn apply_selection(
     &self,
@@ -83,8 +85,10 @@ impl SessionSlot {
       self.tasks.clone(),
       pending.provider.clone(),
       Some(descriptor.id.clone()),
-    );
-    let next_model = SessionModel::new(provider, self.image_dir.clone()).with_client(client);
+    )
+    .with_session_id(descriptor.id.clone());
+    let next_model = SessionModel::new(provider, pending.provider.clone(), self.image_dir.clone())
+      .with_client(client);
     // Save previous calls before changing provider attribution.
     self
       .index

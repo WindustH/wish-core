@@ -1,6 +1,8 @@
 //! HTTP application, provider configuration and operational session management.
 
 mod app;
+mod catalog;
+mod codex_login;
 mod config;
 mod configuration;
 mod error;

@@ -59,11 +59,16 @@ pub enum Message {
     #[serde(default, skip_serializing_if = "Value::is_null")]
     metadata: Value,
 
+    /// A provider item that must be replayed verbatim. Google Interactions uses this for thought
+    /// steps whose signed summary can contain several text or image parts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replay_item: Option<Value>,
+
     /// The readable thinking text the wire gave and gets back: `thinking`, `reasoningText.text`,
     /// `reasoning_content`, `reasoning_text` content, a thought part.
     plaintext: String,
-    /// The thinking text meant for a reader, which no wire gets back: the service's own summary
-    /// where it has one, otherwise a copy of `plaintext`.
+    /// The thinking text meant for a reader: the service's own summary where it has one, otherwise
+    /// a copy of `plaintext`. Responses replays it in the required `summary` array.
     display: String,
     /// The proof that rides with `plaintext` (`signature`, `thoughtSignature`); empty when the wire
     /// returned none.

@@ -265,6 +265,7 @@ impl StreamAccumulator {
           (
             PartialContent::Message(Message::Reasoning {
               metadata: Default::default(),
+              replay_item: block.replay_item,
               display: block.display.unwrap_or_else(|| block.plaintext.clone()),
               plaintext: block.plaintext,
               signature: block.signature,

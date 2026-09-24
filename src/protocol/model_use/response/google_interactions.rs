@@ -14,10 +14,8 @@
 //!   and `Stop` otherwise.
 //! - A `failed` status is reported as an upstream error (with the resource's own `error` where it has
 //!   one) rather than a `StopReason`, because such a resource carries no usable output.
-//! - Image blocks inside a thought step's `summary[]` are dropped; only their text siblings are read.
-//! - A thought step carries its signature as a field of the step itself, so the request side rebuilds
-//!   the step from its parts (`signature` plus a `summary[]` entry) instead of echoing the step back
-//!   wholesale.
+//! - Text summary blocks are joined for display; the original thought step is retained separately
+//!   so its signed text and image summary parts can be replayed unchanged.
 //! - Usage names differ between wire generations (`candidates_token_count` / `total_output_tokens` /
 //!   `completion_tokens`, and the `total_*` counters), and thinking is reported beside the
 //!   candidates rather than inside them: it is folded into `output_tokens` the way it is billed.
@@ -78,6 +76,7 @@ fn decode_thought(step: &Value) -> Message {
   let plaintext = text.join("\n");
   Message::Reasoning {
     metadata: Default::default(),
+    replay_item: Some(step.clone()),
     plaintext: plaintext.clone(),
     display: plaintext,
     signature: step.get("signature").and_then(Value::as_str).unwrap_or("").to_owned(),
