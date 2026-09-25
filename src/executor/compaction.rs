@@ -9,7 +9,13 @@ use super::{
 };
 use crate::{
   Error,
-  protocol::{ContentBlock, Message, Request, StopReason, model_use::context::find_boundaries},
+  protocol::{
+    ContentBlock, Message, Request, Response, StopReason, StreamEvent,
+    model_use::{
+      context::find_boundaries,
+      stream::{PartialResponse, StreamEnd, StreamFinalization},
+    },
+  },
   session::{
     CompactionConfig, CompactionReason, EntryId, GenerationId, RunOutcome, Session, SessionError, SessionEvent,
     statistics::{CallObservation, ModelCallPurpose, ModelCallStatus, Timestamp},
@@ -403,26 +409,21 @@ pub(crate) async fn execute_standby_summary(
   plan: StandbySummaryPlan,
 ) -> Result<StandbySummaryResult, Failure> {
   let started = std::time::Instant::now();
-  check_cancelled(control)?;
-  let calling = caller.call(&plan.summary_request);
-  let cancelled = control.wait_for_cancellation();
-  pin_mut!(calling, cancelled);
-  let call_res = match select(cancelled, calling).await {
-    Either::Left(_) => return Err(Failure::Outcome(RunOutcome::Interrupted)),
-    Either::Right((res, _)) => res?,
-  };
-  let response = match call_res {
-    model::CallResponse::Complete(resp) => *resp,
-    model::CallResponse::Stream(mut stream) => {
-      let mut accumulator = stream.create_accumulator();
-      while let Some(event) = stream.next().await? {
-        accumulator.feed(event)?;
+  // A summary that reaches its output limit continues like a conversation call does, so the output
+  // cap it inherits from the session bounds one segment rather than the whole summary.
+  let mut continuation = model::Continuation::new(&plan.summary_request);
+  let response = loop {
+    match call_summary_segment(caller, control, &continuation.request).await? {
+      SummarySegment::Complete(mut response) => {
+        response.usage = model::combine_usage(continuation.usage, response.usage);
+        let mut messages = std::mem::take(&mut continuation.messages);
+        messages.append(&mut response.messages);
+        response.messages = messages;
+        break response;
       }
-      match accumulator.finalize(crate::protocol::model_use::stream::StreamEnd::Complete)? {
-        crate::protocol::model_use::stream::StreamFinalization::Complete(resp) => *resp,
-        crate::protocol::model_use::stream::StreamFinalization::Incomplete(_) => {
-          return Err(Error::Malformed("incomplete summary stream".into()).into());
-        }
+      SummarySegment::OutputLimited(partial) => {
+        continuation.usage = Some(model::combine_usage(continuation.usage, partial.usage));
+        continuation.extend(partial.get_continuation_messages());
       }
     }
   };
@@ -460,6 +461,67 @@ pub(crate) async fn execute_standby_summary(
     response,
     observation,
   })
+}
+
+enum SummarySegment {
+  Complete(Response),
+  OutputLimited(PartialResponse),
+}
+
+async fn call_summary_segment(
+  caller: &impl ModelCaller,
+  control: &ExecutionControl,
+  request: &Request,
+) -> Result<SummarySegment, Failure> {
+  check_cancelled(control)?;
+  let calling = caller.call(request);
+  let cancelled = control.wait_for_cancellation();
+  pin_mut!(calling, cancelled);
+  let call_res = match select(cancelled, calling).await {
+    Either::Left(_) => return Err(Failure::Outcome(RunOutcome::Interrupted)),
+    Either::Right((res, _)) => res?,
+  };
+  match call_res {
+    model::CallResponse::Complete(response) => {
+      Ok(if response.stop_reason == StopReason::MaxOutputLengthExceeded {
+        SummarySegment::OutputLimited(PartialResponse::from_output_limit(
+          *response,
+          caller.get_model_use_protocol(),
+        )?)
+      } else {
+        SummarySegment::Complete(*response)
+      })
+    }
+    model::CallResponse::Stream(mut stream) => {
+      let mut accumulator = stream.create_accumulator();
+      let mut stop_reason = None;
+      loop {
+        let next = {
+          let reading = stream.next();
+          let cancelled = control.wait_for_cancellation();
+          pin_mut!(reading, cancelled);
+          match select(cancelled, reading).await {
+            Either::Left(_) => return Err(Failure::Outcome(RunOutcome::Interrupted)),
+            Either::Right((next, _)) => next?,
+          }
+        };
+        let Some(event) = next else { break };
+        if let StreamEvent::Stop(reason) = &event {
+          stop_reason = Some(*reason);
+        }
+        accumulator.feed(event)?;
+      }
+      if stop_reason == Some(StopReason::MaxOutputLengthExceeded) {
+        return Ok(SummarySegment::OutputLimited(accumulator.finish_output_limit()?));
+      }
+      match accumulator.finalize(StreamEnd::Complete)? {
+        StreamFinalization::Complete(response) => Ok(SummarySegment::Complete(*response)),
+        StreamFinalization::Incomplete(_) => {
+          Err(Error::Malformed("incomplete summary stream".into()).into())
+        }
+      }
+    }
+  }
 }
 
 pub(crate) fn commit_standby_summary(

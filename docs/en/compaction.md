@@ -85,7 +85,10 @@ Standby preparation runs incrementally at stable executor boundaries, one span p
 not spawn a background worker or run a summary concurrently with a conversation call. Only input
 covered by a completed conversation request is eligible. The latest response and tool results
 remain raw. Turn/tool-batch boundaries can delay a span beyond `segment_tokens`; a single
-indivisible span is never split to satisfy that budget.
+indivisible span is never split to satisfy that budget. A summary uses the session's model,
+reasoning and output cap; when it reaches that cap it is continued the same way as a conversation
+call ([executor](executor.md#automatic-output-continuation)), and the segments' text becomes one
+summary.
 
 Cutover does not force a final summary, create a handoff or summarize existing summaries again.
 `Generation.compaction_cursor` identifies the first remaining raw entry. Removing a prefix adjusts

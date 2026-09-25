@@ -5,7 +5,7 @@ use crate::{
   protocol::{ContentBlock, Message, Request, StreamEvent, Usage},
 };
 
-pub(super) fn combine_usage(previous: Option<Usage>, current: Usage) -> Usage {
+pub(in crate::executor) fn combine_usage(previous: Option<Usage>, current: Usage) -> Usage {
   let Some(previous) = previous else {
     return current;
   };
@@ -25,7 +25,7 @@ pub(super) fn combine_usage(previous: Option<Usage>, current: Usage) -> Usage {
   }
 }
 
-pub(super) struct Continuation {
+pub(in crate::executor) struct Continuation {
   pub request: Request,
   pub messages: Vec<Message>,
   pub usage: Option<Usage>,
