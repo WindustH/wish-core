@@ -2,7 +2,8 @@
 //!
 //! Conversions:
 //! - `model` travels in the body, since the URL carries no model segment.
-//! - Leading `System` messages become the top-level `system_instruction` string.
+//! - Leading `System` messages become the top-level `system_instruction` string. A `System`
+//!   message past the leading run becomes a `user_input` step in place.
 //! - The conversation becomes a `steps[]` array of `user_input`, `model_output`, `function_call`,
 //!   `function_result` and `thought` steps. Images are flat blocks
 //!   (`{"type": "image", "mime_type", "data"}`).
@@ -14,9 +15,9 @@
 //!   or its signature corrupts the reasoning context, and stateless mode has to resend the built-in
 //!   tools' signatures too. A signature belongs only to the step that carried it - never to a
 //!   `user_input`, a `model_output` or a custom `function_call`.
-//! - Instructions go in the top-level `system_instruction`, which only takes text and has to lead
-//!   the conversation: a `System` message past the leading run, or a non-text instruction block, is
-//!   rejected. A `function_result` answers the `function_call` before it.
+//! - Instructions go in the top-level `system_instruction`, which only takes text: a non-text block
+//!   in the leading instruction run is rejected. A `function_result` answers the `function_call`
+//!   before it.
 //!
 //! Trade-offs:
 //! - The wire has no developer role: a `Developer` message is sent as user input, so application
@@ -68,7 +69,7 @@ pub fn render(request: &Request) -> Result<Value, Error> {
 
 /// The instruction the leading `System` / `Developer` run spells out, and the conversation that
 /// remains after it: the wire takes the instruction at the top level, so the run is consumed here
-/// and a `System` message past it is an error inside `render_steps`.
+/// and an instruction past it becomes user input inside `render_steps`.
 fn split_leading_instructions(
   conversation: &[Message],
 ) -> Result<(Option<String>, &[Message]), Error> {
@@ -99,18 +100,16 @@ fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   let mut steps: Vec<Value> = Vec::new();
   for message in conversation {
     match message {
-      Message::System { .. } => {
-        return Err(Error::Build(
-          "system instruction must lead the conversation on the interactions wire".to_owned(),
-        ));
-      }
       Message::UpstreamCompaction { .. } => {
         return Err(Error::Build(
           "the interactions wire cannot carry a compacted conversation".to_owned(),
         ));
       }
-      // Both the developer and user instructions are the same `user_input` step on this wire.
-      Message::Developer { content, .. } | Message::User { content, .. } => {
+      // Past the leading run, system and developer instructions are the same `user_input` step as
+      // the user's own words on this wire.
+      Message::System { content, .. }
+      | Message::Developer { content, .. }
+      | Message::User { content, .. } => {
         steps.push(json!({"type": "user_input", "content": render_content_blocks(content)}))
       }
       Message::Reasoning { replay_item, plaintext, opaque_kind, .. } => {

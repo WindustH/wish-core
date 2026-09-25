@@ -2,7 +2,8 @@
 //! and authentication, so it needs no request renderer of its own.
 //!
 //! Conversions:
-//! - Leading `System` messages become `systemInstruction`, joined into a single text part.
+//! - Leading `System` messages become `systemInstruction`, joined into a single text part. A
+//!   `System` or `Developer` message past the leading run becomes a `user` turn in place.
 //! - Adjacent same-role messages merge into one turn, and `ToolResult` messages merge into the
 //!   single user turn that follows.
 //! - `ToolUse` becomes `functionCall` parts inside the model turn. A `Reasoning` that has text
@@ -17,16 +18,16 @@
 //!
 //! Constraints:
 //! - `contents[]` alternates `user` / `model` strictly, and instructions belong in the top-level
-//!   `systemInstruction` object rather than a turn: an instruction past the leading run, or a
-//!   non-text instruction block, is rejected.
+//!   `systemInstruction` object rather than a turn, which only takes text: a non-text block in the
+//!   leading instruction run is rejected.
 //! - A `thoughtSignature` must be echoed back exactly where it arrived - the thought part or the
 //!   `functionCall` part it seals - when the call is continued; dropping it loses the model's
 //!   reasoning state.
 //! - Every `functionCall` is answered by a `functionResponse` in the `user` turn that follows it.
 //!
 //! Trade-offs:
-//! - A `Developer` message has no role of its own on this wire, so its text joins the same
-//!   `systemInstruction` text.
+//! - A `Developer` message has no role of its own on this wire, so in the leading run its text joins
+//!   the same `systemInstruction` text, and past it the model reads it as user input.
 //! - Function calls carry no usable id on this wire, so results are paired by tool name and call
 //!   order; a decoded call without `id` keeps an empty `call_id` and the id is omitted on render.
 //! - Tool results send `{"name", "response"}` where an object payload passes through and anything
@@ -149,17 +150,16 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   let mut index = 0;
   while index < conversation.len() {
     match &conversation[index] {
-      Message::System { .. } | Message::Developer { .. } => {
-        return Err(Error::Build(
-          "a system instruction must lead the conversation on the generateContent wire".to_owned(),
-        ));
-      }
       Message::UpstreamCompaction { .. } => {
         return Err(Error::Build(
           "the generateContent wire cannot carry a compacted conversation".to_owned(),
         ));
       }
-      Message::User { content, .. } => {
+      // Past the leading run an instruction has no place in `systemInstruction`: it rides as user
+      // input.
+      Message::System { content, .. }
+      | Message::Developer { content, .. }
+      | Message::User { content, .. } => {
         if let Some((_, name)) = pending.first() {
           return Err(build_missing_response_error(name));
         }

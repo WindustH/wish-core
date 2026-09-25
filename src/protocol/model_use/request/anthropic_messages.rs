@@ -2,7 +2,8 @@
 //!
 //! Conversions:
 //! - Leading `System` messages are hoisted into the top-level `system` field, joined with
-//!   newlines.
+//!   newlines. A `System` or `Developer` message past the leading run becomes a `user` turn in
+//!   place.
 //! - Adjacent same-role messages merge into one turn, `ToolUse` folds into the assistant turn that
 //!   requests it, and `ToolResult` messages merge into the single user turn that follows (arriving
 //!   in call order).
@@ -21,8 +22,7 @@
 //! - `messages` must open with a `user` turn and strictly alternate user / assistant; consecutive
 //!   same-role turns are rejected by the wire.
 //! - There is no system role inside `messages`: instructions belong in the top-level `system`
-//!   field, which only takes text, and a `System` or `Developer` message past the leading run is
-//!   rejected.
+//!   field, which only takes text.
 //! - Tool results are `tool_result` blocks inside a `user` turn, never a `tool` role, and each one
 //!   answers a `tool_use` id from the assistant turn before it.
 //! - A thinking block and its `signature` must go back unmodified: stripping or editing either is
@@ -36,8 +36,8 @@
 //! - `ToolChoice::None` has no wire spelling and is rejected rather than silently dropped.
 //! - Call/result pairing is validated in both directions, so a dangling `ToolUse` or an orphan
 //!   result is an error instead of a malformed request.
-//! - A `Developer` message has no role of its own on this wire, so its text joins the same `system`
-//!   field.
+//! - A `Developer` message has no role of its own on this wire, so in the leading run its text joins
+//!   the same `system` field, and past it the model reads it as user input.
 //! - `PromptCache::key` has no spelling on this wire, so it is not sent.
 //! - Foreign signed thinking is omitted; its proof cannot authenticate an Anthropic block.
 //!   Unsigned plaintext thinking remains available for compatible endpoints.
@@ -296,18 +296,15 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   let mut index = 0;
   while index < conversation.len() {
     match &conversation[index] {
-      Message::System { .. } | Message::Developer { .. } => {
-        return Err(Error::Build(
-          "a system instruction must lead the conversation on the anthropic messages wire"
-            .to_owned(),
-        ));
-      }
       Message::UpstreamCompaction { .. } => {
         return Err(Error::Build(
           "the anthropic messages wire cannot carry a compacted conversation".to_owned(),
         ));
       }
-      Message::User { content, .. } => {
+      // Past the leading run an instruction has no place in `system`: it rides as user input.
+      Message::System { content, .. }
+      | Message::Developer { content, .. }
+      | Message::User { content, .. } => {
         if let Some(call_id) = pending.first() {
           return Err(build_missing_result_error(call_id));
         }

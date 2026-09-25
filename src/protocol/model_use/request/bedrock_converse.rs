@@ -1,7 +1,8 @@
 //! Bedrock Converse request wire.
 //!
 //! Conversions:
-//! - Leading `System` messages become the top-level `system[]` blocks.
+//! - Leading `System` messages become the top-level `system[]` blocks. A `System` or `Developer`
+//!   message past the leading run becomes a `user` turn in place.
 //! - Content is always a block array: text -> `{"text": ...}`, images -> `{"image": {format,
 //!   bytes}}`, and tool results -> `{"toolResult": {toolUseId, status, content[]}}` where an object
 //!   payload travels as `json` and anything else as text.
@@ -17,8 +18,8 @@
 //!
 //! Constraints:
 //! - `messages` knows exactly two roles, `user` and `assistant`; instructions ride in the top-level
-//!   `system[]` blocks instead, which only take text and have to lead the conversation: a `System`
-//!   or `Developer` message past the leading run, or a non-text instruction block, is rejected.
+//!   `system[]` blocks instead, which only take text: a non-text block in the leading instruction
+//!   run is rejected.
 //! - A `toolResult` answers a `toolUse` of the assistant turn before it and repeats its `toolUseId`.
 //! - A signed thinking block has to be replayed: dropping the block or its signature makes the
 //!   service reject the next turn with a signature mismatch.
@@ -37,8 +38,8 @@
 //!   yet.
 //! - The signing is not implemented yet - it belongs to the transport layer - so a real Converse
 //!   endpoint rejects a call until it is.
-//! - A `Developer` message has no role of its own on this wire, so its text joins the same `system[]`
-//!   blocks.
+//! - A `Developer` message has no role of its own on this wire, so in the leading run its text joins
+//!   the same `system[]` blocks, and past it the model reads it as user input.
 
 use crate::protocol::error::Error;
 use crate::protocol::ReasoningOpaqueKind;
@@ -191,17 +192,15 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   let mut pending: Vec<String> = Vec::new();
   for message in conversation {
     match message {
-      Message::System { .. } | Message::Developer { .. } => {
-        return Err(Error::Build(
-          "system instructions must lead the conversation on the converse wire".to_owned(),
-        ));
-      }
       Message::UpstreamCompaction { .. } => {
         return Err(Error::Build(
           "the converse wire cannot carry a compacted conversation".to_owned(),
         ));
       }
-      Message::User { content, .. } => {
+      // Past the leading run an instruction has no place in `system[]`: it rides as user input.
+      Message::System { content, .. }
+      | Message::Developer { content, .. }
+      | Message::User { content, .. } => {
         for block in render_user_blocks(content)? {
           push(&mut turns, &mut current, &mut blocks, "user", block);
         }

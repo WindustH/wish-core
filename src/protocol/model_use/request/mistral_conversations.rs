@@ -5,8 +5,9 @@
 //!   `message.input` entry, a `ToolUse` a `function.call` entry and the `ToolResult` that answers it
 //!   a `function.result` entry. A replayed thought rides in its assistant entry's `content` as a
 //!   `thinking` chunk ahead of the text, the way the chat wire attaches it to that turn.
-//! - `System` messages have no turn of their own here: their text merges, in conversation order,
-//!   into the top-level `instructions` string.
+//! - Leading `System` messages have no turn of their own here: their text merges, in conversation
+//!   order, into the top-level `instructions` string. A `System` or `Developer` message past the
+//!   leading run becomes a `user` entry in place.
 //! - `max_output_tokens`, `tool_choice` and the reasoning effort go into `completion_args`; the tools
 //!   themselves are top-level and only functions are declared.
 //! - `ReasoningConfig` has one knob, `reasoning_effort`: `enabled` is spelled as the word at the
@@ -18,7 +19,8 @@
 //!   `inputs` or already in the conversation the request names, so a request that starts a
 //!   conversation has to carry the history it wants considered.
 //! - `inputs` is required and needs at least one entry.
-//! - `instructions` only takes text: an instruction message carrying any other block is rejected.
+//! - `instructions` only takes text: a leading instruction message carrying any other block is
+//!   rejected.
 //! - A `function.result` entry answers a `function.call` entry by `tool_call_id`.
 //!
 //! Trade-offs:
@@ -27,8 +29,8 @@
 //!   behind to delete, at the price of sending the history again.
 //! - `handoff_execution: "client"` is always sent, because built-in connectors are not modelled: a
 //!   function call comes back to the caller instead of being answered by the service.
-//! - A `Developer` message has no role of its own on this wire, so its text joins the same
-//!   `instructions` string.
+//! - A `Developer` message has no role of its own on this wire, so in the leading run its text joins
+//!   the same `instructions` string, and past it the model reads it as user input.
 //! - `Request.cache` is ignored: this wire has no cache key and no breakpoints.
 //! - Only function tools are declared, which leaves the built-in connector tools (web search, code
 //!   interpreter, image generation, document library, custom connectors) without a spelling here.
@@ -76,14 +78,14 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   Ok(Value::Object(body))
 }
 
-/// The wire's one place for standing instructions: every `System` and `Developer` message, in
-/// conversation order, joined into one string.
+/// The wire's one place for standing instructions: the leading run of `System` and `Developer`
+/// messages, joined into one string.
 fn render_instructions(conversation: &[Message]) -> Result<Option<String>, Error> {
   let mut text = String::new();
   for message in conversation {
     let content = match message {
       Message::System { content, .. } | Message::Developer { content, .. } => content,
-      _ => continue,
+      _ => break,
     };
     for block in content {
       let ContentBlock::Text { text: block_text } = block else {
@@ -101,19 +103,28 @@ fn render_instructions(conversation: &[Message]) -> Result<Option<String>, Error
   Ok((!text.is_empty()).then_some(text))
 }
 
-/// The history as entries, in conversation order.
+fn count_leading_instructions(conversation: &[Message]) -> usize {
+  conversation
+    .iter()
+    .take_while(|message| matches!(message, Message::System { .. } | Message::Developer { .. }))
+    .count()
+}
+
+/// The history after the leading instructions as entries, in conversation order.
 fn render_inputs(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   let mut entries: Vec<Value> = Vec::new();
   let mut pending_reasoning: Option<String> = None;
-  for message in conversation {
+  for message in &conversation[count_leading_instructions(conversation)..] {
     match message {
-      Message::System { .. } | Message::Developer { .. } => {}
       Message::UpstreamCompaction { .. } => {
         return Err(Error::Build(
           "the mistral conversations wire cannot carry a compacted conversation".to_owned(),
         ));
       }
-      Message::User { content, .. } => {
+      // Past the leading run an instruction has no place in `instructions`: it rides as user input.
+      Message::System { content, .. }
+      | Message::Developer { content, .. }
+      | Message::User { content, .. } => {
         pending_reasoning = None;
         entries.push(render_message_input("user", content, None)?);
       }
