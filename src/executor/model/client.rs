@@ -158,9 +158,15 @@ impl<T: Transport> Client<T> {
     compaction: UpstreamCompactionProtocol,
   ) -> Result<Self, Error> {
     let reason = match (compaction, self.model_use) {
-      (UpstreamCompactionProtocol::OpenAiResponses, ModelUseProtocol::OpenAiResponses(..)) => {
+      // The platform's own compaction endpoint; the Codex deployment serves only streamed calls.
+      (UpstreamCompactionProtocol::OpenAiResponses, ModelUseProtocol::OpenAiResponses(variant))
+        if variant.deployment != ResponsesDeployment::Codex =>
+      {
         self.upstream_compaction = Some(compaction);
         return Ok(self);
+      }
+      (UpstreamCompactionProtocol::OpenAiResponses, ModelUseProtocol::OpenAiResponses(..)) => {
+        "is not served by the Codex deployment, which compacts on its streamed call instead"
       }
       // A streamed compaction is answered by the Codex deployment, on the streamed call it always
       // serves: the trigger item it carries tells it apart, rather than an endpoint of its own.
