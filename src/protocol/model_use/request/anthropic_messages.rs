@@ -9,6 +9,9 @@
 //!   in call order).
 //! - `Reasoning` replays as `thinking` + `signature`, or as `redacted_thinking` when it carries a
 //!   `ciphertext` instead of text, and it leads the assistant turn.
+//! - Consecutive assistant messages are the segments of one response resumed by automatic output
+//!   continuation: their texts join into one text block, and thinking stored after the turn's
+//!   content is dropped, or moved to the front when the turn did not open with thinking.
 //! - Tool results stay a plain string when text-only, otherwise an image/text block array.
 //! - `ReasoningConfig` renders the control this endpoint documents: Claude's own `thinking` object
 //!   in the default mode, where a depth tier becomes the preset budget, and a vendor's
@@ -318,18 +321,13 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
         let mut blocks: Vec<Value> = Vec::new();
         let mut used = 0;
         let mut seen_content = false;
+        let mut opens_with_thinking = false;
         while let Some(message) = conversation.get(index + used) {
           match message {
             Message::Reasoning { plaintext, signature: proof, ciphertext, opaque_kind, .. } => {
               let unsigned_plaintext = opaque_kind.is_none() && proof.is_empty() && ciphertext.is_empty();
               let signature = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::AnthropicSignature, proof);
               let ciphertext = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::AnthropicRedacted, ciphertext);
-              if seen_content {
-                return Err(Error::Build(
-                  "a reasoning message must lead its assistant turn on the anthropic messages wire"
-                    .to_owned(),
-                ));
-              }
               // Only same-format proofs are valid. A foreign signed block cannot be rewritten
               // as unsigned native thinking without risking an upstream signature mismatch.
               let plaintext = if unsigned_plaintext
@@ -340,12 +338,37 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
                 ""
               };
               if let Some(block) = render_reasoning_block(plaintext, signature, ciphertext) {
-                blocks.push(block);
+                // Thinking after content is where output continuation resumed a capped response.
+                // The turn keeps the thinking it opened with and drops the resumed one; a turn
+                // that opened without any takes it at the front, since a turn that calls tools
+                // has to open with thinking.
+                if !seen_content {
+                  blocks.push(block);
+                  opens_with_thinking = true;
+                } else if !opens_with_thinking {
+                  blocks.insert(0, block);
+                  opens_with_thinking = true;
+                }
               }
             }
             Message::Assistant { content, .. } => {
               seen_content = true;
-              blocks.extend(render_assistant_blocks(content)?);
+              let mut rendered = render_assistant_blocks(content)?;
+              // Consecutive assistant messages are the segments of one continued response: the
+              // resumed text joins the text it continues.
+              if let (Some(last), Some(first)) = (blocks.last_mut(), rendered.first())
+                && last["type"] == "text"
+                && first["type"] == "text"
+              {
+                let joined = format!(
+                  "{}{}",
+                  last["text"].as_str().unwrap_or_default(),
+                  first["text"].as_str().unwrap_or_default()
+                );
+                last["text"] = json!(joined);
+                rendered.remove(0);
+              }
+              blocks.extend(rendered);
             }
             Message::ToolUse { call_id, name, arguments, .. } => {
               seen_content = true;
