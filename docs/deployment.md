@@ -87,7 +87,7 @@ you, so before anything else can connect:
    above). Every `/api` request then needs
    `Authorization: Bearer <token>`.
 2. Give the same token to the web app's server (`WISH_HTTP_TOKEN` for
-   `serve.mjs`). It adds the header on the browser's behalf, so the token
+   `serve.ts`). It adds the header on the browser's behalf, so the token
    never reaches the browser.
 
 Wish has no user accounts or per-user permissions. It is designed for one

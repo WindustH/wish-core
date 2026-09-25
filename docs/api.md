@@ -28,7 +28,7 @@ goes through this API, so any other client can do the same.
 `401 {"error":{"message":"unauthorized"}}`. `/health`, `/version` and unmatched
 paths are public. Browsers cannot attach headers to `EventSource`, so browser
 clients read SSE with `fetch`, or sit behind a proxy that injects the header,
-as `wish-web`'s `serve.mjs` does.
+as `wish-web`'s `serve.ts` does.
 
 **Cross-origin requests.** A server that requires a token also answers web
 pages on other origins: it replies to CORS preflights without authentication
