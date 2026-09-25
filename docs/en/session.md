@@ -88,7 +88,10 @@ Garbage collection is not implemented.
 
 Restarting restores committed data and phase. A session interrupted by a crash during model/tool
 I/O remains active and returns `SessionError::Busy`; automatic recovery/reexecution of external
-effects is not implemented. Graceful interruption remains handled by the [executor](executor.md).
+effects is not implemented. `settle_interrupted()` closes such a run without replaying anything:
+a tool call that had started gets an `unknown` result and the run finishes as
+`ToolOutcomeUnknown`, while calls that never started are cancelled. Graceful interruption remains
+handled by the [executor](executor.md).
 
 Messages have creation timestamps on `Entry`; event timestamps live on `HistoryRecord`, preserving
 receipt time for persisted events. Both also carry an optional originating `model_call_id`.

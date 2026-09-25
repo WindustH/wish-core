@@ -366,7 +366,15 @@ impl SessionTransaction<'_, '_> {
           for (offset, item) in page.items.iter().enumerate() {
             if item.outcome.is_none() {
               let mut updated = (**item).clone();
-              updated.outcome = Some(ToolOutcome::Cancelled);
+              // A started tool may have had external effects before the run stopped; only a
+              // tool that never started is known to have done nothing.
+              updated.outcome = Some(if item.started {
+                ToolOutcome::Unknown(
+                  "The run stopped while this tool was executing; its effects are unknown.".into(),
+                )
+              } else {
+                ToolOutcome::Cancelled
+              });
               self.tx.set_item(&batch, start + offset as u64, &updated)?;
             }
           }
