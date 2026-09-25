@@ -73,8 +73,9 @@ pub async fn enqueue(
   app.require_open()?;
   message.normalize_new_input();
   let slot = app.get_session(&id).await?;
-  let id = blocking(move || Ok(slot.handle.enqueue_message(message)?)).await?;
-  Ok((StatusCode::CREATED, Json(json!({"entry":id}))))
+  let entry = blocking(move || Ok(slot.handle.enqueue_message(message)?)).await?;
+  let _ = app.events.send(json!({"type":"session_changed","id":id}));
+  Ok((StatusCode::CREATED, Json(json!({"entry":entry}))))
 }
 pub async fn set_config(
   State(app): State<Arc<App>>,
@@ -302,9 +303,14 @@ pub async fn events(
   let slot: Arc<SessionSlot> = app.get_session(&id).await?;
   let (receiver, snapshot) = slot.subscribe_live();
   let snapshot = Some(snapshot);
+  // The stream ends after reporting the session's deletion: it holds the slot, and nothing else
+  // would ever be sent on it.
   let stream = futures_util::stream::unfold(
-    (receiver, app.stop.clone(), snapshot, slot),
-    |(mut receiver, stop, mut snapshot, slot)| async move {
+    (receiver, app.stop.clone(), snapshot, slot, false),
+    |(mut receiver, stop, mut snapshot, slot, deleted)| async move {
+      if deleted {
+        return None;
+      }
       let value = if let Some(value) = snapshot.take() {
         value
       } else {
@@ -321,9 +327,10 @@ pub async fn events(
           }
         }
       };
+      let deleted = value["type"] == "deleted";
       Some((
         Ok(Event::default().event("wish").data(value.to_string())),
-        (receiver, stop, snapshot, slot),
+        (receiver, stop, snapshot, slot, deleted),
       ))
     },
   );
