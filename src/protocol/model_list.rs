@@ -7,10 +7,12 @@
 //!
 //! Two rules run through every field:
 //!
-//! - Ids are kept as the service spelled them, except for the `publishers/<publisher>/models/`
-//!   prefix of a Gemini resource name, which is stripped because the wire wants the bare id back.
+//! - Ids are kept as the service spelled them, except for the `models/` or
+//!   `publishers/<publisher>/models/` prefix of a Google resource name, which is stripped because
+//!   the wire wants the bare id back.
 //! - What cannot be represented is kept as text in [`ModelCatalog::warnings`] rather than guessed
-//!   at, and a cursor only ever comes from the service: this reader never invents one.
+//!   at. A cursor comes from the service, except Qwen's next page number, which follows from the
+//!   page's own `page_no`, `page_size` and `total`.
 //!
 //! Each service's own reading of its page lives in a module below this one, and
 //! [`parse_catalog_page`] picks the one a protocol id names, while `source.rs` states where each

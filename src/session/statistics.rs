@@ -61,7 +61,7 @@ pub struct ModelCallRecord {
   /// Buffered responses do not have an event timestamp.
   pub first_event_at: Option<Timestamp>,
   pub finished_at: Option<Timestamp>,
-  /// Monotonic duration of the caller invocation, including stream consumption and batch writes.
+  /// Monotonic duration of the caller invocation, including stream consumption.
   pub elapsed_ms: Option<u64>,
   pub status: ModelCallStatus,
   /// Missing fields remain None. Cumulative stream updates replace previous usage.

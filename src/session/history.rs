@@ -27,7 +27,7 @@ pub struct HistoryRecord {
   pub sequence: u64,
   pub generation: GenerationId,
   pub item: HistoryItem,
-  /// Event creation/receipt time, retained across batched writes.
+  /// When the fact was recorded; an event may carry its own earlier creation time.
   pub recorded_at: Timestamp,
   pub model_call_id: Option<ModelCallId>,
 }

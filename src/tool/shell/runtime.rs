@@ -28,7 +28,8 @@ use tokio::{
 };
 
 /// Share one instance within a session, including across executor::run invocations. Its registry
-/// lock only protects handle insertion/lookup; no process or asynchronous I/O runs under that lock.
+/// lock covers lookup, and spawn plus registration so shutdown never misses a started process; no
+/// asynchronous I/O runs under that lock.
 #[derive(Clone)]
 pub struct ShellTool {
   inner: Arc<Runtime>,
