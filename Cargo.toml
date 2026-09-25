@@ -2,6 +2,11 @@
 name = "wish-core"
 version = "0.1.0"
 edition = "2024"
+description = "Self-hosted agent server: durable sessions, shell tools and many model providers in one binary"
+license = "MIT"
+repository = "https://github.com/WindustH/wish-core"
+readme = "README.md"
+publish = false
 
 [[bin]]
 name = "wish"
