@@ -17,24 +17,40 @@ fn totals(rows: &[Value]) -> Value {
   let sum = |key: &str| rows.iter().map(|r| r[key].as_i64().unwrap_or(0)).sum::<i64>();
   json!({"usage_records":sum("with_usage"),"committed_responses":sum("completed"),"tokens":{"input_tokens":sum("input_tokens"),"output_tokens":sum("output_tokens"),"total_tokens":sum("total_tokens"),"reasoning_tokens":sum("reasoning_tokens")},"cache":{"read_input_tokens":sum("cached_input_tokens"),"write_input_tokens":sum("cache_write_input_tokens"),"request_hit_ratio":null}})
 }
-async fn usage(app: Arc<App>, session: Option<String>) -> Result<Json<Value>, ApiError> {
+/// Optional window for the totals; all recorded usage when absent.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Range {
+  from_ms: Option<i64>,
+  to_ms: Option<i64>,
+}
+async fn usage(app: Arc<App>, session: Option<String>, range: Range) -> Result<Json<Value>, ApiError> {
+  let from = range.from_ms.unwrap_or(0);
+  let to = range.to_ms.unwrap_or_else(|| now() + 1);
+  if from < 0 || to <= from {
+    return Err(ApiError::bad_request("invalid usage range"));
+  }
   let index = app.index.clone();
   blocking(move||{
-    let rows=index.usage_buckets(session.as_deref(),0,now()+1,i64::MAX)?;
+    let rows=index.usage_buckets(session.as_deref(),from,to,i64::MAX)?;
     let attempts=rows.iter().map(|r|r["attempts"].as_i64().unwrap_or(0)).sum::<i64>();
     let with_usage=rows.iter().map(|r|r["with_usage"].as_i64().unwrap_or(0)).sum::<i64>();
     Ok(Json(json!({"unit":"logical_model_call","statistics":{"model_attempts":attempts,"attempts_with_usage":with_usage,"attempts_without_usage":attempts-with_usage,"totals":totals(&rows),"by_provider_model":rows.iter().map(|r|json!({"provider":r["provider"],"model":r["model"],"totals":totals(std::slice::from_ref(r))})).collect::<Vec<_>>()}})))
   }).await
 }
-pub async fn global_usage(State(app): State<Arc<App>>) -> Result<Json<Value>, ApiError> {
-  usage(app, None).await
+pub async fn global_usage(
+  State(app): State<Arc<App>>,
+  Query(range): Query<Range>,
+) -> Result<Json<Value>, ApiError> {
+  usage(app, None, range).await
 }
 pub async fn session_usage(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
+  Query(range): Query<Range>,
 ) -> Result<Json<Value>, ApiError> {
   app.index.read(&id)?;
-  usage(app, Some(id)).await
+  usage(app, Some(id), range).await
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
