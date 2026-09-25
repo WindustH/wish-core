@@ -75,7 +75,7 @@ pub async fn update_session(
     let config: crate::session::SessionConfig = serde_json::from_value(
       input.get("config").cloned().ok_or_else(|| ApiError::bad_request("config required"))?,
     )
-    .map_err(ApiError::internal)?;
+    .map_err(|e| ApiError::bad_request(e.to_string()))?;
     let config = slot.configure_tools(config)?;
     return blocking(move || {
       slot.require_live()?;
