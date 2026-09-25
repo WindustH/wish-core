@@ -3,6 +3,7 @@ mod translation;
 
 use crate::executor::model::tokens::{TokenEstimator, TokenMeasurement};
 use crate::protocol::Message;
+use crate::session::statistics::ModelCallId;
 use crate::session::{
   EntryId, EntryOrigin, Generation, GenerationId, GenerationStatus, Session, SessionError,
   SessionEvent,
@@ -51,6 +52,7 @@ impl Session {
     end: u64,
     summary: Message,
     response: crate::protocol::Response,
+    call: ModelCallId,
   ) -> Result<(), SessionError> {
     self.update(move |transaction| {
       let active = transaction.load_generation(transaction.record.active)?;
@@ -77,17 +79,21 @@ impl Session {
           transaction.tx.append_items(&standby.entries, &ids)?;
         }
       }
-      let entry = transaction.store_entry(summary, EntryOrigin::Summary)?;
-      transaction.tx.append_item(&standby.entries, &entry)?;
-      standby.source = Some((active.id, end));
-      standby.compaction_cursor = transaction.tx.list_len::<EntryId>(&standby.entries)?;
-      transaction.save_generation(&standby)?;
-      transaction.record_event(SessionEvent::CompactionSummary {
-        generation,
-        source_start: start,
-        source_end: end,
-        entry,
-        response: Box::new(response),
+      // The summary and its event belong to the summary's own call, not to the conversation
+      // call that may be running beside it.
+      transaction.with_model_call(call, |transaction| {
+        let entry = transaction.store_entry(summary, EntryOrigin::Summary)?;
+        transaction.tx.append_item(&standby.entries, &entry)?;
+        standby.source = Some((active.id, end));
+        standby.compaction_cursor = transaction.tx.list_len::<EntryId>(&standby.entries)?;
+        transaction.save_generation(&standby)?;
+        transaction.record_event(SessionEvent::CompactionSummary {
+          generation,
+          source_start: start,
+          source_end: end,
+          entry,
+          response: Box::new(response),
+        })
       })
     })
   }

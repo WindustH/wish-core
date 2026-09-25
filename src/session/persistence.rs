@@ -48,6 +48,18 @@ impl Session {
   }
 }
 impl SessionTransaction<'_, '_> {
+  /// Runs `apply` with `call` as the call its entries and events belong to, then restores the
+  /// active one: a standby summary commits beside a conversation call that is still running.
+  pub(in crate::session) fn with_model_call<R>(
+    &mut self,
+    call: ModelCallId,
+    apply: impl FnOnce(&mut Self) -> Result<R, SessionError>,
+  ) -> Result<R, SessionError> {
+    let active = self.record.active_model_call.replace(call);
+    let result = apply(self);
+    self.record.active_model_call = active;
+    result
+  }
   pub fn create_list<T: crate::storage::StoredValue>(&mut self) -> Result<ListId, SessionError> {
     let id = self.record.next_list_id;
     self.record.next_list_id = id.checked_add(1).ok_or(StorageError::InvalidRange)?;

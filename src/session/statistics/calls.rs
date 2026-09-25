@@ -41,10 +41,12 @@ impl Session {
   ) -> Result<(), SessionError> {
     self.update(move |transaction| transaction.complete_model_call(observation, status))
   }
+  /// Records a finished standby summary call and returns its ID, which the summary it produced
+  /// then carries.
   pub(crate) fn record_completed_compaction_call(
     &mut self,
     observation: CallObservation,
-  ) -> Result<(), SessionError> {
+  ) -> Result<ModelCallId, SessionError> {
     self.update(move |transaction| {
       let list = &transaction.record.model_calls;
       let id = ModelCallId(transaction.tx.list_len::<ModelCallRecord>(list)?);
@@ -72,7 +74,7 @@ impl Session {
           stop_reason: observation.stop_reason,
         },
       )?;
-      Ok(())
+      Ok(id)
     })
   }
 }

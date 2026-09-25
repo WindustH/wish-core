@@ -534,13 +534,14 @@ pub(crate) fn commit_standby_summary(
   if active.id != result.generation {
     return Ok(());
   }
-  session.record_completed_compaction_call(result.observation)?;
+  let call = session.record_completed_compaction_call(result.observation)?;
   session.save_compaction_summary(
     result.generation,
     result.start,
     result.end,
     result.summary,
     result.response,
+    call,
   )?;
   notify_observers(session, cursor, observe)?;
   Ok(())
