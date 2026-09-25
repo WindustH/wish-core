@@ -8,7 +8,7 @@ use crate::{
   session::{
     Entry, EntryId, Generation, HistoryReader, RunOutcome, Session, SessionConfig, SessionEvent,
     SessionHandle,
-    statistics::ModelCallRecord,
+    statistics::{ModelCallPurpose, ModelCallRecord, ModelCallStatus},
   },
   storage::ReadList,
   tool::{
@@ -335,5 +335,26 @@ fn web_outcome(outcome: &RunOutcome) -> Value {
 }
 fn snapshot(session: &Session) -> Value {
   json!({"phase":session.get_state().get_phase(),"state":session.get_state(),
-    "active_generation":session.get_active_generation().ok().map(|g|g.id),"metadata":session.get_metadata(),"config":session.get_config(),"queue_head":session.get_queue_head(),"running":false,"standby_preparing":false})
+    "active_generation":session.get_active_generation().ok().map(|g|g.id),"metadata":session.get_metadata(),"config":session.get_config(),"queue_head":session.get_queue_head(),"running":false,"standby_preparing":false,
+    "context_tokens":context_tokens(session)})
+}
+/// The input size compaction compares with its trigger: the last completed
+/// conversation call of the active generation made with the configured model.
+fn context_tokens(session: &Session) -> Option<u64> {
+  let active = session.get_active_generation().ok()?.id;
+  let model = &session.get_config().model;
+  let calls = session.get_model_calls();
+  for position in (0..calls.len().ok()?).rev() {
+    let Some(call) = calls.get(position).ok()? else { continue };
+    if call.generation != active {
+      break;
+    }
+    if &call.model == model
+      && call.purpose == ModelCallPurpose::Conversation
+      && matches!(call.status, ModelCallStatus::Completed)
+    {
+      return call.last_request_input_tokens;
+    }
+  }
+  None
 }
