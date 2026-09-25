@@ -221,8 +221,9 @@ impl Outbound {
         "this call needs a path, and neither its draft nor its target names one".to_owned(),
       )
     })?;
-    let path = fill_path(template, material)?;
-    let mut url = format!("{}{}", self.base_url.trim_end_matches('/'), path);
+    let base_url = fill_placeholders(&self.base_url, material)?;
+    let path = fill_placeholders(template, material)?;
+    let mut url = format!("{}{}", base_url.trim_end_matches('/'), path);
     let mut separator = '?';
     for (name, value) in &draft.query {
       url.push(separator);
@@ -301,23 +302,24 @@ fn require_field(material: &Credentials, credential: CredentialField) -> Result<
   })
 }
 
-/// Fills the `{field}` placeholders a path may carry from the account's own material.
+/// Fills the `{field}` placeholders a base URL or path may carry from the account's own material,
+/// such as the region in a Bedrock host or the workspace in a Qwen one.
 ///
 /// A placeholder is percent-encoded like any other path segment, and one this table does not know
-/// is refused: a path nobody can fill is a bug in the target, not something to send as it stands.
+/// is refused: an address nobody can fill is a bug in the target, not something to send as it stands.
 /// A `{model}` placeholder is the tree's to fill, before the draft is made - the model is request
 /// knowledge, the fields here are account knowledge.
-fn fill_path(path: &str, material: &Credentials) -> Result<String, Error> {
+fn fill_placeholders(path: &str, material: &Credentials) -> Result<String, Error> {
   let mut filled = String::with_capacity(path.len());
   let mut rest = path;
   while let Some(start) = rest.find('{') {
     filled.push_str(&rest[..start]);
     let Some(end) = rest[start..].find('}') else {
-      return Err(Error::Build("the target's path has an unclosed placeholder".to_owned()));
+      return Err(Error::Build("the target's address has an unclosed placeholder".to_owned()));
     };
     let name = &rest[start + 1..start + end];
     let credential = CredentialField::from_placeholder(name).ok_or_else(|| {
-      Error::Build(format!("the target's path reads from the unknown field `{name}`"))
+      Error::Build(format!("the target's address reads from the unknown field `{name}`"))
     })?;
     filled.push_str(&percent_encode(require_field(material, credential)?));
     rest = &rest[start + end + 1..];
