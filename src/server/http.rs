@@ -9,7 +9,7 @@ use crate::server::{app::App, error::ApiError};
 use axum::{
   Json, Router,
   extract::{Request, State},
-  http::StatusCode,
+  http::{HeaderValue, Method, StatusCode, header},
   middleware::{self, Next},
   response::{IntoResponse, Response},
   routing::{get, post, put},
@@ -96,7 +96,39 @@ pub fn build_router(app: Arc<App>) -> Router {
       get(|| async { Json(json!({"name":"wish","version":env!("CARGO_PKG_VERSION")})) }),
     )
     .fallback(|| async { ApiError::not_found() })
+    .layer(middleware::from_fn_with_state(app.clone(), cross_origin))
     .with_state(app)
+}
+/// Pages from other origins may call a server that requires a token: they cannot
+/// act without knowing it. A server without one answers its own origin only, so
+/// an arbitrary web page cannot drive a local agent through the visitor's browser.
+async fn cross_origin(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
+  if app.token.is_none() || !request.headers().contains_key(header::ORIGIN) {
+    return next.run(request).await;
+  }
+  let preflight = request.method() == Method::OPTIONS
+    && request.headers().contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+  let private_network = request.headers().contains_key("access-control-request-private-network");
+  let mut response =
+    if preflight { StatusCode::NO_CONTENT.into_response() } else { next.run(request).await };
+  let headers = response.headers_mut();
+  headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+  if preflight {
+    headers.insert(
+      header::ACCESS_CONTROL_ALLOW_METHODS,
+      HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE"),
+    );
+    headers.insert(
+      header::ACCESS_CONTROL_ALLOW_HEADERS,
+      HeaderValue::from_static("authorization, content-type, if-match, last-event-id"),
+    );
+    headers.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
+    // Chrome asks before a public page reaches a server on a private address.
+    if private_network {
+      headers.insert("access-control-allow-private-network", HeaderValue::from_static("true"));
+    }
+  }
+  response
 }
 async fn authorize(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
   if let Some(token) = &app.token {
