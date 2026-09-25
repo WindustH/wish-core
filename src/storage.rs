@@ -2,7 +2,6 @@
 mod cache;
 mod database;
 mod list;
-mod migration;
 mod object;
 pub(crate) mod search;
 mod transaction;

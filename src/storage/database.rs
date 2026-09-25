@@ -164,7 +164,7 @@ impl Storage {
   }
 
   /// Wait for earlier storage commands and synchronize committed WAL data.
-  /// Call after awaiting agent runs: their pending stream batches belong to the runners.
+  /// Call after awaiting agent runs; live model stream events are never stored.
   pub fn flush(&self) -> Result<(), StorageError> {
     self.dispatch(Database::flush)?
   }
@@ -233,14 +233,16 @@ impl Database {
     connection.execute_batch(
       "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
     )?;
+    // A new database starts at 0. Any other version is migrated by hand before this build opens it.
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if !matches!(version, 0 | 3 | 4) {
+    if !matches!(version, 0 | 4) {
       return Err(StorageError::SchemaVersion(version));
     }
     let tx = connection.transaction()?;
-    super::migration::normalize_list_keys(&tx, version)?;
     tx.execute_batch(
-      "CREATE TABLE IF NOT EXISTS wish_objects (
+      "CREATE TABLE IF NOT EXISTS wish_list_keys (
+      id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+      CREATE TABLE IF NOT EXISTS wish_objects (
       name TEXT PRIMARY KEY,kind TEXT NOT NULL,value BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS wish_lists (
       name TEXT PRIMARY KEY,kind TEXT NOT NULL,length INTEGER NOT NULL CHECK(length>=0));
