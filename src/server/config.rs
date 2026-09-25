@@ -1,6 +1,7 @@
 use crate::server::error::ApiError;
 use crate::server::provider::ProviderConfig;
 use crate::session::{CompactionConfig, SessionConfig};
+use crate::tool::shell::{self, ShellCommand};
 use crate::transport::Proxy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -14,7 +15,42 @@ pub struct Config {
   pub bearer_token_env: Option<String>,
   pub providers: BTreeMap<String, ProviderConfig>,
   pub proxy: ProxyConfig,
+  pub shell: ShellSettings,
   pub defaults: Defaults,
+}
+
+/// The shell every session's commands run under. Applied to the next command after a save.
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ShellSettings {
+  /// Absolute path of the shell; empty for the platform default.
+  pub program: String,
+  /// Arguments before the command text; absent for the ones the shell's family takes.
+  pub args: Option<Vec<String>>,
+}
+
+impl ShellSettings {
+  pub fn resolve(&self) -> Result<ShellCommand, ApiError> {
+    let mut command = if self.program.is_empty() {
+      ShellCommand::platform_default()
+    } else {
+      let program = PathBuf::from(&self.program);
+      if !program.is_absolute() {
+        return Err(ApiError::bad_request("shell program must be an absolute path"));
+      }
+      if !shell::is_runnable(&program) {
+        return Err(ApiError::bad_request(format!(
+          "shell program {} is not an executable file",
+          program.display()
+        )));
+      }
+      ShellCommand::for_program(program)
+    };
+    if let Some(args) = &self.args {
+      command.args = args.clone();
+    }
+    Ok(command)
+  }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -132,6 +168,7 @@ impl Default for Config {
       bearer_token_env: None,
       providers: BTreeMap::new(),
       proxy: ProxyConfig::default(),
+      shell: ShellSettings::default(),
       defaults: Defaults::default(),
     }
   }
@@ -142,6 +179,22 @@ pub fn read_secret(name: &str) -> Result<String, String> {
     return Err(format!("environment variable {name} is empty"));
   }
   Ok(value)
+}
+
+/// The shell used when none is configured and the shells installed on this machine, each with
+/// the arguments it would run with, for choosing one.
+pub fn shell_catalog() -> Value {
+  let describe = |command: ShellCommand| {
+    json!({
+      "name": command.program.file_stem().map(|name| name.to_string_lossy().into_owned()),
+      "program": command.program,
+      "args": command.args,
+    })
+  };
+  json!({
+    "default": describe(ShellCommand::platform_default()),
+    "installed": ShellCommand::installed().into_iter().map(describe).collect::<Vec<_>>(),
+  })
 }
 
 /// The proxy variables visible to this server process, with URL details that may carry secrets removed.

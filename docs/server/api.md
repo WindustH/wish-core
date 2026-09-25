@@ -169,6 +169,9 @@ active-session conflicts 409, unconfigured upstream capabilities 501, and upstre
   process as `{variables:[{name,value,redacted}]}`. Proxy URL output shows only the address and hides
   credentials, paths, query strings and fragments. `NO_PROXY` and `no_proxy` values are shown
   as configured. This is a read-only snapshot for the settings screen.
+- `GET /api/shells` returns `{default:{name,program,args},installed:[{name,program,args}]}`:
+  the shell used when none is configured and the shells found on the server's `PATH`, each
+  with the arguments it would run with. This is a read-only snapshot for the settings screen.
 - `GET /api/defaults` → `{defaults,session_config}` for new-session forms.
 - `GET /api/directories?path=/home/windy` lists the immediate subdirectories of an absolute
   path on the Wish server. The response is
@@ -241,6 +244,15 @@ Global `proxy` configuration applies to providers with `proxy_enabled:true`. Its
 `GET /api/config`; sending the redacted value back to `PUT /api/config` retains it.
 `proxy_enabled:false` always connects that provider directly. Changes saved through
 `PUT /api/config` apply to new model requests without restarting the server.
+
+Global `shell` configuration selects the program shell commands run under. `program` is an
+absolute path to an executable; empty uses `/bin/sh -c` on Unix and `%COMSPEC% /D /S /C` on
+Windows. `args` are placed before the command text, which is passed as one final argument.
+Omitted or `null`, they follow the shell's name: `-lc` for zsh and bash, `-l -c` for fish,
+`-NoLogo -NoProfile -NonInteractive -Command` for PowerShell, `/D /S /C` for cmd, and `-c`
+otherwise. A save that names a missing or non-executable program is rejected. A saved shell
+applies to the next command in every session, including sessions already open; running
+commands keep the shell they started with.
 
 Every session has `history_search`, `history_read`, `history_query`, and `view_image`; `shell_start`, `shell_poll`, `shell_write`, and `shell_kill` remain opt-in. `view_image`
 accepts an absolute local path to a PNG/JPEG/GIF/WebP, at most 20 MiB. The server snapshots

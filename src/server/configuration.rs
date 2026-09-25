@@ -137,6 +137,7 @@ impl App {
     let next: Config =
       serde_json::from_value(value).map_err(|e| ApiError::bad_request(e.to_string()))?;
     next.proxy.validate()?;
+    let shell = next.shell.resolve()?;
     if next.listen != current.config.listen
       || next.data_dir != current.config.data_dir
       || next.bearer_token_env != current.config.bearer_token_env
@@ -176,6 +177,7 @@ impl App {
       return Err(ApiError::internal(error));
     }
     *self.providers.write().unwrap() = providers;
+    *self.shell.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = shell;
     current.config = next;
     current.revision = hash(&bytes);
     let _ = self.events.send(json!({"type":"configuration_changed"}));

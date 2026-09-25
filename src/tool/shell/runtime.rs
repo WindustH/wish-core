@@ -207,16 +207,18 @@ impl ShellTool {
       .await?
       .into_std()
       .await;
-    let mut builder = Command::new(&self.inner.config.program);
+    let shell =
+      self.inner.config.command.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    let mut builder = Command::new(&shell.program);
     builder
-      .args(&self.inner.config.args)
+      .args(&shell.args)
       .current_dir(&self.inner.config.cwd)
       .envs(&self.inner.config.env)
       .stdout(Stdio::from(file.try_clone()?))
       .stderr(Stdio::from(file))
       .stdin(if interactive || data.is_some() { Stdio::piped() } else { Stdio::null() })
       .kill_on_drop(true);
-    platform::configure_command(&mut builder, &self.inner.config.program, &command);
+    platform::configure_command(&mut builder, &shell.program, &command);
     // Serialize spawn/registration with shutdown so a successfully spawned process is never missed.
     let mut registry = self.lock_registry()?;
     if registry.closed {

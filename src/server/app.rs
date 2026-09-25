@@ -24,6 +24,8 @@ pub struct App {
   pub events: tokio::sync::broadcast::Sender<serde_json::Value>,
   pub started: std::time::Instant,
   pub providers: RwLock<BTreeMap<String, Arc<Provider>>>,
+  /// Shared with every session's shell tool; a configuration save replaces its value.
+  pub shell: Arc<RwLock<crate::tool::shell::ShellCommand>>,
   pub sessions: AsyncMutex<BTreeMap<String, Arc<SessionSlot>>>,
   pub data_dir: PathBuf,
   pub token: Option<String>,
@@ -35,6 +37,7 @@ pub struct App {
 impl App {
   pub async fn open(config: &Config, config_path: PathBuf) -> Result<Arc<Self>, ApiError> {
     config.proxy.validate()?;
+    let shell = Arc::new(RwLock::new(config.shell.resolve()?));
     tokio::fs::create_dir_all(&config.data_dir).await.map_err(ApiError::internal)?;
     let path = config.data_dir.join("wish.sqlite");
     let index_path = config.data_dir.join("management.sqlite");
@@ -74,6 +77,7 @@ impl App {
       events,
       started: std::time::Instant::now(),
       providers: RwLock::new(providers),
+      shell,
       sessions: AsyncMutex::new(BTreeMap::new()),
       data_dir: config.data_dir.clone(),
       token,

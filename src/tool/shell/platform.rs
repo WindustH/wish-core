@@ -33,6 +33,52 @@ pub(super) fn default_args() -> Vec<String> {
     vec!["-c".into()]
   }
 }
+/// Arguments a shell takes before command text, chosen by the family its file name names. Login
+/// flags load the profile a user's `PATH` usually lives in; an unknown shell gets POSIX `-c`.
+pub(super) fn family_args(program: &Path) -> Vec<String> {
+  let name =
+    program.file_stem().map(|name| name.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+  let args: &[&str] = match name.as_str() {
+    "zsh" | "bash" => &["-lc"],
+    "fish" => &["-l", "-c"],
+    "pwsh" | "powershell" => &["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"],
+    "cmd" => &["/D", "/S", "/C"],
+    _ => &["-c"],
+  };
+  args.iter().map(|arg| (*arg).to_owned()).collect()
+}
+/// The first match on `PATH` for each shell name this platform commonly has.
+pub(super) fn installed_shells() -> Vec<PathBuf> {
+  #[cfg(windows)]
+  let names = ["pwsh.exe", "powershell.exe", "cmd.exe"].as_slice();
+  #[cfg(not(windows))]
+  let names = ["zsh", "bash", "fish", "sh", "dash", "ksh", "nu", "pwsh"].as_slice();
+  let Some(path) = std::env::var_os("PATH") else {
+    return Vec::new();
+  };
+  let directories: Vec<_> =
+    std::env::split_paths(&path).filter(|directory| !directory.as_os_str().is_empty()).collect();
+  names
+    .iter()
+    .filter_map(|name| {
+      directories.iter().map(|directory| directory.join(name)).find(|path| is_executable_file(path))
+    })
+    .collect()
+}
+pub(super) fn is_executable_file(path: &Path) -> bool {
+  let Ok(metadata) = std::fs::metadata(path) else {
+    return false;
+  };
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+  }
+  #[cfg(not(unix))]
+  {
+    metadata.is_file()
+  }
+}
 pub(super) fn configure_command(builder: &mut Command, program: &Path, command: &str) {
   #[cfg(unix)]
   {

@@ -91,14 +91,12 @@ impl SessionSlot {
       session.settle_interrupted().map_err(ApiError::internal)?;
     }
     let shell = if descriptor.shell {
-      Some(
-        ShellTool::new(ShellConfig::new(
-          &descriptor.cwd,
-          data_dir.join("shell").join(&descriptor.id),
-        ))
-        .await
-        .map_err(ApiError::internal)?,
-      )
+      let mut config =
+        ShellConfig::new(&descriptor.cwd, data_dir.join("shell").join(&descriptor.id));
+      if let Some(app) = app.upgrade() {
+        config.command = Arc::clone(&app.shell);
+      }
+      Some(ShellTool::new(config).await.map_err(ApiError::internal)?)
     } else {
       None
     };

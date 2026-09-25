@@ -35,6 +35,7 @@ pub fn build_router(app: Arc<App>) -> Router {
     .route("/sessions/{id}/history", get(content::timeline))
     .route("/config", get(manage::configuration).put(manage::save_configuration))
     .route("/proxy-environment", get(|| async { Json(crate::server::config::proxy_environment()) }))
+    .route("/shells", get(|| async { Json(crate::server::config::shell_catalog()) }))
     .route("/defaults", get(manage::defaults))
     .route("/directories", get(directories::list))
     .route("/events", get(manage::events))
