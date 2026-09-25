@@ -289,9 +289,13 @@ impl SessionTransaction<'_, '_> {
         if let ToolOutcome::SuccessWithInput { input, .. } = outcome {
           inputs.push((execution.call.clone(), input.clone()));
         }
+        let metadata = match outcome {
+          ToolOutcome::SuccessWithMetadata { metadata, .. } => metadata.clone(),
+          _ => Default::default(),
+        };
         self.append_message(
           Message::ToolResult {
-            metadata: Default::default(),
+            metadata,
             call_id: execution.call.call_id.clone(),
             name: execution.call.name.clone(),
             content: outcome.encode_content(),

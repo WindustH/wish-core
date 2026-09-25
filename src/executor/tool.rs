@@ -18,6 +18,11 @@ pub enum ToolOutcome {
     output: Value,
     input: Vec<crate::protocol::ContentBlock>,
   },
+  /// Success with application data kept on the result message and never sent to the model.
+  SuccessWithMetadata {
+    output: Value,
+    metadata: Value,
+  },
   Failed(String),
   Cancelled,
   Unknown(String),
@@ -26,7 +31,9 @@ pub enum ToolOutcome {
 impl ToolOutcome {
   pub(crate) fn encode_content(&self) -> Value {
     match self {
-      Self::Success(value) | Self::SuccessWithInput { output: value, .. } => {
+      Self::Success(value)
+      | Self::SuccessWithInput { output: value, .. }
+      | Self::SuccessWithMetadata { output: value, .. } => {
         json!({"status": "success", "output": value})
       }
       Self::Failed(message) => json!({"status": "failed", "message": message}),

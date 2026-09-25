@@ -136,7 +136,7 @@ impl ToolExecutor for SessionTools {
       "history_search" | "history_read" | "history_query" => {
         self.history.execute(call, control).await
       }
-      "shell_start" | "shell_poll" | "shell_write" | "shell_kill" => {
+      "shell_start" | "shell_edit" | "shell_poll" | "shell_write" | "shell_kill" => {
         self.execute_shell(call, control).await
       }
       _ => ToolOutcome::Failed(format!("unknown tool: {}", call.name)),

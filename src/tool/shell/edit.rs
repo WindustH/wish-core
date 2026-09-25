@@ -24,7 +24,10 @@ pub(super) enum EditResult {
 impl EditCapture {
   pub async fn capture(path: PathBuf) -> Result<Self, ShellError> {
     if !path.is_absolute() {
-      return Err(ShellError::InvalidArguments("edit must be an absolute file path".into()));
+      return Err(ShellError::InvalidArguments(format!(
+        "diff paths must be absolute: {}",
+        path.display()
+      )));
     }
     let before = match tokio::fs::read(&path).await {
       Ok(bytes) => bytes,
@@ -33,7 +36,7 @@ impl EditCapture {
         return Err(
           io::Error::new(
             error.kind(),
-            format!("cannot read edit file {}: {error}", path.display()),
+            format!("cannot read diff file {}: {error}", path.display()),
           )
           .into(),
         );

@@ -26,7 +26,7 @@ pub(super) struct Snapshot {
   pub initial_input_bytes: usize,
   pub initial_input_error: Option<String>,
   #[serde(skip)]
-  pub edit: Option<Arc<EditResult>>,
+  pub edits: Arc<Vec<EditResult>>,
 }
 impl Default for Snapshot {
   fn default() -> Self {
@@ -37,7 +37,7 @@ impl Default for Snapshot {
       error: None,
       initial_input_bytes: 0,
       initial_input_error: None,
-      edit: None,
+      edits: Arc::default(),
     }
   }
 }
@@ -151,7 +151,7 @@ pub(super) async fn supervise(
   mut kills: mpsc::UnboundedReceiver<KillMode>,
   grace: Duration,
   initial_input: Option<tokio::task::JoinHandle<()>>,
-  edit: Option<EditCapture>,
+  edits: Vec<EditCapture>,
 ) {
   let mut killed = false;
   let mut deadline = None;
@@ -187,12 +187,9 @@ pub(super) async fn supervise(
     let _ = initial_input.await;
   }
   execution.stdin.lock().await.take();
-  let edit = match edit {
-    Some(edit) => Some(Arc::new(edit.finish().await)),
-    None => None,
-  };
+  let edits = futures_util::future::join_all(edits.into_iter().map(EditCapture::finish)).await;
   execution.state.send_modify(|snapshot| {
-    snapshot.edit = edit;
+    snapshot.edits = Arc::new(edits);
     match result.and_then(|status| cleanup.map(|_| status)) {
       Ok(status) => {
         snapshot.status = if killed { Status::Killed } else { Status::Exited };

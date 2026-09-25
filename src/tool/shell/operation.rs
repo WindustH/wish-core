@@ -7,9 +7,6 @@ use serde::{Deserialize, Serialize};
 pub enum ShellOperation {
   Start {
     command: String,
-    /// Absolute file path to compare before launch and after the command finishes.
-    #[serde(default)]
-    edit: Option<std::path::PathBuf>,
     /// Seconds to wait for completion before returning execution_id while the command continues
     /// in the background. Expiry never terminates the command. -1 or omission uses the configured
     /// default; 0 starts the command and returns without waiting for completion.
@@ -21,6 +18,15 @@ pub enum ShellOperation {
     encoding: DataEncoding,
     #[serde(default)]
     interactive: bool,
+  },
+  /// Run a command that edits files and wait for it to exit, diffing each named file.
+  Edit {
+    command: String,
+    /// Absolute paths of the files the command edits, compared before launch and after exit.
+    diff: Vec<std::path::PathBuf>,
+    /// Return the diff text to the model; otherwise it only sees whether each file changed.
+    #[serde(default)]
+    check_diff: bool,
   },
   Poll {
     execution_id: String,
@@ -53,6 +59,13 @@ impl ShellOperation {
       "shell_start" => {
         if let Some(object) = arguments.as_object_mut() {
           object.insert("operation".into(), "start".into());
+        }
+        serde_json::from_value(arguments)
+          .map_err(|error| ShellError::InvalidArguments(error.to_string()))
+      }
+      "shell_edit" => {
+        if let Some(object) = arguments.as_object_mut() {
+          object.insert("operation".into(), "edit".into());
         }
         serde_json::from_value(arguments)
           .map_err(|error| ShellError::InvalidArguments(error.to_string()))
@@ -111,17 +124,29 @@ pub(super) fn build_specifications() -> Vec<crate::protocol::Tool> {
   vec![
     crate::protocol::Tool {
       name: "shell_start".into(),
-      description: "Start a shell command. If the command runs longer than timeout, it continues in the background and returns execution_id for later polling or termination. Output, exit code and diffs are captured. No interactive PTY is allocated.".into(),
+      description: "Start a shell command. If the command runs longer than timeout, it continues in the background and returns execution_id for later polling or termination. Output and exit code are captured. No interactive PTY is allocated. Use shell_edit for commands that modify files.".into(),
       input_schema: serde_json::json!({
         "type": "object", "additionalProperties": false,
         "required": ["command"],
         "properties": {
           "command": {"type": "string", "description": "Shell script to execute."},
-          "edit": {"type": "string", "description": "Optional absolute file path to compare before launch and after completion. Missing files are treated as empty, returning a unified diff in edit."},
           "timeout": {"type": "number", "description": "Seconds to wait for completion before backgrounding. Omit or use -1 for default. Use 0 to start and return immediately without waiting."},
           "data": {"type": "string", "description": "Initial data to feed into standard input."},
           "encoding": {"type": "string", "enum": ["utf8", "base64"], "default": "utf8"},
           "interactive": {"type": "boolean", "description": "Keep standard input open after launch to enable later shell_write calls."}
+        }
+      }),
+    },
+    crate::protocol::Tool {
+      name: "shell_edit".into(),
+      description: "Run a shell command that modifies files and wait for it to exit. Each file in diff is compared before launch and after exit; missing files count as empty. Returns output, exit code and, per file, whether it changed. Set check_diff to also receive the unified diffs.".into(),
+      input_schema: serde_json::json!({
+        "type": "object", "additionalProperties": false,
+        "required": ["command", "diff"],
+        "properties": {
+          "command": {"type": "string", "description": "Shell script that performs the edit."},
+          "diff": {"type": "array", "minItems": 1, "items": {"type": "string"}, "description": "Absolute paths of the files this command edits."},
+          "check_diff": {"type": "boolean", "default": false, "description": "Include the unified diff of each file in the result. Leave false when the change is already known."}
         }
       }),
     },

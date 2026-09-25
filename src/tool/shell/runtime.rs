@@ -128,25 +128,19 @@ impl ShellTool {
       return ToolOutcome::Cancelled;
     }
     let result = match operation {
-      ShellOperation::Start { command, timeout, data, encoding, interactive, edit } => {
+      ShellOperation::Start { command, timeout, data, encoding, interactive } => {
         let timeout = match timeout {
           None | Some(-1.0) => Ok(self.inner.config.soft_timeout),
           Some(seconds) => Duration::try_from_secs_f64(seconds)
             .map_err(|error| ShellError::InvalidArguments(error.to_string())),
         };
         match (timeout, data.map(|data| encoding.decode(data)).transpose()) {
-          (Ok(timeout), Ok(data)) => {
-            let edit = match edit {
-              Some(path) => EditCapture::capture(path).await.map(Some),
-              None => Ok(None),
-            };
-            match edit {
-              Ok(edit) => self.start(command, timeout, data, interactive, edit, control).await,
-              Err(error) => Err(error),
-            }
-          }
+          (Ok(timeout), Ok(data)) => self.start(command, timeout, data, interactive, control).await,
           (Err(error), _) | (_, Err(error)) => Err(error),
         }
+      }
+      ShellOperation::Edit { command, diff, check_diff } => {
+        return self.edit(command, diff, check_diff, control).await.unwrap_or_else(failure);
       }
       ShellOperation::Poll { execution_id, offset, max_bytes, wait_ms, encoding } => {
         self
@@ -170,27 +164,21 @@ impl ShellTool {
         }
       }
       ShellOperation::Kill { execution_id, mode } => match self.get_execution(&execution_id) {
-        Ok(execution) => execution.terminate(mode).await.map(|snapshot| {
-          let mut output = json!({"execution_id": execution_id, "process": snapshot});
-          attach_edit(&mut output, &snapshot);
-          output
-        }),
+        Ok(execution) => execution
+          .terminate(mode)
+          .await
+          .map(|snapshot| json!({"execution_id": execution_id, "process": snapshot})),
         Err(error) => Err(error),
       },
     };
-    match result {
-      Ok(value) => ToolOutcome::Success(value),
-      Err(ShellError::Interrupted) => ToolOutcome::Cancelled,
-      Err(ShellError::Unknown(message)) => ToolOutcome::Unknown(message),
-      Err(error) => ToolOutcome::Failed(error.to_string()),
-    }
+    result.map(ToolOutcome::Success).unwrap_or_else(failure)
   }
   async fn spawn(
     &self,
     command: String,
     data: Option<Vec<u8>>,
     interactive: bool,
-    edit: Option<EditCapture>,
+    edits: Vec<EditCapture>,
     control: &ExecutionControl,
   ) -> Result<Arc<Execution>, ShellError> {
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -231,7 +219,9 @@ impl ShellTool {
     let group = ProcessTree::attach(&child)?;
     let (kills, receiver) = mpsc::unbounded_channel();
     let (state, _) = watch::channel(Snapshot {
-      edit: edit.as_ref().map(|edit| Arc::new(EditResult::Pending { path: edit.path.clone() })),
+      edits: Arc::new(
+        edits.iter().map(|edit| EditResult::Pending { path: edit.path.clone() }).collect(),
+      ),
       ..Snapshot::default()
     });
     let (initial_input_done, _) = watch::channel(data.is_none());
@@ -269,7 +259,7 @@ impl ShellTool {
       receiver,
       self.inner.config.kill_grace,
       initial_input,
-      edit,
+      edits,
     ));
     Ok(execution)
   }
@@ -279,11 +269,10 @@ impl ShellTool {
     timeout: Duration,
     data: Option<Vec<u8>>,
     interactive: bool,
-    edit: Option<EditCapture>,
     control: &ExecutionControl,
   ) -> Result<Value, ShellError> {
     let deadline = resolve_deadline(timeout)?;
-    let execution = self.spawn(command, data, interactive, edit, control).await?;
+    let execution = self.spawn(command, data, interactive, Vec::new(), control).await?;
     let mut foreground = Foreground { execution: execution.clone(), returned: false };
     let reason = loop {
       if control.is_cancelled() {
@@ -333,6 +322,48 @@ impl ShellTool {
     output["return_reason"] = if control.is_cancelled() { "interrupted" } else { reason }.into();
     foreground.returned = true;
     Ok(output)
+  }
+  /// Run an editing command to exit, so the diffs it returns are final. Without `check_diff` the
+  /// model sees only whether each file changed; the diffs stay on the result for the application.
+  async fn edit(
+    &self,
+    command: String,
+    paths: Vec<std::path::PathBuf>,
+    check_diff: bool,
+    control: &ExecutionControl,
+  ) -> Result<ToolOutcome, ShellError> {
+    if paths.is_empty() {
+      return Err(ShellError::InvalidArguments("diff needs at least one file path".into()));
+    }
+    let mut edits = Vec::with_capacity(paths.len());
+    for path in paths {
+      edits.push(EditCapture::capture(path).await?);
+    }
+    let execution = self.spawn(command, None, false, edits, control).await?;
+    let mut foreground = Foreground { execution: execution.clone(), returned: false };
+    let (snapshot, reason) = tokio::select! {
+      snapshot = execution.wait_for_exit() => (snapshot?, "exited"),
+      _ = control.wait_for_cancellation() => {
+        (execution.terminate(KillMode::Graceful).await?, "interrupted")
+      }
+    };
+    foreground.returned = true;
+    let mut output =
+      read_output(&execution, 0, self.inner.config.inline_bytes, DataEncoding::Utf8).await?;
+    output["return_reason"] = reason.into();
+    let edits = json!(*snapshot.edits);
+    if check_diff {
+      output["edits"] = edits;
+      return Ok(ToolOutcome::Success(output));
+    }
+    let mut summaries = edits.clone();
+    for summary in summaries.as_array_mut().into_iter().flatten() {
+      if let Some(summary) = summary.as_object_mut() {
+        summary.remove("diff");
+      }
+    }
+    output["edits"] = summaries;
+    Ok(ToolOutcome::SuccessWithMetadata { output, metadata: json!({"edits": edits}) })
   }
   async fn poll(
     &self,
@@ -402,12 +433,13 @@ async fn read_output(
   if next_offset < total {
     output["output_notice"] = "Output limited. Read only the needed range or search output_path. Use poll with next_offset to continue; avoid reading the entire file or repeating broad commands.".into();
   }
-  attach_edit(&mut output, &snapshot);
   Ok(output)
 }
 
-fn attach_edit(output: &mut Value, snapshot: &Snapshot) {
-  if let Some(edit) = &snapshot.edit {
-    output["edit"] = json!(edit);
+fn failure(error: ShellError) -> ToolOutcome {
+  match error {
+    ShellError::Interrupted => ToolOutcome::Cancelled,
+    ShellError::Unknown(message) => ToolOutcome::Unknown(message),
+    error => ToolOutcome::Failed(error.to_string()),
   }
 }

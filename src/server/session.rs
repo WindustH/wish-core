@@ -135,7 +135,9 @@ impl SessionSlot {
     for tool in &config.tools {
       let is_valid = match tool.name.as_str() {
         "view_image" | "history_search" | "history_read" | "history_query" => true,
-        "shell_start" | "shell_poll" | "shell_write" | "shell_kill" => self.tools.shell.is_some(),
+        "shell_start" | "shell_edit" | "shell_poll" | "shell_write" | "shell_kill" => {
+          self.tools.shell.is_some()
+        }
         _ => false,
       };
       if !is_valid {

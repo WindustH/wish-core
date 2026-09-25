@@ -29,7 +29,8 @@ should have its own ShellTool and capture directory; clones intentionally share 
 
 | Tool | Required Inputs | Optional Inputs | Behavior |
 | --- | --- | --- | --- |
-| `shell_start` | `command` | `edit`, `timeout`, `data`, `encoding`, `interactive` | Run a script; return completion or a background execution ID. |
+| `shell_start` | `command` | `timeout`, `data`, `encoding`, `interactive` | Run a script; return completion or a background execution ID. |
+| `shell_edit` | `command`, `diff` | `check_diff` | Run a script that edits files to exit; return output and per-file changes. |
 | `shell_poll` | `execution_id` | `offset`, `max_bytes`, `wait_ms`, `encoding` | Read merged output by raw byte offset, optionally wait for new bytes. |
 | `shell_write` | `execution_id`, `data` | `encoding`, `close` | Feed stdin and optionally close it; return the actual accepted byte count. |
 | `shell_kill` | `execution_id` | `mode` | Terminate the process group/job and wait for the supervised child to be reaped. |
@@ -56,18 +57,21 @@ whose process.exit_code reports the failure. Text decoding is lossy when needed;
 encoding to read exact bytes, including across UTF-8 boundaries. max_bytes limits each read, not
 captured output. Small foreground results remain pollable too.
 
-For file edits, pass `edit` as an absolute file path. The tool reads the file before launch and
-after completion; a missing file counts as empty. Results include `edit` with `path` and `status`:
-`pending` while running, then `complete` with `changed`, `binary`, and `diff`. Text diffs use
+File edits use `shell_edit`. `diff` lists the absolute paths the command edits; each file is read
+before launch and after exit, and a missing file counts as empty. The command has no stdin, no
+timeout and never moves to the background: the call returns when it exits or is interrupted, so
+every diff is final. Results carry `edits`, one per path, with `path` and `status`: `complete`
+with `changed`, `binary`, and `diff`, or `failed` with `error`. Without `check_diff` the model
+receives each entry without `diff`; the full entries are kept in the tool result's metadata for
+the application, which never sends metadata to the model. Text diffs use
 imara-diff's Histogram algorithm, indentation-aware hunk placement, and unified format with three
 context lines. Unchanged text produces an empty diff. Binary/non-UTF-8 files report whether bytes
 changed and set `diff` to null. A final read failure returns `status: "failed"` and `error` alongside
 the normal process result; an initial read failure prevents launch.
 
-Background starts return a pending edit; `poll` or `kill` retrieves the final diff. Completion,
-nonzero exit, and interruption all capture actual file changes. The final result is retained, so
-later polls do not include subsequent edits. Only the named file's contents are compared; file
-permissions and concurrent writers are not tracked.
+Completion, nonzero exit, and interruption all capture actual file changes. Polls of an edit's
+execution return its output only, never its diffs. Only the named files' contents are compared;
+file permissions and concurrent writers are not tracked.
 
 Stdin defaults to the null device. Initial data is decoded as UTF-8 or base64, written and closed
 unless interactive=true. Initial input precedes subsequent writes; later writes serialize on the

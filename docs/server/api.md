@@ -254,7 +254,7 @@ otherwise. A save that names a missing or non-executable program is rejected. A 
 applies to the next command in every session, including sessions already open; running
 commands keep the shell they started with.
 
-Every session has `history_search`, `history_read`, `history_query`, and `view_image`; `shell_start`, `shell_poll`, `shell_write`, and `shell_kill` remain opt-in. `view_image`
+Every session has `history_search`, `history_read`, `history_query`, and `view_image`; `shell_start`, `shell_edit`, `shell_poll`, `shell_write`, and `shell_kill` remain opt-in. `view_image`
 accepts an absolute local path to a PNG/JPEG/GIF/WebP, at most 20 MiB. The server snapshots
 its bytes under the session's blob directory. The native image is placed after the complete
 tool-result batch; the original image remains in stored context.
