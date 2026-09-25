@@ -42,7 +42,7 @@ use serde_json::json;
 use crate::protocol::account_state::AccountState;
 use crate::protocol::error::Error;
 
-use super::message::{ContentBlock, Message};
+use super::message::{ContentBlock, Message, ReasoningOpaqueKind};
 use super::response::{Response, StopReason, Usage};
 
 /// Which protocol decodes a stream.
@@ -208,6 +208,38 @@ impl Block {
   }
 }
 
+/// The stream events are wire-neutral; provenance comes from the decoder's protocol.
+pub(super) fn reasoning_opaque_kind(
+  protocol: super::ModelUseProtocol,
+  signature: &str,
+  ciphertext: &str,
+  replay_item: Option<&serde_json::Value>,
+) -> Option<ReasoningOpaqueKind> {
+  use super::ModelUseProtocol as P;
+  let kind = match protocol {
+    P::AnthropicMessages(..) => ReasoningOpaqueKind::AnthropicSignature,
+    P::BedrockConverse => ReasoningOpaqueKind::BedrockSignature,
+    P::GoogleGenerateContent | P::GoogleVertexGenerateContent => ReasoningOpaqueKind::GoogleSignature,
+    P::GoogleInteractions => ReasoningOpaqueKind::GoogleInteractionsThought,
+    P::OpenAiResponses(..) => ReasoningOpaqueKind::OpenAiEncrypted,
+    P::OpenAiChat(..) | P::MistralConversations => return None,
+  };
+  let has_material = match kind {
+    ReasoningOpaqueKind::GoogleInteractionsThought => replay_item.is_some(),
+    ReasoningOpaqueKind::OpenAiEncrypted => !ciphertext.is_empty(),
+    ReasoningOpaqueKind::GoogleSignature => !signature.is_empty(),
+    _ => !signature.is_empty() || !ciphertext.is_empty(),
+  };
+  if !has_material {
+    return None;
+  }
+  Some(match kind {
+    ReasoningOpaqueKind::AnthropicSignature if !ciphertext.is_empty() => ReasoningOpaqueKind::AnthropicRedacted,
+    ReasoningOpaqueKind::BedrockSignature if !ciphertext.is_empty() => ReasoningOpaqueKind::BedrockRedacted,
+    other => other,
+  })
+}
+
 impl StreamAccumulator {
   pub fn new() -> Self {
     Self::default()
@@ -342,6 +374,9 @@ impl StreamAccumulator {
         BlockKind::Reasoning => {
           messages.push(Message::Reasoning {
             metadata: Default::default(),
+            opaque_kind: self.protocol.and_then(|protocol| reasoning_opaque_kind(
+              protocol, &block.signature, &block.ciphertext, block.replay_item.as_ref(),
+            )),
             replay_item: block.replay_item,
             display: block.display.unwrap_or_else(|| block.plaintext.clone()),
             plaintext: block.plaintext,

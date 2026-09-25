@@ -1,6 +1,6 @@
 use crate::session::{HistoryItem, Session, SessionError, SessionEvent};
 
-pub(super) fn notify_observers(
+pub(crate) fn notify_observers(
   session: &Session,
   cursor: &mut u64,
   observe: &mut impl FnMut(&SessionEvent),

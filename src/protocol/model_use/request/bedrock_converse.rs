@@ -41,6 +41,7 @@
 //!   blocks.
 
 use crate::protocol::error::Error;
+use crate::protocol::ReasoningOpaqueKind;
 use crate::protocol::model_use::request::{ANSWER_HEADROOM, TierBudget, resolve_tier_budget};
 use crate::protocol::{ContentBlock, Message, ReasoningConfig, Request, Tool, ToolChoice};
 use serde_json::{Map, Value, json};
@@ -210,7 +211,9 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           push(&mut turns, &mut current, &mut blocks, "assistant", block);
         }
       }
-      Message::Reasoning { plaintext, signature, ciphertext, .. } => {
+      Message::Reasoning { plaintext, signature, ciphertext, opaque_kind, .. } => {
+        let signature = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::BedrockSignature, signature);
+        let ciphertext = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::BedrockRedacted, ciphertext);
         let content = if !ciphertext.is_empty() {
           json!({"redactedContent": ciphertext})
         } else if !plaintext.is_empty() || !signature.is_empty() {

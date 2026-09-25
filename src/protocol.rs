@@ -22,7 +22,7 @@ pub mod token_count;
 pub mod upstream_compaction;
 pub mod wire;
 
-pub use model_use::message::{ContentBlock, Conversation, Message};
+pub use model_use::message::{ContentBlock, Conversation, Message, ReasoningOpaqueKind};
 pub use model_use::request::{PromptCache, ReasoningConfig, ReasoningSummary, Request, ToolChoice};
 pub use model_use::response::{Response, StopReason, Usage};
 pub use model_use::stream::{BlockKind, StreamAccumulator, StreamEvent};

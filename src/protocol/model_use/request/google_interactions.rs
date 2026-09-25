@@ -6,8 +6,8 @@
 //! - The conversation becomes a `steps[]` array of `user_input`, `model_output`, `function_call`,
 //!   `function_result` and `thought` steps. Images are flat blocks
 //!   (`{"type": "image", "mime_type", "data"}`).
-//! - `Reasoning` replays the original `thought` step when it is available, preserving signed
-//!   multi-part summaries; caller-supplied reasoning is built from `signature` and `plaintext`.
+//! - `Reasoning` replays a typed original `thought` step, preserving signed multipart summaries;
+//!   unsigned plaintext may become an unsigned thought, but unknown/foreign proofs are not reused.
 //!
 //! Constraints:
 //! - Model-generated steps must be resent exactly as received: stripping or editing a `thought` step
@@ -37,6 +37,7 @@
 //!   modeled.
 
 use crate::protocol::error::Error;
+use crate::protocol::ReasoningOpaqueKind;
 use crate::protocol::{
   ContentBlock, Message, ReasoningConfig, ReasoningSummary, Request, Tool, ToolChoice,
 };
@@ -112,12 +113,19 @@ fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
       Message::Developer { content, .. } | Message::User { content, .. } => {
         steps.push(json!({"type": "user_input", "content": render_content_blocks(content)}))
       }
-      Message::Reasoning { replay_item, plaintext, signature, .. } => {
+      Message::Reasoning { replay_item, plaintext, opaque_kind, .. } => {
+        let replay_item = if *opaque_kind == Some(ReasoningOpaqueKind::GoogleInteractionsThought) {
+          replay_item.as_ref()
+        } else {
+          None
+        };
         let step = replay_item
-          .as_ref()
           .filter(|item| item.get("type").and_then(Value::as_str) == Some("thought"))
           .cloned()
-          .or_else(|| render_thought(plaintext, signature));
+          // A signed foreign thought cannot be treated as a Google Interactions proof.
+          .or_else(|| {
+            if opaque_kind.is_none() { render_thought(plaintext, "") } else { None }
+          });
         if let Some(step) = step {
           steps.push(step);
         }

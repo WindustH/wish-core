@@ -16,6 +16,7 @@
 //!   `StopReason`, because such a body carries no usable output.
 
 use crate::protocol::error::Error;
+use crate::protocol::ReasoningOpaqueKind;
 use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
 use serde_json::{Value, json};
 
@@ -87,6 +88,7 @@ pub(crate) fn decode_reasoning(item: &Value) -> Option<Message> {
   Some(Message::Reasoning {
     metadata: Default::default(),
     replay_item: None,
+    opaque_kind: (!ciphertext.is_empty()).then_some(ReasoningOpaqueKind::OpenAiEncrypted),
     plaintext,
     display,
     signature: String::new(),

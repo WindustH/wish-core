@@ -187,7 +187,9 @@ active-session conflicts 409, unconfigured upstream capabilities 501, and upstre
   Interrupt an active session and wait for completion first. Aggregate usage observations remain.
 - `POST /api/sessions/{id}/fork` copies current model context into an independent session (201).
 - `POST /api/sessions/{id}/context/clear` starts a generation with only the leading fixed
-  system/developer prefix. It preserves historical messages and events.
+  prefix: System messages and Developer messages explicitly marked `fixed: true` until the first
+  unpinned message. New Developer input defaults to `fixed: false`; old stored messages without
+  this field keep their previous pinned behavior. Historical messages and events are preserved.
 - `PATCH /api/sessions/{id}/queue/{entry}` atomically moves a pending input before the entry in `{ "before": entry_id }`, or to the end with `{ "before": null }` (204). A consumed/cancelled source or target returns 409 without changing the queue. Message content and IDs are preserved.
 - `DELETE /api/sessions/{id}/queue/{entry}` cancels a pending input at a stable boundary (204).
 - `POST /api/sessions/{id}/input` accepts `{text,attachments:[{id,kind,name}],metadata}`;
@@ -293,3 +295,9 @@ means the current request still uses the previous selection. It takes effect at 
 executor boundary, before constructing the next model request, without cancelling the active
 request. Repeated edits replace the pending selection; If-Match still guards revisions.
 An unfinished standby summary using the previous selection is discarded at that boundary.
+If the current generation contains an encrypted upstream compaction item and the selected provider
+cannot replay it, Wish first asks the old provider to write a handoff. It replaces the item with
+an unpinned Developer message in a new generation and keeps all later entries in order. If the
+old provider is unavailable or translation fails, Wish records `CompactionTranslationFailed`,
+inserts an explicit missing-context message, and continues with the selected provider. Cancelling
+the run during handoff retains the old generation and pending selection.

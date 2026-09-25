@@ -23,6 +23,7 @@
 //!   errors map to `Error::from_in_band` with `error.status` as the code.
 
 use crate::protocol::error::Error;
+use crate::protocol::ReasoningOpaqueKind;
 use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
 use serde_json::{Value, json};
 
@@ -77,6 +78,7 @@ fn decode_thought(step: &Value) -> Message {
   Message::Reasoning {
     metadata: Default::default(),
     replay_item: Some(step.clone()),
+    opaque_kind: Some(ReasoningOpaqueKind::GoogleInteractionsThought),
     plaintext: plaintext.clone(),
     display: plaintext,
     signature: step.get("signature").and_then(Value::as_str).unwrap_or("").to_owned(),

@@ -38,6 +38,7 @@
 //!   `stream: true`; the terminal response event then carries the usage, so nothing else is asked for.
 
 use crate::protocol::error::Error;
+use crate::protocol::ReasoningOpaqueKind;
 use crate::protocol::{
   ContentBlock, Message, ReasoningConfig, ReasoningSummary, Request, Tool, ToolChoice,
 };
@@ -156,7 +157,8 @@ pub(crate) fn render_items(
       Message::ToolResult { call_id, content, .. } => {
         items.push(render_function_output_item(call_id, content))
       }
-      Message::Reasoning { plaintext, display, ciphertext, .. } => {
+      Message::Reasoning { plaintext, display, ciphertext, opaque_kind, .. } => {
+        let ciphertext = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::OpenAiEncrypted, ciphertext);
         if let Some(item) = render_reasoning_item(plaintext, display, ciphertext, variant) {
           items.push(item);
         }

@@ -265,6 +265,9 @@ impl StreamAccumulator {
           (
             PartialContent::Message(Message::Reasoning {
               metadata: Default::default(),
+              opaque_kind: self.protocol.and_then(|protocol| super::reasoning_opaque_kind(
+                protocol, &block.signature, &block.ciphertext, block.replay_item.as_ref(),
+              )),
               replay_item: block.replay_item,
               display: block.display.unwrap_or_else(|| block.plaintext.clone()),
               plaintext: block.plaintext,

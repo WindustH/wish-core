@@ -68,9 +68,10 @@ pub async fn get(
 pub async fn enqueue(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
-  Json(message): Json<Message>,
+  Json(mut message): Json<Message>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
   app.require_open()?;
+  message.normalize_new_input();
   let slot = app.get_session(&id).await?;
   let id = blocking(move || Ok(slot.handle.enqueue_message(message)?)).await?;
   Ok((StatusCode::CREATED, Json(json!({"entry":id}))))
@@ -130,7 +131,7 @@ async fn start(
   compact: bool,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
   let slot = app.get_session(&id).await?;
-  let provider = app.get_provider(&slot.get_descriptor().provider)?;
+  let (provider, provider_id) = slot.execution_provider(&app)?;
   let mut session =
     slot.session.clone().try_lock_owned().map_err(|_| ApiError::conflict("session is running"))?;
   slot.require_live()?;
@@ -161,7 +162,7 @@ async fn start(
     status["running"] = json!(true);
     status.as_object_mut().unwrap().remove("state");
   }
-  app.tasks.spawn(slot.execute(provider, session, control, compact));
+  app.tasks.spawn(slot.execute(provider, provider_id, session, control, compact));
   Ok((StatusCode::ACCEPTED, Json(json!({"accepted":true}))))
 }
 pub async fn interrupt(

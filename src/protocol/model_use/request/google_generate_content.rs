@@ -35,6 +35,7 @@
 //!   (`cachedContents`) is not modeled.
 
 use crate::protocol::error::Error;
+use crate::protocol::ReasoningOpaqueKind;
 use crate::protocol::{
   ContentBlock, Message, ReasoningConfig, ReasoningSummary, Request, Tool, ToolChoice,
 };
@@ -183,10 +184,11 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
         let mut used = 0;
         while let Some(message) = conversation.get(index + used) {
           match message {
-            Message::Reasoning { plaintext, signature: proof, .. } => {
+            Message::Reasoning { plaintext, signature: proof, opaque_kind, .. } => {
+              let proof = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::GoogleSignature, proof);
               if plaintext.is_empty() {
                 if !proof.is_empty() {
-                  signature = Some(proof.clone());
+                  signature = Some(proof.to_owned());
                 }
               } else {
                 let mut part = json!({"thought": true, "text": plaintext});

@@ -20,7 +20,36 @@ pub async fn run(
   control: &ExecutionControl,
   observe: impl FnMut(&SessionEvent) + Send,
 ) -> Result<RunOutcome, SessionError> {
-  run_with_boundary(model_caller, session, tool_executor, control, observe, |_| Ok(false)).await
+  run_with_boundary(model_caller, session, tool_executor, control, observe, NoBoundary).await
+}
+
+/// A selection change runs only while the session is at a stable action boundary.
+/// The observer cursor lets a long handoff publish its start before awaiting the old provider.
+pub enum BoundaryResult {
+  Unchanged,
+  Changed,
+  Interrupted,
+}
+pub trait RunBoundary: Send {
+  fn apply(
+    &mut self,
+    session: &mut Session,
+    control: &ExecutionControl,
+    cursor: &mut u64,
+    observe: &mut (impl FnMut(&SessionEvent) + Send),
+  ) -> impl std::future::Future<Output = Result<BoundaryResult, SessionError>> + Send;
+}
+struct NoBoundary;
+impl RunBoundary for NoBoundary {
+  async fn apply(
+    &mut self,
+    _session: &mut Session,
+    _control: &ExecutionControl,
+    _cursor: &mut u64,
+    _observe: &mut (impl FnMut(&SessionEvent) + Send),
+  ) -> Result<BoundaryResult, SessionError> {
+    Ok(BoundaryResult::Unchanged)
+  }
 }
 
 /// Apply application-owned configuration changes only between model/tool actions.
@@ -31,7 +60,7 @@ pub async fn run_with_boundary(
   tool_executor: &impl ToolExecutor,
   control: &ExecutionControl,
   mut observe: impl FnMut(&SessionEvent) + Send,
-  mut boundary: impl FnMut(&mut Session) -> Result<bool, SessionError> + Send,
+  boundary: impl RunBoundary,
 ) -> Result<RunOutcome, SessionError> {
   session.require_stable()?;
   if matches!(session.get_state(), SessionState::Suspended { .. }) {
@@ -48,7 +77,7 @@ pub async fn run_with_boundary(
     futures_util::pin_mut!(session_interrupt, executor_cancel);
     let _ = futures_util::future::select(session_interrupt, executor_cancel).await;
   };
-  let running = run_session(model_caller, session, tool_executor, &execution, &mut observe, &mut boundary);
+  let running = run_session(model_caller, session, tool_executor, &execution, &mut observe, boundary);
   futures_util::pin_mut!(interrupted, running);
   match futures_util::future::select(interrupted, running).await {
     futures_util::future::Either::Left(((), running)) => {
@@ -66,6 +95,21 @@ use futures_util::{
   pin_mut,
 };
 use crate::session::statistics::Timestamp;
+
+/// A standby summary is speculative maintenance. Keep its failure visible in history and live
+/// state, but do not fail or suspend the foreground conversation that it was preparing for.
+fn record_standby_failure(
+  session: &mut Session,
+  outcome: RunOutcome,
+  cursor: &mut u64,
+  observe: &mut (impl FnMut(&SessionEvent) + Send),
+) -> Result<(), SessionError> {
+  session.record_events(vec![(
+    Timestamp::now(),
+    SessionEvent::CompactionSummaryFailed { outcome },
+  )])?;
+  notify_observers(session, cursor, observe)
+}
 
 async fn await_standby_task(
   task: Option<
@@ -98,8 +142,7 @@ async fn await_standby_task(
         super::compaction::commit_standby_summary(session, result, cursor, observe)?;
       }
       Either::Right((Err(super::compaction::Failure::Outcome(outcome)), _)) => {
-        session.finish_run(outcome.clone())?;
-        return Ok(Some(outcome));
+        record_standby_failure(session, outcome, cursor, observe)?;
       }
       Either::Right((Err(super::compaction::Failure::Session(err)), _)) => {
         return Err(err);
@@ -115,7 +158,7 @@ async fn run_session(
   tool_executor: &impl ToolExecutor,
   control: &ExecutionControl,
   mut observe: impl FnMut(&SessionEvent) + Send,
-  mut boundary: impl FnMut(&mut Session) -> Result<bool, SessionError> + Send,
+  mut boundary: impl RunBoundary,
 ) -> Result<RunOutcome, SessionError> {
   let mut cursor = session.get_history().len()?;
   let mut standby_task: Option<
@@ -132,8 +175,16 @@ async fn run_session(
     >,
   > = None;
   loop {
-    if session.get_state().is_stable() && boundary(session)? {
-      standby_task = None;
+    if session.get_state().is_stable() {
+      match boundary.apply(session, control, &mut cursor, &mut observe).await? {
+        BoundaryResult::Changed => standby_task = None,
+        BoundaryResult::Interrupted => {
+          session.finish_run(RunOutcome::Interrupted)?;
+          notify_observers(session, &mut cursor, &mut observe)?;
+          return Ok(RunOutcome::Interrupted);
+        }
+        BoundaryResult::Unchanged => {}
+      }
     }
     session.collect_inputs()?;
     notify_observers(session, &mut cursor, &mut observe)?;
@@ -256,13 +307,21 @@ async fn run_session(
             None,
           )
         };
-        if let Some(Ok(res)) = completed_summary {
-          let _ = super::compaction::commit_standby_summary(
-            session,
-            res,
-            &mut cursor,
-            &mut observe,
-          );
+        if let Some(summary) = completed_summary {
+          match summary {
+            Ok(res) => {
+              let _ = super::compaction::commit_standby_summary(
+                session,
+                res,
+                &mut cursor,
+                &mut observe,
+              );
+            }
+            Err(super::compaction::Failure::Outcome(outcome)) => {
+              record_standby_failure(session, outcome, &mut cursor, &mut observe)?;
+            }
+            Err(super::compaction::Failure::Session(error)) => return Err(error),
+          }
         }
 
         let context_rejected = match &result {
@@ -343,13 +402,21 @@ async fn run_session(
           .await?;
           None
         };
-        if let Some(Ok(res)) = completed_summary {
-          let _ = super::compaction::commit_standby_summary(
-            session,
-            res,
-            &mut cursor,
-            &mut observe,
-          );
+        if let Some(summary) = completed_summary {
+          match summary {
+            Ok(res) => {
+              let _ = super::compaction::commit_standby_summary(
+                session,
+                res,
+                &mut cursor,
+                &mut observe,
+              );
+            }
+            Err(super::compaction::Failure::Outcome(outcome)) => {
+              record_standby_failure(session, outcome, &mut cursor, &mut observe)?;
+            }
+            Err(super::compaction::Failure::Session(error)) => return Err(error),
+          }
         }
         session.complete_tools()?;
       }

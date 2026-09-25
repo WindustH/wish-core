@@ -87,7 +87,7 @@ fn decode_message(item: &Value) -> Result<Message, String> {
     "user" => |content| Message::User { metadata: Default::default(), content },
     "assistant" => |content| Message::Assistant { metadata: Default::default(), content },
     "system" => |content| Message::System { metadata: Default::default(), content },
-    "developer" => |content| Message::Developer { metadata: Default::default(), content },
+    "developer" => |content| Message::Developer { metadata: Default::default(), fixed: Some(false), content },
     other => return Err(format!("a `message` item with role `{other}` was dropped")),
   };
   let content: Vec<ContentBlock> = item

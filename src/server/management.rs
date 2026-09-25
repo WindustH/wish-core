@@ -76,7 +76,13 @@ impl ManagementStore {
     )?;
     let mut items = Vec::new();
     for row in rows {
-      items.push(project_session_record(serde_json::from_str::<Value>(&row?).map_err(ApiError::internal)?));
+      let mut record = project_session_record(serde_json::from_str::<Value>(&row?).map_err(ApiError::internal)?);
+      if let Some(pending) = record.pointer("/session/pending_selection").cloned().filter(|value| !value.is_null()) {
+        record["session"]["provider"] = pending["provider"].clone();
+        record["status"]["config"] = pending["config"].clone();
+        record["status"]["selection_pending"] = json!(true);
+      }
+      items.push(record);
     }
     let more = items.len() > q.limit;
     items.truncate(q.limit);

@@ -117,6 +117,7 @@ fn decode_reasoning(
   Ok(Some(Message::Reasoning {
     metadata: Default::default(),
     replay_item: None,
+    opaque_kind: None,
     plaintext: text.to_owned(),
     display: text.to_owned(),
     signature: String::new(),
@@ -176,6 +177,7 @@ fn decode_thinking_chunks(
   Ok(Some(Message::Reasoning {
     metadata: Default::default(),
     replay_item: None,
+    opaque_kind: None,
     plaintext: plaintext.clone(),
     display: plaintext,
     signature: String::new(),

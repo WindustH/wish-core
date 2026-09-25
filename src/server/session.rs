@@ -80,7 +80,7 @@ pub struct SessionSlot {
 }
 impl SessionSlot {
   pub async fn open(
-    mut descriptor: Descriptor,
+    descriptor: Descriptor,
     mut session: Session,
     data_dir: PathBuf,
     index: Arc<crate::server::management::ManagementStore>,
@@ -89,10 +89,6 @@ impl SessionSlot {
   ) -> Result<Arc<Self>, ApiError> {
     if !session.get_state().is_stable() {
       session.settle_interrupted().map_err(ApiError::internal)?;
-    }
-    if let Some(pending) = descriptor.pending_selection.take() {
-      session.set_config(pending.config).map_err(ApiError::internal)?;
-      descriptor.provider = pending.provider;
     }
     let shell = if descriptor.shell {
       Some(
@@ -189,7 +185,11 @@ impl SessionSlot {
   }
   pub fn persist_index(&self) -> Result<(), ApiError> {
     self.require_live()?;
-    self.index.save(&self.describe())?;
+    let mut record = self.describe();
+    // `describe` previews a pending provider to the UI. Persist the actual provider so a restart
+    // can still ask it to translate an encrypted compaction item before applying the selection.
+    record["session"] = json!(self.get_descriptor());
+    self.index.save(&record)?;
     let _ =
       self.global_events.send(json!({"type":"session_changed","id":self.get_descriptor().id}));
     Ok(())
@@ -220,7 +220,10 @@ impl SessionSlot {
     if let SessionEvent::CompactionSummaryStarted { .. } = event {
       self.status.lock().unwrap()["standby_preparing"] = json!(true);
     }
-    if let SessionEvent::CompactionSummary { .. } = event {
+    if matches!(
+      event,
+      SessionEvent::CompactionSummary { .. } | SessionEvent::CompactionSummaryFailed { .. }
+    ) {
       self.status.lock().unwrap()["standby_preparing"] = json!(false);
     }
     if let SessionEvent::ContextCompacted { .. } = event {
@@ -240,15 +243,26 @@ impl SessionSlot {
   pub async fn execute(
     self: Arc<Self>,
     provider: Arc<Provider>,
+    provider_id: String,
     mut session: tokio::sync::OwnedMutexGuard<Session>,
     control: ExecutionControl,
     compact: bool,
   ) {
-    let model =
-      selection::SwitchingModel::new(self.make_model(provider, self.get_descriptor().provider));
+    let model = selection::SwitchingModel::new(self.make_model(provider, provider_id));
     let result = if compact {
-      executor::compaction::compact(&model, &mut session, &control, |event| self.observe(event))
-        .await
+      let prepared = match session.get_history().len() {
+        Ok(mut cursor) => self.apply_selection(
+          &mut session, &model, &control, &mut cursor, &mut |event| self.observe(event),
+        ).await,
+        Err(error) => Err(error.into()),
+      };
+      match prepared {
+        Ok(executor::BoundaryResult::Interrupted) => {
+          session.finish_run(RunOutcome::Interrupted).map(|_| RunOutcome::Interrupted)
+        }
+        Ok(_) => executor::compaction::compact(&model, &mut session, &control, |event| self.observe(event)).await,
+        Err(error) => Err(error),
+      }
     } else {
       executor::run_with_boundary(
         &model,
@@ -256,7 +270,7 @@ impl SessionSlot {
         &self.tools,
         &control,
         |event| self.observe(event),
-        |session| self.apply_selection(session, &model),
+        selection::SelectionBoundary { slot: &self, model: &model },
       )
       .await
     };
@@ -301,6 +315,10 @@ pub(crate) fn web_event(event: &SessionEvent) -> Option<Value> {
     SessionEvent::UpstreamCompactionCompleted(_) => Some(json!({"UpstreamCompactionCompleted":{}})),
     SessionEvent::CompactionSummary { source_start, source_end, .. } =>
       Some(json!({"CompactionSummary":{"source_start":source_start,"source_end":source_end}})),
+    SessionEvent::CompactionSummaryFailed { outcome } =>
+      Some(json!({"CompactionSummaryFailed":{"outcome":web_outcome(outcome)}})),
+    SessionEvent::CompactionTranslationFailed { .. } =>
+      Some(json!({"CompactionTranslationFailed":{}})),
     SessionEvent::ToolStarted(call) => Some(json!({"ToolStarted":{"name":call.name}})),
     SessionEvent::ToolFinished { .. } => Some(json!({"ToolFinished":{}})),
     SessionEvent::MetadataUpdated(_) => Some(json!({"MetadataUpdated":{}})),

@@ -80,6 +80,10 @@ fn get_event_type(event: &SessionEvent) -> &'static str {
     SessionEvent::UpstreamCompactionCompleted(..) => "UpstreamCompactionCompleted",
     SessionEvent::CompactionSummaryStarted { .. } => "CompactionSummaryStarted",
     SessionEvent::CompactionSummary { .. } => "CompactionSummary",
+    SessionEvent::CompactionSummaryFailed { .. } => "CompactionSummaryFailed",
+    SessionEvent::CompactionTranslationStarted { .. } => "CompactionTranslationStarted",
+    SessionEvent::CompactionTranslationFailed { .. } => "CompactionTranslationFailed",
+    SessionEvent::CompactionTranslationCompleted { .. } => "CompactionTranslationCompleted",
     SessionEvent::ContextCompacted { .. } => "ContextCompacted",
     SessionEvent::Created(..) => "Created",
     SessionEvent::ContextEntryCreated { .. } => "ContextEntryCreated",
@@ -122,7 +126,11 @@ fn fill_event_fields(row: &mut IndexRecord, event: &SessionEvent) {
     SessionEvent::ToolStarted(call) | SessionEvent::ToolFinished { call, .. } => {
       row.tool_name = Some(call.name.clone())
     }
-    SessionEvent::Finished(RunOutcome::Failed(error)) => row.text = error.to_string(),
+    SessionEvent::Finished(RunOutcome::Failed(error))
+    | SessionEvent::CompactionSummaryFailed { outcome: RunOutcome::Failed(error) }
+    | SessionEvent::CompactionTranslationFailed { outcome: RunOutcome::Failed(error) } => {
+      row.text = error.to_string();
+    }
     _ => {}
   }
 }

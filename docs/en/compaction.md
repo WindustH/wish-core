@@ -23,8 +23,9 @@ usage trigger / context rejection / manual request
           atomically append a fresh active generation
 ```
 
-Leading System/Developer entries and the most recent User entry are reused verbatim, including
-metadata. Only returned `UpstreamCompaction` items form the body; echoed messages are not copied
+The leading fixed prefix and the most recent User entry are reused verbatim, including metadata.
+The prefix contains System messages and Developer messages explicitly marked `fixed: true`,
+stopping at its first other message. Only returned `UpstreamCompaction` items form the body; echoed messages are not copied
 into the new context. If there is no User message, that last part is omitted. Queued input remains
 queued and is consumed normally by the executor. A later compaction sends the previous opaque
 body as part of the full active context.
@@ -33,6 +34,19 @@ This path neither promotes nor seeds a standby generation. The existing standby 
 empty for compatibility with session APIs; any previously prepared local context is cleared on
 successful cutover. Old generations and history remain available. The compaction cursor points
 after the opaque body, before the retained user message.
+
+When a session switches from an upstream-compaction provider to a provider that cannot replay its
+encrypted item, the old provider gets a streamed request containing the fixed prefix, the item,
+and a request for a self-contained handoff. A successful handoff replaces the item with a
+`Developer { fixed: false }` message in a new generation. All entries after the item keep their
+original order and IDs. The handoff is rendered as an instruction at the start of the new
+conversation, but can be included in a later local summary or upstream compaction. The handoff
+request has an 8192 output-token cap where the old wire accepts one; Codex Responses omits it
+because that deployment rejects output caps. The call and usage are attributed to the old provider.
+If the old provider is unavailable or the handoff fails, the new generation contains an explicit
+missing-context placeholder in the same position, and `CompactionTranslationFailed` records the
+reason. The selected provider then continues. Cancellation leaves the old generation and pending
+selection intact.
 
 The three parts are indivisible: exceeding the target reports failure instead of deleting the
 opaque body or latest user message. Unsupported response structure, provider/count errors and
@@ -107,7 +121,10 @@ batch stay together. Every candidate is checked by the actual request renderer b
 and committing. No signature is rewritten and no tool result is fabricated. Custom ModelCaller
 implementations must expose their protocol or implement `validate_request`.
 
-Leading System/Developer messages are fixed and preserved verbatim. Tool schemas also remain.
+Leading System messages and explicitly pinned (`fixed: true`) Developer messages are preserved
+verbatim until the first unpinned message. New Developer messages default to `fixed: false` at the
+HTTP API; old stored messages without a `fixed` field retain their previous pinned behavior.
+Tool schemas also remain.
 If no protocol-valid remaining context fits alongside that prefix, compaction fails and preserves
 the old active generation. An upstream rejection cannot be handled by retrying an unchanged
 context. There is no arbitrary compaction retry count or summary repetition detector.

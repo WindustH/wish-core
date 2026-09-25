@@ -42,6 +42,7 @@ pub enum ModelCallPurpose {
   Conversation,
   CompactionSummary,
   UpstreamCompaction,
+  CompactionTranslation,
 }
 
 /// One logical call, including retries performed internally by ModelCaller.

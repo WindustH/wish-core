@@ -146,12 +146,14 @@ pub async fn update_session(
     next.name =
       name.as_str().ok_or_else(|| ApiError::bad_request("name must be a string"))?.to_owned();
   }
+  let mut desired_provider = next.pending_selection.as_ref()
+    .map(|selection| selection.provider.clone()).unwrap_or_else(|| next.provider.clone());
   if let Some(provider) = input.get("provider") {
-    next.provider = provider
+    desired_provider = provider
       .as_str()
       .ok_or_else(|| ApiError::bad_request("provider must be a string"))?
       .to_owned();
-    app.get_provider(&next.provider)?;
+    app.get_provider(&desired_provider)?;
     if input.get("config").is_none() {
       return Err(ApiError::bad_request("provider changes require config"));
     }
@@ -163,8 +165,20 @@ pub async fn update_session(
   let config = config.map(|v| slot.configure_tools(v)).transpose()?;
   blocking(move || {
     if let Some(config) = config {
-      next.pending_selection = None;
-      session.set_config(config)?;
+      let next_provider = app.get_provider(&desired_provider)?;
+      let needs_handoff = next_provider.client.get_upstream_compaction_protocol().is_none()
+        && session.build_request()?.conversation.iter()
+          .any(|message| matches!(message, Message::UpstreamCompaction { .. }));
+      if needs_handoff {
+        next.pending_selection = Some(crate::server::session::selection::PendingSelection {
+          provider: desired_provider,
+          config,
+        });
+      } else {
+        next.provider = desired_provider;
+        next.pending_selection = None;
+        session.set_config(config)?;
+      }
     }
     if let Some(metadata) = input.get("metadata") {
       session.set_metadata(metadata.clone())?;
@@ -249,7 +263,7 @@ pub async fn clear_context(
     let mut position = 0;
     while let Some(id) = entries.get(position)? {
       let entry = session.get_entry(*id)?.ok_or_else(ApiError::not_found)?;
-      if !matches!(entry.message, Message::System { .. } | Message::Developer { .. }) {
+      if !entry.message.is_fixed_instruction() {
         break;
       }
       prefix.push(*id);

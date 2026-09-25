@@ -1,5 +1,6 @@
 //! Upstream compaction or incremental standby summaries, with validated atomic cutover.
 mod upstream;
+pub(crate) mod translation;
 use super::model::tokens::{TokenMeasurement, TokenMeasurementSource};
 use super::{
   ExecutionControl,
@@ -103,7 +104,7 @@ pub(super) fn check_compaction_reason(
   let fixed = request
     .conversation
     .iter()
-    .take_while(|message| matches!(message, Message::System { .. } | Message::Developer { .. }))
+    .take_while(|message| message.is_fixed_instruction())
     .count();
   Ok(reason.map(|r| (r, calibration, request, fixed)))
 }
@@ -359,7 +360,7 @@ pub(crate) async fn plan_standby_summary(
   let fixed = request
     .conversation
     .iter()
-    .take_while(|message| matches!(message, Message::System { .. } | Message::Developer { .. }))
+    .take_while(|message| message.is_fixed_instruction())
     .count();
   let standby = session.get_standby_generation()?;
   let processed = standby
@@ -512,7 +513,9 @@ fn build_summary_request(original: &Request, messages: &[Message]) -> Request {
     .push(ContentBlock::Text { text: "\n</history>\nWrite the replacement summary now.".into() });
   Request {
     conversation: vec![Message::User { metadata: Default::default(), content: blocks }],
-    stream: false,
+    // A standby segment can be tens of thousands of tokens. Stream it so the first-byte
+    // deadline covers only upstream admission, not the complete summary generation.
+    stream: true,
     tools: Vec::new(),
     tool_choice: None,
     cache: None,

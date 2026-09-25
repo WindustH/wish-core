@@ -133,6 +133,9 @@ impl App {
       name: input.name,
       revision: 0,
     };
+    for message in &mut input.initial_messages {
+      message.normalize_new_input();
+    }
     crate::server::media::apply_agent_instructions(&mut input.initial_messages);
     let storage = self.storage.clone();
     let id = descriptor.id.clone();

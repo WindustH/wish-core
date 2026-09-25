@@ -15,6 +15,15 @@ impl Session {
     })
   }
 
+  pub(crate) fn start_compaction_translation_call(
+    &mut self,
+    input_entry_count: u64,
+  ) -> Result<(), SessionError> {
+    self.update(move |transaction| {
+      transaction.start_model_call(input_entry_count, ModelCallPurpose::CompactionTranslation)
+    })
+  }
+
   pub fn get_model_calls(&self) -> ReadList<ModelCallRecord> {
     self.storage.open_list(&self.record.model_calls).read_only()
   }
@@ -82,7 +91,11 @@ impl SessionTransaction<'_, '_> {
         purpose,
         generation: self.record.active,
         model: self.record.config.model.clone(),
-        stream: purpose == ModelCallPurpose::Conversation && self.record.config.stream,
+        stream: match purpose {
+          ModelCallPurpose::Conversation => self.record.config.stream,
+          ModelCallPurpose::CompactionTranslation => true,
+          _ => false,
+        },
         input_entry_count,
         started_at: self.recorded_at,
         first_event_at: None,

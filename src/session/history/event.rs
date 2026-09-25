@@ -31,6 +31,23 @@ pub enum SessionEvent {
     entry: EntryId,
     response: Box<crate::protocol::Response>,
   },
+  /// Preparing a standby segment is opportunistic: its failure is recorded for inspection but
+  /// never turns an otherwise successful conversation run into a suspended one.
+  CompactionSummaryFailed {
+    outcome: RunOutcome,
+  },
+  CompactionTranslationStarted {
+    generation: GenerationId,
+  },
+  CompactionTranslationFailed {
+    outcome: RunOutcome,
+  },
+  CompactionTranslationCompleted {
+    previous: GenerationId,
+    active: GenerationId,
+    entry: EntryId,
+    translated: bool,
+  },
   ContextCompacted {
     previous: GenerationId,
     active: GenerationId,

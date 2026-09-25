@@ -20,6 +20,7 @@
 //!   code.
 
 use crate::protocol::error::Error;
+use crate::protocol::ReasoningOpaqueKind;
 use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
 use serde_json::{Value, json};
 
@@ -67,6 +68,7 @@ fn decode_reasoning(block: &Value) -> Option<Message> {
     return Some(Message::Reasoning {
       metadata: Default::default(),
       replay_item: None,
+      opaque_kind: Some(ReasoningOpaqueKind::BedrockRedacted),
       plaintext: String::new(),
       display: String::new(),
       signature: String::new(),
@@ -87,6 +89,7 @@ fn decode_reasoning(block: &Value) -> Option<Message> {
   Some(Message::Reasoning {
     metadata: Default::default(),
     replay_item: None,
+    opaque_kind: (!signature.is_empty()).then_some(ReasoningOpaqueKind::BedrockSignature),
     plaintext: text.to_owned(),
     display: text.to_owned(),
     signature: signature.to_owned(),

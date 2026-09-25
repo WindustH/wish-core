@@ -39,17 +39,20 @@
 //! - A `Developer` message has no role of its own on this wire, so its text joins the same `system`
 //!   field.
 //! - `PromptCache::key` has no spelling on this wire, so it is not sent.
+//! - Foreign signed thinking is omitted; its proof cannot authenticate an Anthropic block.
+//!   Unsigned plaintext thinking remains available for compatible endpoints.
 //! - Vendors that reimplement the wire patched their own thinking control in, so each patch is its
 //!   own mode and an axis a mode has no spelling for is rejected, never dropped. DeepSeek's switch
 //!   and effort spelling follow the controls its chat wire takes, because its messages wire takes
 //!   neither; Qwen's wire replaces the budget with `output_config.effort` entirely.
 //! - The wire's `is_error` flag is never sent (the model keeps its `false` default), reasoning
-//!   provenance is not tracked (a signature from another provider would be rejected upstream as an
-//!   invalid signature), and `prompt_cache_retention` is not modeled.
+//!   provider/model binding of otherwise matching signatures is not tracked, and
+//!   `prompt_cache_retention` is not modeled.
 //! - A breakpoint needs a block to live on, so a cached prompt head is sent as a one-block `system`
 //!   array instead of the plain joined string.
 
 use crate::protocol::error::Error;
+use crate::protocol::ReasoningOpaqueKind;
 use crate::protocol::model_use::request::{ANSWER_HEADROOM, TierBudget, resolve_tier_budget};
 use crate::protocol::{ContentBlock, Message, ReasoningConfig, Request, Tool, ToolChoice};
 use serde_json::{Map, Value, json};
@@ -320,13 +323,25 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
         let mut seen_content = false;
         while let Some(message) = conversation.get(index + used) {
           match message {
-            Message::Reasoning { plaintext, signature, ciphertext, .. } => {
+            Message::Reasoning { plaintext, signature: proof, ciphertext, opaque_kind, .. } => {
+              let unsigned_plaintext = opaque_kind.is_none() && proof.is_empty() && ciphertext.is_empty();
+              let signature = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::AnthropicSignature, proof);
+              let ciphertext = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::AnthropicRedacted, ciphertext);
               if seen_content {
                 return Err(Error::Build(
                   "a reasoning message must lead its assistant turn on the anthropic messages wire"
                     .to_owned(),
                 ));
               }
+              // Only same-format proofs are valid. A foreign signed block cannot be rewritten
+              // as unsigned native thinking without risking an upstream signature mismatch.
+              let plaintext = if unsigned_plaintext
+                || *opaque_kind == Some(ReasoningOpaqueKind::AnthropicSignature)
+              {
+                plaintext.as_str()
+              } else {
+                ""
+              };
               if let Some(block) = render_reasoning_block(plaintext, signature, ciphertext) {
                 blocks.push(block);
               }

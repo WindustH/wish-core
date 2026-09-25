@@ -19,6 +19,18 @@ pub enum ContentBlock {
   Image { mime_type: String, data_base64: String },
 }
 
+/// Format of provider-specific reasoning material. Never infer compatibility from the field name.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReasoningOpaqueKind {
+  OpenAiEncrypted,
+  AnthropicSignature,
+  AnthropicRedacted,
+  GoogleSignature,
+  GoogleInteractionsThought,
+  BedrockSignature,
+  BedrockRedacted,
+}
+
 /// One message in the conversation, independent of any wire's role names.
 ///
 /// Every variant carries application-owned `metadata`: any JSON value, defaulting to null.
@@ -37,6 +49,11 @@ pub enum Message {
     /// Application-owned data; never sent to the model.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     metadata: Value,
+    /// Only an explicitly pinned leading Developer instruction survives every compaction.
+    /// Missing on stored records from before this field existed means legacy pinned behavior;
+    /// new HTTP input normalizes an omitted value to `Some(false)` before storing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fixed: Option<bool>,
     content: Vec<ContentBlock>,
   },
   /// A message from the caller.
@@ -63,6 +80,9 @@ pub enum Message {
     /// steps whose signed summary can contain several text or image parts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     replay_item: Option<Value>,
+    /// Missing on old persisted records: unknown opaque material must not be replayed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    opaque_kind: Option<ReasoningOpaqueKind>,
 
     /// The readable thinking text the wire gave and gets back: `thinking`, `reasoningText.text`,
     /// `reasoning_content`, `reasoning_text` content, a thought part.
@@ -70,12 +90,12 @@ pub enum Message {
     /// The thinking text meant for a reader: the service's own summary where it has one, otherwise
     /// a copy of `plaintext`. Responses replays it in the required `summary` array.
     display: String,
-    /// The proof that rides with `plaintext` (`signature`, `thoughtSignature`); empty when the wire
-    /// returned none.
+    /// The proof that rides with `plaintext` (`signature`, `thoughtSignature`); only replayed when
+    /// `opaque_kind` matches the target wire. Empty when the wire returned none.
     signature: String,
     /// A payload that stands in for `plaintext` rather than proving it: a redacted block's blob, an
-    /// encrypted reasoning item. Filled means the block is redacted or encrypted, so the wire shape
-    /// follows from which of these fields carries something.
+    /// encrypted reasoning item. Filled means the block is redacted or encrypted; `opaque_kind`
+    /// identifies its format; incompatible renderers ignore this payload.
     ciphertext: String,
   },
   /// One tool call the model asked for; `arguments` is the JSON object it was called with.
@@ -114,7 +134,30 @@ pub enum Message {
   },
 }
 
+impl ReasoningOpaqueKind {
+  /// Old persisted reasoning has no provenance: it can keep readable text, not opaque payloads.
+  pub(crate) fn matching<'a>(kind: Option<Self>, expected: Self, value: &'a str) -> &'a str {
+    if kind == Some(expected) { value } else { "" }
+  }
+}
+
 impl Message {
+  /// The fixed prefix stops at the first non-System or unpinned Developer message.
+  pub fn is_fixed_instruction(&self) -> bool {
+    match self {
+      Self::System { .. } => true,
+      Self::Developer { fixed, .. } => fixed.unwrap_or(true),
+      _ => false,
+    }
+  }
+
+  /// API callers must opt in to pinning; only old persisted messages use the legacy default.
+  pub fn normalize_new_input(&mut self) {
+    if let Self::Developer { fixed, .. } = self {
+      fixed.get_or_insert(false);
+    }
+  }
+
   /// Read application-owned metadata, independently of the message variant.
   pub fn get_metadata(&self) -> &Value {
     match self {

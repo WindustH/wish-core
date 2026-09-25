@@ -7,4 +7,5 @@ mod run;
 pub mod tool;
 
 pub use control::ExecutionControl;
-pub use run::{run, run_with_boundary};
+pub use run::{BoundaryResult, RunBoundary, run, run_with_boundary};
+pub(crate) use observe::notify_observers;

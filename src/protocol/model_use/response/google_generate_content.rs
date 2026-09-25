@@ -19,6 +19,7 @@
 //!   wire's error envelope maps to `Error::Upstream` with `error.status` as the code.
 
 use crate::protocol::error::Error;
+use crate::protocol::ReasoningOpaqueKind;
 use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
 use serde_json::{Value, json};
 
@@ -46,14 +47,16 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
         return;
       }
       match messages.last_mut() {
-        Some(Message::Reasoning { signature, .. }) if signature.is_empty() => {
+        Some(Message::Reasoning { signature, opaque_kind, .. }) if signature.is_empty() => {
           *signature = proof.to_owned();
+          *opaque_kind = Some(ReasoningOpaqueKind::GoogleSignature);
         }
         _ => {
           flush(messages, content);
           messages.push(Message::Reasoning {
             metadata: Default::default(),
             replay_item: None,
+            opaque_kind: Some(ReasoningOpaqueKind::GoogleSignature),
             plaintext: String::new(),
             display: String::new(),
             signature: proof.to_owned(),
@@ -71,6 +74,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
           messages.push(Message::Reasoning {
             metadata: Default::default(),
             replay_item: None,
+            opaque_kind: (!signature.is_empty()).then_some(ReasoningOpaqueKind::GoogleSignature),
             plaintext: text.to_owned(),
             display: text.to_owned(),
             signature: signature.to_owned(),
@@ -87,6 +91,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
           messages.push(Message::Reasoning {
             metadata: Default::default(),
             replay_item: None,
+            opaque_kind: Some(ReasoningOpaqueKind::GoogleSignature),
             plaintext: String::new(),
             display: String::new(),
             signature: signature.to_owned(),
@@ -102,6 +107,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
           messages.push(Message::Reasoning {
             metadata: Default::default(),
             replay_item: None,
+            opaque_kind: Some(ReasoningOpaqueKind::GoogleSignature),
             plaintext: String::new(),
             display: String::new(),
             signature: signature.to_owned(),

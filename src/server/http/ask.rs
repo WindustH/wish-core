@@ -53,7 +53,7 @@ fn append_ask_messages(conversation: &mut Vec<Message>, input: Ask) -> Result<()
   }
   let prefix = conversation
     .iter()
-    .take_while(|message| matches!(message, Message::System { .. } | Message::Developer { .. }))
+    .take_while(|message| message.is_fixed_instruction())
     .count();
   conversation.insert(prefix, Message::System {
     metadata: Default::default(),

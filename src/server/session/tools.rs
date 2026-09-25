@@ -85,6 +85,7 @@ impl SessionTools {
       };
       let message = Message::Developer {
         metadata: json!({"source":"background_execution_finished","execution_id":id,"completion":{"command":command,"result":result}}),
+        fixed: Some(false),
         content: vec![ContentBlock::Text {
           text: format!(
             "A background shell execution reached a terminal state.\n{}",

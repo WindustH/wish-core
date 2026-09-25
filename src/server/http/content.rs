@@ -127,7 +127,7 @@ pub(crate) fn schedule(app: Arc<App>, slot: Arc<SessionSlot>) {
           return Err(ApiError::conflict("session has unfinished execution"));
         }
       }
-      let provider = app.get_provider(&slot.get_descriptor().provider)?;
+      let (provider, provider_id) = slot.execution_provider(&app)?;
       session.resume()?;
       slot.update_snapshot(&session);
       let control = crate::executor::ExecutionControl::new();
@@ -138,10 +138,11 @@ pub(crate) fn schedule(app: Arc<App>, slot: Arc<SessionSlot>) {
         status.as_object_mut().unwrap().remove("state");
       }
       slot.persist_index()?;
-      Ok(Some((provider, control)))
+      Ok(Some((provider, provider_id, control)))
     })();
     match setup {
-      Ok(Some((provider, control))) => slot.execute(provider, session, control, false).await,
+      Ok(Some((provider, provider_id, control))) =>
+        slot.execute(provider, provider_id, session, control, false).await,
       Ok(None) => {}
       Err(e) => {
         let _ = slot.events.send(json!({"type":"operation_failed","error":e.to_string()}));

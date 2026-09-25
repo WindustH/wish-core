@@ -19,6 +19,7 @@
 //!   block. Errors map to `Error::Upstream` with `error.type` as the code.
 
 use crate::protocol::error::Error;
+use crate::protocol::ReasoningOpaqueKind;
 use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
 use serde_json::{Value, json};
 
@@ -54,6 +55,8 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
           messages.push(Message::Reasoning {
             metadata: Default::default(),
             replay_item: None,
+            opaque_kind: (!block.get("signature").and_then(Value::as_str).unwrap_or("").is_empty())
+              .then_some(ReasoningOpaqueKind::AnthropicSignature),
             plaintext: thinking.to_owned(),
             display: thinking.to_owned(),
             signature: block.get("signature").and_then(Value::as_str).unwrap_or("").to_owned(),
@@ -65,6 +68,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
           messages.push(Message::Reasoning {
             metadata: Default::default(),
             replay_item: None,
+            opaque_kind: Some(ReasoningOpaqueKind::AnthropicRedacted),
             plaintext: String::new(),
             display: String::new(),
             signature: String::new(),

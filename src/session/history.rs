@@ -102,7 +102,7 @@ impl SessionTransaction<'_, '_> {
   pub fn record_history(&mut self, item: HistoryItem) -> Result<(), SessionError> {
     self.record_history_with_call(item, self.record.active_model_call)
   }
-  fn record_history_with_call(
+  pub(in crate::session) fn record_history_with_call(
     &mut self,
     item: HistoryItem,
     model_call_id: Option<ModelCallId>,
