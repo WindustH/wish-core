@@ -14,5 +14,10 @@
       "model_list": "openai_models",
       "model_list_path": "/v1/models"
     }
+  },
+  "defaults": {
+    "provider": "openai",
+    "model": "YOUR_MODEL_ID",
+    "compaction": {"trigger_tokens": 200000, "target_tokens": 80000, "segment_tokens": 20000}
   }
 }

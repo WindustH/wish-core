@@ -1,78 +1,143 @@
-# Wish
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/wish-logo-dark.svg">
+    <img src="docs/assets/wish-logo-light.svg" alt="Wish" width="300">
+  </picture>
+</p>
 
-The `wish-core` package builds a single `wish` executable with its HTTP server and engine in one process. Providers, the agent executor,
-SQLite storage and built-in tools run in the same process.
+<p align="center">
+  <strong>A self-hosted AI agent that works on your own machine and remembers everything.</strong>
+</p>
 
-```text
-HTTP / SSE
-    |
-    +-- providers ------> core Client ------> upstream
-    |
-    +-- sessions -------> Session + executor
-    |                         |       |
-    |                         |       +-- shell / view_image / search_history
-    |                         v
-    +-- history / calls ---> SQLite + LRU + search index
-```
+<p align="center">
+  <a href="https://github.com/WindustH/wish-web">Web app</a> ·
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="docs/api.md">HTTP API</a> ·
+  <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-## Run
+---
+
+Wish runs long-lived AI agent sessions on a computer you control. Give a
+session a working directory and a model, and it will talk with you, run
+commands, look at images and keep going through long tasks, while every word
+it exchanges is kept and searchable. Use it from the
+[Wish web app](https://github.com/WindustH/wish-web) on desktop or phone, or
+from anything that speaks HTTP.
+
+<p align="center">
+  <img src="docs/assets/screenshot-desktop.png" alt="Wish on the desktop" width="74%">
+  &nbsp;
+  <img src="docs/assets/screenshot-mobile.png" alt="Wish on a phone" width="22%">
+</p>
+
+## Why Wish
+
+- **One small program.** A single `wish` executable with its own embedded
+  database. No database server, container or runtime to install.
+- **Works with the models you already use.** 48 ready-made presets cover
+  OpenAI, Anthropic, Google Gemini, AWS Bedrock, DeepSeek, Qwen, Kimi,
+  Zhipu / Z.ai, MiniMax, Mistral, xAI, OpenRouter and more, plus local models
+  through Ollama, LM Studio or vLLM. Each provider is spoken in its own native
+  protocol, reasoning included. You can also sign in with a ChatGPT account.
+- **Change your mind mid-task.** Switch provider or model at any point, even
+  while the agent is working; the change applies from its next step.
+- **Nothing is ever lost.** Every message and event is stored permanently.
+  Search a session's entire history by keyword, in any language, and let the
+  agent search its own past as well.
+- **Long conversations stay usable.** When the context grows large, Wish
+  compacts it automatically, with rolling summaries or the provider's own
+  compaction. The full original history stays intact.
+- **A capable shell.** The agent runs commands in the session's directory,
+  moves long jobs to the background and hears back when they finish, types
+  into interactive programs, and reports exactly what each file edit changed.
+- **Keep talking while it works.** Queue follow-up messages, reorder or cancel
+  them, interrupt at any time, or ask a quick side question without disturbing
+  the running task.
+- **Dependable.** Tasks keep running when you close the browser. Shutting down
+  keeps partial answers, and after a crash Wish never repeats a command on its
+  own.
+- **See what you spend.** Token usage per model, cache hits, estimated
+  streaming speed and a daily activity calendar.
+- **Configure without restarting.** Add providers, change models, proxy or
+  shell from the web app; changes apply immediately.
+
+## Quick start
+
+You need a [Rust toolchain](https://rustup.rs) (stable) to build Wish, and
+[Node.js](https://nodejs.org) 22.19 or newer for the web app.
+
+**1. Build and start the server.**
 
 ```sh
-cp config.example.json config.json
-export WISH_HTTP_TOKEN='your-local-api-token'
-export OPENAI_API_KEY='your-provider-key'
-cargo run --release -- --config config.json
+git clone https://github.com/WindustH/wish-core.git
+cd wish-core
+cargo build --release
+echo '{"listen": "127.0.0.1:9780", "data_dir": "data"}' > config.json
+./target/release/wish --config config.json
 ```
 
-`cargo build --release` produces `target/release/wish` directly from this repository. No second daemon is needed. `--help` and `--version` are available.
-Configuration is JSON. `/api/config` hot-updates providers and defaults with revision checking; startup settings require restart. Relative `data_dir`
-paths resolve against the process working directory. Provider IDs and model IDs are separate.
-
-By default the listener is `127.0.0.1:9780`. Set `bearer_token_env` to the environment
-variable containing the inbound token; omit it for unauthenticated access. All `/api`
-routes share this boundary. `/health` and `/version` are public. Shell runs with the
-server's OS permissions, in the session's absolute `cwd`; it is opt-in per session.
-There is no user/tenant permission model or shell sandbox.
-
-## Example session
+**2. Start the web app** in another terminal.
 
 ```sh
-curl http://127.0.0.1:9780/api/sessions \
-  -H "Authorization: Bearer $WISH_HTTP_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"provider":"openai","cwd":"/tmp","shell":true,"metadata":{"project":"demo"},
-       "config":{"model":"YOUR_MODEL_ID","stream":true,"tools":[],"run":{"tools":"Serial"}}}'
+git clone https://github.com/WindustH/wish-web.git
+cd wish-web
+./pnpmw install --frozen-lockfile
+./pnpmw build
+node serve.mjs
 ```
 
-Use the returned `session.id` below:
+**3. Open <http://127.0.0.1:8790>.** A short first-run setup helps you add a
+model provider. Pick your working directory on the start page and send your
+first message.
+
+Wish saves the providers you add to `config.json`. To keep an API key out of
+the file, export it before starting Wish and enter it in the web app as
+`${NAME}`. See [configuration](docs/configuration.md) for every option, and
+[deployment](docs/deployment.md) for running Wish as a service, protecting it
+with a token and reaching it from other devices.
+
+### Without the web app
+
+Everything the web app does is available over the [HTTP API](docs/api.md):
 
 ```sh
-curl http://127.0.0.1:9780/api/sessions/SESSION_ID/messages \
-  -H "Authorization: Bearer $WISH_HTTP_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"User":{"content":[{"Text":{"text":"Inspect the current directory"}}]}}'
-curl -X POST http://127.0.0.1:9780/api/sessions/SESSION_ID/run \
-  -H "Authorization: Bearer $WISH_HTTP_TOKEN"
-curl -N http://127.0.0.1:9780/api/sessions/SESSION_ID/events \
-  -H "Authorization: Bearer $WISH_HTTP_TOKEN"
+# Create a session with shell access in /tmp
+curl -s http://127.0.0.1:9780/api/sessions -H 'Content-Type: application/json' -d '{
+  "provider": "openai", "cwd": "/tmp", "shell": true,
+  "config": {"model": "gpt-5", "stream": true, "tools": [], "run": {"tools": "Serial"}}}'
+
+# Send it a message; it starts working right away
+curl -s http://127.0.0.1:9780/api/sessions/SESSION_ID/input \
+  -H 'Content-Type: application/json' -d '{"text": "What is in this directory?"}'
+
+# Follow along live
+curl -N http://127.0.0.1:9780/api/sessions/SESSION_ID/events
 ```
 
-The protocol `messages` endpoint only enqueues. The WebUI `input` endpoint queues and schedules execution. `run` explicitly resumes the session and returns `202`.
-The task continues if an HTTP connection disconnects. `interrupt` requests cancellation;
-wait for `operation_finished` or `status.running=false` before changing config or restarting.
-A second simultaneous run/compact returns `409`.
+## Documentation
 
-`search_history` is installed for every session; `shell` is installed when enabled.
-Creation takes an empty `config.tools`; the server supplies the real specifications.
-Subsequent config updates accept these installed tools and refresh their specifications.
-Other tool names have no executor and are rejected.
+| | |
+| --- | --- |
+| [Configuration](docs/configuration.md) | Every option in `config.json`, providers and presets |
+| [Deployment](docs/deployment.md) | Running as a service, access control, remote access, backups and upgrades |
+| [HTTP API](docs/api.md) | Endpoints, event streams and error handling |
+| [Internals](docs/internals/README.md) | How the engine works, for contributors |
 
-SIGINT/SIGTERM stops new operations, closes SSE streams, cancels active executions,
-waits for core to persist accepted partial output and finish tool cleanup, stops remaining
-background shell processes, and closes storage. On restart sessions load lazily and do not
-resume automatically. After abrupt process termination, core may retain an unfinished
-execution state; this server reports it and refuses to replay its effects automatically.
+## Security
 
-See [API](docs/server/api.md) for routes, payloads, paging and stream semantics.
+Wish is built for one trusted person. Anyone who can reach its API can run
+commands with the permissions of the account Wish runs under. By default it
+listens only on `127.0.0.1`. Before exposing it, set an access token and put
+it behind HTTPS; [deployment](docs/deployment.md) explains how.
 
-Validation lives outside the crate: from `../wish-test`, run
-`python3 -m unittest tests.test_wish_server -q`. It uses a local mock provider and exercises
-real HTTP, shell execution, interruption, persistence and graceful process shutdown.
+## Contributing
+
+Issues and pull requests are welcome. Wish is written in Rust (edition 2024);
+`cargo build` is all it takes. The test suite lives in a separate `wish-test`
+repository and exercises the real binary over HTTP against a local mock
+provider, so no API keys or network access are needed.
+
+## License
+
+[MIT](LICENSE)

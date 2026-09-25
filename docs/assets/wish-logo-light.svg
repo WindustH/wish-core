@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 198.35 55.73" width="397" height="111" role="img" aria-label="Wish">
+  <svg x="0" y="0" width="64" height="51.73" viewBox="79 87 626 506">
+  <g stroke="#933d22" stroke-width="5" stroke-linejoin="round">
+    <polygon points="180,90 320,376 297,391 255,396" fill="#e0805c"/>
+    <polygon points="320,376 365,347 387,278 662,125 460,370 402,322 297,391" fill="#eea07c"/>
+    <polygon points="662,125 626,395 590,420 470,440 497,400 460,370" fill="#c9653f"/>
+    <polygon points="315,530 395,521 445,512 482,478 480,590" fill="#a84d2f"/>
+    <polygon points="82,553 255,396 297,391 375,431" fill="#f7c2a4"/>
+    <polygon points="82,553 375,431 482,478 445,512 395,521" fill="#e0805c"/>
+    <polygon points="297,391 402,322 375,431" fill="#eea07c"/>
+    <polygon points="402,322 470,440 482,478 375,431" fill="#e0805c"/>
+    <polygon points="402,322 497,400 470,440" fill="#a84d2f"/>
+    <polygon points="480,590 630,273 639,272 522,565" fill="#7a331c"/>
+    <polygon points="630,273 702,376 639,272" fill="#c9653f"/>
+    <polygon points="595,276 702,376 630,273" fill="#f7c2a4"/>
+    <polygon points="482,478 470,440 595,276 630,273 480,590" fill="#eea07c"/>
+  </g>
+  </svg>
+  <svg x="80" y="7.87" width="114.35" height="36" viewBox="-1 16 270 85">
+    <polygon points="0.2,22 16.3,22 37,100 21,100" fill="#302d28"/>
+    <polygon points="20.5,100 37.5,100 66.5,34 49.5,34" fill="#a64a33"/>
+    <polygon points="49.5,34 66.5,34 95.5,100 78.5,100" fill="#302d28"/>
+    <polygon points="79,100 95,100 115.8,22 99.7,22" fill="#a64a33"/>
+    <polygon points="125,49 134,40 140,40 140,100 125,100" fill="#302d28"/>
+    <polygon points="132.5,17 132.5,35 123.5,26" fill="#eea07c"/>
+    <polygon points="132.5,17 141.5,26 132.5,35" fill="#c9653f"/>
+    <polygon points="161,40 202,40 202,51.5 167,51.5 167,64.2 202,64.2 202,91 193,100 152,100 152,88.5 187,88.5 187,75.8 152,75.8 152,49" fill="#302d28"/>
+    <polygon points="214,31 223,22 229,22 229,40 259,40 268,49 268,100 253,100 253,51.5 229,51.5 229,100 214,100" fill="#302d28"/>
+  </svg>
+</svg>

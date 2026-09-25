@@ -34,14 +34,17 @@ let page = messages.read_page(0, 128)?;
 closure on the storage thread; use `move` to capture data. Related writes commit together, and
 errors roll back the entire operation. Cache entries are invalidated only after commit; uncommitted
 values are never published. Use the supplied `Transaction` inside the closure: calling another
-storage handle there returns `NestedOperation` instead of waiting on itself.
+storage handle there returns `NestedOperation` instead of waiting on itself. A panicking closure is
+caught, rolled back and reported as `OperationPanicked`.
 
 Lists store each element as its own row under `(list, position)`. Reads use indexed position
-ranges, not OFFSET. Cache pages contain 128 elements; `read_page(start, limit)` accepts any positive
-limit and reads across cache pages, returning at most the remaining items. `Page::next` is the next position. Pagination sees the
-list at each read; callers needing a fixed view should retain the initial length. The cache
-retains decoded objects, individual items and pages, with a configurable approximate byte budget.
-Cache eviction never affects durable data.
+ranges, not OFFSET. Cache pages contain 128 elements (`PAGE_SIZE`); `read_page(start, limit)`
+accepts any positive limit and reads across cache pages, returning at most the remaining items.
+`Page::next` is the next position. Pagination sees the list at each read; callers needing a fixed
+view should retain the initial length. The cache retains decoded objects, individual items and
+pages within an approximate byte budget (`StorageOptions::cache_capacity_bytes`, default 32 MiB).
+Cache eviction never affects durable data. `Storage::open_in_memory` gives the same engine without
+a file, and `clear_cache` empties the cache.
 
 Open one Storage per database, then clone its handle for other tasks. A dedicated thread owns the
 connection and an ordinary byte-bounded LRU cache. Neither is protected by a shared mutex; callers
@@ -50,11 +53,11 @@ wait for replies; different sessions may still await model/tool work concurrentl
 last handle closes the channel and joins the worker. No external-writer cache checks or revision
 conflict protocol are maintained.
 
-Storage creates schema version 4 and transactionally upgrades version 3. Other existing
-versions are rejected. Version 4 interns list names in `wish_list_keys`; item and history
-indexes store integer keys while public list IDs, positions and history IDs stay unchanged.
-The upgrade preserves BLOBs, FTS row IDs and custom metadata indexes. Back up before upgrading;
-a version-3 binary cannot open an upgraded database, so rollback requires the pre-upgrade backup.
+Storage creates schema version 4 in an empty database and opens existing version-4 databases;
+any other version is rejected with `SchemaVersion`. The binary carries no migration code: a
+database from an older schema is migrated by hand, against a backup, before a new build opens it.
+Version 4 interns list names in `wish_list_keys`; item and history indexes store integer keys
+while list names, positions and history IDs stay unchanged.
 
 Nullable history fields use partial indexes that omit NULL keys. Freed pages are reused by
 SQLite; reclaiming filesystem space requires explicit maintenance VACUUM. Opening storage
@@ -66,13 +69,21 @@ readable. Type names still reject opening an object/list as the wrong type.
 INSERT and one list-length update, returning its starting position. Elements remain separate rows.
 An empty batch returns the current length. Propagate transaction errors to roll back the batch.
 
+Two transaction-only operations change existing rows. `Transaction::remove_item` deletes one
+position and shifts every later element down by one, which is O(n) in the tail; the session queue
+uses it to cancel pending input. `Transaction::delete_namespace(key)` deletes an object and every
+list, item and history-index row under `key/`; `Session::delete` uses it.
+
 `Storage::flush()` waits for earlier storage commands and performs a FULL WAL checkpoint;
-it reports checkpoint/SQL errors. Live model deltas are ephemeral and are not flushed.
+it reports SQL errors, and `CheckpointBusy` when the checkpoint could not complete. Live model
+deltas are never stored, so there is nothing of theirs to flush.
 `Storage::shutdown()` performs the same synchronization and explicitly closes the connection
 for all cloned handles. Commands ahead of shutdown finish; later commands return `Closed`.
-Shutdown errors are reported, and the worker still closes. Stop producers and await runners first.
-Dropping handles is cleanup, not an error-reporting substitute for explicit shutdown.
+Shutdown errors are reported, and the worker still closes. Stop producers and await runners first;
+the server does this last in its [shutdown sequence](executor.md#shutdown). Dropping handles is
+cleanup, not an error-reporting substitute for explicit shutdown.
 
 NORMAL avoids a WAL sync for each commit. Recent committed transactions may be lost on power
-loss or OS crash; transactions remain atomic. Unfinished live model output is lost on process termination. Ordinary object/list writes still wait for their SQL commit;
-there is no general background write-behind cache.
+loss or OS crash; transactions remain atomic. Unfinished live model output is lost on process
+termination. Ordinary object/list writes still wait for their SQL commit; there is no background
+write-behind cache.
