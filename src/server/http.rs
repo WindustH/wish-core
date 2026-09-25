@@ -73,6 +73,7 @@ pub fn build_router(app: Arc<App>) -> Router {
     .route("/sessions/{id}/messages", post(sessions::enqueue))
     .route("/sessions/{id}/config", put(sessions::set_config))
     .route("/sessions/{id}/metadata", put(sessions::set_metadata))
+    .route("/sessions/{id}/shell", put(sessions::set_shell))
     .route("/sessions/{id}/run", post(sessions::run))
     .route("/sessions/{id}/interrupt", post(sessions::interrupt))
     .route("/sessions/{id}/compact", post(sessions::compact))

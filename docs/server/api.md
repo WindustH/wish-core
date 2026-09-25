@@ -22,6 +22,7 @@ migrations are provided.
 | GET | `/api/sessions/{id}` | Descriptor and current status |
 | PUT | `/api/sessions/{id}/config` | Full core `SessionConfig`, at an inactive boundary |
 | PUT | `/api/sessions/{id}/metadata` | Any JSON value, while inactive |
+| PUT | `/api/sessions/{id}/shell` | `{program, args?}` gives the session its own shell (validated like the configured one); `null` returns it to the configured shell. Applies to the next command |
 | POST | `/api/sessions/{id}/messages` | One core `Message`; returns its queued entry ID |
 | POST | `/api/sessions/{id}/run` | Start/resume independent agent task; `202` |
 | POST | `/api/sessions/{id}/interrupt` | `{requested: bool}` acknowledges cancellation; pending inputs resume after cancellation settles |
@@ -100,6 +101,10 @@ events remain durable. Use history `sequence` to reconcile finalized messages af
 Existing stored chunks remain readable; this change does not delete or renumber old history.
 
 `status.phase` updates during execution; `status.state` is supplied when inactive.
+`status.context_tokens` is the input size of the last completed conversation call of the active
+generation made with the configured model — the figure compaction compares with
+`compaction.trigger_tokens` — or null until such a call exists. The descriptor's optional
+`shell_command` holds the session's own shell; absent, the session follows the configured one.
 Config, metadata and queue boundary are operation-boundary snapshots. `last_operation`
 is a live completion report; durable outcomes are available from history and call records.
 A loaded session with interrupted/unfinished state does not silently resume side effects.
@@ -210,7 +215,7 @@ active-session conflicts 409, unconfigured upstream capabilities 501, and upstre
   Search returns a bounded ranked result set and `has_more`, not a pagination cursor.
 - `GET /api/events` is live application SSE (`wish` events): snapshot, session_changed,
   session_deleted, configuration_changed, gap, shutdown. Re-fetch snapshots after reconnect/gap.
-- `GET /api/usage`, `/usage/series?window=7d&bucket=1h`, `/usage/daily?days=365&end_date=2026-09-21&tz_offset_minutes=480` aggregate
+- `GET /api/usage?from_ms=&to_ms=` (both optional; all recorded usage without them), `/usage/series?window=7d&bucket=1h`, `/usage/daily?days=365&end_date=2026-09-21&tz_offset_minutes=480` aggregate
   persisted **logical model calls**. Session-scoped counterparts live under `/sessions/{id}`.
   Streaming TPS is sampled once per second for each physical request, including retries,
   continuations, stateless asks and streamed compaction. Text, plaintext reasoning and

@@ -132,6 +132,7 @@ impl App {
       provider: input.provider,
       cwd: input.cwd,
       shell: input.shell,
+      shell_command: None,
       created_at: crate::session::statistics::Timestamp::now().0,
       updated_at: crate::session::statistics::Timestamp::now().0,
       name: input.name,

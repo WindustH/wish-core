@@ -95,6 +95,22 @@ pub async fn set_config(
   })
   .await
 }
+/// Body: `{"program", "args"}` for the session's own shell, or null to follow the application's.
+pub async fn set_shell(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Json(settings): Json<Option<crate::server::config::ShellSettings>>,
+) -> Result<Json<Value>, ApiError> {
+  app.require_open()?;
+  let slot = app.get_session(&id).await?;
+  let global = app.shell.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+  blocking(move || {
+    slot.require_live()?;
+    slot.set_shell(settings, &global)?;
+    Ok(Json(slot.describe()))
+  })
+  .await
+}
 pub async fn set_metadata(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,

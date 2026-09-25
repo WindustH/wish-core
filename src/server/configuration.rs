@@ -177,7 +177,10 @@ impl App {
       return Err(ApiError::internal(error));
     }
     *self.providers.write().unwrap() = providers;
-    *self.shell.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = shell;
+    *self.shell.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = shell.clone();
+    for slot in self.sessions.lock().await.values() {
+      slot.follow_global_shell(&shell);
+    }
     current.config = next;
     current.revision = hash(&bytes);
     let _ = self.events.send(json!({"type":"configuration_changed"}));

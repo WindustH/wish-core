@@ -1,7 +1,7 @@
 mod live;
 pub mod selection;
 mod tools;
-use crate::server::{error::ApiError, provider::Provider};
+use crate::server::{config::ShellSettings, error::ApiError, provider::Provider};
 use crate::{
   executor::{self, ExecutionControl},
   protocol::StreamEvent,
@@ -12,7 +12,7 @@ use crate::{
   },
   storage::ReadList,
   tool::{
-    shell::{ShellConfig, ShellTool},
+    shell::{ShellCommand, ShellConfig, ShellTool},
     view_image::ViewImageTool,
   },
 };
@@ -37,6 +37,9 @@ pub struct Descriptor {
   pub provider: String,
   pub cwd: PathBuf,
   pub shell: bool,
+  /// This session's own shell; absent while it follows the application's.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub shell_command: Option<ShellSettings>,
   pub created_at: u64,
 }
 #[derive(Deserialize)]
@@ -70,6 +73,8 @@ pub struct SessionSlot {
   pub calls: ReadList<ModelCallRecord>,
   pub queue: Mutex<ReadList<EntryId>>,
   pub tools: SessionTools,
+  /// The command this session's shell tool starts; None without a shell tool.
+  pub shell_command: Option<Arc<RwLock<ShellCommand>>>,
   pub image_dir: PathBuf,
   tasks: tokio_util::task::TaskTracker,
   app: std::sync::Weak<crate::server::app::App>,
@@ -90,12 +95,20 @@ impl SessionSlot {
     if !session.get_state().is_stable() {
       session.settle_interrupted().map_err(ApiError::internal)?;
     }
-    let shell = if descriptor.shell {
+    // A session's own shell wins; otherwise it starts from the application's and
+    // follows later saves (see `follow_global_shell`). An override that no longer
+    // resolves (the program was removed) falls back to the application's.
+    let shell_command = descriptor.shell.then(|| {
+      let global = app.upgrade().map_or_else(ShellCommand::platform_default, |app| {
+        app.shell.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+      });
+      let own = descriptor.shell_command.as_ref().and_then(|settings| settings.resolve().ok());
+      Arc::new(RwLock::new(own.unwrap_or(global)))
+    });
+    let shell = if let Some(command) = &shell_command {
       let mut config =
         ShellConfig::new(&descriptor.cwd, data_dir.join("shell").join(&descriptor.id));
-      if let Some(app) = app.upgrade() {
-        config.command = Arc::clone(&app.shell);
-      }
+      config.command = Arc::clone(command);
       Some(ShellTool::new(config).await.map_err(ApiError::internal)?)
     } else {
       None
@@ -122,6 +135,7 @@ impl SessionSlot {
       session: Arc::new(AsyncMutex::new(session)),
       selection_edit: Arc::new(AsyncMutex::new(())),
       tools,
+      shell_command,
       image_dir,
       tasks,
       app,
@@ -175,6 +189,31 @@ impl SessionSlot {
   }
   pub fn get_descriptor(&self) -> Descriptor {
     self.descriptor.read().unwrap().clone()
+  }
+  /// Applies the application's new shell unless this session has its own.
+  pub fn follow_global_shell(&self, global: &ShellCommand) {
+    if self.descriptor.read().unwrap().shell_command.is_none()
+      && let Some(command) = &self.shell_command
+    {
+      *command.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = global.clone();
+    }
+  }
+  /// Gives this session its own shell, or with None returns it to the application's.
+  pub fn set_shell(
+    &self,
+    settings: Option<ShellSettings>,
+    global: &ShellCommand,
+  ) -> Result<(), ApiError> {
+    let Some(command) = &self.shell_command else {
+      return Err(ApiError::bad_request("this session has no shell tool"));
+    };
+    let next = match &settings {
+      Some(settings) => settings.resolve()?,
+      None => global.clone(),
+    };
+    *command.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
+    self.descriptor.write().unwrap().shell_command = settings;
+    self.persist_index()
   }
   pub fn require_live(&self) -> Result<(), ApiError> {
     if self.deleted.load(std::sync::atomic::Ordering::Acquire) {
