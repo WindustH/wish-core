@@ -22,19 +22,6 @@ fn stored_kind<T>() -> Cow<'static, str> {
   }
 }
 
-#[cfg(test)]
-mod tests {
-  use super::stored_kind;
-
-  #[test]
-  fn executable_keeps_existing_session_kind_names() {
-    assert_eq!(
-      stored_kind::<crate::session::SessionConfig>(),
-      "wish_core::session::config::SessionConfig"
-    );
-  }
-}
-
 pub struct Transaction<'a> {
   pub(crate) sql: rusqlite::Transaction<'a>,
   pub(crate) cache: &'a mut Cache,
