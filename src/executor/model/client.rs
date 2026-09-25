@@ -613,9 +613,10 @@ impl<T: Transport> Client<T> {
   /// only one. A non-`2xx` reply never becomes a stream; its body is mapped exactly like the
   /// buffered path. Before the stream is handed over its first event is read: up to that point the
   /// attempt delivered nothing, so it may still be replaced - when the failure is one the transport
-  /// and the policy would replace at all, which a failure after the request reached the service is
-  /// not. Once an event is in the caller's hands a failure is terminal, because a replay would
-  /// splice a second copy of the answer into what the caller has already seen.
+  /// and the policy would replace at all: a connect failure or a head that never came, but not a
+  /// failure after the service started answering. Once an event is in the caller's hands a failure
+  /// is terminal, because a replay would splice a second copy of the answer into what the caller
+  /// has already seen.
   async fn stream_with_retries(&self, request: &Request) -> Result<EventStream<T::Stream>, Error> {
     let mut attempt = 1;
     loop {

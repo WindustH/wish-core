@@ -41,8 +41,11 @@ One call, with every place an error can leave it:
 
 Step 1 never leaves our side and costs no attempt - an expired credential is refused here too
 (`Renewal`). Step 2 keeps the transport's phase, which is also
-the retry judgment: only `connect` may be replaced, because a service that has the call may already
-be generating and billing it. Step 3 lets the status say only *that* this is a failure - what it is,
+the retry judgment: `connect` may be replaced, and so may a stream whose head did not arrive within
+the first-byte limit, because a service acknowledges a stream as soon as it admits the call. Any
+other failure after the request left is not, because a service that has the call may already be
+generating and billing it - a buffered reply's head only comes with the whole answer, so a late
+one means it is still being generated. Step 3 lets the status say only *that* this is a failure - what it is,
 the wire's envelope says, so the same `429` is a rate limit for one service and an exhausted quota
 for another. Steps 4 and 5 can go wrong in two ways: the payload does not fit the wire (`Malformed`,
 including a body whose framing broke, which the transport noticed but refused to call a network

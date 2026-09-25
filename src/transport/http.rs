@@ -125,8 +125,10 @@ impl Transport for ReqwestTransport {
         Ok(Err(error)) => return Err(decode_request_error(&error)),
         Err(_) => {
           return Err(
-            TransportError::AwaitHeaders("no response head within the first-byte limit".to_owned())
-              .into(),
+            TransportError::AwaitStreamHeaders(
+              "no response head within the first-byte limit".to_owned(),
+            )
+            .into(),
           );
         }
       };

@@ -2,10 +2,12 @@
 //!
 //! The protocol layer defines the attempt contract and the failure vocabulary everything above
 //! matches on; this module holds the network half of it, divided by how far the attempt got. That
-//! division is also the retry judgment, and the judgment is not "was it the network": only a
-//! failure before the request left deserves another attempt. Once the service has the call, the
-//! upstream may already be generating - and billing - the answer a replay would ask for again, so
-//! the failure is handed up instead of being retried behind the caller's back.
+//! division is also the retry judgment, and the judgment is not "was it the network": a failure
+//! before the request left deserves another attempt, and so does a stream whose head never came,
+//! because a service acknowledges a stream as soon as it admits the call - a head that late means
+//! the call is stuck ahead of generation, and a replay is the way out. Past that, the upstream may
+//! already be generating - and billing - the answer a replay would ask for again, so the failure is
+//! handed up instead of being retried behind the caller's back.
 //!
 //! A body that arrived but does not read (framing, ceilings) is not a network failure at all: it is
 //! deterministic, and it lands in [`Error::Malformed`](crate::protocol::error::Error::Malformed).
@@ -21,7 +23,12 @@ pub enum TransportError {
   /// Establishing TCP/TLS: nothing of the request reached the service.
   Connect(String),
   /// Waiting for the response head: the request did reach the service, and it has not answered yet.
+  /// A buffered reply only has its head once the whole answer is ready, so this is still
+  /// generating.
   AwaitHeaders(String),
+  /// Waiting for the head of a streamed reply: a service sends it once it admits the call, before
+  /// generating anything, so a head this late means the call is stuck ahead of generation.
+  AwaitStreamHeaders(String),
   /// Reading the body: the service started answering and the answer stopped arriving, or the attempt
   /// outlived the total limit.
   ReadBody(String),
@@ -30,14 +37,16 @@ pub enum TransportError {
 impl TransportError {
   /// Whether sending the same call again could plausibly succeed *and* be safe.
   ///
-  /// Only when nothing of the request left: a fresh attempt then costs nothing extra and is the one
-  /// thing worth trying. A connect failure still has to be a *transient* one for the retry to be
-  /// worth anything (a name that does not resolve will not start resolving unless time passes), but
-  /// this layer cannot tell those apart from outside, so it considers the whole phase retryable and
-  /// leaves how many attempts that is worth to the caller's policy.
+  /// When nothing of the request left, a fresh attempt costs nothing extra and is the one thing
+  /// worth trying. A connect failure still has to be a *transient* one for the retry to be worth
+  /// anything (a name that does not resolve will not start resolving unless time passes), but this
+  /// layer cannot tell those apart from outside, so it considers the whole phase retryable and
+  /// leaves how many attempts that is worth to the caller's policy. A stream whose head never came
+  /// is replaced too: the service had not started answering, and waiting longer on a stuck call
+  /// helps less than a new one, at the rare price of work a silent admission already did.
   pub fn is_retryable(&self) -> bool {
     match self {
-      TransportError::Connect(_) => true,
+      TransportError::Connect(_) | TransportError::AwaitStreamHeaders(_) => true,
       TransportError::AwaitHeaders(_) | TransportError::ReadBody(_) => false,
     }
   }
@@ -48,12 +57,13 @@ impl fmt::Display for TransportError {
     // The phase of the attempt, in words, then the report itself.
     let phase = match self {
       TransportError::Connect(_) => "connect",
-      TransportError::AwaitHeaders(_) => "await headers",
+      TransportError::AwaitHeaders(_) | TransportError::AwaitStreamHeaders(_) => "await headers",
       TransportError::ReadBody(_) => "read body",
     };
     let message = match self {
       TransportError::Connect(message)
       | TransportError::AwaitHeaders(message)
+      | TransportError::AwaitStreamHeaders(message)
       | TransportError::ReadBody(message) => message,
     };
     write!(f, "{phase}: {message}")

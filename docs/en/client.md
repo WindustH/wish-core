@@ -42,7 +42,9 @@ stays with the caller.
 `call(&request)` is the single model-use entry point. `Request.stream` selects its result:
 
 - `false` returns `CallResponse::Complete(Box<Response>)`. Transient failures may retry the whole attempt.
-- `true` returns `CallResponse::Stream(EventStream)`. Retries stop once the first event is in hand.
+- `true` returns `CallResponse::Stream(EventStream)`. Retries stop once the first event is in hand;
+  before that, a stream whose reply head does not arrive within the first-byte limit is replaced
+  too.
 
 The same field drives protocol request construction: body `stream`/usage options where supported,
 or the streaming URL for Google GenerateContent and Bedrock. There is no separate stream flag on
