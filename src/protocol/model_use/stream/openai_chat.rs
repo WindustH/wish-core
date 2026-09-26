@@ -103,7 +103,7 @@ impl Decoder {
     }
     // Only the flat `reasoning_content` delta carries reasoning here: the official wire has no such
     // field, and Mistral spells its reasoning in `content` chunks instead.
-    if !matches!(self.mode, ChatCompletionApiCompatMode::Official) && !self.mode.is_mistral() {
+    if !self.mode.is_plain() && !self.mode.is_mistral() {
       let name = REASONING_FIELD;
       if let Some(value) = delta.get(name).filter(|value| !value.is_null()) {
         let text = value

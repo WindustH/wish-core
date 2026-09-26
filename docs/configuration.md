@@ -117,11 +117,12 @@ entry needs at least `protocol`, `base_url` and `path`.
 ### Protocols
 
 `protocol` selects the provider's native API. Vendor variants handle each
-service's reasoning format and quirks.
+service's reasoning format and quirks, including which message roles it accepts:
+only `openai_chat` sends the `developer` role, which other chat services refuse.
 
 | Family | Values |
 | --- | --- |
-| OpenAI Chat Completions | `openai_chat`, `deepseek_chat`, `zai_chat`, `kimi_k2_chat`, `kimi_k3_chat`, `qwen_chat`, `minimax_chat`, `mimo_chat`, `tokenhub_chat`, `mistral_chat` |
+| OpenAI Chat Completions | `openai_chat` (OpenAI itself), `compatible_chat` (any other OpenAI-compatible service or local server), `deepseek_chat`, `zai_chat`, `kimi_k2_chat`, `kimi_k3_chat`, `qwen_chat`, `minimax_chat`, `mimo_chat`, `tokenhub_chat`, `mistral_chat` |
 | OpenAI Responses | `openai_responses`, `plaintext_responses` (services that return readable reasoning), `codex_responses` (ChatGPT subscription) |
 | Anthropic Messages | `anthropic_messages`, `deepseek_messages`, `zai_messages`, `kimi_messages`, `qwen_messages`, `minimax_messages`, `mimo_messages`, `tokenhub_messages` |
 | Google | `google_generate_content` (Gemini API), `google_vertex_generate_content`, `google_interactions` |

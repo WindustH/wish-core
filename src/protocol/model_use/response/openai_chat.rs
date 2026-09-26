@@ -105,7 +105,7 @@ fn decode_reasoning(
 ) -> Result<Option<Message>, Error> {
   // Only the flat `reasoning_content` field carries reasoning here: the official wire has no such
   // field, and Mistral spells its reasoning in `content` chunks instead.
-  if matches!(mode, ChatCompletionApiCompatMode::Official) || mode.is_mistral() {
+  if mode.is_plain() || mode.is_mistral() {
     return Ok(None);
   }
   let name = REASONING_FIELD;

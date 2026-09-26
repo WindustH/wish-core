@@ -22,7 +22,7 @@ Google GenerateContent's modules.
 | `ModelUseProtocol` variant | Dialect module | Mode |
 | --- | --- | --- |
 | `AnthropicMessages(MessagesApiCompatMode)` | `anthropic_messages` | reasoning extension |
-| `OpenAiChat(ChatCompletionApiCompatMode)` | `openai_chat` | reasoning extension |
+| `OpenAiChat(ChatCompletionApiCompatMode)` | `openai_chat` | reasoning extension and instruction roles |
 | `OpenAiResponses(ResponsesApiCompatMode)` | `openai_responses` | reasoning form and deployment |
 | `GoogleGenerateContent` | `google_generate_content` | none |
 | `GoogleVertexGenerateContent` | `google_generate_content` | none |
@@ -35,8 +35,15 @@ default for both:
 
 - `MessagesApiCompatMode`: `Official`, `DeepSeek`, `Zai`, `Kimi`, `Qwen`, `MiniMax`, `Mimo`,
   `TokenHub`.
-- `ChatCompletionApiCompatMode`: `Official`, `DeepSeek`, `Zai`, `KimiK2`, `KimiK3`, `Qwen`,
-  `MiniMax`, `Mimo`, `TokenHub`, `Mistral`.
+- `ChatCompletionApiCompatMode`: `Official`, `Compatible`, `DeepSeek`, `Zai`, `KimiK2`, `KimiK3`,
+  `Qwen`, `MiniMax`, `Mimo`, `TokenHub`, `Mistral`. `Official` is OpenAI's own endpoint and
+  `Compatible` any other plain chat endpoint; both carry no reasoning extension.
+
+A chat mode also decides where instruction messages go. `Official` keeps `system` and `developer`
+anywhere. `DeepSeek`, `Zai`, `KimiK2` and `KimiK3` refuse `developer` (DeepSeek and Zhipu verified
+live) but take `system` anywhere, so both roles become `system`. The rest take one leading
+`system` message: the leading instruction run merges into it, and a later instruction becomes a
+`user` message.
 
 `ResponsesApiCompatMode` is `{ reasoning_form, deployment }`:
 

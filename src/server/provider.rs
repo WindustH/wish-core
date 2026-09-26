@@ -229,6 +229,7 @@ impl Provider {
 fn parse_protocol(name: &str) -> Result<ModelUseProtocol, ApiError> {
   Ok(match name {
     "openai_chat" => ModelUseProtocol::OpenAiChat(Chat::Official),
+    "compatible_chat" => ModelUseProtocol::OpenAiChat(Chat::Compatible),
     "deepseek_chat" => ModelUseProtocol::OpenAiChat(Chat::DeepSeek),
     "zai_chat" => ModelUseProtocol::OpenAiChat(Chat::Zai),
     "kimi_k2_chat" => ModelUseProtocol::OpenAiChat(Chat::KimiK2),

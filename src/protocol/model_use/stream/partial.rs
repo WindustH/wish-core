@@ -363,8 +363,7 @@ fn classify_reasoning_replay(
   ciphertext: &str,
 ) -> ReplayDisposition {
   use crate::protocol::model_use::request::{
-    anthropic_messages::MessagesApiCompatMode, openai_chat::ChatCompletionApiCompatMode,
-    openai_responses::ReasoningForm,
+    anthropic_messages::MessagesApiCompatMode, openai_responses::ReasoningForm,
   };
   // Transparency is determined by the wire's replay representation, not by visible text or
   // by a signature/ciphertext that has not arrived yet. Display summaries are separate data.
@@ -372,7 +371,7 @@ fn classify_reasoning_replay(
     Some(ModelUseProtocol::OpenAiResponses(mode)) => {
       mode.reasoning_form == ReasoningForm::Plaintext
     }
-    Some(ModelUseProtocol::OpenAiChat(mode)) => mode != ChatCompletionApiCompatMode::Official,
+    Some(ModelUseProtocol::OpenAiChat(mode)) => !mode.is_plain(),
     Some(ModelUseProtocol::AnthropicMessages(mode)) => mode != MessagesApiCompatMode::Official,
     Some(ModelUseProtocol::MistralConversations) => true,
     _ => false,

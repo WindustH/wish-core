@@ -1,8 +1,12 @@
 //! OpenAI Chat Completions request wire.
 //!
 //! Conversions:
-//! - `System` / `Developer` ride as ordinary messages with those roles, unlike the wires that hoist
-//!   instructions into a top-level field.
+//! - `System` / `Developer` ride as ordinary messages, unlike the wires that hoist instructions into
+//!   a top-level field. Which roles they take and where depends on the vendor (see
+//!   [`InstructionPlacement`]): the official wire keeps both roles anywhere; vendors without a
+//!   `developer` role but with `system` anywhere get `system` for both; the rest get one leading
+//!   `system` message, the leading instruction run merged, and every later instruction as user
+//!   input.
 //! - `User` content is a plain string when text-only, otherwise a parts array with images nested
 //!   under `image_url.url` as data URLs.
 //! - `Assistant` text merges with the `ToolUse` messages that follow it into one assistant message
@@ -25,6 +29,10 @@
 //!
 //! Constraints:
 //! - Stateless: every turn has to carry the whole history again.
+//! - Only the official wire takes `developer`: DeepSeek refuses it with 422 and Zhipu with 400,
+//!   and most vendors' role lists leave it out. Several take `system` only as the first message
+//!   (Qwen, TokenHub, Mistral after an assistant or tool turn, open chat templates such as Qwen3.5
+//!   that raise on a later one, or DeepSeek-V3's and MiniMax-M2's that move or drop it).
 //! - A `tool` message answers the `tool_calls` of the assistant turn before it and repeats their
 //!   `tool_call_id`.
 //! - The official wire has nowhere to send reasoning back: a raw thinking block inside `messages`
@@ -52,16 +60,21 @@ pub const HEADERS: &[(&str, &str)] = &[];
 /// The assistant-message field plaintext reasoning rides in.
 pub(crate) const REASONING_FIELD: &str = "reasoning_content";
 
-/// Which reasoning extension this chat endpoint speaks on top of the official wire.
+/// Which reasoning extension this chat endpoint speaks on top of the official wire, and which
+/// instruction roles it takes.
 ///
 /// The official wire has no reasoning round trip at all; every vendor patches one in differently,
 /// so each patch is its own mode however small the difference between two of them is. `Official`
-/// is the plain wire: nothing is read and nothing is sent.
+/// and `Compatible` are the plain wire: nothing is read and nothing is sent. They differ only in
+/// instruction roles, which only OpenAI's own endpoint takes as they are.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChatCompletionApiCompatMode {
-  /// Plain wire: reasoning is neither read nor sent.
+  /// OpenAI's own endpoint: reasoning is neither read nor sent.
   #[default]
   Official,
+  /// Any other endpoint that speaks the plain wire (routers, local servers, hosts of open models):
+  /// reasoning as on `Official`, instructions in the one form every such endpoint takes.
+  Compatible,
   /// `reasoning_content`, which must be replayed whenever tools are in play.
   DeepSeek,
   /// `reasoning_content` plus `thinking.clear_thinking: false` (the default strips the history).
@@ -90,6 +103,32 @@ impl ChatCompletionApiCompatMode {
     matches!(self, ChatCompletionApiCompatMode::Mistral)
   }
 
+  /// Whether this is the plain wire, with no reasoning extension on top.
+  pub(crate) fn is_plain(self) -> bool {
+    matches!(self, ChatCompletionApiCompatMode::Official | ChatCompletionApiCompatMode::Compatible)
+  }
+
+  /// Where this vendor takes instruction messages, and under which role.
+  fn get_instruction_placement(self) -> InstructionPlacement {
+    match self {
+      ChatCompletionApiCompatMode::Official => InstructionPlacement::Native,
+      // Verified against the live APIs (DeepSeek, Zhipu) or documented (Kimi's system prompt
+      // re-inserted after many turns).
+      ChatCompletionApiCompatMode::DeepSeek
+      | ChatCompletionApiCompatMode::Zai
+      | ChatCompletionApiCompatMode::KimiK2
+      | ChatCompletionApiCompatMode::KimiK3 => InstructionPlacement::System,
+      // Documented as first-only (Qwen, TokenHub, Mistral), or undocumented on a vendor whose open
+      // template drops a later one (MiniMax), or undocumented (MiMo, anything compatible).
+      ChatCompletionApiCompatMode::Qwen
+      | ChatCompletionApiCompatMode::MiniMax
+      | ChatCompletionApiCompatMode::Mimo
+      | ChatCompletionApiCompatMode::TokenHub
+      | ChatCompletionApiCompatMode::Mistral
+      | ChatCompletionApiCompatMode::Compatible => InstructionPlacement::LeadingSystem,
+    }
+  }
+
   /// The controls this vendor takes on the chat wire: the round-trip knobs the mode always sends,
   /// plus whichever of the caller's reasoning axes the vendor documents. An axis the vendor has no
   /// spelling for is rejected, never dropped.
@@ -114,7 +153,7 @@ impl ChatCompletionApiCompatMode {
       }
     }
     match self {
-      ChatCompletionApiCompatMode::Official => {
+      ChatCompletionApiCompatMode::Official | ChatCompletionApiCompatMode::Compatible => {
         if enabled.is_some() {
           return Err(Error::Build(
             "the plain chat completions wire has no reasoning on/off switch".to_owned(),
@@ -194,6 +233,7 @@ impl ChatCompletionApiCompatMode {
       matches!(
         self,
         ChatCompletionApiCompatMode::Official
+          | ChatCompletionApiCompatMode::Compatible
           | ChatCompletionApiCompatMode::DeepSeek
           | ChatCompletionApiCompatMode::Zai
           | ChatCompletionApiCompatMode::KimiK3
@@ -255,18 +295,29 @@ fn render_messages(
   let mut messages: Vec<Value> = Vec::new();
   let mut pending_reasoning: Option<String> = None;
   let mut index = 0;
+  let placement = mode.get_instruction_placement();
+  if placement == InstructionPlacement::LeadingSystem {
+    let leading = conversation
+      .iter()
+      .take_while(|message| matches!(message, Message::System { .. } | Message::Developer { .. }))
+      .count();
+    if leading > 0 {
+      messages.push(render_leading_instructions(&conversation[..leading])?);
+      index = leading;
+    }
+  }
   while index < conversation.len() {
     match &conversation[index] {
       Message::System { content, .. } => {
         pending_reasoning = None;
-        messages.push(render_instruction("system", content)?);
+        messages.push(render_placed_instruction("system", content, placement)?);
       }
       Message::UpstreamCompaction { .. } => {
         return Err(Error::Build("the chat wire cannot carry a compacted conversation".to_owned()));
       }
       Message::Developer { content, .. } => {
         pending_reasoning = None;
-        messages.push(render_instruction("developer", content)?);
+        messages.push(render_placed_instruction("developer", content, placement)?);
       }
       Message::User { content, .. } => {
         pending_reasoning = None;
@@ -293,7 +344,7 @@ fn render_messages(
               used += 1;
             }
             Message::Reasoning { plaintext, .. } => {
-              if !matches!(mode, ChatCompletionApiCompatMode::Official) {
+              if !mode.is_plain() {
                 reasoning.push_str(plaintext);
               }
               used += 1;
@@ -311,8 +362,8 @@ fn render_messages(
         index += used;
       }
       Message::Reasoning { plaintext, .. } => {
-        // Replayed reasoning is dropped before the official wire, which has no field for it.
-        if !matches!(mode, ChatCompletionApiCompatMode::Official) {
+        // Replayed reasoning is dropped before the plain wire, which has no field for it.
+        if !mode.is_plain() {
           pending_reasoning.get_or_insert_with(String::new).push_str(plaintext);
         }
       }
@@ -326,7 +377,48 @@ fn render_messages(
   Ok(messages)
 }
 
+/// Where a vendor takes instruction messages, and under which role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstructionPlacement {
+  /// `system` and `developer` keep their roles wherever they are.
+  Native,
+  /// `developer` rides as `system`, and `system` is taken anywhere in the conversation.
+  System,
+  /// One `system` message, first: the leading instruction run merges into it, and a later
+  /// instruction rides as user input.
+  LeadingSystem,
+}
+
+/// One instruction message where the conversation has it. Under `LeadingSystem` the leading run is
+/// already rendered, so this one comes later and rides as user input.
+fn render_placed_instruction(
+  role: &str,
+  content: &[ContentBlock],
+  placement: InstructionPlacement,
+) -> Result<Value, Error> {
+  match placement {
+    InstructionPlacement::Native => render_instruction(role, content),
+    InstructionPlacement::System => render_instruction("system", content),
+    InstructionPlacement::LeadingSystem => render_user(content),
+  }
+}
+
+/// The leading instruction run as the single `system` message a first-only vendor takes.
+fn render_leading_instructions(run: &[Message]) -> Result<Value, Error> {
+  let mut parts = Vec::new();
+  for message in run {
+    if let Message::System { content, .. } | Message::Developer { content, .. } = message {
+      parts.push(get_instruction_text("system", content)?);
+    }
+  }
+  Ok(json!({ "role": "system", "content": parts.join("\n\n") }))
+}
+
 fn render_instruction(role: &str, content: &[ContentBlock]) -> Result<Value, Error> {
+  Ok(json!({ "role": role, "content": get_instruction_text(role, content)? }))
+}
+
+fn get_instruction_text(role: &str, content: &[ContentBlock]) -> Result<String, Error> {
   let mut text: Vec<&str> = Vec::new();
   for block in content {
     match block {
@@ -338,7 +430,7 @@ fn render_instruction(role: &str, content: &[ContentBlock]) -> Result<Value, Err
       }
     }
   }
-  Ok(json!({ "role": role, "content": text.join("\n") }))
+  Ok(text.join("\n"))
 }
 
 fn render_user(content: &[ContentBlock]) -> Result<Value, Error> {
