@@ -139,8 +139,8 @@ pub fn render(request: &Request, variant: ResponsesApiCompatMode) -> Result<Valu
 
 /// The conversation as this wire's `input[]` items.
 ///
-/// Shared with the compaction call, which sends a whole history without any of a model call's
-/// controls beside it.
+/// Shared with the platform compaction call, which sends a whole history without any of a model
+/// call's controls beside it.
 pub(crate) fn render_items(
   conversation: &[Message],
   variant: ResponsesApiCompatMode,

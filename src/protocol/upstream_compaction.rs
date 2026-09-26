@@ -3,8 +3,10 @@
 //! A compaction call takes a conversation and hands back what stands in for it: the service's own
 //! opaque payload, which goes back untouched on every later call instead of the messages it
 //! replaced. It is a dimension of its own beside [`model_use`](crate::protocol::model_use), not a
-//! model call: there are no tools, no output cap and no reasoning controls to set, there is no
-//! stream to follow, and what comes back is the caller's next starting point rather than an answer.
+//! model call: there is no output cap to set and no answer to follow, and what comes back is the
+//! caller's next starting point. The tools, reasoning and caching of the model calls that sent the
+//! history ride along only so a deployment that compacts on its ordinary model call can repeat
+//! those calls' prompt exactly.
 //!
 //! One wire has this call so far - the responses wire, whose platform form and Codex deployment
 //! differ only in what rides beside the body - so this dimension is one renderer and one reader, and
@@ -18,7 +20,9 @@ pub mod response;
 
 use crate::protocol::account_state::AccountState;
 use crate::protocol::model_use::message::Conversation;
+use crate::protocol::model_use::request::{PromptCache, ReasoningConfig, ToolChoice};
 use crate::protocol::model_use::response::Usage;
+use crate::protocol::model_use::tool::Tool;
 
 /// The protocol kinds of upstream compaction: the wires that have this call at all.
 ///
@@ -66,6 +70,13 @@ pub struct UpstreamCompactionRequest {
   pub model: String,
   /// The history to compact, in the order it was sent.
   pub conversation: Conversation,
+  /// The tools the model calls that sent this history offered, and how they let the model pick.
+  pub tools: Vec<Tool>,
+  pub tool_choice: Option<ToolChoice>,
+  /// How much those calls asked the model to think.
+  pub reasoning: Option<ReasoningConfig>,
+  /// The caching those calls asked for.
+  pub cache: Option<PromptCache>,
 }
 
 /// What a service handed back in place of a conversation.

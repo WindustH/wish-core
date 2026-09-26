@@ -27,13 +27,18 @@ caller                     compaction                          service
 ────────────────────────────────────────────────────────────────────────────────────
 UpstreamCompactionRequest ──render()──▶ request/openai_responses.rs ──▶ JSON body ──▶ HTTP
    platform                     {model, input[]}                    ──▶  POST <path>/compact
-   Codex                        {model, store:false, stream:true,   ──▶  POST <path>
-                                 input[] + compaction_trigger}
+   Codex                        model call body (tools, reasoning,  ──▶  POST <path>
+                                 prompt_cache_key, stream:true)
+                                 with input[] + compaction_trigger
 UpstreamCompaction        ◀──decode()── response/openai_responses.rs ◀── JSON body ◀── HTTP
                   ◀──feed()──── model_use/stream/openai_responses.rs ◀── records ◀── SSE
 ```
 
-`UpstreamCompactionRequest` is `{ model, conversation }`. `UpstreamCompaction` is
+`UpstreamCompactionRequest` is `{ model, conversation, tools, tool_choice, reasoning, cache }`.
+The platform lane sends only the model and `input[]`. The Codex lane renders the ordinary
+responses model-call body from all six fields (no output cap) and appends the trigger, so the
+compaction repeats the prefix the session's calls cached, as the Codex CLI's own compaction call
+does. `UpstreamCompaction` is
 `{ conversation, usage, account_state, warnings }`, where `conversation` holds the compaction item
 plus whatever the service echoed beside it.
 

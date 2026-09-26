@@ -617,10 +617,12 @@ context without changing the session:
  "history": [{"question": "...", "answer": "..."}]}
 ```
 
-It works while the agent is running, sees the context up to the last completed
-step, and has no tools. `history` carries earlier turns of the same side
-conversation (at most 32 turns and 128,000 bytes); nothing is stored. The
-response has the same form as [`/call`](#post-apiprovidersidcall).
+It works while the agent is running and sees the context up to the last completed
+step. The request repeats the session's own context, tools and cache settings so
+it reuses the session's prompt cache; the question asks the model not to call
+tools, and tool calls in the reply are not run. `history` carries earlier turns
+of the same side conversation (at most 32 turns and 128,000 bytes); nothing is
+stored. The response has the same form as [`/call`](#post-apiprovidersidcall).
 
 ## Usage statistics
 

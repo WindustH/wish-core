@@ -161,8 +161,11 @@ transaction, including while the executor owns the session. An unfinished tool b
 and its assistant turn are excluded. The returned request does not include queued input
 and does not mutate session state. The server's BTW endpoint `POST /api/sessions/{id}/ask` is built on
 it (server-owned: [`src/server/http/ask.rs`](../../src/server/http/ask.rs),
-[API](../api.md#side-questions)). It inserts a system note after the fixed prefix, strips tools,
-appends at most 32 earlier exchanges (128 000 bytes) and the question, and persists nothing.
+[API](../api.md#side-questions)). It keeps the snapshot's tools, tool choice, reasoning and cache
+unchanged so the question reuses the session's prompt cache, appends at most 32 earlier exchanges
+(128 000 bytes) and the question, and persists nothing. The BTW instruction (answer, do not call
+tools) is the first text of the first BTW question, so later asks in the same side conversation
+repeat it unchanged too.
 
 Configuration changes during a run go through a run boundary; see
 [executor](executor.md#run-boundaries).

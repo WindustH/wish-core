@@ -233,6 +233,10 @@ impl ModelCaller for SessionModel {
       .compact_upstream(&UpstreamCompactionRequest {
         model: request.model.clone(),
         conversation: projected.conversation,
+        tools: request.tools.clone(),
+        tool_choice: request.tool_choice,
+        reasoning: request.reasoning.clone(),
+        cache: request.cache.clone(),
       })
       .await
       .map_err(|error| self.with_model_context(error, &request.model))

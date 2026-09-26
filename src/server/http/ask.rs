@@ -37,6 +37,8 @@ pub struct AskExchange {
   pub answer: String,
 }
 
+const ASK_INSTRUCTION: &str = "This is a temporary BTW question about the session so far. Answer it from the session context above and the BTW conversation that follows. Do not call tools or continue the agent task. BTW turns are not part of the permanent session history.";
+
 fn append_ask_messages(conversation: &mut Vec<Message>, input: Ask) -> Result<(), ApiError> {
   if input.text.trim().is_empty() {
     return Err(ApiError::bad_request("question is empty"));
@@ -51,28 +53,22 @@ fn append_ask_messages(conversation: &mut Vec<Message>, input: Ask) -> Result<()
   {
     return Err(ApiError::bad_request("BTW history is too long or contains an empty turn"));
   }
-  let prefix = conversation
-    .iter()
-    .take_while(|message| message.is_fixed_instruction())
-    .count();
-  conversation.insert(prefix, Message::System {
+  // The session context stays exactly as the conversation calls send it, so the question reads
+  // their prompt cache; the instruction rides on the first BTW question, so later questions in the
+  // same BTW conversation repeat it unchanged as well.
+  let mut instruction = Some(ContentBlock::Text { text: ASK_INSTRUCTION.into() });
+  let mut question = |text: String| Message::User {
     metadata: Default::default(),
-    content: vec![ContentBlock::Text { text: "Answer the final question using the supplied session context and the subsequent temporary BTW conversation. Do not use tools or continue the agent task. BTW turns are not part of the permanent session history.".into() }],
-  });
+    content: instruction.take().into_iter().chain([ContentBlock::Text { text }]).collect(),
+  };
   for turn in input.history {
-    conversation.push(Message::User {
-      metadata: Default::default(),
-      content: vec![ContentBlock::Text { text: turn.question }],
-    });
+    conversation.push(question(turn.question));
     conversation.push(Message::Assistant {
       metadata: Default::default(),
       content: vec![ContentBlock::Text { text: turn.answer }],
     });
   }
-  conversation.push(Message::User {
-    metadata: Default::default(),
-    content: vec![ContentBlock::Text { text: input.text }],
-  });
+  conversation.push(question(input.text));
   Ok(())
 }
 pub async fn ask(
@@ -86,8 +82,6 @@ pub async fn ask(
   let handle = slot.handle.clone();
   let mut request = blocking(move || Ok(handle.build_context_snapshot()?)).await?;
   request.stream = input.stream;
-  request.tools.clear();
-  request.tool_choice = None;
   append_ask_messages(&mut request.conversation, input)?;
   let client = crate::server::sampling::observe_client(
     &provider.client,

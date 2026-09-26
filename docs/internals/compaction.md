@@ -42,6 +42,11 @@ usage trigger / context rejection / manual request
           atomically append a fresh active generation
 ```
 
+On the Codex deployment the compaction is the ordinary streamed model call, with the session's
+tools, tool choice, reasoning and cache key, so it reads the conversation calls' prompt cache. The
+platform `/compact` endpoint receives only the model and the history
+([protocol](protocol/upstream-compaction.md)).
+
 The leading fixed prefix and the most recent `User` entry are reused verbatim, including metadata.
 The prefix contains System messages and Developer messages explicitly marked `fixed: true` (or
 legacy records without the field), stopping at its first other message. Only returned
@@ -70,9 +75,11 @@ pending provider selection at a [run boundary](executor.md#run-boundaries), and
 
 When the new provider cannot replay the active context's encrypted compaction item, the old
 provider gets a streamed request. It contains every entry up to and including the item (normally
-just the fixed prefix and the item), plus a request for a self-contained handoff. Tools, prompt
-cache and reasoning are removed. The output cap is 8192 tokens, except on Codex Responses, which
-rejects output caps. The reply must be 1-65 536 bytes of assistant text.
+just the fixed prefix and the item), plus a request for a self-contained handoff. Tools, tool
+choice, reasoning and prompt cache stay as the conversation calls send them, so the handoff reads
+their cached prefix; the prompt asks for no tool calls, and a reply that calls one fails the
+handoff. The output cap is 8192 tokens, except on Codex Responses, which rejects output caps. The
+reply must be 1-65 536 bytes of assistant text.
 
 A successful handoff replaces the item with a `Developer { fixed: false }` message (metadata
 `{"source":"upstream_compaction_handoff"}`) in a new active generation. All entries after the item
@@ -122,17 +129,23 @@ a run boundary discards it. A background summary failure is recorded as `Compact
 and does not fail or suspend the run, and background planning errors are skipped silently. Inside
 cutover, a summary or planning failure fails the compaction instead.
 
-Only input covered by a completed conversation request is eligible. The latest response and tool
-results remain raw. A span starts at the first unsummarized entry and ends at the first turn or
-tool-batch boundary whose summary request measures at least `segment_tokens`. `segment_tokens` is
-therefore a minimum, and an indivisible span is never split. Planning stops at an
-`UpstreamCompaction` item.
+Only input covered by a completed conversation request is eligible: the entries that the latest
+completed conversation call of the active generation sent (its `input_entry_count`). The latest
+response and tool results remain raw. A span starts at the first unsummarized entry and ends at
+the first turn or tool-batch boundary where the span measures at least `segment_tokens`. The
+measurement flattens the span's messages into one message without tools; it is never sent.
+`segment_tokens` is therefore a minimum, and an indivisible span is never split. Planning stops at
+an `UpstreamCompaction` item.
 
-A summary request uses the session's model, reasoning and output cap. It is always streamed, has
-no tools, tool choice or prompt cache, and uses a fixed prompt that wraps the span's messages as
-data. At the output cap it is continued the same way as a conversation call
-([executor](executor.md#automatic-output-continuation)), and the segments' text becomes one
-summary. The summary is stored as a `User` message with origin `Summary`.
+A summary request repeats that latest conversation call's input unchanged, with the session's
+tools, tool choice, reasoning, prompt cache and output cap, so it reads the prompt cache the call
+wrote. It then appends one `User` instruction. The instruction names the span by the kind and
+opening words (240 characters) of its first and last visible entries, adds the occurrence number
+when those words repeat, and asks for replacement context for that span only, without tool calls.
+The request is always streamed. At the output cap it is continued the same way as a conversation
+call ([executor](executor.md#automatic-output-continuation)), and the segments' text becomes one
+summary; a tool call instead fails the summary. The summary is stored as a `User` message with
+origin `Summary`.
 
 Cutover first drains the plan loop: every remaining eligible span is summarized in turn, inside
 `Compacting`. It then builds the candidate from standby plus the raw tail. It never summarizes the
@@ -163,8 +176,8 @@ compaction items are not converted into textual summaries.
 
 No token-count call is needed merely to decide whether a completed request reached the trigger.
 Summary calls have their own `ModelCallRecord` with purpose `CompactionSummary`; their usage is
-not treated as active-context occupancy. Their `input_entry_count` is zero because the request is
-an independently constructed summary prompt, not a prefix of the active generation.
+not treated as active-context occupancy. Their `input_entry_count` is the number of active entries
+the request repeats before its instruction.
 
 ## Structure and failure
 

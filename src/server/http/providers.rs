@@ -90,7 +90,14 @@ pub async fn compact(
   Json(input): Json<CompactInput>,
 ) -> Result<Json<Value>, ApiError> {
   let provider = app.get_provider(&id)?;
-  let request = UpstreamCompactionRequest { model: input.model, conversation: input.conversation };
+  let request = UpstreamCompactionRequest {
+    model: input.model,
+    conversation: input.conversation,
+    tools: Vec::new(),
+    tool_choice: None,
+    reasoning: None,
+    cache: None,
+  };
   tokio::select! {
     _=app.stop.cancelled()=>Err(ApiError::conflict("server is shutting down")),
     result=provider.client.compact_upstream(&request)=>Ok(Json(json!(result?))),

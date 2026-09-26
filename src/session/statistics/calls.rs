@@ -46,6 +46,7 @@ impl Session {
   pub(crate) fn record_completed_compaction_call(
     &mut self,
     observation: CallObservation,
+    input_entry_count: u64,
   ) -> Result<ModelCallId, SessionError> {
     self.update(move |transaction| {
       let list = &transaction.record.model_calls;
@@ -62,7 +63,7 @@ impl Session {
           generation: transaction.record.active,
           model: transaction.record.config.model.clone(),
           stream: false,
-          input_entry_count: 0,
+          input_entry_count,
           started_at,
           first_event_at: observation.first_event_at,
           finished_at: observation.finished_at,

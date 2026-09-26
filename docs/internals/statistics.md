@@ -32,11 +32,11 @@ Session -> ModelCallRecord: purpose, model, generation, input boundary, times, u
 
 - `Conversation`: one turn's model call, including its output continuations.
 - `CompactionSummary`: a standby summary ([compaction](compaction.md#local-compaction)). Its
-  `input_entry_count` is zero, because the prompt is built independently from a source span. The
+  `input_entry_count` is the active prefix the request repeats before its instruction. The
   record is appended complete when the summary commits. `started_at` is derived as
-  `finished_at - elapsed_ms`, `first_event_at` is absent, and `last_request_input_tokens` holds
-  the plan's measurement, not actual usage. `stream` is recorded `false` although summary requests
-  stream.
+  `finished_at - elapsed_ms`, `first_event_at` is absent, and `last_request_input_tokens` is the
+  last physical request's input usage, as for a conversation call. `stream` is recorded `false`
+  although summary requests stream.
 - `UpstreamCompaction`: records the full active input length and links its opaque entries to the
   call.
 - `CompactionTranslation`: the provider-switch handoff

@@ -10,7 +10,9 @@
 //! - The Codex deployment takes it on the call it always serves, the streamed `/responses`, and is
 //!   told what is being asked for by its last input item, `{"type": "compaction_trigger"}`: a
 //!   request control rather than part of the conversation, appended here and never carried in the
-//!   caller's history.
+//!   caller's history. Everything before that item is the model call's own body, tools, reasoning
+//!   and `prompt_cache_key` included, so the compaction repeats the prefix the session's calls
+//!   cached, the way the Codex CLI's own compaction call does.
 //!
 //! Constraints:
 //! - The reply's items have to be sent back verbatim, so nothing here reads, rewrites or drops a
@@ -23,13 +25,15 @@
 //!   so the history is always sent whole.
 //! - `instructions` is not modeled either; instructions travel as messages, the way the model call
 //!   sends them.
-//! - The Codex deployment's own compaction call carries the tools of the session it compacts and
-//!   asks for a reasoning summary; neither is sent here, because what a history compacts to is the
-//!   service's business and none of it comes back as an answer.
+//! - The platform endpoint takes the model and the history only; the model call's tools, reasoning
+//!   and caching are not sent there.
+//! - The Codex CLI also sends `parallel_tool_calls: true`; the model call here does not, and the
+//!   compaction matches the model call rather than the CLI.
 
+use crate::protocol::Request;
 use crate::protocol::error::Error;
 use crate::protocol::model_use::request::openai_responses::{
-  ResponsesApiCompatMode, ResponsesDeployment, render_items,
+  self as model_use, ResponsesApiCompatMode, ResponsesDeployment, render_items,
 };
 use crate::protocol::upstream_compaction::UpstreamCompactionRequest;
 use serde_json::{Map, Value, json};
@@ -60,15 +64,35 @@ pub fn render(
   request: &UpstreamCompactionRequest,
   variant: ResponsesApiCompatMode,
 ) -> Result<Value, Error> {
-  let mut body = Map::new();
-  body.insert("model".into(), json!(request.model));
-  let mut items = render_items(&request.conversation, variant)?;
-  if variant.deployment == ResponsesDeployment::Codex {
-    // The backend keeps no state and answers this call on a stream, the way it answers every call.
-    body.insert("store".into(), json!(false));
-    body.insert("stream".into(), json!(true));
-    items.push(json!({ "type": "compaction_trigger" }));
+  match variant.deployment {
+    ResponsesDeployment::Platform => {
+      let mut body = Map::new();
+      body.insert("model".into(), json!(request.model));
+      body.insert("input".into(), Value::Array(render_items(&request.conversation, variant)?));
+      Ok(Value::Object(body))
+    }
+    ResponsesDeployment::Codex => {
+      // The backend keeps no state and answers this call on a stream, the way it answers every
+      // call; the body is that call's, with no output cap because the deployment takes none.
+      let mut body = model_use::render(
+        &Request {
+          stream: true,
+          model: request.model.clone(),
+          conversation: request.conversation.clone(),
+          tools: request.tools.clone(),
+          tool_choice: request.tool_choice,
+          max_output_tokens: None,
+          reasoning: request.reasoning.clone(),
+          cache: request.cache.clone(),
+        },
+        variant,
+      )?;
+      body
+        .get_mut("input")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| Error::Build("the model call body has no `input` array".into()))?
+        .push(json!({ "type": "compaction_trigger" }));
+      Ok(body)
+    }
   }
-  body.insert("input".into(), Value::Array(items));
-  Ok(Value::Object(body))
 }

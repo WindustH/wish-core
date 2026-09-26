@@ -43,10 +43,16 @@ pub(super) async fn replace_context(
   )])?;
   notify_observers(session, cursor, observe)?;
   let started = std::time::Instant::now();
-  // Send the whole active conversation, including any earlier opaque compaction body.
+  // Send the whole active conversation, including any earlier opaque compaction body, with the
+  // prompt controls the conversation calls send, so a compaction made on a model call reads their
+  // prompt cache.
   let input = UpstreamCompactionRequest {
     model: request.model.clone(),
     conversation: request.conversation.clone(),
+    tools: request.tools.clone(),
+    tool_choice: request.tool_choice,
+    reasoning: request.reasoning.clone(),
+    cache: request.cache.clone(),
   };
   let result = {
     let compacting = caller.compact_upstream(&input);
