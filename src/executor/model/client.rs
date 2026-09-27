@@ -135,8 +135,8 @@ impl<T: Transport> Client<T> {
   ///
   /// One axis, two readings: a protocol a reply carries fills [`Response::account_state`] and its
   /// streamed twin on every call, and a protocol served by a request of its own is read by
-  /// [`Client::get_account_state`]. Naming a protocol the other side of that divide still fails the
-  /// ask that cannot be served, with the reason its feature states.
+  /// [`Client::get_account_state`] and leaves replies alone. Asking a reply-borne protocol for a
+  /// reading of its own still fails, with the reason its feature states.
   pub fn with_account_state(mut self, account_state: AccountStateProtocol) -> Self {
     self.account_state = Some(account_state);
     self
@@ -597,7 +597,8 @@ impl<T: Transport> Client<T> {
     decode_streamed_upstream_compaction(accumulator.finish()?)
   }
 
-  /// Internal: the account reading this reply carries, when the endpoint named an account protocol.
+  /// Internal: the account reading this reply carries, when the endpoint named an account protocol
+  /// that replies carry. One read by a request of its own finds nothing here.
   ///
   /// `body` is `None` on the streamed path, where only the reply head is in hand: a protocol that
   /// needs the payload reports [`Error::Build`] there instead of quietly finding nothing.
@@ -607,8 +608,10 @@ impl<T: Transport> Client<T> {
     body: Option<&Value>,
   ) -> Result<Option<AccountState>, Error> {
     match self.account_state {
-      Some(protocol) => account_state::parse_reply(protocol, headers, body).map(Some),
-      None => Ok(None),
+      Some(protocol) if protocol.is_passive() => {
+        account_state::parse_reply(protocol, headers, body).map(Some)
+      }
+      _ => Ok(None),
     }
   }
 
