@@ -2,9 +2,10 @@
 //!
 //! Conversions:
 //! - Each `limits` entry is one rolling window. `type` says what it counts - `CREDIT_LIMIT` in the
-//!   points-based plan, `TOKENS_LIMIT` in the token-based one it replaced, `TIME_LIMIT` for tool
-//!   time - and `unit` times `number` says how long it is, where `unit` 1 is a day, 3 an hour, 5 a
-//!   minute and 6 a week.
+//!   points-based plan, `TOKENS_LIMIT` in the token-based one it replaced, `TIME_LIMIT` for the
+//!   number of tool calls (web search, page reading and the like; "times", not duration) - and
+//!   `unit` times `number` says how long it is, where `unit` 1 is a day, 3 an hour, 5 a month and 6
+//!   a week.
 //! - `currentValue` is `used`, `usage` is `limit`, `remaining` is itself, `percentage` is the share
 //!   spent, `nextResetTime` is `resets_at`, and a window at 100% is `reached`.
 //! - `data.level` is the plan tier, kept as `plan_type`.
@@ -80,7 +81,7 @@ fn read_limit(limit: &Value, warnings: &mut Vec<String>) -> QuotaWindow {
       kind.to_owned()
     }
   };
-  if !matches!(get_counted_unit(kind), "credits" | "tokens" | "time") {
+  if !matches!(get_counted_unit(kind), "credits" | "tokens" | "requests") {
     warnings.push(format!("`{kind}` is a limit type this protocol does not know"));
   }
   if let Some(details) =
@@ -96,7 +97,7 @@ fn read_limit(limit: &Value, warnings: &mut Vec<String>) -> QuotaWindow {
     limit: limit.get("usage").and_then(read_scalar_text),
     remaining: limit.get("remaining").and_then(read_scalar_text),
     used_percent: limit.get("percentage").and_then(read_scalar_text),
-    window: window.map(|(minutes, _)| json!({ "duration": minutes, "unit": "minutes" })),
+    window: window.map(|(window, _)| window),
     resets_at: limit.get("nextResetTime").and_then(read_scalar_text),
     reached: limit.get("percentage").and_then(Value::as_f64).map(|spent| spent >= 100.0),
     unlimited: None,
@@ -108,20 +109,21 @@ fn get_counted_unit(kind: &str) -> &'static str {
   match kind {
     "CREDIT_LIMIT" => "credits",
     "TOKENS_LIMIT" => "tokens",
-    "TIME_LIMIT" => "time",
+    "TIME_LIMIT" => "requests",
     _ => "unknown",
   }
 }
 
-/// The window a `unit` and `number` pair describes: its length in minutes, and the short name the
-/// pair reads as. `unit` 1 is a day, 3 an hour, 5 a minute, 6 a week, and `number` multiplies it.
-fn decode_window(unit: i64, number: i64) -> Option<(i64, String)> {
+/// The window a `unit` and `number` pair describes, and the short name the pair reads as. `unit` 1
+/// is a day, 3 an hour, 5 a month, 6 a week, and `number` multiplies it. Fixed lengths are given in
+/// minutes; a calendar month has none, so it keeps its own unit.
+fn decode_window(unit: i64, number: i64) -> Option<(Value, String)> {
   let (per_unit, letter) = match unit {
     1 => (1440, "d"),
     3 => (60, "h"),
-    5 => (1, "m"),
     6 => (10080, "w"),
+    5 => return Some((json!({ "duration": number, "unit": "months" }), format!("{number}mo"))),
     _ => return None,
   };
-  Some((per_unit * number, format!("{number}{letter}")))
+  Some((json!({ "duration": per_unit * number, "unit": "minutes" }), format!("{number}{letter}")))
 }
