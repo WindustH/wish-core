@@ -36,8 +36,9 @@ with `Error::Build`. A header dialect whose headers are all absent reads as succ
 
 Each `source.rs` entry states a default host, a path, bearer auth and any extra headers: Qwen's
 `{workspace_id}` path plus `x-dashscope-workspace`, Codex's `chatgpt-account-id`, and a Kimi Code
-user agent. The `base_url` argument overrides the host, and the server always passes the provider's
-own `base_url` (`src/server/http/providers.rs`). `fetch` makes one GET with no retry. A non-`2xx`
+user agent. The `base_url` argument overrides the host; the server passes the provider's
+`account_state_base_url`, which is only set for a regional twin, and never its conversation
+`base_url` (`src/server/http/providers.rs`). `fetch` makes one GET with no retry. A non-`2xx`
 body is decoded by `http_error::decode_provider_envelope`.
 
 ## Shape

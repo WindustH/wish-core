@@ -145,8 +145,11 @@ pub async fn account(
   Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
   let provider = app.get_provider(&id)?;
+  // An account reading has a fixed path on its service's host. The provider's base URL is where
+  // conversations go and often carries a path of its own, so it never stands in for that host.
+  let host = provider.config.account_state_base_url.as_deref();
   tokio::select! {
     _=app.stop.cancelled()=>Err(ApiError::conflict("server is shutting down")),
-    result=provider.client.get_account_state(Some(&provider.config.base_url))=>Ok(Json(json!(result?))),
+    result=provider.client.get_account_state(host)=>Ok(Json(json!(result?))),
   }
 }

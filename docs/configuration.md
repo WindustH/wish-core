@@ -112,6 +112,7 @@ entry needs at least `protocol`, `base_url` and `path`.
 | `token_count` | `null` | Token-counting protocol, for exact counts during compaction |
 | `compaction` | `null` | Upstream compaction protocol, to let the provider compact the context itself |
 | `account_state` | `null` | Protocol for reading balance or quota |
+| `account_state_base_url` | `null` | Host the account reading is asked on, for a service with regional twins (`https://open.bigmodel.cn` for a Zhipu plan). Without it, the protocol's own host; the provider's `base_url` is never used for it |
 | `refresh_token`, `expires_at` | `null` | Written by ChatGPT sign-in; not meant to be edited by hand |
 
 ### Protocols

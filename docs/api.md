@@ -265,7 +265,27 @@ configuration empties the cache.
 ### `GET /api/providers/{id}/account`
 
 The provider's account reading (balance, quota or rate limits, depending on the
-`account_state` protocol). Returns `501` if none is configured.
+`account_state` protocol), asked on the protocol's own host or on
+`account_state_base_url`. Returns `501` if none is configured.
+
+```json
+{"protocol": "OpenAiCodexUsage", "plan_type": "plus", "availability": null,
+ "balances": [],
+ "quotas": [{"id": "primary", "name": null, "unit": "unknown", "used": null, "limit": null,
+             "remaining": null, "used_percent": "2", "window": {"duration": 300, "unit": "minutes"},
+             "resets_at": "1790513311", "reached": false, "unlimited": null}],
+ "failure": null, "warnings": []}
+```
+
+Amounts are decimal strings exactly as the service reported them, and missing ones
+are `null`, never `0`. A balance has `currency`, `available`, `total` and the parts
+the service splits it into (`cash`, `granted`, `topped_up`, `voucher`, `credit`,
+`owed`). A window's `unit` says what it counts (`tokens`, `requests`, `credits`,
+`time`, `currency_minor` or `unknown`), and `window` its length, usually in minutes
+(`months` for a calendar month). `resets_at` is as the service wrote it: Unix
+seconds, Unix milliseconds or a date. A refusal reported inside a successful reply,
+such as a rejected key or an empty account, is `failure` with a `kind` of
+`Unauthorized`, `Unpaid`, `Throttled` or `Unknown`.
 
 ### ChatGPT sign-in
 

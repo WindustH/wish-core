@@ -65,6 +65,9 @@ pub struct ProviderConfig {
   pub model_list: Option<String>,
   pub model_list_path: Option<String>,
   pub account_state: Option<String>,
+  /// Host the account reading is asked on, for a service that serves one account API from a
+  /// regional twin (`open.bigmodel.cn` beside `api.z.ai`). Absent, the protocol's own host.
+  pub account_state_base_url: Option<String>,
 }
 fn enabled() -> bool {
   true
