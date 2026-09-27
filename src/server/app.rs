@@ -141,13 +141,18 @@ impl App {
     for message in &mut input.initial_messages {
       message.normalize_new_input();
     }
+    // Agent instructions may be inserted at the front; origins line up from the back.
     crate::server::media::apply_agent_instructions(&mut input.initial_messages);
+    let inserted = input.initial_messages.len().saturating_sub(input.initial_origins.len());
+    let origins = std::iter::repeat_n(crate::session::EntryOrigin::Imported, inserted)
+      .chain(input.initial_origins);
+    let initial: Vec<_> = input.initial_messages.into_iter().zip(origins).collect();
     let storage = self.storage.clone();
     let id = descriptor.id.clone();
     let session = blocking(move || {
       let mut session = Session::create(storage, &id, input.config)?;
       session.set_metadata(input.metadata)?;
-      session.import_history(input.initial_messages)?;
+      session.import_history(initial)?;
       Ok(session)
     })
     .await?;

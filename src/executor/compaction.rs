@@ -22,7 +22,7 @@ use crate::{
   },
 };
 use futures_util::{
-  future::{Either, select},
+  future::{Either, join_all, select},
   pin_mut,
 };
 
@@ -147,27 +147,41 @@ pub(super) async fn cutover_compaction(
       )
       .await
     } else {
-      while let Some(plan) = plan_standby_summary(caller, session, control).await? {
-        let started_at = Timestamp::now();
-        session.record_events(vec![(
-          started_at,
-          SessionEvent::CompactionSummaryStarted {
-            source_start: plan.start,
-            source_end: plan.end,
-            measurement: plan.measurement.clone(),
-          },
-        )])?;
-        notify_observers(session, cursor, observe)?;
-        let res = execute_standby_summary(caller, control, plan).await?;
-        commit_standby_summary(session, res, cursor, observe)?;
+      // Every remaining span is summarized at once: each request repeats the same prefix and names
+      // its own span, so none waits for another. They commit in order, since each continues the
+      // standby where the one before it ended; a failure keeps the spans committed before it.
+      let plans = plan_standby_summaries(caller, session, control, usize::MAX).await?;
+      let started_at = Timestamp::now();
+      session.record_events(
+        plans
+          .iter()
+          .map(|plan| {
+            (
+              started_at,
+              SessionEvent::CompactionSummaryStarted {
+                source_start: plan.start,
+                source_end: plan.end,
+                measurement: plan.measurement.clone(),
+              },
+            )
+          })
+          .collect(),
+      )?;
+      notify_observers(session, cursor, observe)?;
+      let results =
+        join_all(plans.into_iter().map(|plan| execute_standby_summary(caller, control, plan)))
+          .await;
+      for result in results {
+        commit_standby_summary(session, result?, cursor, observe)?;
       }
+      let kept = count_kept_prefix(&request.conversation);
       replace_context(
         caller,
         session,
         control,
         Sizing { config: &config, calibration },
         request,
-        fixed,
+        kept,
         reason,
       )
       .await
@@ -185,6 +199,19 @@ pub(super) async fn cutover_compaction(
   };
   notify_observers(session, cursor, observe)?;
   Ok(outcome)
+}
+
+/// The prefix local compaction keeps as it is: the fixed instructions, then the encrypted
+/// compaction items right after them. Another provider reads such an item through its handoff,
+/// and the provider that made it still reads it after switching back, so it is neither summarized
+/// nor trimmed.
+fn count_kept_prefix(conversation: &[Message]) -> usize {
+  let fixed = conversation.iter().take_while(|message| message.is_fixed_instruction()).count();
+  fixed
+    + conversation[fixed..]
+      .iter()
+      .take_while(|message| matches!(message, Message::UpstreamCompaction { .. }))
+      .count()
 }
 
 pub(super) async fn maintain(
@@ -331,14 +358,25 @@ pub(crate) async fn plan_standby_summary(
   session: &Session,
   control: &ExecutionControl,
 ) -> Result<Option<StandbySummaryPlan>, Failure> {
+  Ok(plan_standby_summaries(caller, session, control, 1).await?.pop())
+}
+
+/// Up to `limit` consecutive spans, the first starting at the first unsummarized entry and each
+/// later one where the previous ends.
+async fn plan_standby_summaries(
+  caller: &impl ModelCaller,
+  session: &Session,
+  control: &ExecutionControl,
+  limit: usize,
+) -> Result<Vec<StandbySummaryPlan>, Failure> {
   let Some(config) = session.get_config().compaction.clone() else {
-    return Ok(None);
+    return Ok(Vec::new());
   };
   if caller.supports_upstream_compaction() {
-    return Ok(None);
+    return Ok(Vec::new());
   }
   if control.is_cancelled() {
-    return Ok(None);
+    return Ok(Vec::new());
   }
   let active = session.get_active_generation()?;
   let request = session.build_request()?;
@@ -366,11 +404,7 @@ pub(crate) async fn plan_standby_summary(
       .filter(|(_, estimate)| *estimate > 0)
       .map(|(actual, estimate)| actual as f64 / estimate as f64)
   });
-  let fixed = request
-    .conversation
-    .iter()
-    .take_while(|message| message.is_fixed_instruction())
-    .count();
+  let fixed = count_kept_prefix(&request.conversation);
   let standby = session.get_standby_generation()?;
   let processed = standby
     .source
@@ -378,35 +412,41 @@ pub(crate) async fn plan_standby_summary(
     .map(|(_, end)| end as usize)
     .unwrap_or((active.compaction_cursor as usize).max(fixed));
   let eligible = last.as_ref().map(|call| call.input_entry_count as usize).unwrap_or(0);
+  let mut plans = Vec::new();
   if eligible <= processed || processed >= request.conversation.len() {
-    return Ok(None);
+    return Ok(plans);
   }
   let boundaries = find_boundaries(&request.conversation)?;
+  let mut start = processed;
   for end in boundaries.into_iter().filter(|end| *end > processed && *end <= eligible) {
-    if request.conversation[processed..end]
+    if request.conversation[start..end]
       .iter()
       .any(|message| matches!(message, Message::UpstreamCompaction { .. }))
     {
-      return Ok(None);
+      break;
     }
-    let span_request = build_span_request(&request, &request.conversation[processed..end]);
+    let span_request = build_span_request(&request, &request.conversation[start..end]);
     caller.validate_request(&span_request)?;
     let measurement = measure(caller, control, &config, &span_request, calibration).await?;
     if measurement.tokens < config.segment_tokens {
       continue;
     }
-    let summary_request = build_summary_request(&request, eligible, processed, end);
+    let summary_request = build_summary_request(&request, eligible, start, end);
     caller.validate_request(&summary_request)?;
-    return Ok(Some(StandbySummaryPlan {
+    plans.push(StandbySummaryPlan {
       summary_request,
       input_entry_count: eligible as u64,
       generation: active.id,
-      start: processed as u64,
+      start: start as u64,
       end: end as u64,
       measurement,
-    }));
+    });
+    if plans.len() == limit {
+      break;
+    }
+    start = end;
   }
-  Ok(None)
+  Ok(plans)
 }
 
 pub(crate) async fn execute_standby_summary(

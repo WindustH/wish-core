@@ -3,6 +3,7 @@
 mod app;
 mod catalog;
 mod codex_login;
+mod compaction_item;
 mod config;
 mod configuration;
 mod error;

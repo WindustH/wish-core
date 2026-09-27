@@ -165,10 +165,14 @@ pub async fn update_session(
   let config = config.map(|v| slot.configure_tools(v)).transpose()?;
   blocking(move || {
     if let Some(config) = config {
-      let next_provider = app.get_provider(&desired_provider)?;
-      let needs_handoff = next_provider.client.get_upstream_compaction_protocol().is_none()
-        && session.build_request()?.conversation.iter()
-          .any(|message| matches!(message, Message::UpstreamCompaction { .. }));
+      app.get_provider(&desired_provider)?;
+      // An encrypted item the next provider cannot read, and that has no handoff yet, is
+      // translated at the next run boundary, while the current provider can still read it.
+      let needs_handoff = session.build_request()?.conversation.iter().any(|message| {
+        matches!(message, Message::UpstreamCompaction { .. })
+          && !crate::server::compaction_item::can_read(message, &desired_provider)
+          && !matches!(crate::server::compaction_item::get_handoff(message), Some((_, true)))
+      });
       if needs_handoff {
         next.pending_selection = Some(crate::server::session::selection::PendingSelection {
           provider: desired_provider,
@@ -288,6 +292,14 @@ pub async fn fork(
   let mut config = session.get_config().clone();
   config.tools.clear();
   let request = session.build_request()?;
+  // Summaries and compaction items stay context in the copy, as they are here.
+  let active = session.get_active_generation()?;
+  let list = session.get_generation_entries(active.id)?;
+  let mut initial_origins = Vec::new();
+  for id in list.read_page(0, list.len()? as usize)?.items.iter() {
+    let entry = session.get_entry(**id)?.ok_or(crate::session::SessionError::InvalidEntry(**id))?;
+    initial_origins.push(entry.origin);
+  }
   let input = CreateSession {
     name: format!("{} (copy)", descriptor.name),
     provider: descriptor.provider,
@@ -296,6 +308,7 @@ pub async fn fork(
     config,
     metadata: session.get_metadata().clone(),
     initial_messages: request.conversation,
+    initial_origins,
   };
   drop(session);
   Ok((StatusCode::CREATED, Json(app.create_session(input).await?.describe())))

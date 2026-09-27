@@ -89,7 +89,14 @@ impl Session {
     owner: OwnerGuard,
     record: SessionRecord,
   ) -> Self {
-    Self { storage, key, _owner: owner, record, control: Default::default() }
+    Self {
+      storage,
+      key,
+      _owner: owner,
+      record,
+      control: Default::default(),
+      arrivals: Default::default(),
+    }
   }
   /// Import request content and settings; session tool selection is always Auto.
   pub fn from_request(request: Request) -> Result<Self, SessionError> {
@@ -126,16 +133,31 @@ impl Session {
 }
 
 impl Session {
-  /// Import a complete, protocol-valid conversation at an inactive boundary.
+  /// Import a complete, protocol-valid conversation at an inactive boundary, each message with the
+  /// origin it had where it came from. Summaries and other context-only entries join the context
+  /// but no history, as they did there, and later summaries start after them.
   pub fn import_history(
     &mut self,
-    messages: Vec<crate::protocol::Message>,
+    messages: Vec<(crate::protocol::Message, EntryOrigin)>,
   ) -> Result<(), SessionError> {
     self.require_stable()?;
-    validate_tool_pairs(messages.iter())?;
+    validate_tool_pairs(messages.iter().map(|(message, _)| message))?;
     self.update(move |transaction| {
-      for message in messages {
-        transaction.append_message(message, EntryOrigin::Imported)?;
+      let mut cursor = None;
+      for (position, (message, origin)) in messages.into_iter().enumerate() {
+        if matches!(origin, EntryOrigin::Summary | EntryOrigin::Context) {
+          let entry = transaction.store_entry(message, origin)?;
+          let generation = transaction.load_generation(transaction.record.active)?;
+          transaction.tx.append_item(&generation.entries, &entry)?;
+          cursor = Some(position as u64 + 1);
+        } else {
+          transaction.append_message(message, EntryOrigin::Imported)?;
+        }
+      }
+      if let Some(cursor) = cursor {
+        let mut generation = transaction.load_generation(transaction.record.active)?;
+        generation.compaction_cursor = generation.compaction_cursor.max(cursor);
+        transaction.save_generation(&generation)?;
       }
       Ok(())
     })

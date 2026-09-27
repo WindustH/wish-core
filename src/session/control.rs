@@ -59,6 +59,24 @@ impl SessionControl {
   }
 }
 
+/// Tells the owner's executor that input was queued. The queue stays the durable record; this only
+/// wakes an executor that waits on background work, so it can collect the input at once.
+#[derive(Clone)]
+pub(crate) struct InputArrivals(watch::Sender<()>);
+impl Default for InputArrivals {
+  fn default() -> Self {
+    Self(watch::channel(()).0)
+  }
+}
+impl InputArrivals {
+  pub(crate) fn announce(&self) {
+    self.0.send_replace(());
+  }
+  pub(crate) fn subscribe(&self) -> watch::Receiver<()> {
+    self.0.subscribe()
+  }
+}
+
 /// Deregister on every exit, including errors and a dropped executor future.
 pub(crate) struct RunRegistration(watch::Sender<Option<bool>>);
 impl RunRegistration {

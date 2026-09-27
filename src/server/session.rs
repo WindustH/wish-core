@@ -47,6 +47,10 @@ pub struct Descriptor {
 pub struct CreateSession {
   #[serde(default)]
   pub initial_messages: Vec<crate::protocol::Message>,
+  /// Where each initial message came from, when it came from another session (a fork); missing
+  /// origins are `Imported`.
+  #[serde(skip)]
+  pub initial_origins: Vec<crate::session::EntryOrigin>,
   #[serde(default)]
   pub name: String,
   pub provider: String,

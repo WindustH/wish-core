@@ -29,5 +29,6 @@ pub struct Session {
   key: String,
   _owner: OwnerGuard,
   control: control::SessionControl,
+  arrivals: control::InputArrivals,
   record: SessionRecord,
 }

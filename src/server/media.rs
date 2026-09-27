@@ -118,6 +118,7 @@ impl SessionModel {
   async fn prepare(&self, request: &Request) -> Result<(Request, bool), Error> {
     let mut request = request.clone();
     apply_agent_instructions(&mut request.conversation);
+    self.project_compactions(&mut request.conversation);
     // File writes run outside the async runtime workers; validation below performs no I/O.
     let (mut messages, model, provider, provider_id, directory, rejected) = (
       request.conversation,
@@ -141,6 +142,10 @@ impl SessionModel {
     .map_err(|e| Error::Build(e.to_string()))??;
     request.conversation = conversation;
     Ok((request, images))
+  }
+  /// Encrypted compaction items this provider cannot read travel as their readable handoff.
+  fn project_compactions(&self, conversation: &mut [Message]) {
+    crate::server::compaction_item::project(conversation, &self.provider_id);
   }
   fn with_model_context(&self, error: Error, model: &str) -> Error {
     match error {
@@ -203,6 +208,7 @@ impl ModelCaller for SessionModel {
   fn validate_request(&self, request: &Request) -> Result<(), Error> {
     let mut request = request.clone();
     apply_agent_instructions(&mut request.conversation);
+    self.project_compactions(&mut request.conversation);
     self.project(&request.model, &mut request.conversation, false)?;
     self.client.validate_request(&request)
   }
@@ -228,7 +234,7 @@ impl ModelCaller for SessionModel {
     };
     projected.conversation = request.conversation.clone();
     let (projected, _) = self.prepare(&projected).await?;
-    self
+    let mut compaction = self
       .client
       .compact_upstream(&UpstreamCompactionRequest {
         model: request.model.clone(),
@@ -239,7 +245,13 @@ impl ModelCaller for SessionModel {
         cache: request.cache.clone(),
       })
       .await
-      .map_err(|error| self.with_model_context(error, &request.model))
+      .map_err(|error| self.with_model_context(error, &request.model))?;
+    for message in &mut compaction.conversation {
+      if matches!(message, Message::UpstreamCompaction { .. }) {
+        crate::server::compaction_item::set_provider(message, &self.provider_id);
+      }
+    }
+    Ok(compaction)
   }
   async fn call(&self, original: &Request) -> Result<CallResponse<Self::Stream>, Error> {
     let (request, images) = self.prepare(original).await?;

@@ -1,15 +1,17 @@
 use crate::{
   protocol::Message,
   session::{
-    EntryId, EntryOrigin, Generation, GenerationId, GenerationStatus, HistoryItem, RunOutcome,
-    Session, SessionError, SessionEvent,
+    EntryId, EntryOrigin, Generation, GenerationId, GenerationStatus, RunOutcome, Session,
+    SessionError, SessionEvent,
   },
 };
 
 impl Session {
-  /// Replace the encrypted compaction item with readable context in a fresh active generation.
-  /// Existing entries after the item keep their IDs and order. Failure still creates a generation
-  /// with an explicit placeholder so the new provider never receives an unreadable blob.
+  /// Swap the encrypted compaction item for a copy that also carries its readable handoff, in a
+  /// fresh active generation. Existing entries around the item keep their IDs and order. Failure
+  /// still attaches an explicit placeholder so the new provider never receives an unreadable blob.
+  /// Like a standby summary, the copy is context rather than conversation: it joins no history,
+  /// and later summaries start after it.
   pub(crate) fn commit_compaction_translation(
     &mut self,
     source: GenerationId,
@@ -43,13 +45,12 @@ impl Session {
           entries: list,
           config: config.clone(),
           source: None,
-          compaction_cursor: prefix.len() as u64,
+          compaction_cursor: prefix.len() as u64 + 1,
         },
       )?;
       active.status = GenerationStatus::Sealed;
       transaction.save_generation(&active)?;
       transaction.record.active = id;
-      transaction.record_history_with_call(HistoryItem::Message(entry), None)?;
       let mut standby = transaction.load_generation(transaction.record.standby)?;
       standby.entries = transaction.create_list::<EntryId>()?;
       standby.source = None;

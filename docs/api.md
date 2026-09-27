@@ -432,8 +432,10 @@ are kept.
 
 Creates `"<name> (copy)"` with the same provider, directory, shell flag,
 configuration and metadata, seeded with the current context (not the full
-history). The shell override is not copied. Returns `201` with the new
-session, or `409` while the source runs.
+history). Summaries and compaction items in that context stay context in the
+copy: they are not added to its history, and later summaries start after them.
+The shell override is not copied. Returns `201` with the new session, or `409`
+while the source runs.
 
 ### `PUT /api/sessions/{id}/config`, `PUT /api/sessions/{id}/metadata`
 

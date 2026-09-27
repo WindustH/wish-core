@@ -111,6 +111,29 @@ fn record_standby_failure(
   notify_observers(session, cursor, observe)
 }
 
+/// Commits a finished standby summary, or records its failure without failing the run.
+fn settle_standby_summary(
+  summary: Result<super::compaction::StandbySummaryResult, super::compaction::Failure>,
+  session: &mut Session,
+  cursor: &mut u64,
+  observe: &mut (impl FnMut(&SessionEvent) + Send),
+) -> Result<(), SessionError> {
+  match summary {
+    Ok(result) => super::compaction::commit_standby_summary(session, result, cursor, observe),
+    Err(super::compaction::Failure::Outcome(outcome)) => {
+      record_standby_failure(session, outcome, cursor, observe)
+    }
+    Err(super::compaction::Failure::Session(error)) => Err(error),
+  }
+}
+
+/// What ended the wait for a standby summary after the conversation finished.
+enum FinishedWait {
+  Summary(Box<Result<super::compaction::StandbySummaryResult, super::compaction::Failure>>),
+  Cancelled,
+  Input,
+}
+
 async fn await_standby_task(
   task: Option<
     Pin<
@@ -138,15 +161,7 @@ async fn await_standby_task(
         session.finish_run(RunOutcome::Interrupted)?;
         return Ok(Some(RunOutcome::Interrupted));
       }
-      Either::Right((Ok(result), _)) => {
-        super::compaction::commit_standby_summary(session, result, cursor, observe)?;
-      }
-      Either::Right((Err(super::compaction::Failure::Outcome(outcome)), _)) => {
-        record_standby_failure(session, outcome, cursor, observe)?;
-      }
-      Either::Right((Err(super::compaction::Failure::Session(err)), _)) => {
-        return Err(err);
-      }
+      Either::Right((summary, _)) => settle_standby_summary(summary, session, cursor, observe)?,
     }
   }
   Ok(None)
@@ -255,6 +270,32 @@ async fn run_session(
 
     match action {
       SessionAction::Finished(outcome) => {
+        // A standby summary still in flight never holds back new input: input queued meanwhile is
+        // collected at once, and the summary goes on beside the next model call or tool batch.
+        if let (Some(task), SessionState::Idle) = (standby_task.as_mut(), session.get_state()) {
+          let mut arrivals = session.watch_input_arrivals();
+          let waited = if session.has_queued_input()? {
+            FinishedWait::Input
+          } else {
+            let cancelled = control.wait_for_cancellation();
+            let arrived = arrivals.changed();
+            pin_mut!(cancelled, arrived);
+            match select(task.as_mut(), select(cancelled, arrived)).await {
+              Either::Left((summary, _)) => FinishedWait::Summary(Box::new(summary)),
+              Either::Right((Either::Left(_), _)) => FinishedWait::Cancelled,
+              Either::Right((Either::Right(_), _)) => FinishedWait::Input,
+            }
+          };
+          match waited {
+            FinishedWait::Input => continue,
+            FinishedWait::Summary(summary) => {
+              settle_standby_summary(*summary, session, &mut cursor, &mut observe)?;
+              return Ok(outcome);
+            }
+            // Cancellation is settled below, as for a summary awaited without input in view.
+            FinishedWait::Cancelled => {}
+          }
+        }
         if let Some(finished_outcome) = await_standby_task(
           standby_task.take(),
           session,

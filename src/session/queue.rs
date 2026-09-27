@@ -13,17 +13,20 @@ use crate::{
 pub struct SessionSender {
   pub(crate) storage: Storage,
   pub(crate) key: String,
+  pub(crate) arrivals: super::control::InputArrivals,
 }
 impl SessionSender {
   pub fn enqueue_message(&self, message: Message) -> Result<EntryId, SessionError> {
     validate_input(&message)?;
     let key = self.key.clone();
     let recorded_at = crate::session::statistics::Timestamp::now();
-    self.storage.transaction(move |tx| {
+    let entry = self.storage.transaction(move |tx| {
       let stored = tx.load_object::<SessionRecord>(&key)?;
       let mut record = (*stored).clone();
       SessionTransaction { record: &mut record, tx, key: &key, recorded_at }.append_input(message)
-    })
+    })?;
+    self.arrivals.announce();
+    Ok(entry)
   }
 }
 
@@ -44,7 +47,19 @@ impl Session {
     self.record.queue_head
   }
   pub fn create_sender(&self) -> SessionSender {
-    SessionSender { storage: self.storage.clone(), key: self.key.clone() }
+    SessionSender {
+      storage: self.storage.clone(),
+      key: self.key.clone(),
+      arrivals: self.arrivals.clone(),
+    }
+  }
+  /// Watches for input queued through this owner's senders from now on.
+  pub(crate) fn watch_input_arrivals(&self) -> tokio::sync::watch::Receiver<()> {
+    self.arrivals.subscribe()
+  }
+  /// Whether queued input is waiting to be collected.
+  pub(crate) fn has_queued_input(&self) -> Result<bool, SessionError> {
+    Ok(self.get_message_queue().len()? > self.record.queue_head)
   }
   pub fn enqueue_message(&mut self, message: Message) -> Result<EntryId, SessionError> {
     validate_input(&message)?;

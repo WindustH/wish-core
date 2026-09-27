@@ -1,5 +1,5 @@
 use super::*;
-use crate::server::media::SessionModel;
+use crate::server::{compaction_item, media::SessionModel};
 use crate::{
   Error,
   executor::{BoundaryResult, ExecutionControl, RunBoundary, compaction::translation::{self, Handoff}, model::{CallResponse, ModelCaller}, notify_observers},
@@ -67,14 +67,10 @@ impl RunBoundary for SelectionBoundary<'_> {
   }
 }
 
-fn missing_context_placeholder() -> Message {
-  Message::Developer {
-    metadata: json!({"source":"upstream_compaction_handoff_unavailable"}),
-    fixed: Some(false),
-    content: vec![ContentBlock::Text {
-      text: "[Earlier conversation was compressed into an encrypted item by the previous provider. It could not be translated for this model, so part of the earlier context is missing. Ask for needed details rather than inventing them.]".into(),
-    }],
-  }
+fn missing_context_placeholder() -> Vec<ContentBlock> {
+  vec![ContentBlock::Text {
+    text: "[Earlier conversation was compressed into an encrypted item by the previous provider. It could not be translated for this model, so part of the earlier context is missing. Ask for needed details rather than inventing them.]".into(),
+  }]
 }
 
 impl SessionSlot {
@@ -129,55 +125,69 @@ impl SessionSlot {
         .map_err(|e| SessionError::InvalidCompaction(e.to_string()))?;
       let next_model = self.make_model(provider, pending.provider.clone());
       let mut translated = None;
-      if !next_model.supports_upstream_compaction() {
-        let old_request = session.build_request()?;
-        let positions: Vec<_> = old_request.conversation.iter().enumerate()
-          .filter_map(|(index, message)| matches!(message, Message::UpstreamCompaction { .. }).then_some(index))
-          .collect();
-        if let Some(&first) = positions.first() {
-          let active = session.get_active_generation()?;
-          let list = session.get_generation_entries(active.id)?;
-          let ids: Vec<_> = list.read_page(0, list.len()? as usize)?.items.iter().map(|id| **id).collect();
-          if ids.len() != old_request.conversation.len() {
-            return Err(SessionError::StaleGeneration);
-          }
-          let handoff = if positions.len() != 1 {
-            Handoff::Failed(RunOutcome::Failed(Error::Build("multiple encrypted compaction items cannot be translated together".into())))
-          } else if !model.current().supports_upstream_compaction()
-            || app.get_provider(&selected.provider).is_err()
-          {
-            Handoff::Failed(RunOutcome::Failed(Error::Build(format!(
-              "previous provider `{}` is unavailable for encrypted context translation",
-              selected.provider,
-            ))))
-          } else {
-            let mut request = old_request.clone();
-            request.conversation.truncate(first + 1);
-            translation::generate_handoff(
-              model.current().as_ref(), session, control, cursor, observe, request, (first + 1) as u64,
-            ).await?
-          };
-          if matches!(handoff, Handoff::Interrupted) || control.is_cancelled() {
-            return Ok(BoundaryResult::Interrupted);
-          }
-          let (replacement, failure) = match handoff {
-            Handoff::Translated(message) => (message, None),
-            Handoff::Failed(outcome) => (missing_context_placeholder(), Some(outcome)),
-            Handoff::Interrupted => unreachable!(),
-          };
-          let after: Vec<_> = (first + 1..ids.len())
-            .filter(|index| !positions.contains(index))
-            .collect();
-          let conversation: Vec<_> = old_request.conversation[..first].iter()
-            .cloned()
-            .chain(std::iter::once(replacement.clone()))
-            .chain(after.iter().map(|index| old_request.conversation[*index].clone()))
-            .collect();
-          next_model.validate_request(&pending.config.build_request(conversation))
-            .map_err(|error| SessionError::InvalidCompaction(format!("translated context is invalid for the selected provider: {error}")))?;
-          translated = Some((active.id, ids[..first].to_vec(), replacement,
-            after.into_iter().map(|index| ids[index]).collect(), failure));
+      let old_request = session.build_request()?;
+      let old_provider_live = app.get_provider(&selected.provider).is_ok();
+      let old_reads =
+        |item: &Message| old_provider_live && compaction_item::can_read(item, &selected.provider);
+      // An encrypted item the next provider cannot read travels as its readable handoff (see
+      // `compaction_item`). It needs one now when it has none, or only a placeholder that the
+      // current provider, which can read the item, can replace.
+      let positions: Vec<_> = old_request.conversation.iter().enumerate()
+        .filter_map(|(index, message)| {
+          let needed = matches!(message, Message::UpstreamCompaction { .. })
+            && !compaction_item::can_read(message, &pending.provider)
+            && match compaction_item::get_handoff(message) {
+              None => true,
+              Some((_, translated)) => !translated && old_reads(message),
+            };
+          needed.then_some(index)
+        })
+        .collect();
+      if let Some(&first) = positions.first() {
+        let active = session.get_active_generation()?;
+        let list = session.get_generation_entries(active.id)?;
+        let ids: Vec<_> = list.read_page(0, list.len()? as usize)?.items.iter().map(|id| **id).collect();
+        if ids.len() != old_request.conversation.len() {
+          return Err(SessionError::StaleGeneration);
         }
+        let handoff = if positions.len() != 1 {
+          Handoff::Failed(RunOutcome::Failed(Error::Build("multiple encrypted compaction items cannot be translated together".into())))
+        } else if !old_reads(&old_request.conversation[first]) {
+          Handoff::Failed(RunOutcome::Failed(Error::Build(format!(
+            "previous provider `{}` is unavailable for encrypted context translation",
+            selected.provider,
+          ))))
+        } else {
+          let mut request = old_request.clone();
+          request.conversation.truncate(first + 1);
+          translation::generate_handoff(
+            model.current().as_ref(), session, control, cursor, observe, request, (first + 1) as u64,
+          ).await?
+        };
+        if matches!(handoff, Handoff::Interrupted) || control.is_cancelled() {
+          return Ok(BoundaryResult::Interrupted);
+        }
+        let (content, failure) = match handoff {
+          Handoff::Translated(content) => (content, None),
+          Handoff::Failed(outcome) => (missing_context_placeholder(), Some(outcome)),
+          Handoff::Interrupted => unreachable!(),
+        };
+        // The item stays, encrypted content and all, so the provider that made it reads it again
+        // after switching back; the handoff rides along for every other provider.
+        let replacement =
+          compaction_item::with_handoff(&old_request.conversation[first], &content, failure.is_none());
+        let after: Vec<_> = (first + 1..ids.len())
+          .filter(|index| !positions.contains(index))
+          .collect();
+        let conversation: Vec<_> = old_request.conversation[..first].iter()
+          .cloned()
+          .chain(std::iter::once(replacement.clone()))
+          .chain(after.iter().map(|index| old_request.conversation[*index].clone()))
+          .collect();
+        next_model.validate_request(&pending.config.build_request(conversation))
+          .map_err(|error| SessionError::InvalidCompaction(format!("translated context is invalid for the selected provider: {error}")))?;
+        translated = Some((active.id, ids[..first].to_vec(), replacement,
+          after.into_iter().map(|index| ids[index]).collect(), failure));
       }
 
       let mut descriptor = self.descriptor.write().unwrap();
