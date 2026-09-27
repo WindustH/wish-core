@@ -51,6 +51,9 @@ from anything that speaks HTTP.
 - **A capable shell.** The agent runs commands in the session's directory,
   moves long jobs to the background and hears back when they finish, types
   into interactive programs, and reports exactly what each file edit changed.
+- **Asks when your call is needed.** The agent can put choices and short
+  questions to you in a single form. If it stops waiting and carries on, an
+  answer you give later still reaches it.
 - **Keep talking while it works.** Queue follow-up messages, reorder or cancel
   them, interrupt at any time, or ask a quick side question without disturbing
   the running task.
@@ -104,7 +107,7 @@ Everything the web app does is available over the [HTTP API](docs/api.md):
 ```sh
 # Create a session with shell access in /tmp
 curl -s http://127.0.0.1:9780/api/sessions -H 'Content-Type: application/json' -d '{
-  "provider": "openai", "cwd": "/tmp", "shell": true,
+  "provider": "openai", "cwd": "/tmp", "tools": {"shell": true},
   "config": {"model": "gpt-5", "stream": true, "tools": [], "run": {"tools": "Serial"}}}'
 
 # Send it a message; it starts working right away

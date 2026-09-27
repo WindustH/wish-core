@@ -121,6 +121,7 @@ engine error, for example
 | PUT | `/api/sessions/{id}/config` | Replace the session configuration |
 | PUT | `/api/sessions/{id}/metadata` | Replace the session metadata |
 | PUT | `/api/sessions/{id}/shell` | Give the session its own shell, or follow the global one |
+| PUT | `/api/sessions/{id}/tools` | Switch the session's optional tools |
 | POST | `/api/sessions/{id}/input` | Queue user input and run |
 | POST | `/api/sessions/{id}/messages` | Queue one message without running |
 | POST | `/api/sessions/{id}/run` | Start or resume execution |
@@ -128,6 +129,7 @@ engine error, for example
 | POST | `/api/sessions/{id}/compact` | Compact the context now |
 | POST | `/api/sessions/{id}/context/clear` | Start an empty context |
 | PATCH, DELETE | `/api/sessions/{id}/queue/{entry}` | Reorder or cancel queued input |
+| POST | `/api/sessions/{id}/answer` | Answer or skip an `ask_user` form |
 | GET | `/api/sessions/{id}/events` | Session event stream (SSE) |
 | GET | `/api/sessions/{id}/history` | Conversation timeline |
 | POST | `/api/sessions/{id}/history/query` | Filtered chronological history |
@@ -345,7 +347,7 @@ Session endpoints return a session as `{"session": descriptor, "status": status}
 {
   "session": {
     "id": "8c1f...", "name": "Refactor parser", "provider": "openai",
-    "cwd": "/home/me/project", "shell": true,
+    "cwd": "/home/me/project", "tools": {"shell": true, "ask_user": true},
     "created_at": 1758790000000, "updated_at": 1758790500000, "revision": 7
   },
   "status": {
@@ -353,7 +355,7 @@ Session endpoints return a session as `{"session": descriptor, "status": status}
     "config": {"model": "gpt-5", "stream": true, "tools": [...], "run": {"tools": "Serial"}},
     "metadata": {"tags": ["work"]},
     "active_generation": 3, "queue_head": 12, "queue_count": 0,
-    "standby_preparing": false, "context_tokens": 48210
+    "standby_preparing": false, "context_tokens": 48210, "pending_questions": []
   }
 }
 ```
@@ -362,7 +364,7 @@ Descriptor fields:
 
 | Field | Meaning |
 | --- | --- |
-| `shell` | Whether the session has shell tools |
+| `tools` | The session's optional built-in tools: `{"shell", "ask_user"}`, each a boolean |
 | `shell_command` | The session's own `{program, args}`. Absent when it follows the global `shell` setting |
 | `pending_selection` | A provider/model change made while running, not yet in effect |
 
@@ -379,6 +381,7 @@ Status fields:
 | `context_tokens` | Input tokens of the last completed conversation call in the active context, made with the configured model. Compaction compares this with `trigger_tokens`. `null` until such a call exists |
 | `selection_pending` | A model change waits for the next step boundary |
 | `last_operation` | The last `operation_finished` or `operation_failed` event |
+| `pending_questions` | Open [`ask_user` forms](#questions-to-the-user), oldest first |
 
 ### Session configuration
 
@@ -396,9 +399,10 @@ Status fields:
 | `compaction` | no | `{"trigger_tokens", "target_tokens", "segment_tokens", "estimator"}`; requires `0 < target < trigger` and `segment > 0`. Absent disables compaction |
 
 Every session gets `history_search`, `history_read`, `history_query` and
-`view_image`. A session created with `shell: true` also gets `shell_start`,
-`shell_edit`, `shell_poll`, `shell_write` and `shell_kill`. On updates `tools`
-may list these names; any other name is rejected.
+`view_image`. With `tools.shell` it also gets `shell_start`, `shell_edit`,
+`shell_poll`, `shell_write` and `shell_kill`, and with `tools.ask_user` it gets
+`ask_user`. On updates `tools` may list these names; any other name is
+rejected.
 
 ### `GET /api/sessions`
 
@@ -414,7 +418,7 @@ loading any conversation.
 {
   "provider": "openai",
   "cwd": "/home/me/project",
-  "shell": true,
+  "tools": {"shell": true},
   "name": "Refactor parser",
   "metadata": {"tags": ["work"]},
   "config": {"model": "gpt-5", "stream": true, "tools": [], "run": {"tools": "Serial"}}
@@ -422,7 +426,9 @@ loading any conversation.
 ```
 
 `provider`, `cwd` (an existing absolute directory) and `config` are required.
-`initial_messages` optionally seeds the context with messages. Returns `201`
+`tools` switches optional tools; each switch left out keeps its default, no
+shell and `ask_user` on. `initial_messages` optionally seeds the context with
+messages. Returns `201`
 with the session. `404` if the provider is unknown or disabled.
 
 ### `GET /api/sessions/{id}`
@@ -452,7 +458,7 @@ are kept.
 
 ### `POST /api/sessions/{id}/fork`
 
-Creates `"<name> (copy)"` with the same provider, directory, shell flag,
+Creates `"<name> (copy)"` with the same provider, directory, tool switches,
 configuration and metadata, seeded with the current context (not the full
 history). Summaries and compaction items in that context stay context in the
 copy: they are not added to its history, and later summaries start after them.
@@ -470,7 +476,15 @@ or `409` while it runs.
 validated like the global one (`args: null` picks arguments from the shell's
 name, `{}` means the platform default). `null` returns it to the global
 setting. Takes effect from the next command, even while the session runs.
-Returns `400` for a session without shell tools.
+Returns `400` while the session's shell is switched off.
+
+### `PUT /api/sessions/{id}/tools`
+
+`{"shell": false}`, `{"ask_user": true}` or both switch the session's optional
+tools; a switch left out stays as it is. The session's tool list is rebuilt to
+match. Switching the shell off keeps background commands running, and they
+still report when they finish. Returns the session, `400` if the shell cannot
+start, or `409` while the session runs.
 
 ## Input and execution
 
@@ -530,6 +544,53 @@ searchable. Returns the session, or `409` while running.
 another; `{"before": null}` moves it to the end. `DELETE` cancels it. Both
 return `204`, work during a run, and return `409` if either entry was already
 consumed or cancelled.
+
+## Questions to the user
+
+With `tools.ask_user` the model can call `ask_user` to put a form of 1 to 8
+questions to the user. Each is a `choice` (2 to 8 options, one or several
+picked, and an answer of the user's own unless `allow_other` is false) or a
+`text` question. The call waits like any other tool: input sent meanwhile
+queues as usual, and an interrupt cancels the call. The model may set
+`timeout_seconds`; when that passes, the call returns `timed_out` and the form
+stays open for a late answer. See [tools](internals/tools.md#ask_user) for the
+tool's arguments and results.
+
+An open form in `status.pending_questions`:
+
+```json
+{"call_id": "call_7", "asked_at": 1758790500000, "timeout_seconds": 300, "timed_out": false,
+ "questions": [
+   {"type": "choice", "question": "Which database?", "header": "Database",
+    "options": [{"label": "SQLite"}, {"label": "PostgreSQL", "description": "a server"}],
+    "multi_select": false, "allow_other": true, "multiline": false},
+   {"type": "text", "question": "Table prefix?", "placeholder": "app_",
+    "multi_select": false, "allow_other": false, "multiline": false}]}
+```
+
+Open forms live in memory; a restart closes them.
+
+### `POST /api/sessions/{id}/answer`
+
+```json
+{"call_id": "call_7", "answers": [{"selected": ["PostgreSQL"]}, {"text": "app_"}]}
+```
+
+One answer per question, in order: `{"selected": [labels], "other": "..."}` for
+a choice (either part may be left out), `{"text": "..."}` for a text question,
+or `{"skipped": true}`. At least one question must be answered. `{"call_id",
+"skip": true}` declines the whole form.
+
+Returns `{"delivered": ...}`:
+
+| Value | Meaning |
+| --- | --- |
+| `now` | The waiting call returns the answers |
+| `later` | The call had timed out. The answers are queued as a `Developer` message with metadata `{"source": "ask_user_answer", "call_id", "questions", "answers"}`, and the session runs to read them, like a background command's report |
+| `dropped` | A timed-out form was skipped; nothing is sent |
+
+`400` for answers that do not fit the form, `404` for a form that is not open,
+`409` if it was already answered.
 
 ## History and records
 

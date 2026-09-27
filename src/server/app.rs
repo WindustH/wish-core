@@ -131,7 +131,8 @@ impl App {
       id: uuid::Uuid::new_v4().to_string(),
       provider: input.provider,
       cwd: input.cwd,
-      shell: input.shell,
+      // Without a word from the request: no shell, and questions to the user allowed.
+      tools: crate::server::config::ToolSwitches { shell: false, ask_user: true }.with(input.tools),
       shell_command: None,
       created_at: crate::session::statistics::Timestamp::now().0,
       updated_at: crate::session::statistics::Timestamp::now().0,
@@ -224,7 +225,7 @@ impl App {
     self.tasks.close();
     self.tasks.wait().await;
     for slot in self.sessions.lock().await.values() {
-      if let Some(shell) = &slot.tools.shell {
+      if let Some(shell) = slot.tools.shell() {
         shell.shutdown().await.map_err(ApiError::internal)?;
       }
     }

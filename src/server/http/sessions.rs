@@ -96,6 +96,66 @@ pub async fn set_config(
   })
   .await
 }
+/// Body: `{"shell", "ask_user"}`, each optional. Turns the session's optional tools on or off.
+pub async fn set_tools(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Json(changes): Json<crate::server::config::ToolChanges>,
+) -> Result<Json<Value>, ApiError> {
+  app.require_open()?;
+  let slot = app.get_session(&id).await?;
+  let mut session =
+    slot.session.clone().try_lock_owned().map_err(|_| ApiError::conflict("session is running"))?;
+  slot.require_live()?;
+  slot.switch_tools(changes).await?;
+  // The tool list is rebuilt from the switches, so a tool just switched off is not kept.
+  let mut config = session.get_config().clone();
+  config.tools.clear();
+  let config = slot.configure_tools(config)?;
+  blocking(move || {
+    session.set_config(config)?;
+    slot.update_snapshot(&session);
+    slot.persist_index()?;
+    Ok(Json(slot.describe()))
+  })
+  .await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Answer {
+  call_id: String,
+  #[serde(default)]
+  answers: Option<Vec<Value>>,
+  #[serde(default)]
+  skip: bool,
+}
+/// Body: `{"call_id", "answers"}`, or `{"call_id", "skip": true}`. Answers an `ask_user` form.
+pub async fn answer(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Json(input): Json<Answer>,
+) -> Result<Json<Value>, ApiError> {
+  use crate::server::session::ask_user::{Delivery, late_answer_message};
+  app.require_open()?;
+  let slot = app.get_session(&id).await?;
+  slot.require_live()?;
+  let delivered =
+    match slot.tools.questions.answer(&input.call_id, input.answers.as_deref(), input.skip)? {
+      Delivery::Now => "now",
+      Delivery::Dropped => "dropped",
+      // The call timed out and the agent moved on: the answers follow as a message, like a
+      // background command's report, and wake the session.
+      Delivery::Later { questions, answers } => {
+        let message = late_answer_message(&input.call_id, &questions, &answers);
+        let owner = slot.clone();
+        blocking(move || Ok(owner.handle.enqueue_message(message)?)).await?;
+        crate::server::http::content::schedule(app.clone(), slot.clone());
+        "later"
+      }
+    };
+  slot.persist_index()?;
+  Ok(Json(json!({"delivered": delivered})))
+}
 /// Body: `{"program", "args"}` for the session's own shell, or null to follow the application's.
 pub async fn set_shell(
   State(app): State<Arc<App>>,

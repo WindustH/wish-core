@@ -1,4 +1,8 @@
-use crate::server::{app::App, error::blocking};
+use crate::server::{
+  app::App,
+  config::ToolSwitches,
+  error::{ApiError, blocking},
+};
 use crate::{
   executor::{
     ExecutionControl,
@@ -6,16 +10,29 @@ use crate::{
   },
   protocol::{ContentBlock, Message},
   session::{Session, SessionHandle},
-  tool::{search_history::SearchHistoryTool, shell::ShellTool, view_image::ViewImageTool},
+  tool::{
+    search_history::SearchHistoryTool,
+    shell::{ShellConfig, ShellTool},
+    view_image::ViewImageTool,
+  },
 };
 use serde_json::json;
 use std::{
   path::PathBuf,
-  sync::{Weak, atomic::Ordering},
+  sync::{
+    Weak,
+    atomic::{AtomicBool, Ordering},
+  },
 };
 
 pub struct SessionTools {
-  pub shell: Option<ShellTool>,
+  /// Started the first time the shell is switched on, and kept while it is off so background
+  /// commands finish and report as usual.
+  shell: tokio::sync::OnceCell<ShellTool>,
+  shell_config: ShellConfig,
+  shell_on: AtomicBool,
+  ask_user_on: AtomicBool,
+  pub questions: super::ask_user::Questions,
   history: SearchHistoryTool,
   app: Weak<App>,
   session_id: String,
@@ -24,14 +41,18 @@ pub struct SessionTools {
 }
 impl SessionTools {
   pub fn new(
-    shell: Option<ShellTool>,
+    shell_config: ShellConfig,
     session: &Session,
     app: Weak<App>,
     session_id: String,
     image_dir: PathBuf,
   ) -> Self {
     Self {
-      shell,
+      shell: tokio::sync::OnceCell::new(),
+      shell_config,
+      shell_on: AtomicBool::new(false),
+      ask_user_on: AtomicBool::new(false),
+      questions: Default::default(),
       history: SearchHistoryTool::new(session),
       app,
       session_id,
@@ -42,8 +63,35 @@ impl SessionTools {
   pub fn get_history_specifications(&self) -> Vec<crate::protocol::Tool> {
     self.history.get_specifications()
   }
+  /// The shell tool, once it has been switched on.
+  pub fn shell(&self) -> Option<&ShellTool> {
+    self.shell.get()
+  }
+  /// Applies the session's switches, starting the shell tool the first time it is on.
+  pub async fn switch(&self, switches: ToolSwitches) -> Result<(), ApiError> {
+    if switches.shell {
+      self
+        .shell
+        .get_or_try_init(|| ShellTool::new(self.shell_config.clone()))
+        .await
+        .map_err(|error| ApiError::bad_request(format!("could not start the shell: {error}")))?;
+    }
+    self.shell_on.store(switches.shell, Ordering::Release);
+    self.ask_user_on.store(switches.ask_user, Ordering::Release);
+    Ok(())
+  }
+  /// Publishes the session's open questions: its index record and a change notice.
+  fn questions_changed(&self) {
+    let Some(app) = self.app.upgrade() else { return };
+    let (owner, session_id) = (app.clone(), self.session_id.clone());
+    app.tasks.spawn(async move {
+      if let Ok(slot) = owner.get_session(&session_id).await {
+        let _ = slot.persist_index();
+      }
+    });
+  }
   async fn execute_shell(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
-    let Some(shell) = &self.shell else {
+    let Some(shell) = self.shell().filter(|_| self.shell_on.load(Ordering::Acquire)) else {
       return ToolOutcome::Failed("shell is not enabled for this session".into());
     };
     let app = self.app.upgrade();
@@ -135,6 +183,12 @@ impl ToolExecutor for SessionTools {
       }
       "history_search" | "history_read" | "history_query" => {
         self.history.execute(call, control).await
+      }
+      "ask_user" => {
+        if !self.ask_user_on.load(Ordering::Acquire) {
+          return ToolOutcome::Failed("ask_user is not enabled for this session".into());
+        }
+        self.questions.ask(call, control, || self.questions_changed()).await
       }
       "shell_start" | "shell_edit" | "shell_poll" | "shell_write" | "shell_kill" => {
         self.execute_shell(call, control).await

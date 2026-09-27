@@ -19,10 +19,11 @@ model.
 
 The server's dispatcher is `SessionTools`
 ([`src/server/session/tools.rs`](../../src/server/session/tools.rs)). Every session gets
-`history_search`, `history_read`, `history_query` and `view_image`. It gets the five shell tools
-only when created with a shell. The server rewrites `config.tools` to exactly that set and
-rejects a config naming any other tool (`no executor for tool X`)
-([`src/server/session.rs`](../../src/server/session.rs)).
+`history_search`, `history_read`, `history_query` and `view_image`. The session's switches
+(`descriptor.tools`) add the five shell tools and `ask_user`. The `ShellTool` starts the first time
+the shell is switched on and stays alive while it is off, so background commands still report. The
+server rewrites `config.tools` to exactly that set and rejects a config naming any other tool
+(`no executor for tool X`) ([`src/server/session.rs`](../../src/server/session.rs)).
 
 ```rust
 use crate::tool::shell::{ShellConfig, ShellTool};
@@ -219,3 +220,33 @@ images ([`src/server/media.rs`](../../src/server/media.rs)). Each image becomes 
 `[Image sha256:…]` notice plus its blob path, and the image itself is sent only when the model's
 declared `input_modalities` allow it. If the upstream rejects images before streaming, the call is
 retried once with notices only. Stored conversation always keeps the original images.
+
+## `ask_user`
+
+`server::session::ask_user` puts a form of questions to the person using the session and waits
+for the answers ([`src/server/session/ask_user.rs`](../../src/server/session/ask_user.rs)). It is an
+ordinary tool call: the run stays in `ExecutingTools`, input sent meanwhile waits in the queue,
+and an interrupt cancels the call.
+
+| Input | Meaning |
+| --- | --- |
+| `questions` | 1 to 8 questions, each `{type, question, header?}` plus its type's fields |
+| `timeout_seconds` | 1 to 604800. Without it the call waits until answered, skipped or interrupted |
+
+A `choice` question has 2 to 8 `options` with unique labels (`{label, description?}`, or a bare
+label string), `multi_select` (default false) and `allow_other` (default true). A `text` question
+takes `placeholder` and `multiline`. A malformed form fails the call with a message saying what to
+fix.
+
+The result's `output.status` is one of:
+
+- `answered`, with `answers` in question order: `{question, type, selected, other?}`,
+  `{question, type, text}` or `{question, type, skipped: true}`;
+- `skipped`, when the user declined the whole form;
+- `timed_out`, with `waited_seconds`, when the timeout passed first.
+
+`SessionTools::questions` keeps the open forms in memory and publishes them as
+`status.pending_questions`; `POST /api/sessions/{id}/answer` hands answers to the waiting call. A
+form that timed out stays open. Answered later, it enqueues a `Developer { fixed: false }` message
+with metadata `{source: "ask_user_answer", call_id, questions, answers}` and wakes the session, as
+a background completion does; skipped, it is dropped. A restart closes every open form.

@@ -208,7 +208,7 @@ pub async fn delete_session(
     .try_lock_owned()
     .map_err(|_| ApiError::conflict("interrupt and wait for the session before deleting"))?;
   slot.require_live()?;
-  if let Some(shell) = &slot.tools.shell {
+  if let Some(shell) = slot.tools.shell() {
     shell.shutdown().await.map_err(ApiError::internal)?;
   }
   let index = app.index.clone();
@@ -304,7 +304,10 @@ pub async fn fork(
     name: format!("{} (copy)", descriptor.name),
     provider: descriptor.provider,
     cwd: descriptor.cwd,
-    shell: descriptor.shell,
+    tools: crate::server::config::ToolChanges {
+      shell: Some(descriptor.tools.shell),
+      ask_user: Some(descriptor.tools.ask_user),
+    },
     config,
     metadata: session.get_metadata().clone(),
     initial_messages: request.conversation,

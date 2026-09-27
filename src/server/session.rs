@@ -1,3 +1,4 @@
+pub mod ask_user;
 mod live;
 pub mod selection;
 mod tools;
@@ -12,7 +13,7 @@ use crate::{
   },
   storage::ReadList,
   tool::{
-    shell::{ShellCommand, ShellConfig, ShellTool},
+    shell::{ShellCommand, ShellConfig},
     view_image::ViewImageTool,
   },
 };
@@ -36,7 +37,8 @@ pub struct Descriptor {
   pub id: String,
   pub provider: String,
   pub cwd: PathBuf,
-  pub shell: bool,
+  /// Which optional built-in tools the session has.
+  pub tools: crate::server::config::ToolSwitches,
   /// This session's own shell; absent while it follows the application's.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub shell_command: Option<ShellSettings>,
@@ -56,8 +58,9 @@ pub struct CreateSession {
   pub provider: String,
   pub config: SessionConfig,
   pub cwd: PathBuf,
+  /// Optional tools to switch from the API defaults: no shell, `ask_user` on.
   #[serde(default)]
-  pub shell: bool,
+  pub tools: crate::server::config::ToolChanges,
   #[serde(default)]
   pub metadata: Value,
 }
@@ -77,8 +80,8 @@ pub struct SessionSlot {
   pub calls: ReadList<ModelCallRecord>,
   pub queue: Mutex<ReadList<EntryId>>,
   pub tools: SessionTools,
-  /// The command this session's shell tool starts; None without a shell tool.
-  pub shell_command: Option<Arc<RwLock<ShellCommand>>>,
+  /// The command this session's shell tool starts, whether or not the tool is on.
+  pub shell_command: Arc<RwLock<ShellCommand>>,
   pub image_dir: PathBuf,
   tasks: tokio_util::task::TaskTracker,
   app: std::sync::Weak<crate::server::app::App>,
@@ -102,26 +105,27 @@ impl SessionSlot {
     // A session's own shell wins; otherwise it starts from the application's and
     // follows later saves (see `follow_global_shell`). An override that no longer
     // resolves (the program was removed) falls back to the application's.
-    let shell_command = descriptor.shell.then(|| {
+    let shell_command = {
       let global = app.upgrade().map_or_else(ShellCommand::platform_default, |app| {
         app.shell.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
       });
       let own = descriptor.shell_command.as_ref().and_then(|settings| settings.resolve().ok());
       Arc::new(RwLock::new(own.unwrap_or(global)))
-    });
-    let shell = if let Some(command) = &shell_command {
-      let mut config =
-        ShellConfig::new(&descriptor.cwd, data_dir.join("shell").join(&descriptor.id));
-      config.command = Arc::clone(command);
-      Some(ShellTool::new(config).await.map_err(ApiError::internal)?)
-    } else {
-      None
     };
+    let mut shell_config =
+      ShellConfig::new(&descriptor.cwd, data_dir.join("shell").join(&descriptor.id));
+    shell_config.command = Arc::clone(&shell_command);
     let image_dir = std::path::absolute(data_dir.join("blobs").join(&descriptor.id))
       .map_err(ApiError::internal)?;
     let tasks = app.upgrade().expect("session application is alive").tasks.clone();
-    let tools =
-      SessionTools::new(shell, &session, app.clone(), descriptor.id.clone(), image_dir.clone());
+    let tools = SessionTools::new(
+      shell_config,
+      &session,
+      app.clone(),
+      descriptor.id.clone(),
+      image_dir.clone(),
+    );
+    tools.switch(descriptor.tools).await?;
     let status = Mutex::new(snapshot(&session));
     let (events, _) = broadcast::channel(256);
     Ok(Arc::new(Self {
@@ -150,12 +154,14 @@ impl SessionSlot {
     }))
   }
   pub fn configure_tools(&self, mut config: SessionConfig) -> Result<SessionConfig, ApiError> {
+    let switches = self.descriptor.read().unwrap().tools;
     for tool in &config.tools {
       let is_valid = match tool.name.as_str() {
         "view_image" | "history_search" | "history_read" | "history_query" => true,
         "shell_start" | "shell_edit" | "shell_poll" | "shell_write" | "shell_kill" => {
-          self.tools.shell.is_some()
+          switches.shell
         }
+        "ask_user" => switches.ask_user,
         _ => false,
       };
       if !is_valid {
@@ -165,10 +171,25 @@ impl SessionSlot {
     config.tools.clear();
     config.tools.extend(self.tools.get_history_specifications());
     config.tools.push(ViewImageTool.get_specification());
-    if let Some(shell) = &self.tools.shell {
+    if switches.shell
+      && let Some(shell) = self.tools.shell()
+    {
       config.tools.extend(shell.get_specifications());
     }
+    if switches.ask_user {
+      config.tools.push(ask_user::specification());
+    }
     Ok(config)
+  }
+  /// Turns optional tools on or off; the caller then reinstalls the session's tool list.
+  pub async fn switch_tools(
+    &self,
+    changes: crate::server::config::ToolChanges,
+  ) -> Result<(), ApiError> {
+    let next = self.descriptor.read().unwrap().tools.with(changes);
+    self.tools.switch(next).await?;
+    self.descriptor.write().unwrap().tools = next;
+    Ok(())
   }
   pub fn describe(&self) -> Value {
     {
@@ -182,6 +203,7 @@ impl SessionSlot {
           .unwrap_or(0)
           .saturating_sub(status["queue_head"].as_u64().unwrap_or(0))
       );
+      status["pending_questions"] = json!(self.tools.questions.snapshot());
       let mut descriptor = self.get_descriptor();
       if let Some(pending) = &descriptor.pending_selection {
         descriptor.provider = pending.provider.clone();
@@ -196,10 +218,8 @@ impl SessionSlot {
   }
   /// Applies the application's new shell unless this session has its own.
   pub fn follow_global_shell(&self, global: &ShellCommand) {
-    if self.descriptor.read().unwrap().shell_command.is_none()
-      && let Some(command) = &self.shell_command
-    {
-      *command.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = global.clone();
+    if self.descriptor.read().unwrap().shell_command.is_none() {
+      *self.shell_command.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = global.clone();
     }
   }
   /// Gives this session its own shell, or with None returns it to the application's.
@@ -208,14 +228,14 @@ impl SessionSlot {
     settings: Option<ShellSettings>,
     global: &ShellCommand,
   ) -> Result<(), ApiError> {
-    let Some(command) = &self.shell_command else {
+    if !self.descriptor.read().unwrap().tools.shell {
       return Err(ApiError::bad_request("this session has no shell tool"));
-    };
+    }
     let next = match &settings {
       Some(settings) => settings.resolve()?,
       None => global.clone(),
     };
-    *command.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
+    *self.shell_command.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
     self.descriptor.write().unwrap().shell_command = settings;
     self.persist_index()
   }

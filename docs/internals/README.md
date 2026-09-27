@@ -69,4 +69,4 @@ these pages.
 
 ## Tools
 
-- [tools](tools.md): shell, history tools and `view_image`, with their server integration.
+- [tools](tools.md): shell, history tools, `view_image` and `ask_user`, with their server integration.

@@ -122,13 +122,40 @@ impl ProxyConfig {
     }
   }
 }
+/// The optional built-in tools of a session. History search and `view_image` are always there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolSwitches {
+  /// Commands in the session's working directory: `shell_start`, `shell_edit` and the rest.
+  pub shell: bool,
+  /// Questions to the user: `ask_user`.
+  pub ask_user: bool,
+}
+impl ToolSwitches {
+  /// A request's choices over these; what it leaves out stays as it is.
+  pub fn with(self, changes: ToolChanges) -> Self {
+    Self {
+      shell: changes.shell.unwrap_or(self.shell),
+      ask_user: changes.ask_user.unwrap_or(self.ask_user),
+    }
+  }
+}
+/// Switches a request sets, each optional.
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolChanges {
+  pub shell: Option<bool>,
+  pub ask_user: Option<bool>,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Defaults {
   pub provider: String,
   pub model: String,
   pub cwd: PathBuf,
-  pub shell: bool,
+  /// The tools new sessions start with.
+  pub tools: ToolSwitches,
   pub stream: bool,
   pub instructions: String,
   pub reasoning: Option<crate::protocol::ReasoningConfig>,
@@ -141,7 +168,7 @@ impl Default for Defaults {
       provider: String::new(),
       model: String::new(),
       cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp")),
-      shell: true,
+      tools: ToolSwitches { shell: true, ask_user: true },
       stream: true,
       instructions: String::new(),
       reasoning: None,
