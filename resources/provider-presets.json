@@ -16,6 +16,7 @@
       "variants": {
         "deepseek_chat": {
           "preset": "deepseek",
+          "account_state": "deepseek_user_balance",
           "enabled": true,
           "protocol": "deepseek_chat",
           "base_url": "https://api.deepseek.com",
@@ -32,6 +33,7 @@
         },
         "plaintext_responses": {
           "preset": "deepseek",
+          "account_state": "deepseek_user_balance",
           "enabled": true,
           "protocol": "plaintext_responses",
           "base_url": "https://api.deepseek.com",
@@ -48,6 +50,7 @@
         },
         "deepseek_messages": {
           "preset": "deepseek",
+          "account_state": "deepseek_user_balance",
           "enabled": true,
           "protocol": "deepseek_messages",
           "base_url": "https://api.deepseek.com/anthropic",
@@ -397,6 +400,7 @@
       "variants": {
         "zai_chat": {
           "preset": "zai_coding_global",
+          "account_state": "zai_coding_plan_monitor",
           "enabled": true,
           "protocol": "zai_chat",
           "base_url": "https://api.z.ai/api/coding/paas/v4",
@@ -413,6 +417,7 @@
         },
         "zai_messages": {
           "preset": "zai_coding_global",
+          "account_state": "zai_coding_plan_monitor",
           "enabled": true,
           "protocol": "zai_messages",
           "base_url": "https://api.z.ai/api/anthropic",
@@ -497,6 +502,8 @@
       "variants": {
         "zai_chat": {
           "preset": "zhipu_coding_cn",
+          "account_state": "zai_coding_plan_monitor",
+          "account_state_base_url": "https://open.bigmodel.cn",
           "enabled": true,
           "protocol": "zai_chat",
           "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
@@ -513,6 +520,8 @@
         },
         "zai_messages": {
           "preset": "zhipu_coding_cn",
+          "account_state": "zai_coding_plan_monitor",
+          "account_state_base_url": "https://open.bigmodel.cn",
           "enabled": true,
           "protocol": "zai_messages",
           "base_url": "https://open.bigmodel.cn/api/anthropic",
@@ -529,6 +538,8 @@
         },
         "plaintext_responses": {
           "preset": "zhipu_coding_cn",
+          "account_state": "zai_coding_plan_monitor",
+          "account_state_base_url": "https://open.bigmodel.cn",
           "enabled": true,
           "protocol": "plaintext_responses",
           "base_url": "https://open.bigmodel.cn/api/v1",
@@ -563,6 +574,7 @@
       "variants": {
         "compatible_chat": {
           "preset": "siliconflow_cn",
+          "account_state": "siliconflow_balance",
           "enabled": true,
           "protocol": "compatible_chat",
           "base_url": "https://api.siliconflow.cn/v1",
@@ -595,6 +607,8 @@
       "variants": {
         "compatible_chat": {
           "preset": "siliconflow_global",
+          "account_state": "siliconflow_balance",
+          "account_state_base_url": "https://api.siliconflow.com",
           "enabled": true,
           "protocol": "compatible_chat",
           "base_url": "https://api.siliconflow.com/v1",
@@ -825,6 +839,7 @@
       "variants": {
         "qwen_chat": {
           "preset": "qwen_workspace_cn",
+          "account_state": "qwen_workspace_quota",
           "enabled": true,
           "protocol": "qwen_chat",
           "base_url": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
@@ -841,6 +856,7 @@
         },
         "plaintext_responses": {
           "preset": "qwen_workspace_cn",
+          "account_state": "qwen_workspace_quota",
           "enabled": true,
           "protocol": "plaintext_responses",
           "base_url": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
@@ -1191,6 +1207,7 @@
       "variants": {
         "kimi_k2_chat": {
           "preset": "kimi_cn",
+          "account_state": "kimi_open_balance",
           "enabled": true,
           "protocol": "kimi_k2_chat",
           "base_url": "https://api.moonshot.cn/v1",
@@ -1225,6 +1242,8 @@
       "variants": {
         "kimi_k2_chat": {
           "preset": "kimi_global",
+          "account_state": "kimi_open_balance",
+          "account_state_base_url": "https://api.moonshot.ai",
           "enabled": true,
           "protocol": "kimi_k2_chat",
           "base_url": "https://api.moonshot.ai/v1",
@@ -1259,6 +1278,7 @@
       "variants": {
         "kimi_k2_chat": {
           "preset": "kimi_code",
+          "account_state": "kimi_code_companion_usage",
           "enabled": true,
           "protocol": "kimi_k2_chat",
           "base_url": "https://api.kimi.com/coding/v1",
@@ -1480,6 +1500,7 @@
       "variants": {
         "codex_responses": {
           "preset": "openai_codex",
+          "account_state": "openai_codex_usage",
           "enabled": true,
           "protocol": "codex_responses",
           "base_url": "https://chatgpt.com/backend-api/codex",
@@ -1639,6 +1660,7 @@
       "variants": {
         "minimax_chat": {
           "preset": "minimax_cn",
+          "account_state": "minimax_account_balance",
           "enabled": true,
           "protocol": "minimax_chat",
           "base_url": "https://api.minimaxi.com/v1",
@@ -1655,6 +1677,7 @@
         },
         "minimax_messages": {
           "preset": "minimax_cn",
+          "account_state": "minimax_account_balance",
           "enabled": true,
           "protocol": "minimax_messages",
           "base_url": "https://api.minimaxi.com/anthropic",
@@ -1688,6 +1711,8 @@
       "variants": {
         "minimax_chat": {
           "preset": "minimax_global",
+          "account_state": "minimax_account_balance",
+          "account_state_base_url": "https://api.minimax.io",
           "enabled": true,
           "protocol": "minimax_chat",
           "base_url": "https://api.minimax.io/v1",
@@ -1704,6 +1729,8 @@
         },
         "minimax_messages": {
           "preset": "minimax_global",
+          "account_state": "minimax_account_balance",
+          "account_state_base_url": "https://api.minimax.io",
           "enabled": true,
           "protocol": "minimax_messages",
           "base_url": "https://api.minimax.io/anthropic",
@@ -1737,6 +1764,7 @@
       "variants": {
         "minimax_chat": {
           "preset": "minimax_token_cn",
+          "account_state": "minimax_token_plan_remains",
           "enabled": true,
           "protocol": "minimax_chat",
           "base_url": "https://api.minimaxi.com/v1",
@@ -1753,6 +1781,7 @@
         },
         "minimax_messages": {
           "preset": "minimax_token_cn",
+          "account_state": "minimax_token_plan_remains",
           "enabled": true,
           "protocol": "minimax_messages",
           "base_url": "https://api.minimaxi.com/anthropic",
@@ -1786,6 +1815,8 @@
       "variants": {
         "minimax_chat": {
           "preset": "minimax_token_global",
+          "account_state": "minimax_token_plan_remains",
+          "account_state_base_url": "https://api.minimax.io",
           "enabled": true,
           "protocol": "minimax_chat",
           "base_url": "https://api.minimax.io/v1",
@@ -1802,6 +1833,8 @@
         },
         "minimax_messages": {
           "preset": "minimax_token_global",
+          "account_state": "minimax_token_plan_remains",
+          "account_state_base_url": "https://api.minimax.io",
           "enabled": true,
           "protocol": "minimax_messages",
           "base_url": "https://api.minimax.io/anthropic",
@@ -1835,6 +1868,7 @@
       "variants": {
         "compatible_chat": {
           "preset": "openrouter",
+          "account_state": "openrouter_key_quota",
           "enabled": true,
           "protocol": "compatible_chat",
           "base_url": "https://openrouter.ai/api/v1",
@@ -1851,6 +1885,7 @@
         },
         "openai_responses": {
           "preset": "openrouter",
+          "account_state": "openrouter_key_quota",
           "enabled": true,
           "protocol": "openai_responses",
           "base_url": "https://openrouter.ai/api/v1",
@@ -1884,6 +1919,7 @@
       "variants": {
         "compatible_chat": {
           "preset": "huggingface_router",
+          "account_state": "hf_whoami_billing",
           "enabled": true,
           "protocol": "compatible_chat",
           "base_url": "https://router.huggingface.co/v1",
