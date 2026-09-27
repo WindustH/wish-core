@@ -70,6 +70,19 @@ pub struct QuotaWindow {
   pub reached: Option<bool>,
   /// Whether the allowance is unlimited, which is not the same as a zero or missing limit.
   pub unlimited: Option<bool>,
+  /// How the amount spent divides among the things that share this allowance (the tools behind
+  /// one call quota, say), when the service breaks it down; empty otherwise.
+  #[serde(default)]
+  pub parts: Vec<QuotaPart>,
+}
+
+/// One share of a window's spending.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct QuotaPart {
+  /// The service's own id for what spent it, such as a tool code.
+  pub id: String,
+  /// Amount spent, in the window's unit and the service's own form.
+  pub used: Option<String>,
 }
 
 /// One account balance.

@@ -75,6 +75,7 @@ pub fn parse_workspace_quota(body: &Value) -> Result<AccountState, Error> {
       resets_at: None,
       reached: None,
       unlimited: None,
+      parts: Vec::new(),
     });
   }
   if data.get("monthly_budget").is_some() || data.get("monthly_spend").is_some() {
@@ -97,6 +98,7 @@ pub fn parse_workspace_quota(body: &Value) -> Result<AccountState, Error> {
       resets_at: None,
       reached: None,
       unlimited: None,
+      parts: Vec::new(),
     });
   } else {
     warnings.push("`monthly_budget` window is not reported".to_owned());

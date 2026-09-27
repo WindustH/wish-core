@@ -16,9 +16,10 @@
 //! - A window is only as good as its `unit`/`number` pair: an unknown pair leaves the id as
 //!   the bare type with a warning, because a limit with no window is not a quota.
 //!
+//! - `usageDetails` - how one limit's calls divide among its tools (`search-prime`, `web-reader`,
+//!   `zread`) - become the window's `parts`, keyed by `modelCode`.
+//!
 //! Trade-offs:
-//! - `usageDetails` - the per-tool entries under one limit - are counted into a warning
-//!   rather than represented: this shape holds one window per limit, not one per tool.
 //! - A limit `type` this protocol does not know keeps `unit: "unknown"` and warns, so a new plan
 //!   still shows up instead of disappearing.
 //! - A capacity window states its own `remaining`, which is what this reader reports; the other
@@ -29,7 +30,7 @@
 use serde_json::{Value, json};
 
 use crate::protocol::account_state::{
-  AccountState, AccountStateProtocol, Failure, FailureKind, QuotaWindow,
+  AccountState, AccountStateProtocol, Failure, FailureKind, QuotaPart, QuotaWindow,
 };
 use crate::protocol::read_scalar_text;
 
@@ -84,11 +85,16 @@ fn read_limit(limit: &Value, warnings: &mut Vec<String>) -> QuotaWindow {
   if !matches!(get_counted_unit(kind), "credits" | "tokens" | "requests") {
     warnings.push(format!("`{kind}` is a limit type this protocol does not know"));
   }
-  if let Some(details) =
-    limit.get("usageDetails").and_then(Value::as_array).filter(|details| !details.is_empty())
-  {
-    warnings.push(format!("{} per-tool entries under `{kind}` are not represented", details.len()));
-  }
+  let parts = limit
+    .get("usageDetails")
+    .and_then(Value::as_array)
+    .into_iter()
+    .flatten()
+    .filter_map(|detail| {
+      let id = detail.get("modelCode").and_then(Value::as_str)?;
+      Some(QuotaPart { id: id.to_owned(), used: detail.get("usage").and_then(read_scalar_text) })
+    })
+    .collect();
   QuotaWindow {
     id,
     name: Some(kind.to_owned()),
@@ -101,6 +107,7 @@ fn read_limit(limit: &Value, warnings: &mut Vec<String>) -> QuotaWindow {
     resets_at: limit.get("nextResetTime").and_then(read_scalar_text),
     reached: limit.get("percentage").and_then(Value::as_f64).map(|spent| spent >= 100.0),
     unlimited: None,
+    parts,
   }
 }
 

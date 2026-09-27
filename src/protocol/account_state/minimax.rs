@@ -127,6 +127,7 @@ fn parse_window(
     resets_at: model.get(end).and_then(read_scalar_text),
     reached,
     unlimited: None,
+    parts: Vec::new(),
   }
 }
 

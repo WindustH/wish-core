@@ -148,6 +148,7 @@ pub fn parse_companion(body: &Value) -> Result<AccountState, Error> {
         .and_then(|ratio| ratio.parse::<f64>().ok())
         .map(|ratio| ratio >= 1.0),
       unlimited: None,
+      parts: Vec::new(),
     });
   }
   let wallet = body.get("boosterWallet");
@@ -164,6 +165,7 @@ pub fn parse_companion(body: &Value) -> Result<AccountState, Error> {
       resets_at: None,
       reached: None,
       unlimited: None,
+      parts: Vec::new(),
     });
   }
   let charge_limit = wallet.and_then(|wallet| wallet.get("monthlyChargeLimit"));
@@ -190,6 +192,7 @@ pub fn parse_companion(body: &Value) -> Result<AccountState, Error> {
       resets_at: None,
       reached: None,
       unlimited: None,
+      parts: Vec::new(),
     });
   }
   if wallet.and_then(|wallet| wallet.get("monthlyChargeLimitEnabled")).and_then(Value::as_bool)

@@ -187,6 +187,7 @@ pub fn parse(
       resets_at: window.resets_at.and_then(|name| get_header_value(headers, name)),
       reached: None,
       unlimited: None,
+      parts: Vec::new(),
     };
     // A window whose headers all stayed away is not a window the service reported.
     if quota.limit.is_none() && quota.remaining.is_none() && quota.resets_at.is_none() {

@@ -47,7 +47,8 @@ body is decoded by `http_error::decode_provider_envelope`.
 AccountState { protocol, quotas: [QuotaWindow], balances: [Balance], failure, warnings,
                availability, plan_type }
 QuotaWindow  { id, name, unit, used, limit, remaining, used_percent, window, resets_at,
-               reached, unlimited }
+               reached, unlimited, parts: [QuotaPart] }
+QuotaPart    { id, used }            one share of a window's spending, e.g. per tool
 Balance      { currency, available, total, cash, granted, topped_up, voucher, credit, owed,
                minor_unit }
 Failure      { kind: Unauthorized | Unpaid | Throttled | Unknown, code, message }

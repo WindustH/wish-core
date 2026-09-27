@@ -83,6 +83,7 @@ pub fn parse(body: &Value) -> Result<AccountState, Error> {
         .and_then(read_scalar_text),
       reached: None,
       unlimited: None,
+      parts: Vec::new(),
     });
   }
   let mut balances = Vec::new();
@@ -117,6 +118,7 @@ pub fn parse(body: &Value) -> Result<AccountState, Error> {
           resets_at: None,
           reached: None,
           unlimited: Some(true),
+          parts: Vec::new(),
         });
       }
     }
@@ -193,6 +195,7 @@ fn append_meter_windows(name: &str, limit: &Value, quotas: &mut Vec<QuotaWindow>
         .and_then(read_scalar_text),
       reached,
       unlimited: None,
+      parts: Vec::new(),
     });
   }
 }
@@ -225,6 +228,7 @@ pub fn from_headers(headers: &[(String, String)]) -> Option<AccountState> {
       resets_at,
       reached: None,
       unlimited: None,
+      parts: Vec::new(),
     });
   }
   let mut balances = Vec::new();
@@ -242,6 +246,7 @@ pub fn from_headers(headers: &[(String, String)]) -> Option<AccountState> {
       resets_at: None,
       reached: None,
       unlimited: Some(true),
+      parts: Vec::new(),
     });
   } else if get_header(headers, "x-codex-credits-has-credits").as_deref() == Some("true") {
     balances.push(Balance {

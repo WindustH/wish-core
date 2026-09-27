@@ -64,6 +64,7 @@ pub fn parse_credits(body: &Value) -> Result<AccountState, Error> {
       resets_at: None,
       reached,
       unlimited: None,
+      parts: Vec::new(),
     }],
     balances: Vec::new(),
     failure: None,
@@ -111,6 +112,7 @@ pub fn parse_key(body: &Value) -> Result<AccountState, Error> {
       reached,
       // A ceiling the service reports as `null` is one it does not enforce.
       unlimited: data.get("limit").map(Value::is_null),
+      parts: Vec::new(),
     });
   }
   if let Some(rate_limit) = rate_limit {
@@ -127,6 +129,7 @@ pub fn parse_key(body: &Value) -> Result<AccountState, Error> {
       resets_at: None,
       reached: None,
       unlimited: None,
+      parts: Vec::new(),
     });
   }
   if data.get("is_free_tier").and_then(Value::as_bool) == Some(true) {
