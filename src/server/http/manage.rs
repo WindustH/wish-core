@@ -66,8 +66,8 @@ pub async fn update_session(
     })
     .await;
   }
-  let session = slot.session.clone().try_lock_owned();
-  if session.is_err() {
+  let session = slot.lock_idle().await;
+  if session.is_none() {
     let object = input.as_object().ok_or_else(|| ApiError::bad_request("expected an object"))?;
     if object.keys().any(|key| !["provider", "config"].contains(&key.as_str())) {
       return Err(ApiError::conflict("only model and reasoning settings can change while running"));
@@ -203,10 +203,9 @@ pub async fn delete_session(
   app.require_open()?;
   let slot = app.get_session(&id).await?;
   let mut session = slot
-    .session
-    .clone()
-    .try_lock_owned()
-    .map_err(|_| ApiError::conflict("interrupt and wait for the session before deleting"))?;
+    .lock_idle()
+    .await
+    .ok_or_else(|| ApiError::conflict("interrupt and wait for the session before deleting"))?;
   slot.require_live()?;
   if let Some(shell) = slot.tools.shell() {
     shell.shutdown().await.map_err(ApiError::internal)?;
@@ -259,7 +258,7 @@ pub async fn clear_context(
 ) -> Result<Json<Value>, ApiError> {
   let slot = app.get_session(&id).await?;
   let mut session =
-    slot.session.clone().try_lock_owned().map_err(|_| ApiError::conflict("session is running"))?;
+    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
   blocking(move || {
     slot.require_live()?;
     let generation = session.get_active_generation()?;
@@ -288,7 +287,7 @@ pub async fn fork(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
   let slot = app.get_session(&id).await?;
   let session =
-    slot.session.clone().try_lock_owned().map_err(|_| ApiError::conflict("session is running"))?;
+    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
   let descriptor = slot.get_descriptor();
   let mut config = session.get_config().clone();
   config.tools.clear();

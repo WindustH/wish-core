@@ -86,7 +86,7 @@ pub async fn set_config(
   let slot = app.get_session(&id).await?;
   let config = slot.configure_tools(config)?;
   let mut session =
-    slot.session.clone().try_lock_owned().map_err(|_| ApiError::conflict("session is running"))?;
+    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
   blocking(move || {
     slot.require_live()?;
     session.set_config(config)?;
@@ -105,7 +105,7 @@ pub async fn set_tools(
   app.require_open()?;
   let slot = app.get_session(&id).await?;
   let mut session =
-    slot.session.clone().try_lock_owned().map_err(|_| ApiError::conflict("session is running"))?;
+    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
   slot.require_live()?;
   slot.switch_tools(changes).await?;
   // The tool list is rebuilt from the switches, so a tool just switched off is not kept.
@@ -180,7 +180,7 @@ pub async fn set_metadata(
   app.require_open()?;
   let slot = app.get_session(&id).await?;
   let mut session =
-    slot.session.clone().try_lock_owned().map_err(|_| ApiError::conflict("session is running"))?;
+    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
   blocking(move || {
     slot.require_live()?;
     session.set_metadata(metadata)?;
@@ -210,7 +210,7 @@ async fn start(
   let slot = app.get_session(&id).await?;
   let (provider, provider_id) = slot.execution_provider(&app)?;
   let mut session =
-    slot.session.clone().try_lock_owned().map_err(|_| ApiError::conflict("session is running"))?;
+    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
   slot.require_live()?;
   if !session.get_state().is_stable() {
     if slot.control.lock().unwrap().is_none() {

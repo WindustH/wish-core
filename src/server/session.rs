@@ -278,6 +278,20 @@ impl SessionSlot {
       self.global_events.send(json!({"type":"session_changed","id":self.get_descriptor().id}));
     Ok(())
   }
+  /// The session, unless an operation holds it. An operation that has just ended keeps it a moment
+  /// longer - its status already reads as stopped while it records its end - and a request arriving
+  /// then waits that out instead of being told the session is running.
+  pub async fn lock_idle(&self) -> Option<tokio::sync::OwnedMutexGuard<Session>> {
+    if let Ok(guard) = self.session.clone().try_lock_owned() {
+      return Some(guard);
+    }
+    if self.control.lock().unwrap().is_some() {
+      return None;
+    }
+    tokio::time::timeout(std::time::Duration::from_millis(500), self.session.clone().lock_owned())
+      .await
+      .ok()
+  }
   pub fn update_snapshot(&self, session: &Session) {
     *self.queue.lock().unwrap() = session.get_message_queue();
     *self.status.lock().unwrap() = snapshot(session);
