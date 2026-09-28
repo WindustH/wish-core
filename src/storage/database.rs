@@ -233,7 +233,8 @@ impl Database {
     connection.execute_batch(
       "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
     )?;
-    // A new database starts at 0. Any other version is migrated by hand before this build opens it.
+    // A new database starts at 0. Any other version is refused: older ones are brought up to date
+    // before the program opens storage at all.
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if !matches!(version, 0 | 4) {
       return Err(StorageError::SchemaVersion(version));

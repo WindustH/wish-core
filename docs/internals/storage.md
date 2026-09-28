@@ -54,8 +54,9 @@ last handle closes the channel and joins the worker. No external-writer cache ch
 conflict protocol are maintained.
 
 Storage creates schema version 4 in an empty database and opens existing version-4 databases;
-any other version is rejected with `SchemaVersion`. The binary carries no migration code: a
-database from an older schema is migrated by hand, against a backup, before a new build opens it.
+any other version is rejected with `SchemaVersion`. Storage carries no migration code of its own: a
+database from an older schema is brought up to date by [migration](migration.md) before storage
+opens it.
 Version 4 interns list names in `wish_list_keys`; item and history indexes store integer keys
 while list names, positions and history IDs stay unchanged.
 

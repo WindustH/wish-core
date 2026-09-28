@@ -33,6 +33,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     _ => return Err("usage: wish --config <config.json>".into()),
   };
+  crate::migration::run(std::path::Path::new(&path))?;
   let config: config::Config = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
   let app = app::App::open(&config, path.into()).await?;
   let listener = tokio::net::TcpListener::bind(config.listen).await?;

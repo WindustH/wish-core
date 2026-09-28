@@ -157,9 +157,18 @@ mv ~/.local/bin/wish.new ~/.local/bin/wish   # replacing in place fails while it
 systemctl --user restart wish
 ```
 
-Back up before upgrading. A database that a newer release has written to may
-not open with an older one, so rolling back the binary may also mean restoring
-the backup.
+When a release changes how data or the configuration is stored, it migrates
+them the first time it starts: the service log lists each step (`migrating
+... from format 1 to 2`), and a copy of both databases and the configuration
+file taken just before is kept in `backups/before-migration-<from>-to-<to>-<time>/`
+in the data directory. If a step fails, nothing is changed and Wish refuses to
+start, naming the step and the copy. Remove old copies once you are happy with
+an upgrade.
+
+A data directory a newer release has migrated does not open with an older one
+(`written by a newer build`). To roll back past such an upgrade, restore the
+databases and the configuration file from the copy the newer release took, then
+start the older binary.
 
 ## Monitoring
 

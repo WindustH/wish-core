@@ -2,6 +2,7 @@
 
 pub mod executor;
 pub mod mcp;
+mod migration;
 pub mod protocol;
 mod server;
 pub mod session;

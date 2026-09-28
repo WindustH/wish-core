@@ -66,6 +66,8 @@ these pages.
 ## Storage
 
 - [storage](storage.md): typed SQLite objects and lists, cache, schema version.
+- [migration](migration.md): bringing an older data directory and configuration file up to date at
+  startup.
 
 ## Tools
 

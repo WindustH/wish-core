@@ -339,6 +339,8 @@ stale: restart Wish after a manual edit, before saving from the web app.
 | `blobs/<session>/` | Uploaded attachments and images the agent viewed |
 | `shell/<session>/` | Captured output of every shell command, and in `mcp/` the images and other files MCP tools returned |
 | `bin/` | A link to the Wish program, first on sessions' shell `PATH` so `wish mcp` runs the same build |
+| `format.json` | The version of the stored formats, `{"version": N}`, which a newer release migrates from |
+| `backups/` | Copies of the databases and the configuration file taken before each migration |
 
 Deleting a session removes its rows and both of its directories. Back up the
 whole directory while Wish is stopped, or copy the databases with
