@@ -135,12 +135,12 @@ pub async fn answer(
   Path(id): Path<String>,
   Json(input): Json<Answer>,
 ) -> Result<Json<Value>, ApiError> {
-  use crate::server::session::ask_user::{Delivery, late_answer_message};
+  use crate::tool::ask_user::{Delivery, late_answer_message};
   app.require_open()?;
   let slot = app.get_session(&id).await?;
   slot.require_live()?;
   let delivered =
-    match slot.tools.questions.answer(&input.call_id, input.answers.as_deref(), input.skip)? {
+    match slot.tools.ask_user.answer(&input.call_id, input.answers.as_deref(), input.skip)? {
       Delivery::Now => "now",
       Delivery::Dropped => "dropped",
       // The call timed out and the agent moved on: the answers follow as a message, like a

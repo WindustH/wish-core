@@ -223,10 +223,9 @@ retried once with notices only. Stored conversation always keeps the original im
 
 ## `ask_user`
 
-`server::session::ask_user` puts a form of questions to the person using the session and waits
-for the answers ([`src/server/session/ask_user.rs`](../../src/server/session/ask_user.rs)). It is an
-ordinary tool call: the run stays in `ExecutingTools`, input sent meanwhile waits in the queue,
-and an interrupt cancels the call.
+`tool::ask_user::AskUserTool::new(changed)` puts a form of questions to the person using the
+session and waits for the answers. It is an ordinary tool call: the run stays in `ExecutingTools`,
+input sent meanwhile waits in the queue, and an interrupt cancels the call.
 
 | Input | Meaning |
 | --- | --- |
@@ -245,8 +244,10 @@ The result's `output.status` is one of:
 - `skipped`, when the user declined the whole form;
 - `timed_out`, with `waited_seconds`, when the timeout passed first.
 
-`SessionTools::questions` keeps the open forms in memory and publishes them as
-`status.pending_questions`; `POST /api/sessions/{id}/answer` hands answers to the waiting call. A
-form that timed out stays open. Answered later, it enqueues a `Developer { fixed: false }` message
-with metadata `{source: "ask_user_answer", call_id, questions, answers}` and wakes the session, as
-a background completion does; skipped, it is dropped. A restart closes every open form.
+The tool keeps the open forms in memory and calls `changed` whenever they change; `snapshot()`
+lists them and `answer(call_id, answers, skip)` hands answers to the waiting call. The server
+publishes the list as `status.pending_questions` and takes answers through
+`POST /api/sessions/{id}/answer`. A form that timed out stays open. Answered later, the server
+enqueues `late_answer_message`, a `Developer { fixed: false }` message with metadata
+`{source: "ask_user_answer", call_id, questions, answers}`, and wakes the session, as a background
+completion does; skipped, it is dropped. A restart closes every open form.

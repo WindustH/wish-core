@@ -11,6 +11,7 @@ use crate::{
   protocol::{ContentBlock, Message},
   session::{Session, SessionHandle},
   tool::{
+    ask_user::AskUserTool,
     search_history::SearchHistoryTool,
     shell::{ShellConfig, ShellTool},
     view_image::ViewImageTool,
@@ -32,7 +33,7 @@ pub struct SessionTools {
   shell_config: ShellConfig,
   shell_on: AtomicBool,
   ask_user_on: AtomicBool,
-  pub questions: super::ask_user::Questions,
+  pub ask_user: AskUserTool,
   history: SearchHistoryTool,
   app: Weak<App>,
   session_id: String,
@@ -52,7 +53,7 @@ impl SessionTools {
       shell_config,
       shell_on: AtomicBool::new(false),
       ask_user_on: AtomicBool::new(false),
-      questions: Default::default(),
+      ask_user: AskUserTool::new(questions_changed(app.clone(), session_id.clone())),
       history: SearchHistoryTool::new(session),
       app,
       session_id,
@@ -79,16 +80,6 @@ impl SessionTools {
     self.shell_on.store(switches.shell, Ordering::Release);
     self.ask_user_on.store(switches.ask_user, Ordering::Release);
     Ok(())
-  }
-  /// Publishes the session's open questions: its index record and a change notice.
-  fn questions_changed(&self) {
-    let Some(app) = self.app.upgrade() else { return };
-    let (owner, session_id) = (app.clone(), self.session_id.clone());
-    app.tasks.spawn(async move {
-      if let Ok(slot) = owner.get_session(&session_id).await {
-        let _ = slot.persist_index();
-      }
-    });
   }
   async fn execute_shell(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
     let Some(shell) = self.shell().filter(|_| self.shell_on.load(Ordering::Acquire)) else {
@@ -155,6 +146,19 @@ impl SessionTools {
     outcome
   }
 }
+/// Publishes the session's open questions whenever they change: its index record and a change
+/// notice.
+fn questions_changed(app: Weak<App>, session_id: String) -> impl Fn() + Send + Sync + 'static {
+  move || {
+    let Some(app) = app.upgrade() else { return };
+    let (owner, session_id) = (app.clone(), session_id.clone());
+    app.tasks.spawn(async move {
+      if let Ok(slot) = owner.get_session(&session_id).await {
+        let _ = slot.persist_index();
+      }
+    });
+  }
+}
 impl ToolExecutor for SessionTools {
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
     match call.name.as_str() {
@@ -188,7 +192,7 @@ impl ToolExecutor for SessionTools {
         if !self.ask_user_on.load(Ordering::Acquire) {
           return ToolOutcome::Failed("ask_user is not enabled for this session".into());
         }
-        self.questions.ask(call, control, || self.questions_changed()).await
+        self.ask_user.execute(call, control).await
       }
       "shell_start" | "shell_edit" | "shell_poll" | "shell_write" | "shell_kill" => {
         self.execute_shell(call, control).await

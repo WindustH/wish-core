@@ -3,12 +3,13 @@
 //! timeout passes or the run is interrupted - so everything else about the session works as it
 //! always does. A form answered after its timeout is delivered later, as a message of its own.
 
-use crate::executor::{
-  ExecutionControl,
-  tool::{ToolCall, ToolOutcome},
+use crate::{
+  executor::{
+    ExecutionControl,
+    tool::{ToolCall, ToolExecutor, ToolOutcome},
+  },
+  protocol::{ContentBlock, Message, Tool},
 };
-use crate::protocol::Tool;
-use crate::server::error::ApiError;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -56,7 +57,7 @@ enum Reply {
   Skipped,
 }
 
-/// What became of an answer given through the API.
+/// What became of an answer.
 pub enum Delivery {
   /// The waiting tool call returned it.
   Now,
@@ -75,58 +76,74 @@ struct Pending {
   timed_out: bool,
 }
 
-/// The open forms of one session, by tool call ID.
-#[derive(Default)]
-pub struct Questions {
+/// Why an answer was not taken.
+#[derive(Debug, thiserror::Error)]
+pub enum AnswerError {
+  #[error("no open question with that call ID")]
+  NotFound,
+  #[error("{0}")]
+  Invalid(String),
+  #[error("{0}")]
+  Closed(&'static str),
+}
+
+/// The tool, holding the open forms of one session by tool call ID.
+pub struct AskUserTool {
   pending: Mutex<HashMap<String, Pending>>,
+  changed: Box<dyn Fn() + Send + Sync>,
 }
 
-pub fn specification() -> Tool {
-  Tool {
-    name: "ask_user".into(),
-    description: "Ask the user one or more questions and wait for the answers. Use it when you cannot proceed well without information only the user has, or when approaches differ in trade-offs the user should choose between. Do not ask about anything you can find out yourself by reading files or running commands, and do not ask permission for routine work. Each question is either `choice` (the user picks from `options`, and can write an answer of their own unless `allow_other` is false) or `text` (the user writes the answer). Put related questions in one call. The result's `status` is `answered`, with one entry per question in `answers` (a question the user left out has `skipped: true`); `skipped` if the user declined the whole form; or `timed_out` if you set `timeout_seconds` and no answer came in time. After a timeout, continue with your best judgement and say what you assumed: if the user answers later, the answers arrive as a separate message. Leave out `timeout_seconds` when you cannot continue without the answers.".into(),
-    input_schema: json!({
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["questions"],
-      "properties": {
-        "questions": {
-          "type": "array", "minItems": 1, "maxItems": MAX_QUESTIONS,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["type", "question"],
-            "properties": {
-              "type": {"type": "string", "enum": ["choice", "text"], "description": "`choice` to pick from options, `text` for a written answer."},
-              "question": {"type": "string", "description": "The full question. Markdown is allowed."},
-              "header": {"type": "string", "description": "A very short label shown above the question, a few words at most."},
-              "options": {
-                "type": "array", "minItems": 2, "maxItems": MAX_OPTIONS,
-                "description": "The choices of a `choice` question. Put the one you recommend first.",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": false,
-                  "required": ["label"],
-                  "properties": {
-                    "label": {"type": "string", "description": "The choice, short."},
-                    "description": {"type": "string", "description": "What choosing it means, when the label alone does not say."}
-                  }
-                }
-              },
-              "multi_select": {"type": "boolean", "description": "For `choice`: allow picking several options. Default false."},
-              "allow_other": {"type": "boolean", "description": "For `choice`: allow an answer of the user's own besides the options. Default true."},
-              "placeholder": {"type": "string", "description": "For `text`: a hint shown in the empty answer field."},
-              "multiline": {"type": "boolean", "description": "For `text`: offer a larger field for a longer answer."}
-            }
-          }
-        },
-        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECONDS, "description": "How long to wait before continuing without the answers."}
-      }
-    }),
+impl AskUserTool {
+  /// `changed` runs whenever the open forms change.
+  pub fn new(changed: impl Fn() + Send + Sync + 'static) -> Self {
+    Self { pending: Mutex::default(), changed: Box::new(changed) }
   }
-}
 
-impl Questions {
+  pub fn get_specification(&self) -> Tool {
+    Tool {
+      name: "ask_user".into(),
+      description: "Ask the user one or more questions and wait for the answers. Use it when you cannot proceed well without information only the user has, or when approaches differ in trade-offs the user should choose between. Do not ask about anything you can find out yourself by reading files or running commands, and do not ask permission for routine work. Each question is either `choice` (the user picks from `options`, and can write an answer of their own unless `allow_other` is false) or `text` (the user writes the answer). Put related questions in one call. The result's `status` is `answered`, with one entry per question in `answers` (a question the user left out has `skipped: true`); `skipped` if the user declined the whole form; or `timed_out` if you set `timeout_seconds` and no answer came in time. After a timeout, continue with your best judgement and say what you assumed: if the user answers later, the answers arrive as a separate message. Leave out `timeout_seconds` when you cannot continue without the answers.".into(),
+      input_schema: json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["questions"],
+        "properties": {
+          "questions": {
+            "type": "array", "minItems": 1, "maxItems": MAX_QUESTIONS,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "question"],
+              "properties": {
+                "type": {"type": "string", "enum": ["choice", "text"], "description": "`choice` to pick from options, `text` for a written answer."},
+                "question": {"type": "string", "description": "The full question. Markdown is allowed."},
+                "header": {"type": "string", "description": "A very short label shown above the question, a few words at most."},
+                "options": {
+                  "type": "array", "minItems": 2, "maxItems": MAX_OPTIONS,
+                  "description": "The choices of a `choice` question. Put the one you recommend first.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["label"],
+                    "properties": {
+                      "label": {"type": "string", "description": "The choice, short."},
+                      "description": {"type": "string", "description": "What choosing it means, when the label alone does not say."}
+                    }
+                  }
+                },
+                "multi_select": {"type": "boolean", "description": "For `choice`: allow picking several options. Default false."},
+                "allow_other": {"type": "boolean", "description": "For `choice`: allow an answer of the user's own besides the options. Default true."},
+                "placeholder": {"type": "string", "description": "For `text`: a hint shown in the empty answer field."},
+                "multiline": {"type": "boolean", "description": "For `text`: offer a larger field for a longer answer."}
+              }
+            }
+          },
+          "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_SECONDS, "description": "How long to wait before continuing without the answers."}
+        }
+      }),
+    }
+  }
+
   /// The open forms, oldest first, as the session status reports them.
   pub fn snapshot(&self) -> Vec<Value> {
     let pending = self.pending.lock().unwrap();
@@ -141,13 +158,8 @@ impl Questions {
     items
   }
 
-  /// Puts the form to the user and waits. `changed` runs whenever the open forms change.
-  pub async fn ask(
-    &self,
-    call: &ToolCall,
-    control: &ExecutionControl,
-    changed: impl Fn(),
-  ) -> ToolOutcome {
+  /// Puts the form to the user and waits.
+  async fn ask(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
     let (form, timeout) = match parse_form(&call.arguments) {
       Ok(parsed) => parsed,
       Err(message) => return ToolOutcome::Failed(message),
@@ -165,8 +177,8 @@ impl Questions {
     );
     // Whatever ends the wait - even the run's future being dropped - closes the form, except a
     // timeout, which leaves it open for a later answer.
-    let mut open = Opened { questions: self, call_id: &call.call_id, keep: false };
-    changed();
+    let mut open = Opened { tool: self, call_id: &call.call_id, keep: false };
+    (self.changed)();
     let expire = async {
       match timeout {
         Some(seconds) => tokio::time::sleep(Duration::from_secs(seconds)).await,
@@ -192,7 +204,7 @@ impl Questions {
       _ = control.wait_for_cancellation() => ToolOutcome::Cancelled,
     };
     drop(open);
-    changed();
+    (self.changed)();
     outcome
   }
 
@@ -202,21 +214,21 @@ impl Questions {
     call_id: &str,
     answers: Option<&[Value]>,
     skip: bool,
-  ) -> Result<Delivery, ApiError> {
+  ) -> Result<Delivery, AnswerError> {
     let mut pending = self.pending.lock().unwrap();
-    let form = pending.get_mut(call_id).ok_or_else(ApiError::not_found)?;
+    let form = pending.get_mut(call_id).ok_or(AnswerError::NotFound)?;
     let reply = if skip {
       Reply::Skipped
     } else {
       let answers =
-        answers.ok_or_else(|| ApiError::bad_request("give `answers`, or `skip` the form"))?;
+        answers.ok_or_else(|| AnswerError::Invalid("give `answers`, or `skip` the form".into()))?;
       Reply::Answered(read_answers(&form.form, answers)?)
     };
     match form.reply.take() {
       Some(sender) => {
         if sender.send(reply).is_err() {
           pending.remove(call_id);
-          return Err(ApiError::conflict("the question is no longer open"));
+          return Err(AnswerError::Closed("the question is no longer open"));
         }
         Ok(Delivery::Now)
       }
@@ -228,37 +240,38 @@ impl Questions {
         })
       }
       // An answer is already on its way to the waiting call.
-      None => Err(ApiError::conflict("the question is already answered")),
+      None => Err(AnswerError::Closed("the question is already answered")),
     }
+  }
+}
+
+impl ToolExecutor for AskUserTool {
+  async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
+    self.ask(call, control).await
   }
 }
 
 /// Closes a form when the wait ends, unless it timed out and stays open for a late answer.
 struct Opened<'a> {
-  questions: &'a Questions,
+  tool: &'a AskUserTool,
   call_id: &'a str,
   keep: bool,
 }
 impl Drop for Opened<'_> {
   fn drop(&mut self) {
     if !self.keep {
-      self.questions.pending.lock().unwrap().remove(self.call_id);
+      self.tool.pending.lock().unwrap().remove(self.call_id);
     }
   }
 }
 
-/// The message that carries answers given after the call had timed out.
 /// The message that brings answers given after a timeout; its metadata carries the questions
 /// too, so the answers can be shown without the call that asked them.
-pub fn late_answer_message(
-  call_id: &str,
-  questions: &Value,
-  answers: &[Value],
-) -> crate::protocol::Message {
-  crate::protocol::Message::Developer {
+pub fn late_answer_message(call_id: &str, questions: &Value, answers: &[Value]) -> Message {
+  Message::Developer {
     metadata: json!({"source": "ask_user_answer", "call_id": call_id, "questions": questions, "answers": answers}),
     fixed: Some(false),
-    content: vec![crate::protocol::ContentBlock::Text {
+    content: vec![ContentBlock::Text {
       text: format!(
         "The user answered the questions you asked earlier (ask_user call {call_id}), after they had timed out:\n{}",
         json!(answers)
@@ -367,15 +380,15 @@ fn parse_choice(value: &Value) -> Result<Choice, String> {
 
 /// Checks answers against the form, returning them in the shape the model reads: each with its
 /// question, and either what was chosen or written, or `skipped`.
-fn read_answers(form: &[Question], answers: &[Value]) -> Result<Vec<Value>, ApiError> {
+fn read_answers(form: &[Question], answers: &[Value]) -> Result<Vec<Value>, AnswerError> {
   if answers.len() != form.len() {
-    return Err(ApiError::bad_request(format!("give {} answers, one per question", form.len())));
+    return Err(AnswerError::Invalid(format!("give {} answers, one per question", form.len())));
   }
   let mut read = Vec::with_capacity(form.len());
   let mut given = 0;
   for (index, (question, answer)) in form.iter().zip(answers).enumerate() {
     let invalid =
-      |message: String| ApiError::bad_request(format!("answer {}: {message}", index + 1));
+      |message: String| AnswerError::Invalid(format!("answer {}: {message}", index + 1));
     let mut entry = json!({"question": question.question, "type": question.kind});
     if answer.get("skipped").and_then(Value::as_bool) == Some(true) {
       entry["skipped"] = json!(true);
@@ -428,7 +441,7 @@ fn read_answers(form: &[Question], answers: &[Value]) -> Result<Vec<Value>, ApiE
     read.push(entry);
   }
   if given == 0 {
-    return Err(ApiError::bad_request("answer at least one question, or skip the form"));
+    return Err(AnswerError::Invalid("answer at least one question, or skip the form".into()));
   }
   Ok(read)
 }

@@ -1,4 +1,3 @@
-pub mod ask_user;
 mod live;
 pub mod selection;
 mod tools;
@@ -177,7 +176,7 @@ impl SessionSlot {
       config.tools.extend(shell.get_specifications());
     }
     if switches.ask_user {
-      config.tools.push(ask_user::specification());
+      config.tools.push(self.tools.ask_user.get_specification());
     }
     Ok(config)
   }
@@ -203,7 +202,7 @@ impl SessionSlot {
           .unwrap_or(0)
           .saturating_sub(status["queue_head"].as_u64().unwrap_or(0))
       );
-      status["pending_questions"] = json!(self.tools.questions.snapshot());
+      status["pending_questions"] = json!(self.tools.ask_user.snapshot());
       let mut descriptor = self.get_descriptor();
       if let Some(pending) = &descriptor.pending_selection {
         descriptor.provider = pending.provider.clone();

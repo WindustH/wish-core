@@ -59,6 +59,16 @@ impl From<StorageError> for ApiError {
     }
   }
 }
+impl From<crate::tool::ask_user::AnswerError> for ApiError {
+  fn from(error: crate::tool::ask_user::AnswerError) -> Self {
+    use crate::tool::ask_user::AnswerError;
+    match error {
+      AnswerError::NotFound => Self::not_found(),
+      AnswerError::Invalid(_) => Self::bad_request(error.to_string()),
+      AnswerError::Closed(_) => Self::conflict(error.to_string()),
+    }
+  }
+}
 impl From<crate::Error> for ApiError {
   fn from(error: crate::Error) -> Self {
     let status = match &error {
