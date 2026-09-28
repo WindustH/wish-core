@@ -99,7 +99,7 @@ pub async fn input(
   let message = input::message(&app, &id, input).await?;
   let owner = slot.clone();
   let entry = blocking(move || Ok(owner.handle.enqueue_message(message)?)).await?;
-  let _ = app.events.send(json!({"type":"session_changed","id":id}));
+  slot.touch()?;
   schedule(app, slot);
   Ok((StatusCode::ACCEPTED, Json(json!({"entry":entry}))))
 }

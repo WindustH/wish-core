@@ -292,6 +292,12 @@ impl SessionSlot {
       .await
       .ok()
   }
+  /// Marks the session as just used - a user message or answer arrived - and saves the index, so
+  /// the session list, ordered by `updated_at`, brings it to the top at once.
+  pub fn touch(&self) -> Result<(), ApiError> {
+    self.descriptor.write().unwrap().updated_at = crate::session::statistics::Timestamp::now().0;
+    self.persist_index()
+  }
   pub fn update_snapshot(&self, session: &Session) {
     *self.queue.lock().unwrap() = session.get_message_queue();
     *self.status.lock().unwrap() = snapshot(session);

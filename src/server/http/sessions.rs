@@ -73,8 +73,9 @@ pub async fn enqueue(
   app.require_open()?;
   message.normalize_new_input();
   let slot = app.get_session(&id).await?;
-  let entry = blocking(move || Ok(slot.handle.enqueue_message(message)?)).await?;
-  let _ = app.events.send(json!({"type":"session_changed","id":id}));
+  let owner = slot.clone();
+  let entry = blocking(move || Ok(owner.handle.enqueue_message(message)?)).await?;
+  slot.touch()?;
   Ok((StatusCode::CREATED, Json(json!({"entry":entry}))))
 }
 pub async fn set_config(
@@ -153,7 +154,7 @@ pub async fn answer(
         "later"
       }
     };
-  slot.persist_index()?;
+  slot.touch()?;
   Ok(Json(json!({"delivered": delivered})))
 }
 /// Body: `{"program", "args"}` for the session's own shell, or null to follow the application's.
