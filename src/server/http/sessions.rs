@@ -96,7 +96,7 @@ pub async fn set_config(
   })
   .await
 }
-/// Body: `{"shell", "ask_user"}`, each optional. Turns the session's optional tools on or off.
+/// Body: `{"shell", "ask_user", "mcp"}`, each optional. Turns the session's optional tools on or off.
 pub async fn set_tools(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,

@@ -33,10 +33,18 @@ pub struct App {
   pub tasks: TaskTracker,
   /// Serializes operation registration against shutdown, never held across awaits.
   pub closing: Mutex<bool>,
+  /// MCP servers and their live connections.
+  pub mcp: crate::server::mcp::McpHub,
+  /// Where a session's shell reaches the MCP bridge, known once the listener is bound.
+  bridge_url: std::sync::OnceLock<String>,
+  /// A directory holding only a link to this program, put first on a session shell's `PATH` so
+  /// `wish mcp` runs this build.
+  bin_dir: Option<PathBuf>,
 }
 impl App {
   pub async fn open(config: &Config, config_path: PathBuf) -> Result<Arc<Self>, ApiError> {
     config.proxy.validate()?;
+    config.mcp.validate(&config.providers)?;
     let shell = Arc::new(RwLock::new(config.shell.resolve()?));
     tokio::fs::create_dir_all(&config.data_dir).await.map_err(ApiError::internal)?;
     let path = config.data_dir.join("wish.sqlite");
@@ -84,9 +92,53 @@ impl App {
       stop: CancellationToken::new(),
       tasks,
       closing: Mutex::new(false),
+      mcp: crate::server::mcp::McpHub::new(
+        config.mcp.clone(),
+        config.proxy.clone(),
+        config.defaults.cwd.clone(),
+      ),
+      bridge_url: std::sync::OnceLock::new(),
+      bin_dir: prepare_bin_dir(&config.data_dir),
     });
     crate::server::codex_login::start_refresh_worker(&app);
+    let reaper = app.clone();
+    app.tasks.spawn(async move {
+      loop {
+        tokio::select! {
+          _ = reaper.stop.cancelled() => break,
+          _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => reaper.mcp.reap(),
+        }
+      }
+    });
     Ok(app)
+  }
+  /// Records the address the server listens on, for the MCP bridge sessions' shells call.
+  pub fn set_bridge_address(&self, address: std::net::SocketAddr) {
+    let mut address = address;
+    if address.ip().is_unspecified() {
+      address.set_ip(match address.ip() {
+        std::net::IpAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
+        std::net::IpAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
+      });
+    }
+    let _ = self.bridge_url.set(format!("http://{address}/api"));
+  }
+  /// The variables a session's shell gets for reaching its MCP servers through `wish mcp`.
+  pub fn get_mcp_environment(&self, session: &str, token: &str) -> Vec<(String, String)> {
+    let Some(url) = self.bridge_url.get() else { return Vec::new() };
+    let mut variables = vec![
+      ("WISH_URL".to_owned(), url.clone()),
+      ("WISH_SESSION".to_owned(), session.to_owned()),
+      ("WISH_MCP_TOKEN".to_owned(), token.to_owned()),
+    ];
+    if let Some(bin) = &self.bin_dir {
+      let inherited = std::env::var_os("PATH").unwrap_or_default();
+      let paths = std::iter::once(bin.clone()).chain(std::env::split_paths(&inherited));
+      if let Ok(path) = std::env::join_paths(paths) {
+        variables.push(("PATH".to_owned(), path.to_string_lossy().into_owned()));
+      }
+    }
+    variables
   }
   pub fn get_provider(&self, id: &str) -> Result<Arc<Provider>, ApiError> {
     self
@@ -131,8 +183,9 @@ impl App {
       id: uuid::Uuid::new_v4().to_string(),
       provider: input.provider,
       cwd: input.cwd,
-      // Without a word from the request: no shell, and questions to the user allowed.
-      tools: crate::server::config::ToolSwitches { shell: false, ask_user: true }.with(input.tools),
+      // Without a word from the request: no shell, and questions to the user and MCP allowed.
+      tools: crate::server::config::ToolSwitches { shell: false, ask_user: true, mcp: true }
+        .with(input.tools),
       shell_command: None,
       created_at: crate::session::statistics::Timestamp::now().0,
       updated_at: crate::session::statistics::Timestamp::now().0,
@@ -224,6 +277,7 @@ impl App {
   pub async fn finish_shutdown(&self) -> Result<(), ApiError> {
     self.tasks.close();
     self.tasks.wait().await;
+    self.mcp.close_all().await;
     for slot in self.sessions.lock().await.values() {
       if let Some(shell) = slot.tools.shell() {
         shell.shutdown().await.map_err(ApiError::internal)?;
@@ -235,5 +289,25 @@ impl App {
       Ok(())
     })
     .await
+  }
+}
+
+/// Makes `data_dir/bin/wish` a link to this program. Without one, sessions' shells find `wish mcp`
+/// only if the program is on their `PATH` already.
+fn prepare_bin_dir(data_dir: &std::path::Path) -> Option<PathBuf> {
+  #[cfg(unix)]
+  {
+    let program = std::env::current_exe().ok()?;
+    let directory = std::path::absolute(data_dir.join("bin")).ok()?;
+    std::fs::create_dir_all(&directory).ok()?;
+    let link = directory.join("wish");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&program, &link).ok()?;
+    Some(directory)
+  }
+  #[cfg(not(unix))]
+  {
+    let _ = data_dir;
+    None
   }
 }

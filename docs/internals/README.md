@@ -70,3 +70,8 @@ these pages.
 ## Tools
 
 - [tools](tools.md): shell, history tools, `view_image` and `ask_user`, with their server integration.
+
+## MCP
+
+- [mcp](mcp.md): MCP servers reached from a session's shell through `wish mcp`: the client, the
+  instances, the bridge.

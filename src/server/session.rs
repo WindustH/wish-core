@@ -82,6 +82,9 @@ pub struct SessionSlot {
   /// The command this session's shell tool starts, whether or not the tool is on.
   pub shell_command: Arc<RwLock<ShellCommand>>,
   pub image_dir: PathBuf,
+  /// What this session's shell shows the MCP bridge; made anew each time the session opens, since
+  /// its shells do not outlive the process.
+  pub mcp_token: String,
   tasks: tokio_util::task::TaskTracker,
   app: std::sync::Weak<crate::server::app::App>,
   pub events: broadcast::Sender<Value>,
@@ -114,6 +117,11 @@ impl SessionSlot {
     let mut shell_config =
       ShellConfig::new(&descriptor.cwd, data_dir.join("shell").join(&descriptor.id));
     shell_config.command = Arc::clone(&shell_command);
+    let mcp_token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    // Set whether or not MCP is on: the bridge checks the switch, and the environment stays as it is.
+    if let Some(app) = app.upgrade() {
+      shell_config.env.extend(app.get_mcp_environment(&descriptor.id, &mcp_token));
+    }
     let image_dir = std::path::absolute(data_dir.join("blobs").join(&descriptor.id))
       .map_err(ApiError::internal)?;
     let tasks = app.upgrade().expect("session application is alive").tasks.clone();
@@ -144,6 +152,7 @@ impl SessionSlot {
       tools,
       shell_command,
       image_dir,
+      mcp_token,
       tasks,
       app,
       events,
@@ -173,7 +182,13 @@ impl SessionSlot {
     if switches.shell
       && let Some(shell) = self.tools.shell()
     {
-      config.tools.extend(shell.get_specifications());
+      let mut specifications = shell.get_specifications();
+      for specification in &mut specifications {
+        if specification.name == "shell_start" {
+          specification.description.push_str(crate::server::mcp::SHELL_NOTE);
+        }
+      }
+      config.tools.extend(specifications);
     }
     if switches.ask_user {
       config.tools.push(self.tools.ask_user.get_specification());
@@ -185,9 +200,16 @@ impl SessionSlot {
     &self,
     changes: crate::server::config::ToolChanges,
   ) -> Result<(), ApiError> {
-    let next = self.descriptor.read().unwrap().tools.with(changes);
+    let previous = self.descriptor.read().unwrap().tools;
+    let next = previous.with(changes);
     self.tools.switch(next).await?;
     self.descriptor.write().unwrap().tools = next;
+    if previous.mcp
+      && !next.mcp
+      && let Some(app) = self.app.upgrade()
+    {
+      app.mcp.close_session(&self.get_descriptor().id);
+    }
     Ok(())
   }
   pub fn describe(&self) -> Value {

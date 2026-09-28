@@ -16,6 +16,7 @@ pub struct Config {
   pub providers: BTreeMap<String, ProviderConfig>,
   pub proxy: ProxyConfig,
   pub shell: ShellSettings,
+  pub mcp: crate::server::mcp::McpConfig,
   pub defaults: Defaults,
 }
 
@@ -130,6 +131,9 @@ pub struct ToolSwitches {
   pub shell: bool,
   /// Questions to the user: `ask_user`.
   pub ask_user: bool,
+  /// Whether `wish mcp` in the session's shell may reach the MCP servers. The model's request is
+  /// the same either way, so switching it keeps the prompt cache.
+  pub mcp: bool,
 }
 impl ToolSwitches {
   /// A request's choices over these; what it leaves out stays as it is.
@@ -137,6 +141,7 @@ impl ToolSwitches {
     Self {
       shell: changes.shell.unwrap_or(self.shell),
       ask_user: changes.ask_user.unwrap_or(self.ask_user),
+      mcp: changes.mcp.unwrap_or(self.mcp),
     }
   }
 }
@@ -146,6 +151,7 @@ impl ToolSwitches {
 pub struct ToolChanges {
   pub shell: Option<bool>,
   pub ask_user: Option<bool>,
+  pub mcp: Option<bool>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -168,7 +174,7 @@ impl Default for Defaults {
       provider: String::new(),
       model: String::new(),
       cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp")),
-      tools: ToolSwitches { shell: true, ask_user: true },
+      tools: ToolSwitches { shell: true, ask_user: true, mcp: true },
       stream: true,
       instructions: String::new(),
       reasoning: None,
@@ -196,6 +202,7 @@ impl Default for Config {
       providers: BTreeMap::new(),
       proxy: ProxyConfig::default(),
       shell: ShellSettings::default(),
+      mcp: Default::default(),
       defaults: Defaults::default(),
     }
   }

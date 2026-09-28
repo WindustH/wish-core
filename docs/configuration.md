@@ -21,6 +21,7 @@ a temporary file and renamed into place). Most changes apply immediately; see
 - [Session defaults](#session-defaults)
 - [Proxy](#proxy)
 - [Shell](#shell)
+- [MCP servers](#mcp-servers)
 - [Secrets](#secrets)
 - [Applying changes](#applying-changes)
 - [Data directory](#data-directory)
@@ -56,6 +57,13 @@ a temporary file and renamed into place). Most changes apply immediately; see
   },
   "proxy": {"mode": "environment"},
   "shell": {"program": "/usr/bin/zsh"},
+  "mcp": {
+    "servers": {
+      "context7": {"transport": "stdio", "command": "npx", "args": ["-y", "@upstash/context7-mcp"]},
+      "zai-search": {"transport": "http", "url": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
+                     "auth_provider": "zai", "scope": "shared"}
+    }
+  },
   "defaults": {
     "provider": "openai",
     "model": "gpt-5",
@@ -81,6 +89,7 @@ fields are rejected everywhere, so typos fail loudly.
 | `defaults` | | Defaults for new sessions; see [Session defaults](#session-defaults) |
 | `proxy` | environment | Outbound proxy; see [Proxy](#proxy) |
 | `shell` | platform shell | The shell commands run in; see [Shell](#shell) |
+| `mcp` | `{"servers": {}}` | MCP servers sessions can call; see [MCP servers](#mcp-servers) |
 
 ## Providers
 
@@ -189,7 +198,7 @@ sessions keep their own settings.
 | `provider` | `""` | Default provider ID; must exist in `providers` |
 | `model` | `""` | Default model ID |
 | `cwd` | Wish's start directory | Default working directory, an absolute path |
-| `tools` | `{"shell": true, "ask_user": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions. Each session can switch them later |
+| `tools` | `{"shell": true, "ask_user": true, "mcp": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell. Each session can switch them later |
 | `stream` | `true` | Stream model output |
 | `instructions` | `""` | Extra instructions the web app adds to each new session |
 | `reasoning` | `null` | `{"enabled": bool, "effort": "low", "summary": "Auto"}`. Accepted effort values depend on the provider |
@@ -243,6 +252,51 @@ every session that follows the global setting. A session can also have its
 own shell, set in the web app or with
 [`PUT /api/sessions/{id}/shell`](api.md#put-apisessionsidshell).
 
+## MCP servers
+
+`mcp.servers` lists the MCP servers sessions can use, by name. Sessions reach
+them from their shell with the `wish mcp` command: the model runs
+`wish mcp list`, `wish mcp describe <server>/<tool>` and
+`wish mcp call <server>/<tool> '<json>'`, and reads the answers as command
+output. The servers and their tools never appear in the model's tool list, so
+adding a server, removing one or a server changing its tools does not
+invalidate a conversation's prompt cache. MCP needs the shell: without it a
+session has no way to run the command.
+
+A session's `tools.mcp` switch decides only what the command answers. With it
+off, every `wish mcp` command says MCP is disabled for the session and that you
+can enable it in the session's settings; the model's request is the same either
+way, so switching it keeps the cache too.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `transport` | required | `stdio` for a local program, `http` for a remote server (Streamable HTTP) |
+| `enabled` | `true` | A disabled server is kept in the file but not offered |
+| `command`, `args` | | stdio: the program and its arguments. A bare name is looked up on `PATH` |
+| `env` | `{}` | stdio: variables added to Wish's environment for the program |
+| `cwd` | | stdio: where the program starts. Absent, a session's instance starts in the session's working directory and a shared one in `defaults.cwd` |
+| `url` | | http: the server's endpoint |
+| `headers` | `{}` | http: headers sent with every request |
+| `auth_provider` | | http: a provider ID whose key is sent as `Authorization: Bearer`, for a server that comes with a subscription the provider already has (Zhipu's search MCP with a GLM Coding Plan key, for example) |
+| `proxy_enabled` | `true` | http: use the [proxy](#proxy) |
+| `scope` | `"session"` | `session` runs one instance per session; `shared` has every session use one |
+| `idle_timeout` | `1800` | Seconds without a call after which an instance is closed; the next call starts it again. `0` keeps it open |
+| `timeout` | `300` | Seconds a call may go without an answer or a progress report. Past it the call is abandoned and the server is told to stop |
+
+A server runs once per session by default, started the first time that session
+calls it. That is how MCP servers are written to be used (one client each),
+so it is right whether or not a server keeps state, such as a browser it
+drives. Use `scope: "shared"` only for servers you know keep none, where one
+instance saves starting a program per session. A local server runs in a
+process group of its own, and closing it ends everything it started.
+
+The tools a server offers are listed when it first connects and shared by all
+of its instances, so `wish mcp list` in a new session does not start anything.
+Server names may use letters, digits, `-` and `_`. For an `http` server, the
+transport sets `Accept`, `Content-Type`, `Mcp-Session-Id`,
+`MCP-Protocol-Version` and `Last-Event-ID` itself, and `auth_provider` excludes
+an `Authorization` header.
+
 ## Secrets
 
 Provider keys and credentials can be written directly (`api_key`,
@@ -256,7 +310,8 @@ configuration that refers to them. A reference to a missing or empty variable
 is refused (for disabled providers it is not read).
 
 `GET /api/config` replaces `api_key`, `refresh_token`, every `credentials` and
-`headers` value, and the proxy password with `"<redacted>"`. Sending that
+`headers` value, every MCP server's `env` and `headers` value, and the proxy
+password with `"<redacted>"`. Sending that
 placeholder back keeps the stored value. The file on disk holds the real
 values, so protect it accordingly (for example `chmod 600`).
 
@@ -266,6 +321,7 @@ values, so protect it accordingly (for example `chmod 600`).
 | --- | --- |
 | Providers, proxy | On the next model call. Calls in progress finish with the old settings |
 | Shell | On the next command |
+| MCP servers | On the next call. An instance whose server changed, or would now be reached with another key or proxy, is closed and started again |
 | Defaults | For the next new session |
 | `listen`, `data_dir`, `bearer_token_env` | After a restart. The API refuses to change them |
 | Values of environment variables | After a restart |
@@ -281,7 +337,8 @@ stale: restart Wish after a manual edit, before saving from the web app.
 | `wish.sqlite` | Sessions: messages, events, context generations, queue, model calls and the search index |
 | `management.sqlite` | Session list, per-provider usage records and streaming-speed samples |
 | `blobs/<session>/` | Uploaded attachments and images the agent viewed |
-| `shell/<session>/` | Captured output of every shell command |
+| `shell/<session>/` | Captured output of every shell command, and in `mcp/` the images and other files MCP tools returned |
+| `bin/` | A link to the Wish program, first on sessions' shell `PATH` so `wish mcp` runs the same build |
 
 Deleting a session removes its rows and both of its directories. Back up the
 whole directory while Wish is stopped, or copy the databases with

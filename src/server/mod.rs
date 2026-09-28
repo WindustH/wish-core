@@ -9,6 +9,7 @@ mod configuration;
 mod error;
 mod http;
 mod management;
+mod mcp;
 mod media;
 mod presets;
 mod provider;
@@ -17,6 +18,9 @@ mod session;
 
 pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut args = std::env::args().skip(1);
+  if std::env::args().nth(1).as_deref() == Some("mcp") {
+    std::process::exit(mcp::cli::run(args.skip(1).collect()).await);
+  }
   let path = match (args.next().as_deref(), args.next(), args.next()) {
     (Some("--config"), Some(path), None) => path,
     (Some("--help"), None, None) | (None, None, None) => {
@@ -32,7 +36,9 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
   let config: config::Config = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
   let app = app::App::open(&config, path.into()).await?;
   let listener = tokio::net::TcpListener::bind(config.listen).await?;
-  eprintln!("wish listening on {}", listener.local_addr()?);
+  let address = listener.local_addr()?;
+  eprintln!("wish listening on {address}");
+  app.set_bridge_address(address);
   let shutdown = app.clone();
   let result = axum::serve(listener, http::build_router(app.clone()))
     .with_graceful_shutdown(async move {

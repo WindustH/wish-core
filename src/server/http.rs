@@ -2,6 +2,7 @@ mod ask;
 pub(crate) mod content;
 mod directories;
 mod manage;
+mod mcp;
 mod providers;
 mod sessions;
 mod statistics;
@@ -88,8 +89,15 @@ pub fn build_router(app: Arc<App>) -> Router {
     .route("/sessions/{id}/history/query", post(sessions::query_history))
     .route("/sessions/{id}/history/search", post(sessions::search_history))
     .route("/sessions/{id}/history/{sequence}", get(sessions::read_history))
+    .route("/mcp/servers", get(mcp::list))
+    .route("/mcp/servers/{id}/check", post(mcp::check))
     .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
-    .route_layer(middleware::from_fn_with_state(app.clone(), authorize));
+    .route_layer(middleware::from_fn_with_state(app.clone(), authorize))
+    // The bridge a session's shell reaches its MCP servers through checks that session's own token
+    // instead of the application's.
+    .route("/sessions/{id}/mcp/servers", get(mcp::servers))
+    .route("/sessions/{id}/mcp/tool", get(mcp::tool))
+    .route("/sessions/{id}/mcp/call", post(mcp::call));
   Router::new()
     .nest("/api", api)
     .route("/health", get(|| async { Json(json!({"status":"ok"})) }))

@@ -35,6 +35,15 @@ impl Configuration {
     if !self.config.proxy.password.is_empty() {
       config["proxy"]["password"] = json!("<redacted>");
     }
+    // An MCP server's environment and headers carry its keys.
+    for (_, server) in config["mcp"]["servers"].as_object_mut().into_iter().flatten() {
+      for field in ["env", "headers"] {
+        for (_, value) in server.get_mut(field).and_then(Value::as_object_mut).into_iter().flatten()
+        {
+          *value = json!("<redacted>");
+        }
+      }
+    }
     json!({"revision":self.revision,"config":config})
   }
 }
@@ -134,9 +143,30 @@ impl App {
     if value["proxy"]["password"] == "<redacted>" {
       value["proxy"]["password"] = json!(current.config.proxy.password);
     }
+    if let Some(servers) = value["mcp"]["servers"].as_object_mut() {
+      for (id, server) in servers {
+        let stored = current.config.mcp.servers.get(id);
+        for field in ["env", "headers"] {
+          for (name, entry) in
+            server.get_mut(field).and_then(Value::as_object_mut).into_iter().flatten()
+          {
+            if entry == "<redacted>" {
+              let kept = stored
+                .and_then(|s| if field == "env" { s.env.get(name) } else { s.headers.get(name) });
+              *entry = json!(kept.ok_or_else(|| {
+                ApiError::bad_request(format!(
+                  "redacted MCP {field} value `{name}` has no stored value"
+                ))
+              })?);
+            }
+          }
+        }
+      }
+    }
     let next: Config =
       serde_json::from_value(value).map_err(|e| ApiError::bad_request(e.to_string()))?;
     next.proxy.validate()?;
+    next.mcp.validate(&next.providers)?;
     let shell = next.shell.resolve()?;
     if next.listen != current.config.listen
       || next.data_dir != current.config.data_dir
@@ -176,6 +206,7 @@ impl App {
       let _ = tokio::fs::remove_file(&temp).await;
       return Err(ApiError::internal(error));
     }
+    self.mcp.apply(next.mcp.clone(), next.proxy.clone(), next.defaults.cwd.clone(), &providers);
     *self.providers.write().unwrap() = providers;
     *self.shell.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = shell.clone();
     for slot in self.sessions.lock().await.values() {

@@ -26,7 +26,7 @@ pub struct ReqwestTransport {
 impl ReqwestTransport {
   /// Builds the client: connect timeout, no redirects, and the requested proxy policy.
   pub fn new(limits: Limits, proxy: Proxy) -> Result<Self, Error> {
-    let mut builder = reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
       .connect_timeout(limits.connect)
       .redirect(reqwest::redirect::Policy::none())
       // One call means at most one request on the wire. The default policy silently resends on
@@ -34,20 +34,9 @@ impl ReqwestTransport {
       // server states it did not process the stream, but invisible here. Retrying belongs above
       // this layer, where it can be seen, measured and switched off per caller.
       .retry(reqwest::retry::never());
-    builder = match proxy {
-      Proxy::Environment => builder,
-      Proxy::Disabled => builder.no_proxy(),
-      Proxy::Manual { url, basic_auth } => {
-        let mut rule = reqwest::Proxy::all(&url)
-          .map_err(|error| Error::Build(format!("proxy {url}: {error}")))?;
-        if let Some((username, password)) = &basic_auth {
-          rule = rule.basic_auth(username, password);
-        }
-        builder.proxy(rule)
-      }
-    };
-    let client =
-      builder.build().map_err(|error| Error::Build(format!("client build failed: {error}")))?;
+    let client = apply_proxy(builder, proxy)?
+      .build()
+      .map_err(|error| Error::Build(format!("client build failed: {error}")))?;
     Ok(Self { client, limits, stream_total: None })
   }
 
@@ -73,6 +62,25 @@ impl ReqwestTransport {
     }
     Ok(self.client.request(method, &call.url).headers(headers).body(call.body.clone()))
   }
+}
+
+/// Applies a proxy policy to a client under construction.
+pub(crate) fn apply_proxy(
+  builder: reqwest::ClientBuilder,
+  proxy: Proxy,
+) -> Result<reqwest::ClientBuilder, Error> {
+  Ok(match proxy {
+    Proxy::Environment => builder,
+    Proxy::Disabled => builder.no_proxy(),
+    Proxy::Manual { url, basic_auth } => {
+      let mut rule =
+        reqwest::Proxy::all(&url).map_err(|error| Error::Build(format!("proxy {url}: {error}")))?;
+      if let Some((username, password)) = &basic_auth {
+        rule = rule.basic_auth(username, password);
+      }
+      builder.proxy(rule)
+    }
+  })
 }
 
 impl Transport for ReqwestTransport {

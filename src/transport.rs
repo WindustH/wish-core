@@ -19,13 +19,14 @@ pub use aws_eventstream::{
   EventStreamValue,
 };
 pub use error::TransportError;
+pub(crate) use http::apply_proxy;
 pub use http::{HttpBodyStream, ReqwestTransport};
 pub use sse::{SseError, SseEvent, SseParser, SseStream};
 
 use crate::protocol::error::Error;
 
 /// Proxy policy for the HTTP client.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Proxy {
   /// Whatever the client does by default.
   Environment,

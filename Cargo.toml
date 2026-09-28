@@ -41,6 +41,14 @@ hex = "0.4"
 ring = "0.17"
 base64 = "0.22"
 imara-diff = { version = "0.2", features = ["unified_diff"] }
+# MCP client: the protocol, local servers over stdio and the Streamable HTTP session logic. Its own
+# reqwest client stays off: remote servers are reached through wish's, under the same proxy policy.
+rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client"] }
+# The SSE records rmcp's HTTP transport reads, parsed from wish's own response bodies.
+sse-stream = "0.2"
+# Starts a local MCP server in a process group of its own (a job object on Windows), so closing it
+# ends whatever it started too - `npx` and the server behind it.
+process-wrap = { version = "10", default-features = false, features = ["tokio1", "process-group", "job-object", "kill-on-drop"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

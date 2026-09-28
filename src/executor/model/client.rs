@@ -271,6 +271,13 @@ impl<T: Transport> Client<T> {
     self
   }
 
+  /// The API key or OAuth token the account is reached with, for a caller that reaches another
+  /// service of the same account by it.
+  #[must_use]
+  pub fn get_api_key(&self) -> &str {
+    &self.credentials.api_key
+  }
+
   /// When the material stops being accepted, when it says so itself; `None` is material that
   /// does not run out.
   #[must_use]

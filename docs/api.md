@@ -26,7 +26,8 @@ goes through this API, so any other client can do the same.
 [configuration](configuration.md), every matched `/api` route requires
 `Authorization: Bearer <token>`. A missing or wrong token returns
 `401 {"error":{"message":"unauthorized"}}`. `/health`, `/version` and unmatched
-paths are public. Browsers cannot attach headers to `EventSource`, so browser
+paths are public. The [MCP bridge](#the-bridge) is the exception: it takes a
+session's own token instead, and the application's token is refused there. Browsers cannot attach headers to `EventSource`, so browser
 clients read SSE with `fetch`, or sit behind a proxy that injects the header,
 as `wish-web`'s `serve.ts` does.
 
@@ -130,6 +131,11 @@ engine error, for example
 | POST | `/api/sessions/{id}/context/clear` | Start an empty context |
 | PATCH, DELETE | `/api/sessions/{id}/queue/{entry}` | Reorder or cancel queued input |
 | POST | `/api/sessions/{id}/answer` | Answer or skip an `ask_user` form |
+| GET | `/api/mcp/servers` | Configured MCP servers and what is known of them |
+| POST | `/api/mcp/servers/{id}/check` | Connect to an MCP server and list its tools |
+| GET | `/api/sessions/{id}/mcp/servers` | MCP bridge: servers and tools (session token) |
+| GET | `/api/sessions/{id}/mcp/tool` | MCP bridge: one tool's definition (session token) |
+| POST | `/api/sessions/{id}/mcp/call` | MCP bridge: call a tool (session token) |
 | GET | `/api/sessions/{id}/events` | Session event stream (SSE) |
 | GET | `/api/sessions/{id}/history` | Conversation timeline |
 | POST | `/api/sessions/{id}/history/query` | Filtered chronological history |
@@ -347,7 +353,7 @@ Session endpoints return a session as `{"session": descriptor, "status": status}
 {
   "session": {
     "id": "8c1f...", "name": "Refactor parser", "provider": "openai",
-    "cwd": "/home/me/project", "tools": {"shell": true, "ask_user": true},
+    "cwd": "/home/me/project", "tools": {"shell": true, "ask_user": true, "mcp": false},
     "created_at": 1758790000000, "updated_at": 1758790500000, "revision": 7
   },
   "status": {
@@ -364,7 +370,7 @@ Descriptor fields:
 
 | Field | Meaning |
 | --- | --- |
-| `tools` | The session's optional built-in tools: `{"shell", "ask_user"}`, each a boolean |
+| `tools` | The session's optional built-in tools: `{"shell", "ask_user", "mcp"}`, each a boolean |
 | `shell_command` | The session's own `{program, args}`. Absent when it follows the global `shell` setting |
 | `pending_selection` | A provider/model change made while running, not yet in effect |
 
@@ -402,7 +408,10 @@ Every session gets `history_search`, `history_read`, `history_query` and
 `view_image`. With `tools.shell` it also gets `shell_start`, `shell_edit`,
 `shell_poll`, `shell_write` and `shell_kill`, and with `tools.ask_user` it gets
 `ask_user`. On updates `tools` may list these names; any other name is
-rejected.
+rejected. With the shell on, `shell_start`'s description ends with a fixed note
+on `wish mcp` (see [MCP servers](#mcp-servers)). `tools.mcp` adds no tool and
+changes nothing in the tool list: it decides whether that command may reach
+the servers.
 
 ### `GET /api/sessions`
 
@@ -426,8 +435,8 @@ loading any conversation.
 ```
 
 `provider`, `cwd` (an existing absolute directory) and `config` are required.
-`tools` switches optional tools; each switch left out keeps its default, no
-shell and `ask_user` on. `initial_messages` optionally seeds the context with
+`tools` switches optional tools; each switch left out keeps its default: no
+shell, `ask_user` on and MCP on. `initial_messages` optionally seeds the context with
 messages. Returns `201`
 with the session. `404` if the provider is unknown or disabled.
 
@@ -453,7 +462,7 @@ Returns the updated session.
 ### `DELETE /api/sessions/{id}`
 
 Deletes the session, its attachments and its shell output, and stops its
-background commands. Returns `204`, or `409` while it runs. Usage statistics
+background commands and its own MCP server instances. Returns `204`, or `409` while it runs. Usage statistics
 are kept.
 
 ### `POST /api/sessions/{id}/fork`
@@ -480,10 +489,11 @@ Returns `400` while the session's shell is switched off.
 
 ### `PUT /api/sessions/{id}/tools`
 
-`{"shell": false}`, `{"ask_user": true}` or both switch the session's optional
-tools; a switch left out stays as it is. The session's tool list is rebuilt to
-match. Switching the shell off keeps background commands running, and they
-still report when they finish. Returns the session, `400` if the shell cannot
+`{"shell": false}`, `{"ask_user": true}`, `{"mcp": true}` or any of them together
+switch the session's optional tools; a switch left out stays as it is. The
+session's tool list is rebuilt to match. Switching the shell off keeps
+background commands running, and they still report when they finish.
+Switching MCP off closes the session's own MCP server instances. Returns the session, `400` if the shell cannot
 start, or `409` while the session runs.
 
 ## Input and execution
@@ -591,6 +601,74 @@ Returns `{"delivered": ...}`:
 
 `400` for answers that do not fit the form, `404` for a form that is not open,
 `409` if it was already answered.
+
+## MCP servers
+
+The servers in the configuration's [`mcp`](configuration.md#mcp-servers)
+section are reached from a session's shell, never through the model's tool
+list. The model runs `wish mcp` in the session's shell:
+
+```sh
+wish mcp list                         # servers and their tools, one line each
+wish mcp describe fetch/fetch         # a tool's description and parameter schema
+wish mcp call fetch/fetch '{"url": "https://example.com"}'
+printf '%s' "$ARGS" | wish mcp call fetch/fetch     # arguments on standard input
+wish mcp call --json fetch/fetch '{...}'            # the whole result as the protocol gives it
+```
+
+`call` prints text content as text and structured content as JSON when nothing
+else says it. Images, audio and binary resources are saved under
+`shell/<session>/mcp/` in the data directory and printed as their paths, so the
+model can open an image with `view_image`. The exit status is `0` when done, `1`
+when the tool reported an error, `2` when nothing was called (a usage error, an
+unknown server or tool, a server that could not start) and `3` when the
+outcome is unknown: the connection closed or the call ran past its `timeout`,
+so it may have taken effect.
+
+### The bridge
+
+`wish mcp` is a client of three routes. Each session's shell runs with
+`WISH_URL` (this server's `/api` on the loopback address), `WISH_SESSION` and
+`WISH_MCP_TOKEN`, a token made when the session opens and known only to its
+shell, and with a directory linking to the Wish program first on `PATH`. The
+routes take `Authorization: Bearer <that token>` and answer that session only;
+the application's token is refused. While the session has `tools.mcp` off they
+return `409` with a message meant for the model: MCP is disabled for this
+session, and the user can enable it in the session's settings. That is the
+switch's only effect, so switching it never changes the model's request.
+
+| Route | Body or query | Returns |
+| --- | --- | --- |
+| `GET /api/sessions/{id}/mcp/servers` | `?server=` to list one | `[{"server", "tools": [{"name", "description"}]}]`, the description cut to its first line; a server that cannot be reached has `"error"` instead of `"tools"` |
+| `GET /api/sessions/{id}/mcp/tool` | `?server=&name=` | The tool as the server defines it: `name`, `description`, `inputSchema`, `outputSchema`, `annotations` |
+| `POST /api/sessions/{id}/mcp/call` | `{"server", "tool", "arguments"}` | The server's `CallToolResult`, with binary content replaced by `path` |
+
+Errors carry `details.kind`: `not_found` (`404`, no such server or tool),
+`connect` (`502`, the server could not start or be reached, with the end of its
+standard error), `rejected` (`422`, the server answered with an error) and
+`unknown` (`504`, no answer; a call may have taken effect). A call ends when its
+request does: interrupting the command drops the request, and the server is
+sent `notifications/cancelled`.
+
+### `GET /api/mcp/servers`
+
+Every configured server with what is known of it, for the settings page:
+
+```json
+[{"id": "fetch", "instances": 2, "server": {"name": "mcp-fetch", "version": "1.2.0"},
+  "tools": [{"name": "fetch", "description": "...", "inputSchema": {...}}],
+  "error": null, "stderr": "", "checked_at": 1758790500000}]
+```
+
+`tools` is `null` until the server has connected once; `error` is the last
+connection or listing failure; `stderr` is the end of a running instance's
+standard error.
+
+### `POST /api/mcp/servers/{id}/check`
+
+Starts the server on a connection of its own, lists its tools and closes it,
+whether or not it is enabled. Returns `{"server", "tools", "stderr"}`, or an
+error as above. The tools listed replace what is known of the server.
 
 ## History and records
 

@@ -211,6 +211,7 @@ pub async fn delete_session(
   if let Some(shell) = slot.tools.shell() {
     shell.shutdown().await.map_err(ApiError::internal)?;
   }
+  app.mcp.close_session(&id);
   let index = app.index.clone();
   let target = id.clone();
   let owned = slot.clone();
@@ -307,6 +308,7 @@ pub async fn fork(
     tools: crate::server::config::ToolChanges {
       shell: Some(descriptor.tools.shell),
       ask_user: Some(descriptor.tools.ask_user),
+      mcp: Some(descriptor.tools.mcp),
     },
     config,
     metadata: session.get_metadata().clone(),

@@ -51,6 +51,9 @@ from anything that speaks HTTP.
 - **A capable shell.** The agent runs commands in the session's directory,
   moves long jobs to the background and hears back when they finish, types
   into interactive programs, and reports exactly what each file edit changed.
+- **MCP servers without the cost.** Add local or remote MCP servers and the
+  agent calls them from its shell, one instance per session. Their tools never
+  crowd the model's context or reset its prompt cache, however many you add.
 - **Asks when your call is needed.** The agent can put choices and short
   questions to you in a single form. If it stops waiting and carries on, an
   answer you give later still reaches it.
