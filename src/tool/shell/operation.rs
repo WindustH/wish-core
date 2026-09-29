@@ -124,7 +124,7 @@ pub(super) fn build_specifications() -> Vec<crate::protocol::Tool> {
   vec![
     crate::protocol::Tool {
       name: "shell_start".into(),
-      description: "Start a shell command. If the command runs longer than timeout, it continues in the background and returns execution_id for later polling or termination. Output and exit code are captured. No interactive PTY is allocated. Use shell_edit for commands that modify files.".into(),
+      description: format!("Start a shell command. If the command runs longer than timeout, it continues in the background and returns execution_id for later polling or termination. Output and exit code are captured. No interactive PTY is allocated. Use shell_edit for commands that modify files.{}", super::platform::DESCRIPTION_NOTE),
       input_schema: serde_json::json!({
         "type": "object", "additionalProperties": false,
         "required": ["command"],

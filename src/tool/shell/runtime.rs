@@ -421,11 +421,7 @@ async fn read_output(
   let total = file.metadata().await?.len();
   let next_offset = offset + bytes.len() as u64;
   let (text, lossy) = match encoding {
-    DataEncoding::Utf8 => {
-      let text = String::from_utf8_lossy(&bytes);
-      let lossy = matches!(text, std::borrow::Cow::Owned(_));
-      (text.into_owned(), lossy)
-    }
+    DataEncoding::Utf8 => platform::decode_output(&bytes),
     DataEncoding::Base64 => (base64::engine::general_purpose::STANDARD.encode(&bytes), false),
   };
   let mut output = json!({"execution_id":execution.id, "process":snapshot, "output_path":execution.output_path,

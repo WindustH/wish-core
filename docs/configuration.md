@@ -247,7 +247,9 @@ Providers with `"proxy_enabled": false` always connect directly.
 | `args` | Arguments placed before the command text. `null` (default) chooses by shell: `-lc` for bash and zsh, `-l -c` for fish, `-NoLogo -NoProfile -NonInteractive -Command` for PowerShell, `/D /S /C` for cmd, `-c` otherwise |
 
 Commands run in the session's working directory with Wish's own user,
-permissions and environment. A changed shell applies from the next command of
+permissions and environment. On Windows the agent is told that commands run on
+Windows, and output that is not UTF-8 is read in the system's OEM code page, the
+one cmd.exe writes in (GBK on Chinese Windows). A changed shell applies from the next command of
 every session that follows the global setting. A session can also have its
 own shell, set in the web app or with
 [`PUT /api/sessions/{id}/shell`](api.md#put-apisessionsidshell).

@@ -13,6 +13,29 @@ pub(super) use unix::ProcessTree;
 #[cfg(windows)]
 pub(super) use windows::ProcessTree;
 
+/// What `shell_start` adds to its description about where commands run: models write POSIX shell
+/// by default, which cmd.exe and PowerShell reject.
+pub(super) const DESCRIPTION_NOTE: &str = if cfg!(windows) {
+  " Commands run on Windows, in the shell set for this session: cmd.exe unless configured otherwise. Write Windows commands in that shell's syntax, not POSIX sh."
+} else {
+  ""
+};
+
+/// Command output as text, and whether any of it could not be decoded. On Windows, console
+/// programs such as cmd.exe write in the system's OEM code page (GBK on Chinese systems), so
+/// output that is not UTF-8 is read in that code page.
+pub(super) fn decode_output(bytes: &[u8]) -> (String, bool) {
+  #[cfg(windows)]
+  if std::str::from_utf8(bytes).is_err()
+    && let Some(text) = windows::decode_oem(bytes)
+  {
+    return (text, false);
+  }
+  let text = String::from_utf8_lossy(bytes);
+  let lossy = matches!(text, std::borrow::Cow::Owned(_));
+  (text.into_owned(), lossy)
+}
+
 pub(super) fn default_program() -> PathBuf {
   #[cfg(windows)]
   {

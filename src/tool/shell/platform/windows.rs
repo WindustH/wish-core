@@ -59,6 +59,30 @@ impl ProcessTree {
   // Closing the job still enforces KILL_ON_JOB_CLOSE; no late PID-based signaling is necessary.
   pub fn disarm(&mut self) {}
 }
+/// Bytes in the system's OEM code page as text; None when Windows cannot convert them.
+pub(in crate::tool::shell) fn decode_oem(bytes: &[u8]) -> Option<String> {
+  use windows_sys::Win32::Globalization::{CP_OEMCP, MultiByteToWideChar};
+  let length = i32::try_from(bytes.len()).ok()?;
+  if length == 0 {
+    return Some(String::new());
+  }
+  // SAFETY: the input is valid for `length` bytes. The first call only measures; the second writes
+  // at most the measured number of UTF-16 units into a buffer of exactly that size.
+  unsafe {
+    let units = MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), length, std::ptr::null_mut(), 0);
+    if units <= 0 {
+      return None;
+    }
+    let mut wide = vec![0u16; units as usize];
+    let written =
+      MultiByteToWideChar(CP_OEMCP, 0, bytes.as_ptr(), length, wide.as_mut_ptr(), units);
+    if written <= 0 {
+      return None;
+    }
+    wide.truncate(written as usize);
+    Some(String::from_utf16_lossy(&wide))
+  }
+}
 fn check(result: i32) -> io::Result<()> {
   if result == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
