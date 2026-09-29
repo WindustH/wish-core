@@ -6,6 +6,8 @@ mod codex_login;
 mod compaction_item;
 mod config;
 mod configuration;
+#[cfg(windows)]
+mod console;
 mod error;
 mod http;
 mod management;
@@ -34,6 +36,8 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     _ => return Err("usage: wish --config <config.json>".into()),
   };
   crate::migration::run(std::path::Path::new(&path))?;
+  #[cfg(windows)]
+  console::install();
   let config: config::Config = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
   let app = app::App::open(&config, path.into()).await?;
   let listener = tokio::net::TcpListener::bind(config.listen).await?;
@@ -48,7 +52,10 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await;
   app.begin_shutdown().await;
-  app.finish_shutdown().await?;
+  let finished = app.finish_shutdown().await;
+  #[cfg(windows)]
+  console::release();
+  finished?;
   result?;
   Ok(())
 }
@@ -60,8 +67,13 @@ async fn wait_for_signal() {
       .expect("install SIGTERM handler");
     tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
   }
-  #[cfg(not(unix))]
+  #[cfg(windows)]
   {
-    tokio::signal::ctrl_c().await.expect("install Ctrl-C handler");
+    let mut ctrl_break = tokio::signal::windows::ctrl_break().expect("install Ctrl-Break handler");
+    tokio::select! {
+      _ = tokio::signal::ctrl_c() => {},
+      _ = ctrl_break.recv() => {},
+      _ = console::wait_for_close() => {},
+    }
   }
 }

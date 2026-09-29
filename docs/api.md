@@ -869,9 +869,10 @@ cancels a run.
 
 - A run continues without any connected client. `interrupt` is the only way to
   stop it.
-- On `SIGINT` or `SIGTERM`, Wish stops accepting work, cancels runs, keeps the
-  partial output they had accepted, stops background shell commands, flushes
-  storage and exits. Streams end without a final event.
+- On `SIGINT` or `SIGTERM` (on Windows: Ctrl-C, Ctrl-Break, closing its
+  console window or system shutdown), Wish stops accepting work, cancels runs,
+  keeps the partial output they had accepted, stops background shell commands,
+  flushes storage and exits. Streams end without a final event.
 - After a restart, sessions load on first use and never resume by themselves.
   If the process was killed during a tool call, the session reports the
   unfinished state and does not repeat the call; `interrupt` settles it.

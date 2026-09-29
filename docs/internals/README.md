@@ -8,7 +8,8 @@ surface is described in [the API reference](../api.md) and the config file in
 ## Process layout
 
 One process serves HTTP, drives sessions and calls upstreams. `src/main.rs` calls `server::run`,
-which reads `--config <file>`, opens storage and serves until SIGINT/SIGTERM.
+which reads `--config <file>`, opens storage and serves until SIGINT/SIGTERM (on Windows until
+Ctrl-C, Ctrl-Break, console close or system shutdown; see `server/console.rs`).
 
 ```text
                              HTTP / SSE

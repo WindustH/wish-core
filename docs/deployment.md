@@ -121,6 +121,11 @@ On `SIGTERM` or `SIGINT` (`systemctl stop`, Ctrl-C) Wish:
 4. flushes the database and exits.
 
 This usually takes a moment; `TimeoutStopSec` above leaves room for it.
+
+On Windows the same shutdown follows Ctrl-C, Ctrl-Break, closing Wish's console
+window or shutting Windows down. Windows ends the process about five seconds
+after the console closes, so a slow shutdown can be cut short there; a service
+wrapper should stop Wish with Ctrl-C.
 Interrupted tasks are not resumed automatically after a restart; send the
 session a message to continue. If the process is killed
 abruptly, sessions caught mid-command are marked as unfinished when next
