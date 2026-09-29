@@ -265,6 +265,13 @@ adding a server, removing one or a server changing its tools does not
 invalidate a conversation's prompt cache. MCP needs the shell: without it a
 session has no way to run the command.
 
+A session's shell finds `wish` through a directory Wish puts first on its
+`PATH`: `<data_dir>/bin`, which holds a `wish` link to the running program, on
+Linux and macOS, and the program's own directory on Windows, where creating a
+link takes a privilege ordinary users lack. On Windows the agent is told to pass
+`wish mcp call` its arguments on standard input, since cmd.exe cannot quote JSON
+reliably.
+
 A session's `tools.mcp` switch decides only what the command answers. With it
 off, every `wish mcp` command says MCP is disabled for the session and that you
 can enable it in the session's settings; the model's request is the same either

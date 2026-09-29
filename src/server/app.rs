@@ -292,8 +292,9 @@ impl App {
   }
 }
 
-/// Makes `data_dir/bin/wish` a link to this program. Without one, sessions' shells find `wish mcp`
-/// only if the program is on their `PATH` already.
+/// The directory sessions' shells find `wish mcp` in: on Unix `data_dir/bin`, holding a `wish` link
+/// to this program; on Windows, where creating a link takes a privilege ordinary users lack, the
+/// program's own directory. Without one, a shell finds `wish` only if it is on `PATH` already.
 fn prepare_bin_dir(data_dir: &std::path::Path) -> Option<PathBuf> {
   #[cfg(unix)]
   {
@@ -308,6 +309,6 @@ fn prepare_bin_dir(data_dir: &std::path::Path) -> Option<PathBuf> {
   #[cfg(not(unix))]
   {
     let _ = data_dir;
-    None
+    std::env::current_exe().ok()?.parent().map(std::path::Path::to_path_buf)
   }
 }

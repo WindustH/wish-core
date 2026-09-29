@@ -32,7 +32,13 @@ use std::{
 
 /// Appended to `shell_start`'s description in every session with a shell. It names no server and no
 /// tool, and does not depend on the session's MCP switch, so it never changes.
-pub const SHELL_NOTE: &str = " MCP servers are available through the `wish mcp` command: `wish mcp list` shows the servers and their tools, `wish mcp describe <server>/<tool>` shows a tool's parameters, and `wish mcp call <server>/<tool> '<json arguments>'` calls it and prints the result. Scripts can run it too, to chain calls and filter results before printing them.";
+pub const SHELL_NOTE: &str = if cfg!(windows) {
+  // cmd.exe has no single quotes, and quoting JSON for it is fragile: the arguments go on standard
+  // input instead, which `wish mcp call` reads when they are left out.
+  " MCP servers are available through the `wish mcp` command: `wish mcp list` shows the servers and their tools, `wish mcp describe <server>/<tool>` shows a tool's parameters, and `wish mcp call <server>/<tool>` calls it with the JSON arguments read from standard input (give them in shell_start's data) and prints the result. Scripts can run it too, to chain calls and filter results before printing them."
+} else {
+  " MCP servers are available through the `wish mcp` command: `wish mcp list` shows the servers and their tools, `wish mcp describe <server>/<tool>` shows a tool's parameters, and `wish mcp call <server>/<tool> '<json arguments>'` calls it and prints the result. Scripts can run it too, to chain calls and filter results before printing them."
+};
 
 /// Headers a server's configuration may not set: the transport sends them itself.
 const RESERVED_HEADERS: &[&str] =
