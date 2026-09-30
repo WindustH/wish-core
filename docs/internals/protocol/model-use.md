@@ -23,15 +23,16 @@ Google GenerateContent's modules.
 | --- | --- | --- |
 | `AnthropicMessages(MessagesApiCompatMode)` | `anthropic_messages` | reasoning extension |
 | `OpenAiChat(ChatCompletionApiCompatMode)` | `openai_chat` | reasoning extension and instruction roles |
-| `OpenAiResponses(ResponsesApiCompatMode)` | `openai_responses` | reasoning form and deployment |
+| `OpenAiResponses(ResponsesApiMode)` | `openai_responses` | reasoning form and deployment |
 | `GoogleGenerateContent` | `google_generate_content` | none |
 | `GoogleVertexGenerateContent` | `google_generate_content` | none |
 | `GoogleInteractions` | `google_interactions` | none |
 | `BedrockConverse` | `bedrock_converse` | none |
 | `MistralConversations` | `mistral_conversations` | none |
 
-Compat modes name the vendor reasoning extension a reimplemented wire speaks. `Official` is the
-default for both:
+The modes live in `mode.rs`, because the renderer, the body reader and the stream decoder of a
+wire all consult the same one; each renderer re-exports the mode it takes. Compat modes name the
+vendor reasoning extension a reimplemented wire speaks. `Official` is the default for both:
 
 - `MessagesApiCompatMode`: `Official`, `DeepSeek`, `Zai`, `Kimi`, `Qwen`, `MiniMax`, `Mimo`,
   `TokenHub`.
@@ -45,13 +46,12 @@ live) but take `system` anywhere, so both roles become `system`. The rest take o
 `system` message: the leading instruction run merges into it, and a later instruction becomes a
 `user` message.
 
-`ResponsesApiCompatMode` is `{ reasoning_form, deployment }`:
+`ResponsesApiMode` is `{ reasoning_form, deployment }`:
 
 | `ReasoningForm` | Meaning |
 | --- | --- |
 | `Plaintext` | send reasoning back as `reasoning_text` content |
 | `Ciphertext` (default) | request `reasoning.encrypted_content` and send it back |
-| `NoSendBack` | read reasoning, never send it back |
 
 | `ResponsesDeployment` | Meaning |
 | --- | --- |
@@ -111,17 +111,17 @@ when execution may have occurred. It never infers execution from output or invok
 
 `PartialResponse` retains the ending reason, delivered blocks with their `ReplayDisposition`,
 observed usage/account state and any upstream stop reason. `get_replay_messages()` exposes the fully
-paired context fragment; `take_replay_messages()` transfers it without discarding the original
-partial data. The session appends that fragment verbatim, without filtering or synthesizing results.
+paired context fragment. The session appends that fragment verbatim, without filtering or
+synthesizing results.
 A block's replay eligibility describes its content; the ending policy still suppresses all replay
 on failure. A `Complete` that fails strict validation returns an error, never a partial success.
 
-`BlockEnd` closes a block for normal response assembly. `BlockComplete` independently certifies
+`BlockEnd` closes a block for normal response assembly. `BlockComplete` independently confirms
 that the wire finished the payload: the `StreamDecoder` dispatcher supplies it after explicit
 block endings or successful terminal records, not synthetic closings on abnormal termination.
-Responses items whose status is not `completed` are never certified. Code that drives a dialect
-decoder directly does not get the dispatcher's certification, so partial replay must go through
-`StreamDecoder`. Any other event producer must uphold the same contract. A valid JSON prefix alone
+Responses items whose status is not `completed` are never confirmed complete. The dialect
+decoders are only driven through `StreamDecoder`, so every stream gets the dispatcher's
+completions; any other event producer must uphold the same contract. A valid JSON prefix alone
 is never a completed tool invocation.
 
 Interruption uses these rules:
@@ -137,12 +137,14 @@ Visible summaries do not make opaque reasoning transparent. `ReasoningDisplayDel
 `Message::Reasoning.display`; `ReasoningDelta` fills replayable `plaintext`. Responses decodes
 `reasoning_summary_text.delta` and `reasoning_text.delta` separately, matching its buffered reader.
 
-Plaintext replay applies to supported Chat dialects, Mistral Conversations, plaintext Anthropic
-compatibility dialects and Responses with `ReasoningForm::Plaintext`. Blocks carrying opaque
-material still require completion. Responses ciphertext mode, native Anthropic, Bedrock and Google
-require their complete opaque replay material even if readable text arrived earlier. A completed
-opaque block need not have visible text. `ReasoningForm::NoSendBack`, official OpenAI Chat and
-unknown protocol configurations do not replay reasoning from partial results.
+These rules are the source protocol's, and `ModelUseProtocol::get_reasoning_replay` is the one
+place that states them. Plaintext replay applies to supported Chat dialects, Mistral
+Conversations, plaintext Anthropic compatibility dialects and Responses with
+`ReasoningForm::Plaintext`. Blocks carrying opaque material still require completion. Responses
+ciphertext mode, native Anthropic, Bedrock and Google require their complete opaque replay
+material even if readable text arrived earlier. A completed opaque block need not have visible
+text. The plain OpenAI Chat wire (`Official`, `Compatible`) and unknown protocol configurations do
+not replay reasoning from partial results.
 
 An unattached Google GenerateContent/Vertex signature-only item (`MissingSignedPart`) stays outside
 replay to avoid moving its proof to a later part. Replay eligibility is tied to the source protocol
@@ -153,7 +155,7 @@ strict, and stream failures retain an empty context fragment.
 ## Output limit
 
 `StreamAccumulator::finish_output_limit()` closes a stream with an explicit
-`MaxOutputLengthExceeded` stop using the same certified-block replay rules. Its `PartialResponse`
+`MaxOutputLengthExceeded` stop using the same completed-block replay rules. Its `PartialResponse`
 has `IncompleteReason::OutputLimit`, distinct from local cancellation or transport failure.
 `get_continuation_messages()` projects only text and reasoning; tool calls must be reissued and
 signatures bound to discarded tool calls are omitted. Buffered output-limit responses use

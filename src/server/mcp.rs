@@ -1,8 +1,8 @@
 //! MCP servers for sessions: their configuration, the live connections, and what a session's shell
 //! reaches them through.
 //!
-//! Nothing here enters the model's tool list. Every session with a shell gets a fixed note in its
-//! shell tool's description and a few variables in its shell's environment; the model finds the
+//! Nothing here enters the model's tool list. Every session with a shell gets a fixed section in
+//! its agent instructions and a few variables in its shell's environment; the model finds the
 //! servers and their tools by running `wish mcp`, and the answers arrive as ordinary command output.
 //! Servers and their tools can change at any time without touching the request a conversation's
 //! prompt cache is keyed on, and so can a session's MCP switch: it decides only what `wish mcp`
@@ -14,10 +14,11 @@
 //! session use one instance, for servers known to keep none. An instance nobody has called for
 //! `idle_timeout` seconds is closed, and started again on the next call.
 
+pub mod bridge;
 pub mod cli;
 
 use crate::mcp::{Connection, Endpoint, McpError};
-use crate::server::{config::ProxyConfig, error::ApiError, provider::Provider};
+use crate::server::{config::ProxyConfig, error::ApiError, provider::Providers};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
@@ -30,14 +31,28 @@ use std::{
   time::{Duration, Instant},
 };
 
-/// Appended to `shell_start`'s description in every session with a shell. It names no server and no
-/// tool, and does not depend on the session's MCP switch, so it never changes.
-pub const SHELL_NOTE: &str = if cfg!(windows) {
+/// The section of the agent instructions on `wish mcp`, in every request with a shell (see
+/// [`crate::server::session_model::agent_instructions`]). It names no server and no tool, and does
+/// not depend on the session's MCP switch, so it never changes.
+pub const INSTRUCTIONS: &str = if cfg!(windows) {
   // cmd.exe has no single quotes, and quoting JSON for it is fragile: the arguments go on standard
   // input instead, which `wish mcp call` reads when they are left out.
-  " MCP servers are available through the `wish mcp` command: `wish mcp list` shows the servers and their tools, `wish mcp describe <server>/<tool>` shows a tool's parameters, and `wish mcp call <server>/<tool>` calls it with the JSON arguments read from standard input (give them in shell_start's data) and prints the result. Scripts can run it too, to chain calls and filter results before printing them."
+  "# MCP servers\n\
+   MCP servers are reached through the `wish mcp` command in the shell; their tools are not in your \
+   tool list.\n\
+   - `wish mcp list` shows the servers and their tools.\n\
+   - `wish mcp describe <server>/<tool>` shows a tool's description and parameters.\n\
+   - `wish mcp call <server>/<tool>` calls it with the JSON arguments read from standard input \
+   (give them in shell_start's data) and prints the result.\n\
+   Scripts can run it too, to chain calls and filter results before printing them."
 } else {
-  " MCP servers are available through the `wish mcp` command: `wish mcp list` shows the servers and their tools, `wish mcp describe <server>/<tool>` shows a tool's parameters, and `wish mcp call <server>/<tool> '<json arguments>'` calls it and prints the result. Scripts can run it too, to chain calls and filter results before printing them."
+  "# MCP servers\n\
+   MCP servers are reached through the `wish mcp` command in the shell; their tools are not in your \
+   tool list.\n\
+   - `wish mcp list` shows the servers and their tools.\n\
+   - `wish mcp describe <server>/<tool>` shows a tool's description and parameters.\n\
+   - `wish mcp call <server>/<tool> '<json arguments>'` calls it and prints the result.\n\
+   Scripts can run it too, to chain calls and filter results before printing them."
 };
 
 /// Headers a server's configuration may not set: the transport sends them itself.
@@ -69,9 +84,6 @@ pub enum McpScope {
   Shared,
 }
 
-fn yes() -> bool {
-  true
-}
 fn default_idle_timeout() -> u64 {
   30 * 60
 }
@@ -83,7 +95,7 @@ fn default_timeout() -> u64 {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServerConfig {
-  #[serde(default = "yes")]
+  #[serde(default = "crate::server::config::yes")]
   pub enabled: bool,
   pub transport: McpTransport,
   /// stdio: the program, found on `PATH` when not a path.
@@ -107,7 +119,7 @@ pub struct McpServerConfig {
   /// subscription the provider already holds.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub auth_provider: Option<String>,
-  #[serde(default = "yes")]
+  #[serde(default = "crate::server::config::yes")]
   pub proxy_enabled: bool,
   #[serde(default)]
   pub scope: McpScope,
@@ -206,9 +218,9 @@ impl From<McpFailure> for ApiError {
 }
 
 /// The session a request comes from.
-pub struct Caller<'a> {
-  pub session: &'a str,
-  pub cwd: &'a Path,
+pub struct Caller {
+  pub session: String,
+  pub cwd: PathBuf,
 }
 
 /// What the application holds about MCP apart from the connections themselves.
@@ -236,7 +248,7 @@ struct Instance {
 /// What is known of a server's tools, kept across its instances: the same configuration offers the
 /// same tools, so listing them never needs a session's own instance.
 #[derive(Clone, Default)]
-struct Catalog {
+struct ServerCatalog {
   tools: Option<Vec<Value>>,
   server: Value,
   error: Option<String>,
@@ -244,14 +256,22 @@ struct Catalog {
 }
 
 pub struct McpHub {
+  /// How sessions' shells reach this server's MCP bridge.
+  pub bridge: bridge::Bridge,
   settings: RwLock<Settings>,
   instances: Mutex<HashMap<InstanceKey, Arc<Instance>>>,
-  catalogs: Arc<Mutex<HashMap<String, Catalog>>>,
+  catalogs: Arc<Mutex<HashMap<String, ServerCatalog>>>,
 }
 
 impl McpHub {
-  pub fn new(config: McpConfig, proxy: ProxyConfig, default_cwd: PathBuf) -> Self {
+  pub fn new(
+    config: McpConfig,
+    proxy: ProxyConfig,
+    default_cwd: PathBuf,
+    bridge: bridge::Bridge,
+  ) -> Self {
     Self {
+      bridge,
       settings: RwLock::new(Settings { config, proxy, default_cwd }),
       instances: Mutex::new(HashMap::new()),
       catalogs: Arc::new(Mutex::new(HashMap::new())),
@@ -262,7 +282,7 @@ impl McpHub {
     &self,
     server: &McpServerConfig,
     cwd: &Path,
-    providers: &BTreeMap<String, Arc<Provider>>,
+    providers: &Providers,
   ) -> Result<Endpoint, McpFailure> {
     let settings = self.settings.read().unwrap();
     Ok(match server.transport {
@@ -297,7 +317,7 @@ impl McpHub {
       return cwd.clone();
     }
     match (server.scope, caller) {
-      (McpScope::Session, Some(caller)) => caller.cwd.to_owned(),
+      (McpScope::Session, Some(caller)) => caller.cwd.clone(),
       _ => self.settings.read().unwrap().default_cwd.clone(),
     }
   }
@@ -321,11 +341,11 @@ impl McpHub {
     id: &str,
     server: &McpServerConfig,
     caller: &Caller,
-    providers: &BTreeMap<String, Arc<Provider>>,
+    providers: &Providers,
   ) -> Result<Arc<Instance>, McpFailure> {
     let key = InstanceKey {
       server: id.to_owned(),
-      session: (server.scope == McpScope::Session).then(|| caller.session.to_owned()),
+      session: (server.scope == McpScope::Session).then(|| caller.session.clone()),
     };
     let mut instances = self.instances.lock().unwrap();
     if let Some(instance) = instances.get(&key)
@@ -373,7 +393,7 @@ impl McpHub {
         let mut catalogs = catalogs.lock().unwrap();
         let catalog = catalogs.entry(id.to_owned()).or_default();
         catalog.server = connection.describe_server();
-        catalog.checked_at = Some(crate::session::statistics::Timestamp::now().0);
+        catalog.checked_at = Some(crate::utils::time::Timestamp::now().0);
         match tools {
           Ok(tools) => {
             catalog.tools = Some(tools);
@@ -390,7 +410,7 @@ impl McpHub {
         let mut catalogs = self.catalogs.lock().unwrap();
         let catalog = catalogs.entry(id.to_owned()).or_default();
         catalog.error = Some(error.to_string());
-        catalog.checked_at = Some(crate::session::statistics::Timestamp::now().0);
+        catalog.checked_at = Some(crate::utils::time::Timestamp::now().0);
         Err(error.into())
       }
     }
@@ -400,8 +420,8 @@ impl McpHub {
   async fn get_tools(
     &self,
     id: &str,
-    caller: &Caller<'_>,
-    providers: &BTreeMap<String, Arc<Provider>>,
+    caller: &Caller,
+    providers: &Providers,
   ) -> Result<Vec<Value>, McpFailure> {
     if let Some(tools) = self.catalogs.lock().unwrap().get(id).and_then(|c| c.tools.clone()) {
       return Ok(tools);
@@ -417,8 +437,8 @@ impl McpHub {
   /// Every enabled server with its tools, each summarized by the first line of its description.
   pub async fn list(
     &self,
-    caller: &Caller<'_>,
-    providers: &BTreeMap<String, Arc<Provider>>,
+    caller: &Caller,
+    providers: &Providers,
     only: Option<&str>,
   ) -> Result<Vec<Value>, McpFailure> {
     let ids: Vec<String> = {
@@ -454,8 +474,8 @@ impl McpHub {
     &self,
     id: &str,
     tool: &str,
-    caller: &Caller<'_>,
-    providers: &BTreeMap<String, Arc<Provider>>,
+    caller: &Caller,
+    providers: &Providers,
   ) -> Result<Value, McpFailure> {
     self.find_server(id)?;
     self
@@ -472,8 +492,8 @@ impl McpHub {
     id: &str,
     tool: &str,
     arguments: Map<String, Value>,
-    caller: &Caller<'_>,
-    providers: &BTreeMap<String, Arc<Provider>>,
+    caller: &Caller,
+    providers: &Providers,
   ) -> Result<Value, McpFailure> {
     let server = self.find_server(id)?;
     let instance = self.get_instance(id, &server, caller, providers)?;
@@ -485,11 +505,7 @@ impl McpHub {
 
   /// Opens a connection of its own to a server, reads its tools into the catalog and closes it: the
   /// check behind the settings page's button.
-  pub async fn check(
-    &self,
-    id: &str,
-    providers: &BTreeMap<String, Arc<Provider>>,
-  ) -> Result<Value, McpFailure> {
+  pub async fn check(&self, id: &str, providers: &Providers) -> Result<Value, McpFailure> {
     let server = self
       .settings
       .read()
@@ -502,8 +518,8 @@ impl McpHub {
     let cwd = self.start_directory(&server, None);
     let endpoint = self.resolve(&server, &cwd, providers)?;
     let opened = Connection::open(&endpoint, || {}).await;
-    let mut catalog = Catalog {
-      checked_at: Some(crate::session::statistics::Timestamp::now().0),
+    let mut catalog = ServerCatalog {
+      checked_at: Some(crate::utils::time::Timestamp::now().0),
       ..Default::default()
     };
     let result = match opened {
@@ -580,7 +596,7 @@ impl McpHub {
     config: McpConfig,
     proxy: ProxyConfig,
     default_cwd: PathBuf,
-    providers: &BTreeMap<String, Arc<Provider>>,
+    providers: &Providers,
   ) {
     let previous = {
       let mut settings = self.settings.write().unwrap();

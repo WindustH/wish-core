@@ -1,33 +1,33 @@
-//! Upstream compaction or incremental standby summaries, with validated atomic cutover.
+//! Context compaction: the active context replaced by a smaller one, validated and switched to
+//! atomically, leaving the complete history as it was.
+//!
+//! [`trigger`] decides when a cutover is due. A caller that compacts upstream hands the whole
+//! context to its provider ([`upstream`]). Any other caller keeps a standby generation of
+//! summaries, prepared beside the run's work ([`standby`]), and at cutover trims standby plus the
+//! unsummarized tail to the target ([`trim`]). [`handoff`] writes the readable handoff an encrypted
+//! compaction item carries for providers that cannot read it.
+pub(crate) mod handoff;
+mod standby;
+mod trigger;
+mod trim;
 mod upstream;
-pub(crate) mod translation;
-use super::model::tokens::{TokenMeasurement, TokenMeasurementSource};
-use super::{
-  ExecutionControl,
-  model::{self, ModelCaller, ModelStream},
-  observe::notify_observers,
-};
+
+pub(super) use standby::{StandbySummarizer, StandbyWait};
+pub(super) use trigger::{CutoverPlan, find_cutover, force_cutover};
+
+use super::{ExecutionControl, model::ModelCaller, observe::deliver_new_events, run::run_scoped};
 use crate::{
   Error,
-  protocol::{
-    ContentBlock, Message, Request, Response, StopReason, StreamEvent,
-    model_use::{
-      context::find_boundaries,
-      stream::{PartialResponse, StreamEnd, StreamFinalization},
-    },
-  },
+  protocol::{ContentBlock, Message, Request, Response, StopReason},
   session::{
-    CompactionConfig, CompactionReason, EntryId, GenerationId, RunOutcome, Session, SessionError, SessionEvent,
-    statistics::{CallObservation, ModelCallPurpose, ModelCallStatus, Timestamp},
+    CompactionConfig, CompactionReason, RunOutcome, Session, SessionError, SessionEvent,
+    TokenMeasurement, TokenMeasurementSource, statistics::ModelCallStatus,
   },
-};
-use futures_util::{
-  future::{Either, join_all, select},
-  pin_mut,
+  storage::StorageError,
 };
 
-/// Compact at a stable boundary, honoring both Session interruption and executor cancellation.
-/// A failed/interrupted operation leaves the previous active context intact and returns its outcome.
+/// Compacts now (`Manual`), at a stable boundary, honoring the caller's cancellation. A failed or
+/// interrupted compaction leaves the active context as it was and returns its outcome.
 pub async fn compact(
   caller: &impl ModelCaller,
   session: &mut Session,
@@ -38,244 +38,49 @@ pub async fn compact(
   if session.get_config().compaction.is_none() {
     return Err(SessionError::InvalidCompaction("no compaction budgets configured".into()));
   }
-  let registration = session.begin_run_control();
-  let check_session = registration.create_interruption_check();
-  let parent = control.clone();
-  let execution = ExecutionControl::inherit(move || parent.is_cancelled() || check_session());
-  let _scope = execution.create_scope();
-  let interrupted = async {
-    let session_interrupt = registration.wait_for_interruption();
-    let executor_cancel = control.wait_for_cancellation();
-    pin_mut!(session_interrupt, executor_cancel);
-    let _ = select(session_interrupt, executor_cancel).await;
-  };
-  let mut cursor = session.get_history().len()?;
-  let running = maintain(
-    caller,
-    session,
-    &execution,
-    &mut cursor,
-    &mut observe,
-    Some(CompactionReason::Manual),
-  );
-  pin_mut!(interrupted, running);
-  let outcome = match select(interrupted, running).await {
-    Either::Left(((), running)) => {
-      execution.cancel();
-      running.await?
-    }
-    Either::Right((result, _)) => result?,
-  };
+  let outcome = run_scoped(session, control, async |session, control| {
+    let mut delivered = session.reader().get_history().len()?;
+    force_cutover(caller, session, control, &mut delivered, &mut observe, CompactionReason::Manual)
+      .await
+  })
+  .await?;
   Ok(outcome.unwrap_or(RunOutcome::Completed))
 }
 
-pub(super) fn check_compaction_reason(
-  session: &Session,
-  forced: Option<CompactionReason>,
-) -> Result<Option<(CompactionReason, Option<f64>, Request, usize)>, SessionError> {
-  let Some(config) = session.get_config().compaction.clone() else {
-    return Ok(None);
-  };
-  let active = session.get_active_generation()?;
-  let request = session.build_request()?;
-  let calls = session.get_model_calls();
-  let mut last = None;
-  for position in (0..calls.len()?).rev() {
-    let Some(call) = calls.get(position)? else {
-      continue;
-    };
-    if call.generation != active.id {
-      break;
-    }
-    if call.model == request.model
-      && call.purpose == ModelCallPurpose::Conversation
-      && matches!(call.status, ModelCallStatus::Completed)
-    {
-      last = Some(call);
-      break;
-    }
-  }
-  let calibration = last.as_ref().and_then(|call| {
-    call
-      .last_request_input_tokens
-      .zip(call.last_request_estimated_tokens)
-      .filter(|(_, estimate)| *estimate > 0)
-      .map(|(actual, estimate)| actual as f64 / estimate as f64)
-  });
-  let reason = forced.or_else(|| {
-    last.as_ref().and_then(|call| {
-      (call.last_request_input_tokens? >= config.trigger_tokens).then_some(CompactionReason::Usage)
-    })
-  });
-  let fixed = request
-    .conversation
-    .iter()
-    .take_while(|message| message.is_fixed_instruction())
-    .count();
-  Ok(reason.map(|r| (r, calibration, request, fixed)))
-}
-
-pub(super) async fn cutover_compaction(
+/// Replaces the active context inside `Compacting`: upstream when the caller compacts upstream,
+/// otherwise by catching the standby up and trimming. A failure leaves the active context as it
+/// was and finishes the run with its outcome, which is returned.
+pub(super) async fn cutover(
   caller: &impl ModelCaller,
   session: &mut Session,
   control: &ExecutionControl,
-  cursor: &mut u64,
+  delivered: &mut u64,
   observe: &mut (impl FnMut(&SessionEvent) + Send),
-  reason: CompactionReason,
-  calibration: Option<f64>,
-  request: Request,
-  fixed: usize,
+  plan: CutoverPlan,
 ) -> Result<Option<RunOutcome>, SessionError> {
-  let config = session.get_config().compaction.clone().expect("compaction config present");
   let upstream = caller.supports_upstream_compaction();
   session.begin_compaction()?;
-  notify_observers(session, cursor, observe)?;
-  let result = async {
-    if upstream {
-      upstream::replace_context(
-        caller,
-        session,
-        control,
-        cursor,
-        observe,
-        upstream::Plan {
-          request,
-          fixed,
-          reason,
-          sizing: Sizing { config: &config, calibration },
-        },
-      )
-      .await
-    } else {
-      // Every remaining span is summarized at once: each request repeats the same prefix and names
-      // its own span, so none waits for another. They commit in order, since each continues the
-      // standby where the one before it ended; a failure keeps the spans committed before it.
-      let plans = plan_standby_summaries(caller, session, control, usize::MAX).await?;
-      let started_at = Timestamp::now();
-      session.record_events(
-        plans
-          .iter()
-          .map(|plan| {
-            (
-              started_at,
-              SessionEvent::CompactionSummaryStarted {
-                source_start: plan.start,
-                source_end: plan.end,
-                measurement: plan.measurement.clone(),
-              },
-            )
-          })
-          .collect(),
-      )?;
-      notify_observers(session, cursor, observe)?;
-      let results =
-        join_all(plans.into_iter().map(|plan| execute_standby_summary(caller, control, plan)))
-          .await;
-      for result in results {
-        commit_standby_summary(session, result?, cursor, observe)?;
-      }
-      let kept = count_kept_prefix(&request.conversation);
-      replace_context(
-        caller,
-        session,
-        control,
-        Sizing { config: &config, calibration },
-        request,
-        kept,
-        reason,
-      )
-      .await
+  deliver_new_events(session, delivered, observe)?;
+  let result = if upstream {
+    upstream::replace_with_upstream(caller, session, control, delivered, observe, plan).await
+  } else {
+    match standby::catch_up(caller, session, control, delivered, observe).await {
+      Ok(()) => trim::trim_context(caller, session, control, plan).await,
+      Err(failure) => Err(failure),
     }
-  }
-  .await;
+  };
   session.end_compaction()?;
   let outcome = match result {
     Ok(()) => None,
-    Err(Failure::Outcome(outcome)) => {
-      session.finish_run(outcome.clone())?;
-      Some(outcome)
-    }
-    Err(Failure::Session(error)) => return Err(error),
+    Err(failure) => Some(failure.settle(session)?),
   };
-  notify_observers(session, cursor, observe)?;
+  deliver_new_events(session, delivered, observe)?;
   Ok(outcome)
 }
 
-/// The prefix local compaction keeps as it is: the fixed instructions, then the encrypted
-/// compaction items right after them. Another provider reads such an item through its handoff,
-/// and the provider that made it still reads it after switching back, so it is neither summarized
-/// nor trimmed.
-fn count_kept_prefix(conversation: &[Message]) -> usize {
-  let fixed = conversation.iter().take_while(|message| message.is_fixed_instruction()).count();
-  fixed
-    + conversation[fixed..]
-      .iter()
-      .take_while(|message| matches!(message, Message::UpstreamCompaction { .. }))
-      .count()
-}
-
-pub(super) async fn maintain(
-  caller: &impl ModelCaller,
-  session: &mut Session,
-  control: &ExecutionControl,
-  cursor: &mut u64,
-  observe: &mut (impl FnMut(&SessionEvent) + Send),
-  forced: Option<CompactionReason>,
-) -> Result<Option<RunOutcome>, SessionError> {
-  if control.is_cancelled() {
-    return Ok(Some(RunOutcome::Interrupted));
-  }
-  if let Some((reason, calibration, request, fixed)) = check_compaction_reason(session, forced)? {
-    return cutover_compaction(
-      caller,
-      session,
-      control,
-      cursor,
-      observe,
-      reason,
-      calibration,
-      request,
-      fixed,
-    )
-    .await;
-  }
-  if caller.supports_upstream_compaction() {
-    return Ok(None);
-  }
-  let plan = match plan_standby_summary(caller, session, control).await {
-    Ok(plan) => plan,
-    Err(Failure::Outcome(outcome)) => {
-      session.finish_run(outcome.clone())?;
-      return Ok(Some(outcome));
-    }
-    Err(Failure::Session(err)) => return Err(err),
-  };
-  if let Some(plan) = plan {
-    session.record_events(vec![(
-      Timestamp::now(),
-      SessionEvent::CompactionSummaryStarted {
-        source_start: plan.start,
-        source_end: plan.end,
-        measurement: plan.measurement.clone(),
-      },
-    )])?;
-    notify_observers(session, cursor, observe)?;
-    let result = execute_standby_summary(caller, control, plan).await;
-    match result {
-      Ok(res) => {
-        commit_standby_summary(session, res, cursor, observe)?;
-      }
-      Err(Failure::Outcome(outcome)) => {
-        session.finish_run(outcome.clone())?;
-        return Ok(Some(outcome));
-      }
-      Err(Failure::Session(err)) => return Err(err),
-    }
-  }
-  Ok(None)
-}
-
-pub(crate) enum Failure {
+/// Why a compaction step stopped: a session error, which fails the run, or an outcome that
+/// finishes it.
+pub(super) enum Failure {
   Session(SessionError),
   Outcome(RunOutcome),
 }
@@ -284,8 +89,8 @@ impl From<SessionError> for Failure {
     Self::Session(error)
   }
 }
-impl From<crate::storage::StorageError> for Failure {
-  fn from(error: crate::storage::StorageError) -> Self {
+impl From<StorageError> for Failure {
+  fn from(error: StorageError) -> Self {
     Self::Session(error.into())
   }
 }
@@ -294,9 +99,25 @@ impl From<Error> for Failure {
     Self::Outcome(RunOutcome::Failed(error))
   }
 }
+impl Failure {
+  /// Finishes the run with the failure's outcome and returns it; a session error stays an error.
+  fn settle(self, session: &mut Session) -> Result<RunOutcome, SessionError> {
+    match self {
+      Self::Outcome(outcome) => {
+        session.finish_run(outcome.clone())?;
+        Ok(outcome)
+      }
+      Self::Session(error) => Err(error),
+    }
+  }
+}
+
 fn check_cancelled(control: &ExecutionControl) -> Result<(), Failure> {
   if control.is_cancelled() { Err(Failure::Outcome(RunOutcome::Interrupted)) } else { Ok(()) }
 }
+
+/// The input size of `request`: the provider's count when the caller has a count endpoint,
+/// otherwise the configured estimate, scaled by `calibration` when there is one.
 async fn measure(
   caller: &impl ModelCaller,
   control: &ExecutionControl,
@@ -305,14 +126,10 @@ async fn measure(
   calibration: Option<f64>,
 ) -> Result<TokenMeasurement, Failure> {
   check_cancelled(control)?;
-  let counting = caller.count_tokens(request);
-  let cancelled = control.wait_for_cancellation();
-  pin_mut!(counting, cancelled);
-  let count = match select(cancelled, counting).await {
-    Either::Left(_) => return Err(Failure::Outcome(RunOutcome::Interrupted)),
-    Either::Right((count, _)) => count?,
+  let Some(count) = control.run_until_cancelled(caller.count_tokens(request)).await else {
+    return Err(Failure::Outcome(RunOutcome::Interrupted));
   };
-  if let Some(count) = count {
+  if let Some(count) = count? {
     Ok(TokenMeasurement {
       tokens: count.input_tokens,
       source: TokenMeasurementSource::ProviderCount,
@@ -329,483 +146,50 @@ async fn measure(
     })
   }
 }
-struct Sizing<'a> {
-  config: &'a CompactionConfig,
-  calibration: Option<f64>,
-}
-pub(crate) struct StandbySummaryPlan {
-  pub summary_request: Request,
-  /// Active entries the summary request repeats before its instruction.
-  pub input_entry_count: u64,
-  pub generation: GenerationId,
-  pub start: u64,
-  pub end: u64,
-  pub measurement: TokenMeasurement,
-}
 
-pub(crate) struct StandbySummaryResult {
-  pub input_entry_count: u64,
-  pub generation: GenerationId,
-  pub start: u64,
-  pub end: u64,
-  pub summary: Message,
-  pub response: crate::protocol::Response,
-  pub observation: CallObservation,
-}
-
-pub(crate) async fn plan_standby_summary(
-  caller: &impl ModelCaller,
-  session: &Session,
-  control: &ExecutionControl,
-) -> Result<Option<StandbySummaryPlan>, Failure> {
-  Ok(plan_standby_summaries(caller, session, control, 1).await?.pop())
-}
-
-/// Up to `limit` consecutive spans, the first starting at the first unsummarized entry and each
-/// later one where the previous ends.
-async fn plan_standby_summaries(
-  caller: &impl ModelCaller,
-  session: &Session,
-  control: &ExecutionControl,
-  limit: usize,
-) -> Result<Vec<StandbySummaryPlan>, Failure> {
-  let Some(config) = session.get_config().compaction.clone() else {
-    return Ok(Vec::new());
-  };
-  if caller.supports_upstream_compaction() {
-    return Ok(Vec::new());
-  }
-  if control.is_cancelled() {
-    return Ok(Vec::new());
-  }
-  let active = session.get_active_generation()?;
-  let request = session.build_request()?;
-  let calls = session.get_model_calls();
-  let mut last = None;
-  for position in (0..calls.len()?).rev() {
-    let Some(call) = calls.get(position)? else {
-      continue;
-    };
-    if call.generation != active.id {
-      break;
-    }
-    if call.model == request.model
-      && call.purpose == ModelCallPurpose::Conversation
-      && matches!(call.status, ModelCallStatus::Completed)
-    {
-      last = Some(call);
-      break;
-    }
-  }
-  let calibration = last.as_ref().and_then(|call| {
-    call
-      .last_request_input_tokens
-      .zip(call.last_request_estimated_tokens)
-      .filter(|(_, estimate)| *estimate > 0)
-      .map(|(actual, estimate)| actual as f64 / estimate as f64)
-  });
-  let fixed = count_kept_prefix(&request.conversation);
-  let standby = session.get_standby_generation()?;
-  let processed = standby
-    .source
-    .filter(|(id, _)| *id == active.id)
-    .map(|(_, end)| end as usize)
-    .unwrap_or((active.compaction_cursor as usize).max(fixed));
-  let eligible = last.as_ref().map(|call| call.input_entry_count as usize).unwrap_or(0);
-  let mut plans = Vec::new();
-  if eligible <= processed || processed >= request.conversation.len() {
-    return Ok(plans);
-  }
-  let boundaries = find_boundaries(&request.conversation)?;
-  let mut start = processed;
-  for end in boundaries.into_iter().filter(|end| *end > processed && *end <= eligible) {
-    if request.conversation[start..end]
+/// The prefix local compaction keeps as it is: the fixed instructions, then the encrypted
+/// compaction items right after them. Another provider reads such an item through its handoff,
+/// and the provider that made it still reads it after switching back, so it is neither summarized
+/// nor trimmed.
+fn count_kept_prefix(conversation: &[Message]) -> usize {
+  let fixed = conversation.iter().take_while(|message| message.is_fixed_instruction()).count();
+  fixed
+    + conversation[fixed..]
       .iter()
-      .any(|message| matches!(message, Message::UpstreamCompaction { .. }))
-    {
-      break;
-    }
-    let span_request = build_span_request(&request, &request.conversation[start..end]);
-    caller.validate_request(&span_request)?;
-    let measurement = measure(caller, control, &config, &span_request, calibration).await?;
-    if measurement.tokens < config.segment_tokens {
-      continue;
-    }
-    let summary_request = build_summary_request(&request, eligible, start, end);
-    caller.validate_request(&summary_request)?;
-    plans.push(StandbySummaryPlan {
-      summary_request,
-      input_entry_count: eligible as u64,
-      generation: active.id,
-      start: start as u64,
-      end: end as u64,
-      measurement,
-    });
-    if plans.len() == limit {
-      break;
-    }
-    start = end;
-  }
-  Ok(plans)
+      .take_while(|message| matches!(message, Message::UpstreamCompaction { .. }))
+      .count()
 }
 
-pub(crate) async fn execute_standby_summary(
-  caller: &impl ModelCaller,
-  control: &ExecutionControl,
-  plan: StandbySummaryPlan,
-) -> Result<StandbySummaryResult, Failure> {
-  let started = std::time::Instant::now();
-  // A summary that reaches its output limit continues like a conversation call does, so the output
-  // cap it inherits from the session bounds one segment rather than the whole summary.
-  let mut continuation = model::Continuation::new(&plan.summary_request);
-  let (response, last_request_input_tokens) = loop {
-    match call_summary_segment(caller, control, &continuation.request).await? {
-      SummarySegment::Complete(mut response) => {
-        let last_request_input_tokens = response.usage.input_tokens;
-        response.usage = model::combine_usage(continuation.usage, response.usage);
-        let mut messages = std::mem::take(&mut continuation.messages);
-        messages.append(&mut response.messages);
-        response.messages = messages;
-        break (response, last_request_input_tokens);
-      }
-      SummarySegment::OutputLimited(partial) => {
-        continuation.usage = Some(model::combine_usage(continuation.usage, partial.usage));
-        continuation.extend(partial.get_continuation_messages());
-      }
-    }
-  };
+/// The assistant content of a completed side call, a summary or a handoff (`what`): refused when
+/// the model stopped for another reason than finishing, or answered with anything but assistant
+/// content and reasoning, which is left out.
+fn collect_assistant_content(
+  response: &Response,
+  what: &str,
+) -> Result<Vec<ContentBlock>, RunOutcome> {
   if response.stop_reason != StopReason::Stop {
-    return Err(Failure::Outcome(RunOutcome::ModelStopped(Box::new(response))));
+    return Err(RunOutcome::ModelStopped(Box::new(response.clone())));
   }
   let mut content = Vec::new();
   for message in &response.messages {
     match message {
-      Message::Assistant { content: blocks, .. } => content.extend(blocks.clone()),
+      Message::Assistant { content: blocks, .. } => content.extend(blocks.iter().cloned()),
       Message::Reasoning { .. } => {}
       _ => {
-        return Err(
-          Error::Malformed("summary response contains non-assistant content".into()).into(),
-        );
+        return Err(RunOutcome::Failed(Error::Malformed(format!(
+          "{what} response contains non-assistant content"
+        ))));
       }
     }
   }
-  check_cancelled(control)?;
-  let summary = Message::User { metadata: Default::default(), content };
-  let observation = CallObservation {
-    first_event_at: None,
-    finished_at: Some(Timestamp::now()),
-    elapsed_ms: Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
-    usage: response.usage,
-    last_request_input_tokens,
-    last_request_estimated_tokens: None,
-    stop_reason: Some(response.stop_reason),
-  };
-  Ok(StandbySummaryResult {
-    input_entry_count: plan.input_entry_count,
-    generation: plan.generation,
-    start: plan.start,
-    end: plan.end,
-    summary,
-    response,
-    observation,
-  })
+  Ok(content)
 }
 
-enum SummarySegment {
-  Complete(Response),
-  OutputLimited(PartialResponse),
-}
-
-async fn call_summary_segment(
-  caller: &impl ModelCaller,
-  control: &ExecutionControl,
-  request: &Request,
-) -> Result<SummarySegment, Failure> {
-  check_cancelled(control)?;
-  let calling = caller.call(request);
-  let cancelled = control.wait_for_cancellation();
-  pin_mut!(calling, cancelled);
-  let call_res = match select(cancelled, calling).await {
-    Either::Left(_) => return Err(Failure::Outcome(RunOutcome::Interrupted)),
-    Either::Right((res, _)) => res?,
-  };
-  match call_res {
-    model::CallResponse::Complete(response) => {
-      Ok(if response.stop_reason == StopReason::MaxOutputLengthExceeded {
-        SummarySegment::OutputLimited(PartialResponse::from_output_limit(
-          *response,
-          caller.get_model_use_protocol(),
-        )?)
-      } else {
-        SummarySegment::Complete(*response)
-      })
-    }
-    model::CallResponse::Stream(mut stream) => {
-      let mut accumulator = stream.create_accumulator();
-      let mut stop_reason = None;
-      loop {
-        let next = {
-          let reading = stream.next();
-          let cancelled = control.wait_for_cancellation();
-          pin_mut!(reading, cancelled);
-          match select(cancelled, reading).await {
-            Either::Left(_) => return Err(Failure::Outcome(RunOutcome::Interrupted)),
-            Either::Right((next, _)) => next?,
-          }
-        };
-        let Some(event) = next else { break };
-        if let StreamEvent::Stop(reason) = &event {
-          stop_reason = Some(*reason);
-        }
-        accumulator.feed(event)?;
-      }
-      if stop_reason == Some(StopReason::MaxOutputLengthExceeded) {
-        return Ok(SummarySegment::OutputLimited(accumulator.finish_output_limit()?));
-      }
-      match accumulator.finalize(StreamEnd::Complete)? {
-        StreamFinalization::Complete(response) => Ok(SummarySegment::Complete(*response)),
-        StreamFinalization::Incomplete(_) => {
-          Err(Error::Malformed("incomplete summary stream".into()).into())
-        }
-      }
-    }
+/// The status the record of a compaction side call settles on.
+fn call_status<T>(result: &Result<T, RunOutcome>) -> ModelCallStatus {
+  match result {
+    Ok(_) => ModelCallStatus::Completed,
+    Err(RunOutcome::Interrupted) => ModelCallStatus::Interrupted,
+    Err(_) => ModelCallStatus::Failed,
   }
-}
-
-pub(crate) fn commit_standby_summary(
-  session: &mut Session,
-  result: StandbySummaryResult,
-  cursor: &mut u64,
-  observe: &mut (impl FnMut(&SessionEvent) + Send),
-) -> Result<(), SessionError> {
-  let active = session.get_active_generation()?;
-  if active.id != result.generation {
-    return Ok(());
-  }
-  let call =
-    session.record_completed_compaction_call(result.observation, result.input_entry_count)?;
-  session.save_compaction_summary(
-    result.generation,
-    result.start,
-    result.end,
-    result.summary,
-    result.response,
-    call,
-  )?;
-  notify_observers(session, cursor, observe)?;
-  Ok(())
-}
-
-const SUMMARY_EXCERPT_CHARS: usize = 240;
-
-/// The summary call: the conversation the last completed conversation call sent, unchanged, so it
-/// reads that call's prompt cache, then one instruction naming the span to summarize by its first
-/// and last entries. The model keeps the session's tools, reasoning and cache settings for the same
-/// reason; the instruction, not a stripped request, keeps it from continuing the task.
-fn build_summary_request(original: &Request, prefix: usize, start: usize, end: usize) -> Request {
-  let conversation = &original.conversation;
-  let describe = |position: usize| {
-    let (kind, excerpt) = describe_entry(&conversation[position])?;
-    let same = |message: &Message| {
-      describe_entry(message).is_some_and(|(other, text)| other == kind && text == excerpt)
-    };
-    let occurrence = conversation[..=position].iter().filter(|message| same(message)).count();
-    let total = conversation[..prefix].iter().filter(|message| same(message)).count();
-    let excerpt = serde_json::to_string(&excerpt).expect("a string serializes");
-    Some(if total > 1 {
-      format!(
-        "the {kind} entry whose visible excerpt is {excerpt} (occurrence {occurrence} of {total} with that excerpt)"
-      )
-    } else {
-      format!("the {kind} entry whose visible excerpt is {excerpt}")
-    })
-  };
-  let first =
-    (start..end).find_map(describe).unwrap_or_else(|| "the first unsummarized entry".into());
-  let last = (start..end).rev().find_map(describe).unwrap_or_else(|| first.clone());
-  let instruction = format!(
-    "Produce compact replacement context for one span of the conversation above.\n\nStart at {first}. Stop after {last}.\n\nPreserve goals, constraints, decisions, useful facts, tool outcomes and unfinished work that later development needs. Do not summarize or restate entries before the start boundary or after the end boundary. Do not call tools or continue the task. Return only the replacement summary."
-  );
-  let mut messages = conversation[..prefix].to_vec();
-  messages.push(Message::User {
-    metadata: Default::default(),
-    content: vec![ContentBlock::Text { text: instruction }],
-  });
-  Request {
-    // A summary can run long. Stream it so the first-byte deadline covers only upstream admission,
-    // not the complete summary generation.
-    stream: true,
-    model: original.model.clone(),
-    conversation: messages,
-    tools: original.tools.clone(),
-    tool_choice: original.tool_choice,
-    max_output_tokens: original.max_output_tokens,
-    reasoning: original.reasoning.clone(),
-    cache: original.cache.clone(),
-  }
-}
-
-/// The kind and whitespace-normalized opening of an entry the model can see.
-fn describe_entry(message: &Message) -> Option<(&'static str, String)> {
-  let text = |content: &[ContentBlock]| {
-    content
-      .iter()
-      .map(|block| match block {
-        ContentBlock::Text { text } => text.as_str(),
-        ContentBlock::Image { .. } => "[image]",
-      })
-      .collect::<Vec<_>>()
-      .join(" ")
-  };
-  let (kind, raw) = match message {
-    Message::User { content, .. } => ("user", text(content)),
-    Message::Assistant { content, .. } => ("assistant", text(content)),
-    Message::System { content, .. } | Message::Developer { content, .. } => {
-      ("instruction", text(content))
-    }
-    Message::ToolUse { name, arguments, .. } => ("tool call", format!("{name} {arguments}")),
-    Message::ToolResult { name, content, .. } => (
-      "tool result",
-      format!(
-        "{name} {}",
-        content.as_str().map(str::to_owned).unwrap_or_else(|| content.to_string())
-      ),
-    ),
-    Message::Reasoning { .. } | Message::UpstreamCompaction { .. } => return None,
-  };
-  let excerpt: String = raw
-    .split_whitespace()
-    .collect::<Vec<_>>()
-    .join(" ")
-    .chars()
-    .take(SUMMARY_EXCERPT_CHARS)
-    .collect();
-  (!excerpt.is_empty()).then_some((kind, excerpt))
-}
-
-/// A span flattened into one message, only to measure it against `segment_tokens`.
-fn build_span_request(original: &Request, messages: &[Message]) -> Request {
-  let mut blocks = Vec::new();
-  for message in messages {
-    let (role, content) = match message {
-      Message::User { content, .. } => ("user", content.clone()),
-      Message::Assistant { content, .. } => ("assistant", content.clone()),
-      Message::System { content, .. } | Message::Developer { content, .. } => {
-        ("instruction", content.clone())
-      }
-      Message::Reasoning { plaintext, .. } => {
-        ("reasoning", vec![ContentBlock::Text { text: plaintext.clone() }])
-      }
-      Message::ToolUse { name, arguments, .. } => {
-        ("tool call", vec![ContentBlock::Text { text: format!("{name}: {arguments}") }])
-      }
-      Message::ToolResult { name, content, .. } => {
-        ("tool result", vec![ContentBlock::Text { text: format!("{name}: {content}") }])
-      }
-      Message::UpstreamCompaction { .. } => {
-        ("opaque context", vec![ContentBlock::Text { text: "[opaque upstream context]".into() }])
-      }
-    };
-    blocks.push(ContentBlock::Text { text: format!("[{role}]\n") });
-    blocks.extend(content);
-  }
-  Request {
-    stream: true,
-    model: original.model.clone(),
-    conversation: vec![Message::User { metadata: Default::default(), content: blocks }],
-    tools: Vec::new(),
-    tool_choice: None,
-    max_output_tokens: original.max_output_tokens,
-    reasoning: original.reasoning.clone(),
-    cache: None,
-  }
-}
-
-async fn replace_context(
-  caller: &impl ModelCaller,
-  session: &mut Session,
-  control: &ExecutionControl,
-  sizing: Sizing<'_>,
-  mut request: Request,
-  fixed: usize,
-  reason: CompactionReason,
-) -> Result<(), Failure> {
-  let Sizing { config, calibration } = sizing;
-  let active = session.get_active_generation()?;
-  let standby = session.get_standby_generation()?;
-  let active_list = session.get_generation_entries(active.id)?;
-  let original: Vec<EntryId> = if active_list.is_empty()? {
-    Vec::new()
-  } else {
-    active_list.read_page(0, active_list.len()? as usize)?.items.iter().map(|id| **id).collect()
-  };
-  let (mut entries, mut next_cursor) =
-    if let Some((_, end)) = standby.source.filter(|(source, _)| *source == active.id) {
-      let list = session.get_generation_entries(standby.id)?;
-      let mut prefix: Vec<EntryId> = if list.is_empty()? {
-        Vec::new()
-      } else {
-        list.read_page(0, list.len()? as usize)?.items.iter().map(|id| **id).collect()
-      };
-      let next_cursor = prefix.len();
-      prefix.extend_from_slice(&original[end as usize..]);
-      (prefix, next_cursor)
-    } else {
-      (original.clone(), (active.compaction_cursor as usize).max(fixed))
-    };
-  request.conversation = entries
-    .iter()
-    .map(|id| {
-      session
-        .get_entry(*id)?
-        .map(|entry| entry.message.clone())
-        .ok_or(SessionError::InvalidEntry(*id))
-    })
-    .collect::<Result<Vec<_>, _>>()?;
-  let boundaries = find_boundaries(&request.conversation)?;
-  let initial = request.clone();
-  let initial_entries = entries.clone();
-  let initial_cursor = next_cursor;
-  // Retain the fixed prefix verbatim. Try only structurally complete prefixes, in order.
-  for remove_end in std::iter::once(fixed).chain(boundaries.into_iter().filter(|end| *end > fixed))
-  {
-    if remove_end == initial.conversation.len() {
-      continue;
-    }
-    check_cancelled(control)?;
-    request.conversation = initial.conversation[..fixed]
-      .iter()
-      .chain(&initial.conversation[remove_end..])
-      .cloned()
-      .collect();
-    // A wire may reject a structurally closed suffix (e.g. a model-only beginning). Move to the
-    // next complete boundary; never repair it by deleting a signature or inventing a tool result.
-    if caller.validate_request(&request).is_err() {
-      continue;
-    }
-    let measurement = measure(caller, control, config, &request, calibration).await?;
-    if measurement.tokens > config.target_tokens {
-      continue;
-    }
-    entries =
-      initial_entries[..fixed].iter().chain(&initial_entries[remove_end..]).copied().collect();
-    if entries == original {
-      if matches!(reason, CompactionReason::ContextRejected) {
-        continue;
-      }
-      return Ok(());
-    }
-    next_cursor = fixed + initial_cursor.saturating_sub(remove_end);
-    check_cancelled(control)?;
-    session.commit_compaction(
-      active.id,
-      entries,
-      next_cursor as u64,
-      (remove_end - fixed) as u64,
-      measurement,
-      reason,
-    )?;
-    return Ok(());
-  }
-  Err(Error::Build("compaction target cannot accommodate the fixed prompt and a protocol-valid remaining context".into()).into())
 }

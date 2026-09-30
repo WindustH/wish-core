@@ -4,11 +4,9 @@
 //! always does. A form answered after its timeout is delivered later, as a message of its own.
 
 use crate::{
-  executor::{
-    ExecutionControl,
-    tool::{ToolCall, ToolExecutor, ToolOutcome},
-  },
+  executor::{ExecutionControl, tool::ToolExecutor},
   protocol::{ContentBlock, Message, Tool},
+  session::{ToolCall, ToolOutcome},
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -67,8 +65,9 @@ pub enum Delivery {
   Dropped,
 }
 
-struct Pending {
-  form: Vec<Question>,
+/// A form put to the user and not closed yet.
+struct OpenForm {
+  questions: Vec<Question>,
   asked_at: u64,
   timeout_seconds: Option<u64>,
   /// Present while the tool call waits; taken when an answer is handed to it.
@@ -89,14 +88,14 @@ pub enum AnswerError {
 
 /// The tool, holding the open forms of one session by tool call ID.
 pub struct AskUserTool {
-  pending: Mutex<HashMap<String, Pending>>,
+  forms: Mutex<HashMap<String, OpenForm>>,
   changed: Box<dyn Fn() + Send + Sync>,
 }
 
 impl AskUserTool {
   /// `changed` runs whenever the open forms change.
   pub fn new(changed: impl Fn() + Send + Sync + 'static) -> Self {
-    Self { pending: Mutex::default(), changed: Box::new(changed) }
+    Self { forms: Mutex::default(), changed: Box::new(changed) }
   }
 
   pub fn get_specification(&self) -> Tool {
@@ -146,11 +145,11 @@ impl AskUserTool {
 
   /// The open forms, oldest first, as the session status reports them.
   pub fn snapshot(&self) -> Vec<Value> {
-    let pending = self.pending.lock().unwrap();
-    let mut items: Vec<_> = pending
+    let forms = self.forms.lock().unwrap();
+    let mut items: Vec<_> = forms
       .iter()
       .map(|(call_id, form)| {
-        json!({"call_id": call_id, "questions": form.form, "asked_at": form.asked_at,
+        json!({"call_id": call_id, "questions": form.questions, "asked_at": form.asked_at,
           "timeout_seconds": form.timeout_seconds, "timed_out": form.timed_out})
       })
       .collect();
@@ -160,16 +159,16 @@ impl AskUserTool {
 
   /// Puts the form to the user and waits.
   async fn ask(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
-    let (form, timeout) = match parse_form(&call.arguments) {
+    let (questions, timeout) = match parse_form(&call.arguments) {
       Ok(parsed) => parsed,
       Err(message) => return ToolOutcome::Failed(message),
     };
     let (sender, receiver) = oneshot::channel();
-    self.pending.lock().unwrap().insert(
+    self.forms.lock().unwrap().insert(
       call.call_id.clone(),
-      Pending {
-        form,
-        asked_at: crate::session::statistics::Timestamp::now().0,
+      OpenForm {
+        questions,
+        asked_at: crate::utils::time::Timestamp::now().0,
         timeout_seconds: timeout,
         reply: Some(sender),
         timed_out: false,
@@ -177,7 +176,7 @@ impl AskUserTool {
     );
     // Whatever ends the wait - even the run's future being dropped - closes the form, except a
     // timeout, which leaves it open for a later answer.
-    let mut open = Opened { tool: self, call_id: &call.call_id, keep: false };
+    let mut open = CloseOnDrop { tool: self, call_id: &call.call_id, keep: false };
     (self.changed)();
     let expire = async {
       match timeout {
@@ -194,7 +193,7 @@ impl AskUserTool {
       },
       _ = expire => {
         open.keep = true;
-        if let Some(form) = self.pending.lock().unwrap().get_mut(&call.call_id) {
+        if let Some(form) = self.forms.lock().unwrap().get_mut(&call.call_id) {
           form.timed_out = true;
           form.reply = None;
         }
@@ -215,25 +214,25 @@ impl AskUserTool {
     answers: Option<&[Value]>,
     skip: bool,
   ) -> Result<Delivery, AnswerError> {
-    let mut pending = self.pending.lock().unwrap();
-    let form = pending.get_mut(call_id).ok_or(AnswerError::NotFound)?;
+    let mut forms = self.forms.lock().unwrap();
+    let form = forms.get_mut(call_id).ok_or(AnswerError::NotFound)?;
     let reply = if skip {
       Reply::Skipped
     } else {
       let answers =
         answers.ok_or_else(|| AnswerError::Invalid("give `answers`, or `skip` the form".into()))?;
-      Reply::Answered(read_answers(&form.form, answers)?)
+      Reply::Answered(read_answers(&form.questions, answers)?)
     };
     match form.reply.take() {
       Some(sender) => {
         if sender.send(reply).is_err() {
-          pending.remove(call_id);
+          forms.remove(call_id);
           return Err(AnswerError::Closed("the question is no longer open"));
         }
         Ok(Delivery::Now)
       }
       None if form.timed_out => {
-        let questions = json!(pending.remove(call_id).map(|form| form.form));
+        let questions = json!(forms.remove(call_id).map(|form| form.questions));
         Ok(match reply {
           Reply::Answered(answers) => Delivery::Later { questions, answers },
           Reply::Skipped => Delivery::Dropped,
@@ -252,15 +251,15 @@ impl ToolExecutor for AskUserTool {
 }
 
 /// Closes a form when the wait ends, unless it timed out and stays open for a late answer.
-struct Opened<'a> {
+struct CloseOnDrop<'a> {
   tool: &'a AskUserTool,
   call_id: &'a str,
   keep: bool,
 }
-impl Drop for Opened<'_> {
+impl Drop for CloseOnDrop<'_> {
   fn drop(&mut self) {
     if !self.keep {
-      self.tool.pending.lock().unwrap().remove(self.call_id);
+      self.tool.forms.lock().unwrap().remove(self.call_id);
     }
   }
 }

@@ -1,13 +1,11 @@
-mod upstream;
+mod tokens;
 mod translation;
+mod upstream;
 
-use crate::executor::model::tokens::{TokenEstimator, TokenMeasurement};
 use crate::protocol::Message;
 use crate::session::statistics::ModelCallId;
-use crate::session::{
-  EntryId, EntryOrigin, Generation, GenerationId, GenerationStatus, Session, SessionError,
-  SessionEvent,
-};
+use crate::session::{EntryId, EntryOrigin, GenerationId, Session, SessionError, SessionEvent};
+pub use tokens::{TokenEstimator, TokenMeasurement, TokenMeasurementSource};
 
 /// Explicit token budgets; absence from SessionConfig disables automatic compaction.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -45,9 +43,12 @@ pub enum CompactionReason {
 }
 
 impl Session {
-  pub(crate) fn save_compaction_summary(
+  /// Appends a standby summary of the span `start..end` of the active generation, which must still
+  /// be `expected_active`. The first summary of a standby starts it anew, over the active prefix
+  /// before the span; each later one continues where the one before it ended.
+  pub(crate) fn append_standby_summary(
     &mut self,
-    generation: GenerationId,
+    expected_active: GenerationId,
     start: u64,
     end: u64,
     summary: Message,
@@ -56,100 +57,77 @@ impl Session {
   ) -> Result<(), SessionError> {
     self.update(move |transaction| {
       let active = transaction.load_generation(transaction.record.active)?;
-      if active.id != generation {
+      if active.id != expected_active {
         return Err(SessionError::StaleGeneration);
       }
       let mut standby = transaction.load_generation(transaction.record.standby)?;
-      let expected = standby
-        .source
-        .filter(|(id, _)| *id == active.id)
-        .map(|(_, end)| end)
-        .unwrap_or(active.compaction_cursor.max(start));
+      let expected = standby.summarized_end(&active).unwrap_or(active.compaction_cursor.max(start));
       if start != expected
         || end <= start
-        || end > transaction.tx.list_len::<EntryId>(&active.entries)?
+        || end > transaction.store.list_len::<EntryId>(&active.entries)?
       {
         return Err(SessionError::StaleGeneration);
       }
       if standby.source.is_none() {
-        standby.entries = transaction.create_list::<EntryId>()?;
+        transaction.replace_entries(&mut standby)?;
         if start > 0 {
-          let prefix = transaction.tx.read_page::<EntryId>(&active.entries, 0, start as usize)?;
+          let prefix =
+            transaction.store.read_page::<EntryId>(&active.entries, 0, start as usize)?;
           let ids: Vec<_> = prefix.items.iter().map(|id| **id).collect();
-          transaction.tx.append_items(&standby.entries, &ids)?;
+          transaction.store.append_items(&standby.entries, &ids)?;
         }
       }
       // The summary and its event belong to the summary's own call, not to the conversation
       // call that may be running beside it.
       transaction.with_model_call(call, |transaction| {
         let entry = transaction.store_entry(summary, EntryOrigin::Summary)?;
-        transaction.tx.append_item(&standby.entries, &entry)?;
+        transaction.store.append_item(&standby.entries, &entry)?;
         standby.source = Some((active.id, end));
-        standby.compaction_cursor = transaction.tx.list_len::<EntryId>(&standby.entries)?;
+        standby.compaction_cursor = transaction.store.list_len::<EntryId>(&standby.entries)?;
         transaction.save_generation(&standby)?;
         transaction.record_event(SessionEvent::CompactionSummary {
-          generation,
+          generation: expected_active,
           source_start: start,
           source_end: end,
           entry,
           response: Box::new(response),
-        })
+        })?;
+        Ok(())
       })
     })
   }
-  /// Commits the already validated, measured context and its first unprocessed position together.
-  pub(crate) fn commit_compaction(
+  /// Commits a local cutover: the standby becomes the active generation holding `entries`, which
+  /// are validated and measured already, with its first unsummarized position; a new standby
+  /// starts from the entries before it.
+  pub(crate) fn commit_local_compaction(
     &mut self,
-    generation: GenerationId,
+    expected_active: GenerationId,
     entries: Vec<EntryId>,
-    cursor: u64,
+    compaction_cursor: u64,
     removed: u64,
     measurement: TokenMeasurement,
     reason: CompactionReason,
   ) -> Result<(), SessionError> {
     self.update(move |transaction| {
-      let mut active = transaction.load_generation(transaction.record.active)?;
-      if active.id != generation {
+      if transaction.record.active != expected_active {
         return Err(SessionError::StaleGeneration);
       }
       let mut standby = transaction.load_generation(transaction.record.standby)?;
-      standby.entries = transaction.create_list::<EntryId>()?;
-      transaction.tx.append_items(&standby.entries, &entries)?;
-      standby.compaction_cursor = cursor;
-      standby.source = None;
-      standby.status = GenerationStatus::Active;
-      active.status = GenerationStatus::Sealed;
-      transaction.save_generation(&active)?;
+      transaction.replace_entries(&mut standby)?;
+      transaction.store.append_items(&standby.entries, &entries)?;
+      standby.compaction_cursor = compaction_cursor;
       transaction.save_generation(&standby)?;
-      transaction.record.active = standby.id;
-      let id = GenerationId(
-        transaction.tx.list_len::<Generation>(&transaction.record.generations)? as usize,
-      );
-      let seeded = transaction.create_list::<EntryId>()?;
-      transaction.tx.append_items(&seeded, &entries[..cursor as usize])?;
-      transaction.tx.append_item(
-        &transaction.record.generations,
-        &Generation {
-          id,
-          status: GenerationStatus::Standby,
-          entries: seeded,
-          config: transaction.record.config.clone(),
-          compaction_cursor: cursor,
-          source: Some((standby.id, cursor)),
-        },
-      )?;
-      transaction.record.standby = id;
-      transaction.record_event(SessionEvent::GenerationActivated {
-        previous: active.id,
-        active: standby.id,
-      })?;
+      let previous = transaction.promote_standby()?;
+      let seed = &entries[..compaction_cursor as usize];
+      transaction.append_standby(seed, compaction_cursor, Some((standby.id, compaction_cursor)))?;
       transaction.record_event(SessionEvent::ContextCompacted {
-        previous: active.id,
+        previous,
         active: standby.id,
         reason,
         removed_entries: removed,
         measurement,
-      })
+      })?;
+      Ok(())
     })
   }
 }

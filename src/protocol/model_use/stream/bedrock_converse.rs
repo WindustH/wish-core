@@ -16,16 +16,20 @@
 //! - `messageStop` carries the `stopReason` and `metadata` the `usage`; both are required, and
 //!   whichever arrives second is the terminal: open blocks close in index order and the buffered
 //!   decoder's mappings produce the usage report and the stop. `messageStart`, `messageDelta`
-//!   (which some models use instead, redundantly), unknown events and exception frames
-//!   (`__exception:<type>`, payload not guaranteed JSON) map to an upstream error.
+//!   (which some models use instead, redundantly) and unknown events are tolerated silently, while
+//!   an exception frame (`__exception:<type>`, payload not guaranteed JSON) maps to an upstream
+//!   error.
 //!
 //! Trade-offs:
-//! - A body that ends without both terminal halves is a protocol error, reported by `finish()`.
+//! - A body that ends without both terminal halves is a protocol error, reported when the body
+//!   ends.
 
 use std::collections::HashMap;
 
 use serde_json::Value;
 
+use super::WireDecoder;
+use super::blocks::{BlockCounter, end_blocks_in_order};
 use crate::protocol::error::Error;
 use crate::protocol::model_use::response::bedrock_converse as buffered;
 use crate::protocol::{BlockKind, StopReason, StreamEvent};
@@ -33,8 +37,8 @@ use crate::protocol::{BlockKind, StopReason, StreamEvent};
 /// Decodes one `converse-stream` body.
 #[derive(Default)]
 pub struct Decoder {
-  next_index: u32,
-  /// `contentBlockIndex` -> our block index.
+  counter: BlockCounter,
+  /// `contentBlockIndex` -> our block index, while the block is open.
   blocks: HashMap<u64, u32>,
   finish_reason: Option<String>,
   usage: Option<crate::protocol::Usage>,
@@ -45,9 +49,11 @@ impl Decoder {
   pub fn new() -> Self {
     Self::default()
   }
+}
 
+impl WireDecoder for Decoder {
   /// Feeds one frame: its `:event-type` (or `__exception:<type>`) and its JSON payload.
-  pub fn feed(&mut self, event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
+  fn feed(&mut self, event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
     if self.done {
       return Err(Error::Malformed("event after the terminal converse event".to_owned()));
     }
@@ -72,7 +78,7 @@ impl Decoder {
       }
       "metadata" => {
         if let Some(usage) = value.pointer("/metadata/usage").filter(|usage| !usage.is_null()) {
-          let usage = buffered::parse_usage(Some(usage));
+          let usage = buffered::decode_usage(Some(usage));
           self.usage = Some(usage);
           out.push(StreamEvent::Usage(usage));
         }
@@ -88,13 +94,15 @@ impl Decoder {
   }
 
   /// The body ended: the wire's two terminal halves must both have arrived.
-  pub fn finish(&mut self) -> Result<Vec<StreamEvent>, Error> {
+  fn finish(&mut self) -> Result<Vec<StreamEvent>, Error> {
     if self.done {
       return Ok(Vec::new());
     }
     Err(Error::Malformed("stream ended before messageStop and metadata".to_owned()))
   }
+}
 
+impl Decoder {
   fn handle_block_start(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
     let Some(index) = value.pointer("/contentBlockStart/contentBlockIndex").and_then(Value::as_u64)
     else {
@@ -108,10 +116,8 @@ impl Decoder {
       // opens there.
       return;
     };
-    let block_index = self.next_index;
-    self.next_index += 1;
+    let block_index = self.counter.open(BlockKind::ToolUse, out);
     self.blocks.insert(index, block_index);
-    out.push(StreamEvent::BlockStart { index: block_index, kind: BlockKind::ToolUse });
     out.push(StreamEvent::ToolUseDelta {
       index: block_index,
       call_id: Some(tool.get("toolUseId").and_then(Value::as_str).unwrap_or("").to_owned()),
@@ -176,26 +182,21 @@ impl Decoder {
     }
   }
 
-  /// The block of a delta: opened get_current_time (with the kind the delta just named) if this is its first.
+  /// The block of a delta: opened now, with the kind the delta just named, if this is its first.
   fn ensure(&mut self, index: u64, kind: BlockKind, out: &mut Vec<StreamEvent>) -> u32 {
     if let Some(block) = self.blocks.get(&index) {
       return *block;
     }
-    let block = self.next_index;
-    self.next_index += 1;
+    let block = self.counter.open(kind, out);
     self.blocks.insert(index, block);
-    out.push(StreamEvent::BlockStart { index: block, kind });
     block
   }
 
   /// Close every still-open block in index order, then stop.
   fn terminate(&mut self, reason: Option<&str>) -> Vec<StreamEvent> {
     self.done = true;
-    let mut indices: Vec<u32> = self.blocks.values().copied().collect();
-    indices.sort_unstable();
-    indices.dedup();
-    let mut out: Vec<StreamEvent> =
-      indices.into_iter().map(|index| StreamEvent::BlockEnd { index }).collect();
+    let mut out = Vec::new();
+    end_blocks_in_order(self.blocks.values().copied().collect(), &mut out);
     let stop = match reason {
       Some(reason) => buffered::map_stop_reason(Some(reason)),
       None => StopReason::Unknown,

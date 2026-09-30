@@ -7,8 +7,13 @@ pub enum SessionError {
   InvalidHistoryQuery(String),
   #[error(transparent)]
   Storage(#[from] StorageError),
+  /// The operation needs a stable phase - idle, ready or suspended - and a run is under way.
   #[error("operation requires a stable session boundary")]
   Busy,
+  /// A run step found the session in a phase other than the one it continues. The text is Busy's:
+  /// it is what API clients have always been told.
+  #[error("operation requires a stable session boundary")]
+  UnexpectedPhase,
   #[error("only user, system and developer messages can be enqueued")]
   InvalidInput,
   #[error("invalid entry reference: {0:?}")]

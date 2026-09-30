@@ -2,8 +2,8 @@
 
 `session::statistics::ModelCallRecord` describes one logical agent model call. Client retries and
 executor output continuations stay inside that call. These records do not count individual network
-attempts or direct token-count API calls. Each session has a paged list, exposed by
-`get_model_calls()` and `get_model_call(id)`.
+attempts or direct token-count API calls. Each session has a paged list, which its reader's
+`get_model_calls()` returns.
 
 | Field | Meaning |
 | --- | --- |
@@ -12,7 +12,7 @@ attempts or direct token-count API calls. Each session has a paged list, exposed
 | `generation` | active generation when the call started |
 | `model`, `stream` | the session's model and response mode when the call started |
 | `input_entry_count` | active-generation prefix the request was built from |
-| `started_at`, `first_event_at`, `finished_at` | `Timestamp` (Unix ms) |
+| `started_at`, `first_event_at`, `finished_at` | `utils::time::Timestamp` (Unix ms) |
 | `elapsed_ms` | monotonic duration of the caller invocation and stream consumption |
 | `status` | `Running`, then `Completed`, `Interrupted` or `Failed` |
 | `usage` | the protocol's `Usage`; missing fields stay `None` |
@@ -95,7 +95,7 @@ If a later continuation fails or is interrupted, the previous completed request'
 Server-owned. After each run, and before a provider switch, the server copies the session's call
 records into its management database's `calls` table, tagged with the session's provider
 (`src/server/management.rs`). The usage endpoints aggregate that table
-([API](../api.md#usage-statistics)). Separately, a `StreamObserver` on every provider client
+([API](../api.md#usage-statistics)). Separately, an `AttemptObserver` on every provider client
 samples visible streamed output once per second per attempt into `stream_samples`
 (`src/server/sampling.rs`). Tokens there are estimated at 4 bytes each; these samples are
 throughput observations, not billing usage.

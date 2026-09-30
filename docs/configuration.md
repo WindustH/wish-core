@@ -90,6 +90,7 @@ fields are rejected everywhere, so typos fail loudly.
 | `proxy` | environment | Outbound proxy; see [Proxy](#proxy) |
 | `shell` | platform shell | The shell commands run in; see [Shell](#shell) |
 | `mcp` | `{"servers": {}}` | MCP servers sessions can call; see [MCP servers](#mcp-servers) |
+| `search` | `{"order": [], "providers": {}}` | The services the `web_search` tool asks; see [Web search](#web-search) |
 
 ## Providers
 
@@ -198,7 +199,7 @@ sessions keep their own settings.
 | `provider` | `""` | Default provider ID; must exist in `providers` |
 | `model` | `""` | Default model ID |
 | `cwd` | Wish's start directory | Default working directory, an absolute path |
-| `tools` | `{"shell": true, "ask_user": true, "mcp": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell. Each session can switch them later |
+| `tools` | `{"shell": true, "ask_user": true, "mcp": true, "web_search": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell, `web_search` lets it search the web through the [search providers](#web-search). Each session can switch them later. A new session gets `web_search` only while some search provider can answer |
 | `stream` | `true` | Stream model output |
 | `instructions` | `""` | Extra instructions the web app adds to each new session |
 | `reasoning` | `null` | `{"enabled": bool, "effort": "low", "summary": "Auto"}`. Accepted effort values depend on the provider |
@@ -257,7 +258,8 @@ own shell, set in the web app or with
 ## MCP servers
 
 `mcp.servers` lists the MCP servers sessions can use, by name. Sessions reach
-them from their shell with the `wish mcp` command: the model runs
+them from their shell with the `wish mcp` command, which the agent instructions
+of every session with a shell describe: the model runs
 `wish mcp list`, `wish mcp describe <server>/<tool>` and
 `wish mcp call <server>/<tool> '<json>'`, and reads the answers as command
 output. The servers and their tools never appear in the model's tool list, so
@@ -306,6 +308,78 @@ transport sets `Accept`, `Content-Type`, `Mcp-Session-Id`,
 `MCP-Protocol-Version` and `Last-Event-ID` itself, and `auth_provider` excludes
 an `Authorization` header.
 
+## Web search
+
+`search.providers` lists the services the `web_search` tool asks, by ID, and
+`search.order` the order it asks them in. When one cannot answer - its quota is
+spent, its key refused, its service down, or it takes longer than 60 seconds -
+the next is asked, and a search fails only when every one has. A provider left
+out of `order` is never asked.
+
+The model sees one `web_search` tool whichever provider answers. Its
+description and parameters never name a service, so changing the providers or
+their order does not change the model's request or its prompt cache.
+
+```json
+"search": {
+  "order": ["chatgpt", "tavily"],
+  "providers": {
+    "chatgpt": {"preset": "openai_codex_search", "auth_provider": "openai_codex"},
+    "tavily": {"preset": "tavily", "api_key_env": "WISH_SEARCH_TAVILY_KEY"}
+  }
+}
+```
+
+A provider is one of two kinds:
+
+- **Borrowed.** Search that comes with a subscription uses a model provider's
+  account: `auth_provider` names it. The search uses that provider's
+  credentials and proxy setting as they stand at the moment of the search, so
+  a renewed ChatGPT sign-in applies at once. A borrowed provider takes no key of
+  its own, and only the model presets its preset lists can lend it their
+  account. While that model provider is disabled or missing its credentials,
+  the search provider is skipped.
+- **Own key.** Any other search service takes its own key, like a model
+  provider: `api_key`, or `api_key_env` naming an environment variable.
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `preset` | required | A search preset ID (below); it names the protocol and the service's address |
+| `enabled` | `true` | A disabled provider is kept in the file but never asked |
+| `auth_provider` | | Borrowed: the model provider whose account the search uses |
+| `api_key`, `api_key_env` | | Own key: the key, or the environment variable that holds it |
+| `base_url` | the service's | Where the service is: required for a self-hosted one, otherwise only to reach another address |
+| `proxy_enabled` | `true` | Own key: use the [proxy](#proxy). A borrowed provider follows its model provider |
+| `headers` | `{}` | Headers added to every search request |
+
+Search presets:
+
+| Preset | Kind | Service |
+| --- | --- | --- |
+| `openai_codex_search` | Borrowed from `openai_codex` | ChatGPT's search, the one Codex uses: `POST {base_url}/alpha/search` with the model provider's base URL |
+| `kimi_code_search` | Borrowed from `kimi_code` | Kimi Code's search, the one Kimi's coding CLI uses: `POST {base_url}/search`. Kimi expects clients to identify themselves truthfully and may refuse ones it does not know |
+| `minimax_coding_plan_search` | Borrowed from `minimax_token_cn`, `minimax_token_global` | MiniMax Token Plan's search, on the host of the plan's region. Ten results at most, no filters |
+| `tavily_keyless` | No key | [Tavily](https://docs.tavily.com/documentation/keyless) without an account: free and rate-limited by Tavily |
+| `tavily` | Own key | [Tavily](https://docs.tavily.com) with a key (`tvly-…`) |
+| `exa` | Own key | [Exa](https://exa.ai/docs/reference/search); the snippet is Exa's highlights |
+| `perplexity_search` | Own key | [Perplexity's Search API](https://docs.perplexity.ai/docs/search/quickstart) |
+| `brave` | Own key | [Brave Search](https://api-dashboard.search.brave.com/app/documentation/web-search/get-started) |
+| `serper` | Own key | Google results through [Serper](https://serper.dev) |
+| `jina` | Own key | [Jina](https://jina.ai/reader)'s search; it cannot limit results by date |
+| `searxng` | No key, `base_url` required | A self-hosted [SearXNG](https://docs.searxng.org/dev/search_api.html). Its JSON output must be on (`search.formats: [html, json]` in settings.yml), and its limiter, if on, allows API requests only a few times an hour: turn it off or let Wish's address through |
+| `bocha` | Own key | [博查 Bocha](https://open.bochaai.com), a mainland China service |
+| `metaso` | Own key | [秘塔 Metaso](https://metaso.cn/search-api/playground), a mainland China service; no filters |
+
+Services without domain filters of their own get `site:` operators in the query
+where their engines honour them (Brave, Serper, SearXNG), and every service's
+results are filtered by domain again after the reply.
+
+The results the model reads are the pages found - title, URL, site, date and a
+short snippet - with a note that they come from the web and are not verified.
+What a service cannot filter itself (a blocked domain, for example) is
+filtered after its reply, and a filter that cannot be applied at all is
+mentioned in the result.
+
 ## Secrets
 
 Provider keys and credentials can be written directly (`api_key`,
@@ -351,7 +425,7 @@ stale: restart Wish after a manual edit, before saving from the web app.
 | `format.json` | The version of the stored formats, `{"version": N}`, which a newer release migrates from |
 | `backups/` | Copies of the databases and the configuration file taken before each migration |
 
-Deleting a session removes its rows and both of its directories. Back up the
+Deleting a session removes its rows and both of its directories, and the database shrinks by what they took. Back up the
 whole directory while Wish is stopped, or copy the databases with
 `sqlite3 wish.sqlite ".backup backup.sqlite"` while it runs. See
 [deployment](deployment.md#backups-and-upgrades).

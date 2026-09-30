@@ -1,9 +1,10 @@
 # Executor
 
 `executor` executes model and tool effects selected by the [Session](session.md) state machine.
-The caller supplies a `model::ModelCaller` (implemented by `model::Client`, and by the server's
-provider-switching wrapper), a `tool::ToolExecutor` and the async runtime. Session owns state,
-configuration and history; [storage](storage.md) owns persistence and caching.
+The caller supplies a `model::ModelCaller` (implemented by [`client::Client`](client.md), and by the
+server's provider-switching wrapper), a `tool::ToolExecutor` and the async runtime. Session owns
+state, configuration and history, including the `ToolCall`s and `ToolOutcome`s the executor carries
+out; [storage](storage.md) owns persistence and caching.
 
 ```text
 Idle -- queued input / resume --> Ready
@@ -44,7 +45,8 @@ response whose stop reason is neither `Stop` nor `ToolUse` suspends as `ModelSto
 tool batch is recorded as `ResponseRejected` and suspends as `Failed`.
 
 Stream events reach the observer immediately and are live-only: they are never written to history
-or the events list. All other events are committed before the observer is notified. Completed
+or the events list. All other events are committed before the observer is notified, the
+`Finished` event that ends a run included, however it ends. Completed
 responses, interruption fragments and call observations are committed when the call ends. Storage
 errors are returned to the caller. History exposes committed records only, and notifications are
 not exactly-once across crashes; use history when replaying earlier records.
@@ -75,11 +77,11 @@ failure.
 ## Run boundaries
 
 `run_with_boundary(..., boundary)` applies pending configuration only at stable points. `run` is the
-same with a no-op boundary.
+same with a no-op boundary; the fixtures in wish-test use it.
 
 ```rust
 pub trait RunBoundary: Send {
-  fn apply(&mut self, session: &mut Session, control: &ExecutionControl, cursor: &mut u64,
+  fn apply(&mut self, session: &mut Session, control: &ExecutionControl, delivered: &mut u64,
     observe: &mut (impl FnMut(&SessionEvent) + Send))
     -> impl Future<Output = Result<BoundaryResult, SessionError>> + Send;
 }
@@ -88,12 +90,13 @@ pub enum BoundaryResult { Unchanged, Changed, Interrupted }
 
 `apply` runs at the top of every loop iteration while the session is stable, including the
 first, so current model/tool work always finishes first. `Changed` discards any in-flight standby
-summary built for the old settings. `Interrupted` finishes the run as `Interrupted`. The cursor
-lets a long boundary publish its own events before it awaits I/O.
+summary built for the old settings. `Interrupted` finishes the run as `Interrupted`. `delivered`,
+how much of the history the observer has had, lets a long boundary publish its own events before
+it awaits I/O.
 
-The server's `SelectionBoundary` applies a pending provider/model selection at this point,
-including the encrypted-compaction handoff (server-owned:
-[`src/server/session/selection.rs`](../../src/server/session/selection.rs); see
+The server's `SelectionBoundary` applies a pending provider/model selection at this point
+(server-owned: [`src/server/session/selection.rs`](../../src/server/session/selection.rs)),
+including the encrypted-compaction handoff that `executor::compaction::handoff` writes (see
 [compaction](compaction.md#provider-switch-handoff)).
 
 ## Shutdown
@@ -125,55 +128,61 @@ A tool executor must cooperate with cancellation for the run to finish.
 
 ```text
 executor
- +-- run                 run / run_with_boundary, RunBoundary, action dispatch and acceptance
- +-- control             ExecutionControl for executor cancellation
- +-- observe             history event delivery to the observer
- +-- compaction          standby summaries, cutover, manual compact
- |    +-- upstream       upstream compaction cutover
- |    +-- translation    encrypted-compaction handoff call (used by the server)
+ +-- run                 run / run_with_boundary, RunBoundary, run_scoped, the action loop
+ +-- control             ExecutionControl: cancellation, run_until_cancelled, CancelOnDrop
+ +-- observe             deliver_new_events / record_and_deliver to the run's observer
+ +-- compaction          compact (manual), cutover inside Compacting, shared helpers
+ |    +-- trigger        read_usage, find_cutover / force_cutover, CutoverPlan
+ |    +-- standby        standby summaries: StandbySummarizer beside a run, catch_up at cutover
+ |    +-- trim           the local cutover's candidate, trimmed to the target
+ |    +-- upstream       the cutover through upstream compaction
+ |    +-- handoff        encrypted-compaction handoff: plan, call, new context (used by the server)
  +-- model
- |    +-- caller         ModelCaller / ModelStream
- |    +-- client         Client / CallResponse / EventStream / CodeAgentIdentity
- |    +-- execute        model execution and call timing
+ |    +-- caller         ModelCaller / ModelStream / CallResponse
+ |    +-- execute        one logical model call: segments, live stream events, call timing
  |    +-- continuation   output-limit continuation and usage summing
- |    +-- observer       StreamObserver / StreamObserverFactory (per-attempt observation)
- |    +-- tokens         TokenEstimator / TokenMeasurement
- +-- tool                ToolCall / ToolExecutor / ToolOutcome, serial/parallel execution
+ +-- tool                ToolExecutor, serial/parallel batch execution
 ```
 
-Protocol conversion and transport are separate modules. Retry is described in
-[client](client.md#retry). Model retries never repeat tool side effects.
+`ToolCall` / `ToolOutcome` and `TokenEstimator` / `TokenMeasurement` are persisted data and live in
+`session`. The model client, its `EventStream` and the per-attempt `AttemptObserver` are the
+top-level `client` module ([client](client.md)). Protocol conversion and transport are separate
+modules. Model retries never repeat tool side effects.
 
 ## Control scopes
 
 ```text
-SessionHandle::interrupt()          outer ExecutionControl::cancel()
-              |                                 |
-              +--------- current run -----------+
-                              |
-                 fresh child ExecutionControl
-                              |
-                stop model reads / settle tools
-                              |
-                 save partial response and state
+           outer ExecutionControl::cancel()
+                        |
+                   current run
+                        |
+       child ExecutionControl (cancelled on drop)
+                        |
+          stop model reads / settle tools
+                        |
+          save partial response and state
 ```
 
-`run` creates a fresh child execution control and registers the run with Session. Session interrupts
-cancel only that child; they never mark the outer control cancelled. The outer control is shared
-by whoever owns the run: the server creates one per run and cancels it for interrupt and shutdown.
-Explicitly cancelling it is sticky for all its users. Observers can interrupt synchronously before
-the next effect. On every exit (including future drop), the child scope is cancelled and the
-session registration is removed. Tool implementations still receive `&ExecutionControl` and must
-cooperate with cancellation rather than be abandoned.
+`run` (like `compaction::compact`) runs inside `run_scoped`, on a child of the caller's execution
+control. Cancelling the outer control reaches the child and wakes whatever waits on it; the child
+never cancels the outer one. The outer control is owned by whoever owns the run: the server creates
+one per operation and cancels it for interrupt and shutdown. Explicitly cancelling it is sticky for
+all its users. Observers can interrupt synchronously before the next effect. On every exit
+(including future drop), the child is cancelled, so work scoped to the run ends with it. Tool
+implementations still receive `&ExecutionControl` and must cooperate with cancellation rather than
+be abandoned. There is no interrupt of the session's own: the control is the one way to stop a
+run.
 
 ## Automatic output continuation
 
-`executor/model` handles `MaxOutputLengthExceeded` as a request to continue generating. It retains
+`executor/model` (`execute_model`) handles `MaxOutputLengthExceeded` as a request to continue
+generating. It retains
 protocol-approved text/reasoning, appends it and a continuation instruction (a `User` message) to a
 private request, and calls the same model again with the original tools and output settings. The
 instruction never enters Session history. This works for buffered and streamed responses; direct
 `Client::call` still returns the provider's original response and stop reason. Standby summaries
-use the same continuation ([compaction](compaction.md#local-compaction)).
+are made by the same `execute_model`, without an observer
+([compaction](compaction.md#local-compaction)).
 
 Session sees one logical call and one final response. Returned message order is preserved across
 segments. Stream block indices are offset across segments; intermediate output-limit Stop events

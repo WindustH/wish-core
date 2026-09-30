@@ -14,16 +14,23 @@
 //! Trade-offs:
 //! - A `failed` status is reported as `Error::Upstream` (with `error.code`) instead of a
 //!   `StopReason`, because such a body carries no usable output.
+//! - A `compaction` item in a buffered reply is skipped, while the stream decoder hands one over
+//!   whole as [`StreamEvent::UpstreamCompaction`](crate::protocol::StreamEvent::UpstreamCompaction)
+//!   and the compaction call's own reader keeps it too; those two read its payload through
+//!   [`decode_compaction_payload`].
 
 use crate::protocol::error::Error;
-use crate::protocol::ReasoningOpaqueKind;
-use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
-use serde_json::{Value, json};
+use crate::protocol::http_error::decode_in_band;
+use crate::protocol::model_use::tool::parse_tool_arguments;
+use crate::protocol::{ContentBlock, Message, ReasoningOpaqueKind, Response, StopReason, Usage};
+use serde_json::Value;
 
 pub fn decode(body: &Value) -> Result<Response, Error> {
   if body.get("status").and_then(Value::as_str) == Some("failed") {
-    return Err(decode_upstream_error(body));
+    return Err(decode_in_band_error(body));
   }
+  // The calls of a capped reply may be cut short, so they are not read at all.
+  let capped = decode_stop_reason(body, false) == StopReason::MaxOutputLengthExceeded;
   let mut messages: Vec<Message> = Vec::new();
   if let Some(output) = body.get("output").and_then(Value::as_array) {
     for item in output {
@@ -39,11 +46,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
             messages.push(Message::Assistant { metadata: Default::default(), content });
           }
         }
-        Some("function_call")
-          if decode_stop_reason(body, false) != StopReason::MaxOutputLengthExceeded =>
-        {
-          messages.push(decode_function_call(item)?)
-        }
+        Some("function_call") if !capped => messages.push(decode_function_call(item)?),
         _ => {}
       }
     }
@@ -57,14 +60,9 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
   })
 }
 
-pub(crate) fn decode_upstream_error(body: &Value) -> Error {
-  let error = body.get("error");
-  let message = error
-    .and_then(|error| error.get("message"))
-    .and_then(Value::as_str)
-    .unwrap_or("upstream reported failure without an error message");
-  let code = error.and_then(|error| error.get("code")).and_then(Value::as_str);
-  Error::from_in_band(code.map(str::to_owned), message.to_owned())
+/// The failure a `failed` response reports, from its `error` object.
+pub(crate) fn decode_in_band_error(body: &Value) -> Error {
+  decode_in_band(body.get("error"), &["code"], "upstream reported failure without an error message")
 }
 
 pub(crate) fn decode_reasoning(item: &Value) -> Option<Message> {
@@ -120,11 +118,9 @@ pub(crate) fn decode_function_call(item: &Value) -> Result<Message, Error> {
   };
   let call_id = field("call_id")?;
   let name = field("name")?;
-  let arguments = match item.get("arguments").and_then(Value::as_str) {
-    Some(raw) if !raw.trim().is_empty() => serde_json::from_str(raw)
-      .map_err(|_| Error::Malformed("function_call arguments are not valid JSON".to_owned()))?,
-    _ => json!({}),
-  };
+  let raw = item.get("arguments").and_then(Value::as_str).unwrap_or_default();
+  let arguments = parse_tool_arguments(raw)
+    .map_err(|_| Error::Malformed("function_call arguments are not valid JSON".to_owned()))?;
   Ok(Message::ToolUse {
     metadata: Default::default(),
     call_id: call_id.to_owned(),
@@ -133,11 +129,26 @@ pub(crate) fn decode_function_call(item: &Value) -> Result<Message, Error> {
   })
 }
 
-fn decode_stop_reason(body: &Value, has_tool_uses: bool) -> StopReason {
-  map_stop_reason(body, has_tool_uses)
+/// The two parts of the item a compacted history travels as: the service's name for the
+/// compaction when it gave one, and the opaque payload that stands in for the history.
+///
+/// A `compaction` item without its payload is an error, not an empty compaction: that payload is
+/// the whole history, and losing it quietly would leave a conversation that looks complete.
+pub(crate) fn decode_compaction_payload(item: &Value) -> Result<(Option<String>, String), Error> {
+  let payload = item
+    .get("encrypted_content")
+    .and_then(Value::as_str)
+    .filter(|payload| !payload.is_empty())
+    .ok_or_else(|| {
+      Error::Malformed("a `compaction` item carries no `encrypted_content`".to_owned())
+    })?;
+  Ok((item.get("id").and_then(Value::as_str).map(str::to_owned), payload.to_owned()))
 }
 
-pub(crate) fn map_stop_reason(body: &Value, has_tool_uses: bool) -> StopReason {
+/// Maps a response's `status` (and, when it is `incomplete`, its reason); shared with the stream
+/// decoder, whose terminal event carries the same response. A completed response that made calls
+/// stopped for them.
+pub(crate) fn decode_stop_reason(body: &Value, has_tool_uses: bool) -> StopReason {
   match body.get("status").and_then(Value::as_str) {
     Some("completed") => {
       if has_tool_uses {
@@ -161,11 +172,8 @@ pub(crate) fn map_stop_reason(body: &Value, has_tool_uses: bool) -> StopReason {
   }
 }
 
-fn decode_usage(body: &Value) -> Usage {
-  parse_usage(body)
-}
-
-pub(crate) fn parse_usage(body: &Value) -> Usage {
+/// Maps the response's `usage` object; shared with the stream decoder and the compaction reader.
+pub(crate) fn decode_usage(body: &Value) -> Usage {
   let usage = body.get("usage");
   let field = |path: &[&str]| -> Option<u64> {
     let mut node = usage?;

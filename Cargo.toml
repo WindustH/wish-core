@@ -35,10 +35,7 @@ sha2 = "0.10"
 hmac = "0.12"
 # Lowercase hex, for the SHA-256 digests a signature spells its pieces with.
 hex = "0.4"
-# Google ADC service-account keys sign their token assertions with RS256, and their PEM bodies
-# decode as base64. Both routines are the ones the TLS stack already compiles under reqwest's
-# rustls, so nothing new enters the tree.
-ring = "0.17"
+# Base64 for inline media and the PKCE challenge of a browser login.
 base64 = "0.22"
 imara-diff = { version = "0.2", features = ["unified_diff"] }
 # MCP client: the protocol, local servers over stdio and the Streamable HTTP session logic. Its own

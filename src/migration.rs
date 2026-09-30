@@ -17,9 +17,14 @@
 //! one transaction per database and against the configuration in memory, so nothing is written
 //! unless every step succeeds. The databases commit, then the configuration file is replaced, then
 //! the new version is recorded. Steps are written to be repeatable, so a crash between those writes
-//! only repeats their work on the next start.
+//! only repeats their work on the next start. Last, the databases are vacuumed.
 
 mod m0001_mcp_switch;
+mod m0002_web_search;
+mod m0003_tool_batches;
+mod m0004_compact_storage;
+mod m0005_short_outcomes;
+mod m0006_standby_lists;
 
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -32,7 +37,6 @@ pub struct Data<'a> {
   /// `management.sqlite`: the session index, call records, stream samples.
   pub management: Option<&'a Connection>,
   /// `wish.sqlite`: sessions themselves.
-  #[allow(dead_code, reason = "no step has changed the sessions themselves yet")]
   pub wish: Option<&'a Connection>,
 }
 
@@ -42,14 +46,22 @@ struct Step {
 }
 
 /// In order: the step at index `i` takes version `i` to `i + 1`.
-const STEPS: &[Step] =
-  &[Step { summary: m0001_mcp_switch::SUMMARY, apply: m0001_mcp_switch::apply }];
+const STEPS: &[Step] = &[
+  Step { summary: m0001_mcp_switch::SUMMARY, apply: m0001_mcp_switch::apply },
+  Step { summary: m0002_web_search::SUMMARY, apply: m0002_web_search::apply },
+  Step { summary: m0003_tool_batches::SUMMARY, apply: m0003_tool_batches::apply },
+  Step { summary: m0004_compact_storage::SUMMARY, apply: m0004_compact_storage::apply },
+  Step { summary: m0005_short_outcomes::SUMMARY, apply: m0005_short_outcomes::apply },
+  Step { summary: m0006_standby_lists::SUMMARY, apply: m0006_standby_lists::apply },
+];
 
 /// The format this build reads.
 pub const LATEST: u32 = STEPS.len() as u32;
 
 const FORMAT_FILE: &str = "format.json";
-const DATABASES: [&str; 2] = ["management.sqlite", "wish.sqlite"];
+/// The databases a data directory may have, and what a step gets them as.
+const MANAGEMENT: &str = "management.sqlite";
+const WISH: &str = "wish.sqlite";
 
 /// Brings the configuration at `config_path` and its data directory up to [`LATEST`].
 ///
@@ -58,10 +70,43 @@ pub fn run(config_path: &Path) -> Result<(), String> {
   let Ok(source) = std::fs::read(config_path) else { return Ok(()) };
   let Ok(mut config) = serde_json::from_slice::<Value>(&source) else { return Ok(()) };
   let data_dir = PathBuf::from(config.get("data_dir").and_then(Value::as_str).unwrap_or("data"));
-  let from = match read_version(&data_dir)? {
+  let Some(from) = plan(&data_dir)? else { return Ok(()) };
+  eprintln!("migrating {} from format {from} to {LATEST}:", data_dir.display());
+  for (index, step) in STEPS.iter().enumerate().skip(from as usize) {
+    eprintln!("  {}: {}", index + 1, step.summary);
+  }
+  let backup = back_up(config_path, &data_dir, from)?;
+  let open = |name: &str| -> Result<Option<Connection>, String> {
+    let path = data_dir.join(name);
+    if !path.exists() {
+      return Ok(None);
+    }
+    Connection::open(&path)
+      .map(Some)
+      .map_err(|error| unchanged(format!("open {name}: {error}"), &backup))
+  };
+  let (mut management, mut wish) = (open(MANAGEMENT)?, open(WISH)?);
+  let before = config.clone();
+  apply_steps(from, &mut config, management.as_mut(), wish.as_mut(), &backup)?;
+  commit(config_path, (config != before).then_some(&config), &data_dir)?;
+  eprintln!("migrated; the copy taken before is in {}", backup.display());
+  // Steps often delete, and some change how the file is laid out, which only a VACUUM applies. It
+  // cannot run inside a transaction, and failing it loses nothing.
+  for (name, connection) in [(WISH, &wish), (MANAGEMENT, &management)] {
+    if let Some(Err(error)) = connection.as_ref().map(|file| file.execute_batch("VACUUM")) {
+      eprintln!("compact {name}: {error}");
+    }
+  }
+  Ok(())
+}
+
+/// The version the data directory is migrated from, or None when there is nothing to do: it is
+/// current, or new, which is marked current here.
+fn plan(data_dir: &Path) -> Result<Option<u32>, String> {
+  let from = match read_version(data_dir)? {
     Some(version) => version,
-    None if DATABASES.iter().any(|name| data_dir.join(name).exists()) => 0,
-    None => return write_version(&data_dir, LATEST),
+    None if [MANAGEMENT, WISH].iter().any(|name| data_dir.join(name).exists()) => 0,
+    None => return write_version(data_dir, LATEST).map(|()| None),
   };
   if from > LATEST {
     return Err(format!(
@@ -69,63 +114,54 @@ pub fn run(config_path: &Path) -> Result<(), String> {
       data_dir.display()
     ));
   }
-  if from == LATEST {
-    return Ok(());
-  }
-  let pending = &STEPS[from as usize..];
-  eprintln!("migrating {} from format {from} to {LATEST}:", data_dir.display());
-  for (offset, step) in pending.iter().enumerate() {
-    eprintln!("  {}: {}", from as usize + offset + 1, step.summary);
-  }
-  let backup = back_up(config_path, &data_dir, from)?;
-  let failed = |message: String| {
-    format!(
-      "{message}\nnothing was changed; a copy taken before migrating is in {}",
-      backup.display()
-    )
-  };
+  Ok((from < LATEST).then_some(from))
+}
 
-  let open = |name: &str| -> Result<Option<Connection>, String> {
-    let path = data_dir.join(name);
-    if !path.exists() {
-      return Ok(None);
-    }
-    Connection::open(&path).map(Some).map_err(|error| failed(format!("open {name}: {error}")))
-  };
-  let (mut management, mut wish) = (open(DATABASES[0])?, open(DATABASES[1])?);
-  let management = begin(&mut management).map_err(|error| failed(error.to_string()))?;
-  let wish = begin(&mut wish).map_err(|error| failed(error.to_string()))?;
-  let before = config.clone();
-  {
-    let mut data =
-      Data { config: &mut config, management: management.as_deref(), wish: wish.as_deref() };
-    for (offset, step) in pending.iter().enumerate() {
-      (step.apply)(&mut data)
-        .map_err(|error| failed(format!("step {}: {error}", from as usize + offset + 1)))?;
-    }
+/// Runs the steps after `from` against `config` and one transaction per database, and commits the
+/// databases once every step succeeded.
+fn apply_steps(
+  from: u32,
+  config: &mut Value,
+  management: Option<&mut Connection>,
+  wish: Option<&mut Connection>,
+  backup: &Path,
+) -> Result<(), String> {
+  let failed = |error: rusqlite::Error| unchanged(error.to_string(), backup);
+  let management = management.map(Connection::transaction).transpose().map_err(failed)?;
+  let wish = wish.map(Connection::transaction).transpose().map_err(failed)?;
+  let mut data = Data { config, management: management.as_deref(), wish: wish.as_deref() };
+  for (index, step) in STEPS.iter().enumerate().skip(from as usize) {
+    (step.apply)(&mut data)
+      .map_err(|error| unchanged(format!("step {}: {error}", index + 1), backup))?;
   }
-  for (name, transaction) in [(DATABASES[1], wish), (DATABASES[0], management)] {
+  for (name, transaction) in [(WISH, wish), (MANAGEMENT, management)] {
     if let Some(transaction) = transaction {
       transaction.commit().map_err(|error| {
         format!("commit {name}: {error}\nrestore the data directory from {}", backup.display())
       })?;
     }
   }
-  if config != before {
-    let text = serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?;
+  Ok(())
+}
+
+/// Finishes a migration whose databases are committed: replaces the configuration file when the
+/// steps changed it, then records the new version.
+fn commit(config_path: &Path, config: Option<&Value>, data_dir: &Path) -> Result<(), String> {
+  if let Some(config) = config {
+    let text = serde_json::to_vec_pretty(config).map_err(|error| error.to_string())?;
     replace_file(config_path, &text).map_err(|error| {
       format!("write {}: {error}; the databases are migrated already", config_path.display())
     })?;
   }
-  write_version(&data_dir, LATEST)?;
-  eprintln!("migrated; the copy taken before is in {}", backup.display());
-  Ok(())
+  write_version(data_dir, LATEST)
 }
 
-fn begin(
-  connection: &mut Option<Connection>,
-) -> rusqlite::Result<Option<rusqlite::Transaction<'_>>> {
-  connection.as_mut().map(Connection::transaction).transpose()
+/// Why a migration stopped before writing anything.
+fn unchanged(message: String, backup: &Path) -> String {
+  format!(
+    "{message}\nnothing was changed; a copy taken before migrating is in {}",
+    backup.display()
+  )
 }
 
 fn read_version(data_dir: &Path) -> Result<Option<u32>, String> {
@@ -161,7 +197,7 @@ fn back_up(config_path: &Path, data_dir: &Path, from: u32) -> Result<PathBuf, St
     data_dir.join("backups").join(format!("before-migration-{from}-to-{LATEST}-{time}"));
   std::fs::create_dir_all(&directory)
     .map_err(|error| format!("create {}: {error}", directory.display()))?;
-  for name in DATABASES {
+  for name in [MANAGEMENT, WISH] {
     let source = data_dir.join(name);
     if !source.exists() {
       continue;

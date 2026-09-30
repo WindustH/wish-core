@@ -5,8 +5,8 @@
 //!   `read_scalar_text` so a gateway writing a string does not lose the timestamp.
 //! - `context_length` is read as `context_window` where a gateway adds it; the standard entry has
 //!   none, and a model listed without a size is still a model.
-//! - `last_id` becomes `next_cursor` when `has_more` is true, and `page_query` sends it back as
-//!   `after`.
+//! - `last_id` becomes `next_cursor` when `has_more` is true, and `build_page_query` sends it
+//!   back as `after`.
 //!
 //! Constraints:
 //! - The body is only a list when `data` is an array, and an entry without an id is dropped: a model
@@ -25,56 +25,40 @@
 use serde_json::Value;
 
 use crate::Error;
-use crate::protocol::model_list::{Model, ModelCatalog, ModelListProtocol};
-use crate::protocol::read_scalar_text;
+use crate::protocol::json_read::read_scalar_text;
+use crate::protocol::model_list::{
+  Model, ModelListPage, ModelListProtocol, read_entries, read_forward_cursor,
+};
 
 /// Reads the list body.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Malformed`] when `data` is missing or is not an array.
-pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
-  let data = body
-    .get("data")
-    .and_then(Value::as_array)
-    .ok_or_else(|| Error::Malformed("openai model list missing `data` array".to_owned()))?;
-  let mut models = Vec::new();
-  let mut warnings = Vec::new();
+pub fn parse(body: &Value) -> Result<ModelListPage, Error> {
+  let (entries, mut warnings) = read_entries(body, "data", "id", "openai")?;
   let mut capabilities = false;
-  for entry in data {
-    let Some(id) = entry.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) else {
-      warnings.push("an entry without an `id` was dropped".to_owned());
-      continue;
-    };
+  let mut models = Vec::new();
+  for (id, entry) in entries {
     for flag in ["supports_image_in", "supports_video_in", "supports_reasoning"] {
       capabilities |= entry.get(flag).is_some();
     }
     models.push(Model {
-      id: id.to_owned(),
-      name: None,
       owner: entry.get("owned_by").and_then(Value::as_str).map(str::to_owned),
       created_at: entry.get("created").and_then(read_scalar_text),
       context_window: entry.get("context_length").and_then(Value::as_u64),
-      max_output_tokens: None,
+      ..Model::new(id)
     });
   }
   if capabilities {
     warnings.push("capability flags (`supports_image_in`, ...) are not represented".to_owned());
   }
-  Ok(ModelCatalog {
+  Ok(ModelListPage {
     protocol: ModelListProtocol::OpenAiModels,
     models,
-    next_cursor: parse_next_cursor(body),
+    next_cursor: read_forward_cursor(body),
     warnings,
   })
-}
-
-/// The next page, when the envelope claims one: an id on its own does not.
-fn parse_next_cursor(body: &Value) -> Option<String> {
-  match body.get("has_more").and_then(Value::as_bool) {
-    Some(true) => body.get("last_id").and_then(Value::as_str).map(str::to_owned),
-    _ => None,
-  }
 }
 
 /// The query of a page: `after`, once a cursor exists to continue from.

@@ -18,9 +18,11 @@
 //!   become `ToolUse.arguments`.
 //! - Neither cache counter and no reasoning-token count has a spelling here, so they stay `None`.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::protocol::error::Error;
+use crate::protocol::model_use::mistral_chunks::{join_text_chunks, join_thinking_chunks};
+use crate::protocol::model_use::tool::parse_tool_arguments;
 use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
 
 pub fn decode(body: &Value) -> Result<Response, Error> {
@@ -40,7 +42,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
       _ => {}
     }
   }
-  Ok(Response { messages, stop_reason, usage: parse_usage(body), account_state: None })
+  Ok(Response { messages, stop_reason, usage: decode_usage(body), account_state: None })
 }
 
 /// One `message.output` entry: a thought becomes its own message ahead of the text, the order every
@@ -63,14 +65,11 @@ fn decode_message_output(entry: &Value, messages: &mut Vec<Message>) -> Result<(
       ));
     }
   };
-  if let Some(reasoning) = decode_reasoning(chunks)? {
-    messages.push(reasoning);
+  let plaintext = join_thinking_chunks(chunks)?;
+  if !plaintext.is_empty() {
+    messages.push(Message::reasoning_text(plaintext));
   }
-  let text: String = chunks
-    .iter()
-    .filter(|chunk| get_chunk_type(chunk) == Some("text"))
-    .filter_map(|chunk| chunk.get("text").and_then(Value::as_str))
-    .collect();
+  let text = join_text_chunks(chunks);
   if !text.is_empty() {
     messages.push(Message::Assistant {
       metadata: Default::default(),
@@ -78,34 +77,6 @@ fn decode_message_output(entry: &Value, messages: &mut Vec<Message>) -> Result<(
     });
   }
   Ok(())
-}
-
-/// The `thinking` chunks of a content list as one reasoning message.
-fn decode_reasoning(chunks: &[Value]) -> Result<Option<Message>, Error> {
-  let mut plaintext = String::new();
-  for chunk in chunks.iter().filter(|chunk| is_thinking(chunk)) {
-    let parts = chunk
-      .get("thinking")
-      .and_then(Value::as_array)
-      .ok_or_else(|| Error::Malformed("`thinking` chunk carries no `thinking` list".to_owned()))?;
-    for part in parts {
-      if let Some(text) = part.get("text").and_then(Value::as_str) {
-        plaintext.push_str(text);
-      }
-    }
-  }
-  if plaintext.is_empty() {
-    return Ok(None);
-  }
-  Ok(Some(Message::Reasoning {
-    metadata: Default::default(),
-    replay_item: None,
-    opaque_kind: None,
-    plaintext: plaintext.clone(),
-    display: plaintext,
-    signature: String::new(),
-    ciphertext: String::new(),
-  }))
 }
 
 fn decode_function_call(entry: &Value) -> Result<Message, Error> {
@@ -119,9 +90,9 @@ fn decode_function_call(entry: &Value) -> Result<Message, Error> {
     .ok_or_else(|| Error::Malformed("function.call entry is missing `name`".to_owned()))?;
   let arguments = match entry.get("arguments") {
     Some(Value::Object(arguments)) => Value::Object(arguments.clone()),
-    Some(Value::String(raw)) if !raw.trim().is_empty() => serde_json::from_str(raw)
+    Some(Value::String(raw)) => parse_tool_arguments(raw)
       .map_err(|_| Error::Malformed("function.call arguments are not valid JSON".to_owned()))?,
-    _ => json!({}),
+    _ => Value::Object(Default::default()),
   };
   Ok(Message::ToolUse {
     metadata: Default::default(),
@@ -131,18 +102,9 @@ fn decode_function_call(entry: &Value) -> Result<Message, Error> {
   })
 }
 
-/// The `type` of one content chunk.
-pub(crate) fn get_chunk_type(chunk: &Value) -> Option<&str> {
-  chunk.get("type").and_then(Value::as_str)
-}
-
-/// Whether a content chunk is a thought: the vendor's schema spells the type `thinking`, its prose
-/// spells it `think`, so both are read.
-pub(crate) fn is_thinking(chunk: &Value) -> bool {
-  matches!(get_chunk_type(chunk), Some("thinking" | "think"))
-}
-
-pub(crate) fn parse_usage(body: &Value) -> Usage {
+/// Maps the top-level `usage` object; shared with the stream decoder, whose terminal event carries
+/// the same object.
+pub(crate) fn decode_usage(body: &Value) -> Usage {
   let usage = body.get("usage");
   let field = |name: &str| usage.and_then(|usage| usage.get(name)).and_then(Value::as_u64);
   Usage {

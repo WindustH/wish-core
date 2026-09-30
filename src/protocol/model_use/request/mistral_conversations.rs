@@ -41,6 +41,10 @@
 use serde_json::{Map, Value, json};
 
 use crate::protocol::error::Error;
+use crate::protocol::model_use::message::image_data_url;
+use crate::protocol::model_use::mistral_chunks::render_thinking_chunk;
+use crate::protocol::model_use::request::split_leading_instructions;
+use crate::protocol::model_use::tool::tool_result_text;
 use crate::protocol::{ContentBlock, Message, ReasoningConfig, Request, Tool, ToolChoice};
 
 /// Headers every call carries, besides auth and `content-type`.
@@ -56,7 +60,11 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   if request.stream {
     body.insert("stream".into(), json!(true));
   }
-  if let Some(instructions) = render_instructions(&request.conversation)? {
+  let (instructions, rest) = split_leading_instructions(
+    &request.conversation,
+    "a system or developer message can only carry text blocks on the conversations wire",
+  )?;
+  if let Some(instructions) = render_instructions(&instructions) {
     body.insert("instructions".into(), json!(instructions));
   }
   if !request.tools.is_empty() {
@@ -74,47 +82,29 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   if !completion.is_empty() {
     body.insert("completion_args".into(), Value::Object(completion));
   }
-  body.insert("inputs".into(), Value::Array(render_inputs(&request.conversation)?));
+  body.insert("inputs".into(), Value::Array(render_inputs(rest)?));
   Ok(Value::Object(body))
 }
 
-/// The wire's one place for standing instructions: the leading run of `System` and `Developer`
-/// messages, joined into one string.
-fn render_instructions(conversation: &[Message]) -> Result<Option<String>, Error> {
+/// The wire's one place for standing instructions: the text of the leading run of `System` and
+/// `Developer` messages, joined into one string with a newline between text blocks, or nothing when
+/// the run has no text.
+fn render_instructions(run: &[Vec<&str>]) -> Option<String> {
   let mut text = String::new();
-  for message in conversation {
-    let content = match message {
-      Message::System { content, .. } | Message::Developer { content, .. } => content,
-      _ => break,
-    };
-    for block in content {
-      let ContentBlock::Text { text: block_text } = block else {
-        return Err(Error::Build(
-          "a system or developer message can only carry text blocks on the conversations wire"
-            .to_owned(),
-        ));
-      };
-      if !text.is_empty() {
-        text.push('\n');
-      }
-      text.push_str(block_text);
+  for block_text in run.iter().flatten() {
+    if !text.is_empty() {
+      text.push('\n');
     }
+    text.push_str(block_text);
   }
-  Ok((!text.is_empty()).then_some(text))
-}
-
-fn count_leading_instructions(conversation: &[Message]) -> usize {
-  conversation
-    .iter()
-    .take_while(|message| matches!(message, Message::System { .. } | Message::Developer { .. }))
-    .count()
+  (!text.is_empty()).then_some(text)
 }
 
 /// The history after the leading instructions as entries, in conversation order.
 fn render_inputs(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   let mut entries: Vec<Value> = Vec::new();
   let mut pending_reasoning: Option<String> = None;
-  for message in &conversation[count_leading_instructions(conversation)..] {
+  for message in conversation {
     match message {
       Message::UpstreamCompaction { .. } => {
         return Err(Error::Build(
@@ -146,15 +136,11 @@ fn render_inputs(conversation: &[Message]) -> Result<Vec<Value>, Error> {
       }
       Message::ToolResult { call_id, content, .. } => {
         pending_reasoning = None;
-        let result = match content {
-          Value::String(text) => text.clone(),
-          other => other.to_string(),
-        };
         entries.push(json!({
           "object": "entry",
           "type": "function.result",
           "tool_call_id": call_id,
-          "result": result,
+          "result": tool_result_text(content),
         }));
       }
     }
@@ -188,7 +174,7 @@ fn render_message_input(
         }
         chunks.push(json!({
           "type": "image_url",
-          "image_url": { "url": format!("data:{mime_type};base64,{data_base64}") },
+          "image_url": { "url": image_data_url(mime_type, data_base64) },
         }));
       }
     }
@@ -203,15 +189,6 @@ fn render_message_input(
     Value::Array(chunks)
   };
   Ok(json!({ "object": "entry", "type": "message.input", "role": role, "content": content }))
-}
-
-/// The chunk a replayed thought travels in on this wire.
-fn render_thinking_chunk(reasoning: &str) -> Value {
-  json!({
-    "type": "thinking",
-    "closed": true,
-    "thinking": [{ "type": "text", "text": reasoning }],
-  })
 }
 
 fn render_tool(tool: &Tool) -> Value {

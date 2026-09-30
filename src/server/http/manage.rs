@@ -1,159 +1,119 @@
+//! Managing a session: editing it (`PATCH`), deleting and forking it, clearing its context, and
+//! editing its queue.
 use crate::server::{
   app::App,
+  compaction_item,
   error::{ApiError, blocking},
-  session::CreateSession,
+  session::{CreateSession, SessionSlot, ToolChanges, selection::PendingSelection},
 };
-use crate::{protocol::Message, session::EntryId};
+use crate::session::{EntryId, Session, SessionConfig, SessionError};
 use axum::{
   Json,
   extract::{Path, State},
-  http::{HeaderMap, StatusCode},
+  http::{HeaderMap, HeaderValue, StatusCode, header::IF_MATCH},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
+use tokio::sync::OwnedMutexGuard;
 
-pub async fn configuration(State(app): State<Arc<App>>) -> Json<Value> {
-  Json(app.configuration.lock().await.describe())
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SaveConfig {
-  revision: String,
-  config: Value,
-}
-pub async fn save_configuration(
-  State(app): State<Arc<App>>,
-  Json(input): Json<SaveConfig>,
-) -> Result<Json<Value>, ApiError> {
-  app.require_open()?;
-  Ok(Json(app.save_configuration(input.revision, input.config).await?))
-}
+/// Body: any of `name`, `provider` (with `config`), `config` and `metadata`, with `If-Match` naming
+/// the revision the change was made against. A rename alone never waits for an operation; while
+/// one runs, only the model selection may change, and it applies at the operation's next boundary.
 pub async fn update_session(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   headers: HeaderMap,
   Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-  app.require_open()?;
+  app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
-  let _edit = slot.selection_edit.clone().lock_owned().await;
+  let _update = slot.update_lock.clone().lock_owned().await;
+  let if_match = headers.get(IF_MATCH).cloned();
   // Names belong to the descriptor, not the executing session. Do not wait
   // for the execution mutex or disturb a pending model selection.
   if input.as_object().is_some_and(|object| object.len() == 1 && object.contains_key("name")) {
-    let name = input["name"]
-      .as_str()
-      .ok_or_else(|| ApiError::bad_request("name must be a string"))?
-      .to_owned();
-    return blocking(move || {
-      slot.require_live()?;
-      let mut descriptor = slot.descriptor.write().unwrap();
-      if let Some(revision) = headers.get("if-match") {
-        if revision.to_str().ok() != Some(descriptor.revision.to_string().as_str()) {
-          return Err(ApiError::conflict("session changed; reload before saving"));
-        }
-      }
-      let mut next = descriptor.clone();
+    return rename(slot, if_match, &input).await;
+  }
+  match slot.lock_idle().await {
+    None => stage_selection(app, slot, if_match, input).await,
+    Some(session) => update_idle(app, slot, session, if_match, input).await,
+  }
+}
+async fn rename(
+  slot: Arc<SessionSlot>,
+  if_match: Option<HeaderValue>,
+  input: &Value,
+) -> Result<Json<Value>, ApiError> {
+  let name = input["name"]
+    .as_str()
+    .ok_or_else(|| ApiError::bad_request("name must be a string"))?
+    .to_owned();
+  blocking(move || {
+    slot.require_live()?;
+    slot.edit_descriptor(if_match.as_ref(), |next| {
       next.name = name;
-      next.revision += 1;
-      next.updated_at = crate::session::statistics::Timestamp::now().0;
-      let status = slot.status.lock().unwrap().clone();
-      slot.index.save(&json!({"session":next,"status":status}))?;
-      *descriptor = next;
-      drop(descriptor);
-      slot.persist_index()?;
-      Ok(Json(slot.describe()))
-    })
-    .await;
+      Ok(())
+    })?;
+    Ok(Json(slot.describe()))
+  })
+  .await
+}
+async fn stage_selection(
+  app: Arc<App>,
+  slot: Arc<SessionSlot>,
+  if_match: Option<HeaderValue>,
+  input: Value,
+) -> Result<Json<Value>, ApiError> {
+  let object = input.as_object().ok_or_else(|| ApiError::bad_request("expected an object"))?;
+  if object.keys().any(|key| !["provider", "config"].contains(&key.as_str())) {
+    return Err(ApiError::conflict("only model and reasoning settings can change while running"));
   }
-  let session = slot.lock_idle().await;
-  if session.is_none() {
-    let object = input.as_object().ok_or_else(|| ApiError::bad_request("expected an object"))?;
-    if object.keys().any(|key| !["provider", "config"].contains(&key.as_str())) {
-      return Err(ApiError::conflict("only model and reasoning settings can change while running"));
-    }
-    let config: crate::session::SessionConfig = serde_json::from_value(
-      input.get("config").cloned().ok_or_else(|| ApiError::bad_request("config required"))?,
-    )
-    .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let config = slot.configure_tools(config)?;
-    return blocking(move || {
-      slot.require_live()?;
-      let mut descriptor = slot.descriptor.write().unwrap();
-      if let Some(revision) = headers.get("if-match") {
-        if revision.to_str().ok() != Some(descriptor.revision.to_string().as_str()) {
-          return Err(ApiError::conflict("session changed; reload before saving"));
-        }
-      }
-      let mut current = descriptor
-        .pending_selection
-        .as_ref()
-        .map(|p| json!(p.config))
-        .unwrap_or_else(|| slot.status.lock().unwrap()["config"].clone());
-      let mut desired = json!(config);
-      for key in ["model", "reasoning", "max_output_tokens"] {
-        current.as_object_mut().unwrap().remove(key);
-        desired.as_object_mut().unwrap().remove(key);
-      }
-      if current != desired {
-        return Err(ApiError::conflict(
-          "only model, reasoning and output limit can change while running",
-        ));
-      }
-      let provider = input
-        .get("provider")
-        .map(|v| v.as_str().ok_or_else(|| ApiError::bad_request("provider must be a string")))
-        .transpose()?
-        .unwrap_or_else(|| {
-          descriptor
-            .pending_selection
-            .as_ref()
-            .map(|p| p.provider.as_str())
-            .unwrap_or(&descriptor.provider)
-        })
-        .to_owned();
-      app.get_provider(&provider)?;
-      let mut next = descriptor.clone();
-      next.pending_selection =
-        Some(crate::server::session::selection::PendingSelection { provider, config });
-      next.revision += 1;
-      next.updated_at = crate::session::statistics::Timestamp::now().0;
-      let status = slot.status.lock().unwrap().clone();
-      slot.index.save(&json!({"session":next,"status":status}))?;
-      *descriptor = next;
-      drop(descriptor);
-      slot.persist_index()?;
-      Ok(Json(slot.describe()))
-    })
-    .await;
-  }
-  let mut session = session.unwrap();
+  let config: SessionConfig = serde_json::from_value(
+    input.get("config").cloned().ok_or_else(|| ApiError::bad_request("config required"))?,
+  )
+  .map_err(|e| ApiError::bad_request(e.to_string()))?;
+  let config = slot.configure_tools(config)?;
+  blocking(move || {
+    slot.require_live()?;
+    slot.stage_selection(&app, if_match.as_ref(), input.get("provider"), config)?;
+    Ok(Json(slot.describe()))
+  })
+  .await
+}
+/// What a config change does to the descriptor's provider.
+enum Selection {
+  /// Staged, for an encrypted item to be translated at the next run boundary.
+  Staged(PendingSelection),
+  /// Made now.
+  Made(String),
+}
+async fn update_idle(
+  app: Arc<App>,
+  slot: Arc<SessionSlot>,
+  mut session: OwnedMutexGuard<Session>,
+  if_match: Option<HeaderValue>,
+  input: Value,
+) -> Result<Json<Value>, ApiError> {
   slot.require_live()?;
   let object = input.as_object().ok_or_else(|| ApiError::bad_request("expected an object"))?;
-  for key in object.keys() {
-    if !["name", "provider", "config", "metadata"].contains(&key.as_str()) {
-      return Err(ApiError::bad_request(format!("unknown field: {key}")));
-    }
+  if let Some(key) =
+    object.keys().find(|key| !["name", "provider", "config", "metadata"].contains(&key.as_str()))
+  {
+    return Err(ApiError::bad_request(format!("unknown field: {key}")));
   }
+  slot.check_revision(if_match.as_ref())?;
+  let name = input
+    .get("name")
+    .map(|name| name.as_str().ok_or_else(|| ApiError::bad_request("name must be a string")))
+    .transpose()?
+    .map(str::to_owned);
   let descriptor = slot.get_descriptor();
-  if let Some(revision) = headers.get("if-match") {
-    if revision.to_str().ok() != Some(descriptor.revision.to_string().as_str()) {
-      return Err(ApiError::conflict("session changed; reload before saving"));
-    }
-  }
-  let mut next = descriptor;
-  if let Some(name) = input.get("name") {
-    next.name =
-      name.as_str().ok_or_else(|| ApiError::bad_request("name must be a string"))?.to_owned();
-  }
-  let mut desired_provider = next.pending_selection.as_ref()
-    .map(|selection| selection.provider.clone()).unwrap_or_else(|| next.provider.clone());
-  if let Some(provider) = input.get("provider") {
-    desired_provider = provider
-      .as_str()
-      .ok_or_else(|| ApiError::bad_request("provider must be a string"))?
-      .to_owned();
-    app.get_provider(&desired_provider)?;
+  let mut provider = descriptor.pending_selection.map_or(descriptor.provider, |p| p.provider);
+  if let Some(value) = input.get("provider") {
+    provider =
+      value.as_str().ok_or_else(|| ApiError::bad_request("provider must be a string"))?.to_owned();
+    app.get_provider(&provider)?;
     if input.get("config").is_none() {
       return Err(ApiError::bad_request("provider changes require config"));
     }
@@ -162,36 +122,40 @@ pub async fn update_session(
     .get("config")
     .map(|v| serde_json::from_value(v.clone()).map_err(|e| ApiError::bad_request(e.to_string())))
     .transpose()?;
-  let config = config.map(|v| slot.configure_tools(v)).transpose()?;
+  let config = config.map(|config| slot.configure_tools(config)).transpose()?;
+  let metadata = input.get("metadata").cloned();
   blocking(move || {
+    let mut selection = None;
     if let Some(config) = config {
-      app.get_provider(&desired_provider)?;
+      app.get_provider(&provider)?;
       // An encrypted item the next provider cannot read, and that has no handoff yet, is
       // translated at the next run boundary, while the current provider can still read it.
-      let needs_handoff = session.build_request()?.conversation.iter().any(|message| {
-        matches!(message, Message::UpstreamCompaction { .. })
-          && !crate::server::compaction_item::can_read(message, &desired_provider)
-          && !matches!(crate::server::compaction_item::get_handoff(message), Some((_, true)))
-      });
-      if needs_handoff {
-        next.pending_selection = Some(crate::server::session::selection::PendingSelection {
-          provider: desired_provider,
-          config,
-        });
+      let conversation = session.build_request()?.conversation;
+      if conversation.iter().any(|message| compaction_item::needs_handoff(message, &provider)) {
+        selection = Some(Selection::Staged(PendingSelection { provider, config }));
       } else {
-        next.provider = desired_provider;
-        next.pending_selection = None;
         session.set_config(config)?;
+        selection = Some(Selection::Made(provider));
       }
     }
-    if let Some(metadata) = input.get("metadata") {
-      session.set_metadata(metadata.clone())?;
+    if let Some(metadata) = metadata {
+      session.set_metadata(metadata)?;
     }
-    next.revision += 1;
-    next.updated_at = crate::session::statistics::Timestamp::now().0;
-    *slot.descriptor.write().unwrap() = next;
-    slot.update_snapshot(&session);
-    slot.persist_index()?;
+    slot.refresh_status(&session);
+    slot.edit_descriptor(None, |next| {
+      if let Some(name) = name {
+        next.name = name;
+      }
+      match selection {
+        Some(Selection::Staged(pending)) => next.pending_selection = Some(pending),
+        Some(Selection::Made(provider)) => {
+          next.provider = provider;
+          next.pending_selection = None;
+        }
+        None => {}
+      }
+      Ok(())
+    })?;
     Ok(Json(slot.describe()))
   })
   .await
@@ -200,7 +164,7 @@ pub async fn delete_session(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-  app.require_open()?;
+  app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
   let mut session = slot
     .lock_idle()
@@ -211,19 +175,17 @@ pub async fn delete_session(
     shell.shutdown().await.map_err(ApiError::internal)?;
   }
   app.mcp.close_session(&id);
-  let index = app.index.clone();
-  let target = id.clone();
-  let owned = slot.clone();
+  let (management, target, deleted) = (app.management.clone(), id.clone(), slot.clone());
   blocking(move || {
     session.delete()?;
-    owned.deleted.store(true, Ordering::Release);
-    index.delete(&target)?;
+    deleted.mark_deleted();
+    management.delete(&target)?;
     Ok(())
   })
   .await?;
   app.sessions.lock().await.remove(&id);
-  for directory in ["shell", "blobs"] {
-    match tokio::fs::remove_dir_all(app.data_dir.join(directory).join(&id)).await {
+  for directory in [app.data_dir.shell(&id), app.data_dir.blobs(&id)] {
+    match tokio::fs::remove_dir_all(directory).await {
       Ok(()) => {}
       Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
       Err(e) => return Err(ApiError::internal(e)),
@@ -231,6 +193,11 @@ pub async fn delete_session(
   }
   let _ = slot.events.send(json!({"type":"deleted"}));
   let _ = app.events.send(json!({"type":"session_deleted","id":id}));
+  // The session is gone either way; this only hands its room back to the file system.
+  let storage = app.storage.clone();
+  if let Err(error) = blocking(move || storage.shrink().map_err(ApiError::internal)).await {
+    eprintln!("shrink storage after deleting {id}: {}", error.message);
+  }
   Ok(StatusCode::NO_CONTENT)
 }
 pub async fn cancel_input(
@@ -240,8 +207,8 @@ pub async fn cancel_input(
   let slot = app.get_session(&id).await?;
   blocking(move || {
     slot.require_live()?;
-    slot.handle.cancel_queued_input(EntryId(entry)).map_err(|error| match error {
-      crate::session::SessionError::InvalidEntry(_) => {
+    slot.sender.cancel_queued_input(EntryId(entry)).map_err(|error| match error {
+      SessionError::InvalidEntry(_) => {
         ApiError::conflict("input has already been consumed or cancelled")
       }
       error => error.into(),
@@ -251,105 +218,6 @@ pub async fn cancel_input(
   })
   .await
 }
-
-pub async fn clear_context(
-  State(app): State<Arc<App>>,
-  Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-  let slot = app.get_session(&id).await?;
-  let mut session =
-    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
-  blocking(move || {
-    slot.require_live()?;
-    let generation = session.get_active_generation()?;
-    let entries = session.get_generation_entries(generation.id)?;
-    let mut prefix = Vec::new();
-    let mut position = 0;
-    while let Some(id) = entries.get(position)? {
-      let entry = session.get_entry(*id)?.ok_or_else(ApiError::not_found)?;
-      if !entry.message.is_fixed_instruction() {
-        break;
-      }
-      prefix.push(*id);
-      position += 1;
-    }
-    session.prepare_standby_generation(prefix)?;
-    session.activate_standby_generation()?;
-    slot.update_snapshot(&session);
-    slot.persist_index()?;
-    Ok(Json(slot.describe()))
-  })
-  .await
-}
-pub async fn fork(
-  State(app): State<Arc<App>>,
-  Path(id): Path<String>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-  let slot = app.get_session(&id).await?;
-  let session =
-    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
-  let descriptor = slot.get_descriptor();
-  let mut config = session.get_config().clone();
-  config.tools.clear();
-  let request = session.build_request()?;
-  // Summaries and compaction items stay context in the copy, as they are here.
-  let active = session.get_active_generation()?;
-  let list = session.get_generation_entries(active.id)?;
-  let mut initial_origins = Vec::new();
-  for id in list.read_page(0, list.len()? as usize)?.items.iter() {
-    let entry = session.get_entry(**id)?.ok_or(crate::session::SessionError::InvalidEntry(**id))?;
-    initial_origins.push(entry.origin);
-  }
-  let input = CreateSession {
-    name: format!("{} (copy)", descriptor.name),
-    provider: descriptor.provider,
-    cwd: descriptor.cwd,
-    tools: crate::server::config::ToolChanges {
-      shell: Some(descriptor.tools.shell),
-      ask_user: Some(descriptor.tools.ask_user),
-      mcp: Some(descriptor.tools.mcp),
-    },
-    config,
-    metadata: session.get_metadata().clone(),
-    initial_messages: request.conversation,
-    initial_origins,
-  };
-  drop(session);
-  Ok((StatusCode::CREATED, Json(app.create_session(input).await?.describe())))
-}
-pub async fn defaults(State(app): State<Arc<App>>) -> Json<Value> {
-  let config = app.configuration.lock().await;
-  Json(
-    json!({"defaults":config.config.defaults,"session_config":config.config.defaults.session_config()}),
-  )
-}
-pub async fn events(
-  State(app): State<Arc<App>>,
-) -> axum::response::Sse<
-  impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
-> {
-  let receiver = app.events.subscribe();
-  let stop = app.stop.clone();
-  let stream = futures_util::stream::unfold(
-    (receiver, stop, true),
-    |(mut receiver, stop, first)| async move {
-      let value = if first {
-        json!({"type":"snapshot"})
-      } else {
-        tokio::select! {
-          _=stop.cancelled()=>return None,
-          result=receiver.recv()=>match result{Ok(v)=>v,Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>json!({"type":"gap"}),Err(_)=>return None}
-        }
-      };
-      Some((
-        Ok(axum::response::sse::Event::default().event("wish").data(value.to_string())),
-        (receiver, stop, false),
-      ))
-    },
-  );
-  axum::response::Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MoveInput {
@@ -363,9 +231,9 @@ pub async fn move_input(
   let slot = app.get_session(&id).await?;
   blocking(move || {
     slot.require_live()?;
-    slot.handle.move_queued_input(EntryId(entry), input.before.map(EntryId)).map_err(|error| {
+    slot.sender.move_queued_input(EntryId(entry), input.before.map(EntryId)).map_err(|error| {
       match error {
-        crate::session::SessionError::InvalidEntry(_) => {
+        SessionError::InvalidEntry(_) => {
           ApiError::conflict("queued input has already been consumed or cancelled")
         }
         error => error.into(),
@@ -375,4 +243,67 @@ pub async fn move_input(
     Ok(StatusCode::NO_CONTENT)
   })
   .await
+}
+/// Starts a new context generation that keeps only the fixed instructions at its front.
+pub async fn clear_context(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+  let slot = app.get_session(&id).await?;
+  let mut session = slot.lock_idle_or_conflict().await?;
+  blocking(move || {
+    slot.require_live()?;
+    let generation = session.get_active_generation()?;
+    let entries = session.reader().get_generation_entry_ids(generation.id)?;
+    let mut prefix = Vec::new();
+    let mut position = 0;
+    while let Some(id) = entries.get(position)? {
+      let entry = session.reader().get_entry(*id)?.ok_or_else(ApiError::not_found)?;
+      if !entry.message.is_fixed_instruction() {
+        break;
+      }
+      prefix.push(*id);
+      position += 1;
+    }
+    session.prepare_standby_generation(prefix)?;
+    session.activate_standby_generation()?;
+    Ok(Json(slot.publish(&session)?))
+  })
+  .await
+}
+/// Creates a copy of the session with its current context, settings and tool switches.
+pub async fn fork(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+  let slot = app.get_session(&id).await?;
+  let session = slot.lock_idle_or_conflict().await?;
+  let descriptor = slot.get_descriptor();
+  let mut config = session.get_config().clone();
+  config.tools.clear();
+  let request = session.build_request()?;
+  // Summaries and compaction items stay context in the copy, as they are here.
+  let active = session.get_active_generation()?;
+  let mut initial_origins = Vec::new();
+  for id in session.reader().read_generation_entry_ids(active.id)? {
+    let entry = session.reader().get_entry(id)?.ok_or(SessionError::InvalidEntry(id))?;
+    initial_origins.push(entry.origin);
+  }
+  let input = CreateSession {
+    name: format!("{} (copy)", descriptor.name),
+    provider: descriptor.provider,
+    cwd: descriptor.cwd,
+    tools: ToolChanges {
+      shell: Some(descriptor.tools.shell),
+      ask_user: Some(descriptor.tools.ask_user),
+      mcp: Some(descriptor.tools.mcp),
+      web_search: Some(descriptor.tools.web_search),
+    },
+    config,
+    metadata: session.get_metadata().clone(),
+    initial_messages: request.conversation,
+    initial_origins,
+  };
+  drop(session);
+  Ok((StatusCode::CREATED, Json(app.create_session(input).await?.describe())))
 }

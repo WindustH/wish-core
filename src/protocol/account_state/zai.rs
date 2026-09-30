@@ -30,41 +30,32 @@
 use serde_json::{Value, json};
 
 use crate::protocol::account_state::{
-  AccountState, AccountStateProtocol, Failure, FailureKind, QuotaPart, QuotaWindow,
+  AccountState, AccountStateProtocol, Failure, QuotaPart, QuotaWindow, minutes_window,
 };
-use crate::protocol::read_scalar_text;
+use crate::protocol::json_read::read_scalar_text;
 
 /// Reads the monitor body.
 pub fn parse(body: &Value) -> AccountState {
   let data = body.get("data");
-  let mut warnings = Vec::new();
+  let mut state = AccountState::new(AccountStateProtocol::ZaiCodingPlanMonitor);
   let rejected = body.get("success").and_then(Value::as_bool) == Some(false)
     || body.get("code").and_then(Value::as_i64).is_some_and(|code| code != 200);
-  let failure = rejected.then(|| Failure {
-    kind: FailureKind::Unknown,
-    code: body.get("code").and_then(Value::as_i64).map(|code| code.to_string()),
-    message: body
-      .get("msg")
-      .and_then(Value::as_str)
-      .filter(|message| !message.is_empty())
-      .unwrap_or("the monitor service rejected the read")
-      .to_owned(),
+  state.failure = rejected.then(|| {
+    Failure::rejected(
+      body.get("code").and_then(Value::as_i64).map(|code| code.to_string()),
+      body.get("msg").and_then(Value::as_str),
+      "the monitor service rejected the read",
+    )
   });
-  let mut quotas = Vec::new();
   for limit in
     data.and_then(|data| data.get("limits")).and_then(Value::as_array).into_iter().flatten()
   {
-    quotas.push(read_limit(limit, &mut warnings));
+    let quota = read_limit(limit, &mut state.warnings);
+    state.quotas.push(quota);
   }
-  AccountState {
-    protocol: AccountStateProtocol::ZaiCodingPlanMonitor,
-    quotas,
-    balances: Vec::new(),
-    failure,
-    warnings,
-    availability: None,
-    plan_type: data.and_then(|data| data.get("level")).and_then(Value::as_str).map(str::to_owned),
-  }
+  state.plan_type =
+    data.and_then(|data| data.get("level")).and_then(Value::as_str).map(str::to_owned);
+  state
 }
 
 /// Reads one `limits` entry into the window it describes.
@@ -132,5 +123,5 @@ fn decode_window(unit: i64, number: i64) -> Option<(Value, String)> {
     5 => return Some((json!({ "duration": number, "unit": "months" }), format!("{number}mo"))),
     _ => return None,
   };
-  Some((json!({ "duration": per_unit * number, "unit": "minutes" }), format!("{number}{letter}")))
+  Some((minutes_window(per_unit * number), format!("{number}{letter}")))
 }

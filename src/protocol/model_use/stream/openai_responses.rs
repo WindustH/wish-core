@@ -5,18 +5,20 @@
 //!   and `reasoning` item, and `content_part.added` opens the text block of a `message` item (first
 //!   `output_text` part only; later parts of that item land in the same block). Indices are handed
 //!   out in announcement order, and blocks close on their own `output_item.done`.
-//! - Deltas attribute by `item_id`: `output_text.delta` streams text, `reasoning_text.delta` and
-//!   `response.reasoning_summary_text.delta` both stream the reasoning text the accumulator mirrors
-//!   into `display`, and `function_call_arguments.delta` streams argument JSON. A delta without an
-//!   `item_id` cannot be attributed at all and fails closed.
+//! - Deltas attribute by `item_id`: `output_text.delta` streams text, `reasoning_text.delta` the
+//!   replayable reasoning text, `reasoning_summary_text.delta` the summary meant only for display,
+//!   and `function_call_arguments.delta` argument JSON. A delta without an `item_id` cannot be
+//!   attributed at all and fails closed.
 //! - A delta that arrives before its item is announced is buffered (bounded) and flushed when the
 //!   announcement arrives; bytes still orphaned at the terminal fail closed instead of dropping
 //!   content silently.
 //! - The reasoning item's `encrypted_content` (captured at `added` or `done`, whichever carries it
 //!   first) is emitted once, as the block's ciphertext half.
 //! - The item a compacted history travels as (`compaction`) is not streamed in parts: it is handed
-//!   over whole at its `output_item.done`, as [`StreamEvent::UpstreamCompaction`], and takes the place its
-//!   index gives it among the blocks.
+//!   over whole at its `output_item.done`, as [`StreamEvent::UpstreamCompaction`], and takes the
+//!   place its index gives it among the blocks. (The buffered decoder skips such an item.)
+//! - An `output_item.done` whose item's own `status` is not `completed` closes its block without
+//!   confirming it complete, whatever the outer response goes on to say.
 //! - The terminal `response.completed` / `response.done` / `response.incomplete` /
 //!   `response.cancelled` closes every open block in index order, reports the terminal usage, and
 //!   stops, with the stop reason and usage mapped by the buffered decoder's own mappings (a
@@ -39,10 +41,11 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Value, json};
 
+use super::WireDecoder;
+use super::blocks::{BlockCounter, end_blocks_in_order};
 use crate::protocol::account_state::codex;
 use crate::protocol::error::Error;
 use crate::protocol::model_use::response::openai_responses as buffered;
-use crate::protocol::upstream_compaction::response::openai_responses as compaction;
 use crate::protocol::{BlockKind, StreamEvent};
 
 /// Bounded tolerance for deltas that arrive before their item is announced.
@@ -69,7 +72,7 @@ impl ItemShape {
 /// Decodes one Responses stream.
 #[derive(Default)]
 pub struct Decoder {
-  next_index: u32,
+  counter: BlockCounter,
   /// `item_id` -> (block index, shape).
   blocks: HashMap<String, (u32, ItemShape)>,
   open: Vec<u32>,
@@ -78,6 +81,8 @@ pub struct Decoder {
   orphan_bytes: usize,
   /// Reasoning blocks whose ciphertext half was already emitted.
   ciphertext_seen: HashSet<u32>,
+  /// Whether the record just fed closed an item whose own status is not `completed`.
+  closed_incomplete_item: bool,
   done: bool,
 }
 
@@ -91,46 +96,41 @@ impl Decoder {
   fn decode_rate_limits(&self, value: &Value, out: &mut Vec<StreamEvent>) {
     let Some(rate_limits) = value.get("rate_limits") else { return };
     let payload = json!({ "rate_limits": rate_limits, "plan_type": value.get("plan_type") });
-    if let Ok(snapshot) = codex::parse(&payload) {
+    if let Ok(snapshot) = codex::parse_rate_limit_payload(&payload) {
       out.push(StreamEvent::Account(snapshot));
     }
   }
 
-  /// Feeds one SSE record. The `event:` name is redundant with the payload's `type`.
-  pub fn feed(&mut self, _event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
-    if self.done {
-      return Err(Error::Malformed("event after the terminal response event".to_owned()));
-    }
-    let value: Value = serde_json::from_str(data)
-      .map_err(|error| Error::Malformed(format!("responses event is not JSON: {error}")))?;
+  /// One parsed event.
+  fn decode_event(&mut self, value: &Value) -> Result<Vec<StreamEvent>, Error> {
     let Some(event_type) = value.get("type").and_then(Value::as_str) else {
       return Ok(Vec::new());
     };
     let mut out = Vec::new();
     match event_type {
       "response.created" | "response.in_progress" | "response.queued" => {}
-      "response.rate_limits" | "codex.rate_limits" => self.decode_rate_limits(&value, &mut out),
+      "response.rate_limits" | "codex.rate_limits" => self.decode_rate_limits(value, &mut out),
       "response.usage" => {}
-      "response.output_item.added" => self.handle_item_added(&value, &mut out),
-      "response.content_part.added" => self.handle_part_added(&value, &mut out),
-      "response.output_text.delta" => self.handle_delta(&value, ItemShape::Text, &mut out)?,
+      "response.output_item.added" => self.handle_item_added(value, &mut out),
+      "response.content_part.added" => self.handle_part_added(value, &mut out),
+      "response.output_text.delta" => self.handle_delta(value, ItemShape::Text, &mut out)?,
       "response.reasoning_text.delta" => {
-        self.handle_delta(&value, ItemShape::Reasoning, &mut out)?
+        self.handle_delta(value, ItemShape::Reasoning, &mut out)?
       }
       "response.reasoning_summary_text.delta" => {
-        self.handle_delta(&value, ItemShape::ReasoningSummary, &mut out)?
+        self.handle_delta(value, ItemShape::ReasoningSummary, &mut out)?
       }
       "response.function_call_arguments.delta" => {
-        self.handle_delta(&value, ItemShape::ToolUse, &mut out)?
+        self.handle_delta(value, ItemShape::ToolUse, &mut out)?
       }
-      "response.output_item.done" => self.handle_item_done(&value, &mut out)?,
+      "response.output_item.done" => self.handle_item_done(value, &mut out)?,
       "response.completed" | "response.done" | "response.incomplete" | "response.cancelled" => {
-        return self.handle_terminal(&value);
+        return self.handle_terminal(value);
       }
       "response.failed" | "response.error" | "error" => {
-        let response = value.get("response").unwrap_or(&value);
+        let response = value.get("response").unwrap_or(value);
         self.done = true;
-        return Err(buffered::decode_upstream_error(response));
+        return Err(buffered::decode_in_band_error(response));
       }
       // Unknown and future event types are tolerated.
       _ => {}
@@ -150,11 +150,9 @@ impl Decoder {
     if item_id.is_empty() || self.blocks.contains_key(&item_id) {
       return;
     }
-    let index = self.next_index;
-    self.next_index += 1;
+    let index = self.counter.open(shape.get_kind(), out);
     self.blocks.insert(item_id.clone(), (index, shape));
     self.open.push(index);
-    out.push(StreamEvent::BlockStart { index, kind: shape.get_kind() });
     match shape {
       ItemShape::ToolUse => {
         // The item announces the call id and name; arguments follow as deltas.
@@ -189,11 +187,9 @@ impl Decoder {
     if self.blocks.contains_key(item_id) {
       return;
     }
-    let index = self.next_index;
-    self.next_index += 1;
+    let index = self.counter.open(BlockKind::Text, out);
     self.blocks.insert(item_id.to_owned(), (index, ItemShape::Text));
     self.open.push(index);
-    out.push(StreamEvent::BlockStart { index, kind: BlockKind::Text });
     self.flush_orphans(item_id, index, out);
   }
 
@@ -228,9 +224,8 @@ impl Decoder {
     // A compacted history arrives as one whole item rather than as blocks, so it takes an index of
     // its own among them and travels on as it came.
     if item.get("type").and_then(Value::as_str) == Some("compaction") {
-      let index = self.next_index;
-      self.next_index += 1;
-      let (id, encrypted_content) = compaction::decode_compaction_payload(item)?;
+      let index = self.counter.allocate();
+      let (id, encrypted_content) = buffered::decode_compaction_payload(item)?;
       out.push(StreamEvent::UpstreamCompaction { index, id, encrypted_content });
       return Ok(());
     }
@@ -258,16 +253,13 @@ impl Decoder {
       )));
     }
     self.done = true;
-    let mut out: Vec<StreamEvent> = {
-      let mut open = std::mem::take(&mut self.open);
-      open.sort_unstable();
-      open.into_iter().map(|index| StreamEvent::BlockEnd { index }).collect()
-    };
+    let mut out = Vec::new();
+    end_blocks_in_order(std::mem::take(&mut self.open), &mut out);
     if response.get("usage").is_some() {
-      out.push(StreamEvent::Usage(buffered::parse_usage(response)));
+      out.push(StreamEvent::Usage(buffered::decode_usage(response)));
     }
     let has_tool_uses = self.blocks.values().any(|(_, shape)| *shape == ItemShape::ToolUse);
-    out.push(StreamEvent::Stop(buffered::map_stop_reason(response, has_tool_uses)));
+    out.push(StreamEvent::Stop(buffered::decode_stop_reason(response, has_tool_uses)));
     Ok(out)
   }
 
@@ -310,5 +302,30 @@ impl Decoder {
         arguments: delta.to_owned(),
       }),
     }
+  }
+}
+
+impl WireDecoder for Decoder {
+  /// Feeds one SSE record. The `event:` name is redundant with the payload's `type`.
+  fn feed(&mut self, _event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
+    if self.done {
+      return Err(Error::Malformed("event after the terminal response event".to_owned()));
+    }
+    let value: Value = serde_json::from_str(data)
+      .map_err(|error| Error::Malformed(format!("responses event is not JSON: {error}")))?;
+    let events = self.decode_event(&value)?;
+    self.closed_incomplete_item =
+      events.iter().any(|event| matches!(event, StreamEvent::BlockEnd { .. }))
+        && value
+          .pointer("/item/status")
+          .and_then(Value::as_str)
+          .is_some_and(|status| status != "completed");
+    Ok(events)
+  }
+
+  /// An item can close with its own status still incomplete: its closing event must not complete
+  /// arguments or encrypted reasoning merely because the outer response is still open.
+  fn confirms_block_ends(&self) -> bool {
+    !self.closed_incomplete_item
   }
 }

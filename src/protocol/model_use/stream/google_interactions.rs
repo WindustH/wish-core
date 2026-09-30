@@ -13,8 +13,9 @@
 //!   that follow are the continuations.
 //! - `step.delta` streams: `text` (older traffic: `text_delta`) into the step's text block,
 //!   `thought_summary` (older traffic: `thought`) into its reasoning block, `thought_signature`
-//!   into that block's signature, `arguments_delta` (older traffic: `arguments` carrying
-//!   `partial_arguments`) into the step's tool block.
+//!   into that block's signature, and `arguments` carrying `partial_arguments` (older traffic:
+//!   `arguments_delta` carrying `arguments`) into the step's tool block. A delta whose kind
+//!   contradicts the block its step already opened is dropped.
 //! - A completed step arrives either in its own `step.stop` event (older traffic: `step.completed`)
 //!   or again in the terminal resource's `steps[]`; both fill what the deltas left out, and neither
 //!   closes a block: blocks close at the terminal.
@@ -38,7 +39,10 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use super::WireDecoder;
+use super::blocks::{BlockCounter, end_blocks_in_order};
 use crate::protocol::error::Error;
+use crate::protocol::http_error::decode_in_band;
 use crate::protocol::model_use::response::google_interactions as buffered;
 use crate::protocol::{BlockKind, StreamEvent};
 
@@ -59,7 +63,8 @@ struct StepBlock {
 /// Decodes one `interactions` stream.
 #[derive(Default)]
 pub struct Decoder {
-  next_index: u32,
+  counter: BlockCounter,
+  /// Step index -> the step's block.
   steps: HashMap<usize, StepBlock>,
   done: bool,
 }
@@ -69,55 +74,10 @@ impl Decoder {
     Self::default()
   }
 
-  /// Feeds one SSE record. The `[DONE]` marker is ignored; the `event:` line wins, and the
-  /// payload's `type` then `event_type` field follow, so all wire generations route.
-  pub fn feed(&mut self, event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
-    if data.trim() == "[DONE]" {
-      return Ok(Vec::new());
-    }
-    if self.done {
-      return Err(Error::Malformed("event after the terminal interaction event".to_owned()));
-    }
-    let value: Value = serde_json::from_str(data)
-      .map_err(|error| Error::Malformed(format!("interactions event is not JSON: {error}")))?;
-    let event_type = event
-      .or_else(|| value.get("type").and_then(Value::as_str))
-      .or_else(|| value.get("event_type").and_then(Value::as_str))
-      .unwrap_or("");
-    let mut out = Vec::new();
-    match event_type {
-      "interaction.started" | "interaction.created" | "interaction.in_progress" => {}
-      "step.start" => self.handle_step_start(&value, &mut out),
-      "step.delta" => self.handle_step_delta(&value, &mut out)?,
-      "step.stop" | "step.completed" => self.handle_step_stop(&value, &mut out),
-      "interaction.completed"
-      | "interaction.incomplete"
-      | "interaction.budget_exceeded"
-      | "interaction.requires_action"
-      | "interaction.cancelled" => return self.handle_terminal(&value),
-      "interaction.failed" => {
-        self.done = true;
-        let interaction = value.get("interaction").unwrap_or(&value);
-        return Err(buffered::decode_failed_error(interaction));
-      }
-      "error" => {
-        self.done = true;
-        return Err(decode_error_event(&value));
-      }
-      // Unknown and future event types are tolerated.
-      _ => {}
-    }
-    Ok(out)
-  }
-
   fn handle_step_start(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
-    let Some(step) = usize::try_from(value.get("index").and_then(Value::as_u64).unwrap_or(0))
-      .ok()
-      .and_then(|index| value.get("step").map(|step| (index, step)))
-    else {
+    let (Some(index), Some(step)) = (parse_step_index(value), value.get("step")) else {
       return;
     };
-    let (index, step) = step;
     match step.get("type").and_then(Value::as_str) {
       // A thought step opens with whatever summary its start carries; the deltas that follow are
       // the continuation, and the signature arrives with them.
@@ -179,21 +139,16 @@ impl Decoder {
   }
 
   fn handle_step_delta(&mut self, value: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
-    let Some(index) = usize::try_from(value.get("index").and_then(Value::as_u64).unwrap_or(0))
-      .ok()
-      .filter(|index| *index != usize::MAX)
-    else {
+    let Some(index) = parse_step_index(value).filter(|index| *index != usize::MAX) else {
       return Err(Error::Malformed("step.delta index is not a usable step number".to_owned()));
     };
     let delta = value.get("delta");
     match delta.and_then(|delta| delta.get("type")).and_then(Value::as_str) {
       // Current wire spells the model output delta `text`; older traffic spelled it `text_delta`.
       Some("text" | "text_delta") => {
-        // A delta that contradicts the step's opened block kind is malformed traffic; tolerate it.
-        if self.steps.get(&index).is_some_and(|step| step.kind != BlockKind::Text) {
+        if !self.open_matching(index, BlockKind::Text, out) {
           return Ok(());
         }
-        self.open(index, BlockKind::Text, true, out);
         let text =
           delta.and_then(|delta| delta.get("text")).and_then(Value::as_str).unwrap_or_default();
         if !text.is_empty()
@@ -205,24 +160,21 @@ impl Decoder {
       // Thinking text streams on the current wire (`thought_summary`, nested content), while older
       // traffic spelled the delta `thought` with a flat `text`.
       Some("thought_summary" | "thought") => {
-        if self.steps.get(&index).is_some_and(|step| step.kind != BlockKind::Reasoning) {
+        if !self.open_matching(index, BlockKind::Reasoning, out) {
           return Ok(());
         }
-        self.open(index, BlockKind::Reasoning, true, out);
         let text = decode_thought_delta_text(delta.expect("checked"));
         if !text.is_empty()
-          && let Some(step) = self.steps.get_mut(&index)
+          && let Some(step) = self.steps.get(&index)
         {
-          let block_index = step.index;
-          out.push(StreamEvent::ReasoningDelta { index: block_index, delta: text });
+          out.push(StreamEvent::ReasoningDelta { index: step.index, delta: text });
         }
       }
       // The signature rides its own final delta; a completed thought step does not carry it.
       Some("thought_signature") => {
-        if self.steps.get(&index).is_some_and(|step| step.kind != BlockKind::Reasoning) {
+        if !self.open_matching(index, BlockKind::Reasoning, out) {
           return Ok(());
         }
-        self.open(index, BlockKind::Reasoning, true, out);
         if let Some(step) = self.steps.get_mut(&index) {
           step.signature = delta
             .and_then(|delta| delta.get("signature"))
@@ -234,10 +186,9 @@ impl Decoder {
       // Current wire: `arguments` carrying `partial_arguments`; older traffic: `arguments_delta`
       // carrying `arguments`.
       Some("arguments" | "arguments_delta") => {
-        if self.steps.get(&index).is_some_and(|step| step.kind != BlockKind::ToolUse) {
+        if !self.open_matching(index, BlockKind::ToolUse, out) {
           return Ok(());
         }
-        self.open(index, BlockKind::ToolUse, true, out);
         let delta = delta.expect("checked");
         let name = delta
           .get("name")
@@ -260,8 +211,19 @@ impl Decoder {
     Ok(())
   }
 
+  /// One step's completed payload arriving in its own event. The event may carry only the index.
+  fn handle_step_stop(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
+    let Some(index) = parse_step_index(value) else { return };
+    let Some(step) = value.get("step") else { return };
+    if !self.steps.contains_key(&index) {
+      let Some(kind) = get_step_block_kind(step) else { return };
+      self.open(index, kind, false, out);
+    }
+    self.fill(index, step, out);
+  }
+
   /// The terminal interaction event: fill unstreamed steps, close every block, report, stop.
-  fn handle_terminal(&mut self, value: &Value) -> Result<Vec<StreamEvent>, Error> {
+  fn handle_terminal(&mut self, value: &Value) -> Vec<StreamEvent> {
     let interaction = value.get("interaction").unwrap_or(value);
     self.done = true;
     let mut out = Vec::new();
@@ -269,18 +231,31 @@ impl Decoder {
       for (index, step) in steps.iter().enumerate() {
         if !self.steps.contains_key(&index) {
           // A step that was never announced at all gets its block here.
-          match step.get("type").and_then(Value::as_str) {
-            Some("thought") => self.open(index, BlockKind::Reasoning, false, &mut out),
-            Some("function_call") => self.open(index, BlockKind::ToolUse, false, &mut out),
-            Some("model_output") => self.open(index, BlockKind::Text, false, &mut out),
-            _ => continue,
-          }
+          let Some(kind) = get_step_block_kind(step) else { continue };
+          self.open(index, kind, false, &mut out);
         }
         self.fill(index, step, &mut out);
       }
     }
-    // A completed thought item retains its original summary part boundaries and image parts for
-    // stateless replay. The display text streamed above remains independent from this payload.
+    out.extend(self.collect_replay_items());
+    out.extend(self.collect_proofs());
+    // Close in index order, then report and stop.
+    end_blocks_in_order(self.steps.values().map(|block| block.index).collect(), &mut out);
+    if interaction.get("usage").is_some() {
+      out.push(StreamEvent::Usage(buffered::decode_usage(interaction)));
+    }
+    let has_tool_uses = self.steps.values().any(|block| block.kind == BlockKind::ToolUse);
+    out.push(StreamEvent::Stop(buffered::map_stop_reason(
+      interaction.get("status").and_then(Value::as_str),
+      has_tool_uses,
+    )));
+    out
+  }
+
+  /// The completed thought items, in index order. Such an item retains its original summary part
+  /// boundaries and image parts for stateless replay, with the streamed signature on it; the
+  /// display text streamed before remains independent from this payload.
+  fn collect_replay_items(&self) -> Vec<StreamEvent> {
     let mut replay_items: Vec<(u32, Value)> = self
       .steps
       .values()
@@ -294,13 +269,15 @@ impl Decoder {
       })
       .collect();
     replay_items.sort_unstable_by_key(|(index, _)| *index);
-    out.extend(
-      replay_items
-        .into_iter()
-        .map(|(index, item)| StreamEvent::ReasoningReplayItem { index, item }),
-    );
-    // Every reasoning block reports its proof before it closes: the signature delta when one came,
-    // otherwise the signature the completed step carried.
+    replay_items
+      .into_iter()
+      .map(|(index, item)| StreamEvent::ReasoningReplayItem { index, item })
+      .collect()
+  }
+
+  /// Every reasoning block's proof, in index order, reported before the blocks close: the signature
+  /// delta when one came, otherwise the signature the completed step carried.
+  fn collect_proofs(&self) -> Vec<StreamEvent> {
     let mut proofs: Vec<(u32, String)> = self
       .steps
       .values()
@@ -318,24 +295,10 @@ impl Decoder {
       })
       .collect();
     proofs.sort_unstable_by_key(|(index, _)| *index);
-    out.extend(
-      proofs
-        .into_iter()
-        .map(|(index, signature)| StreamEvent::ReasoningSignatureDelta { index, signature }),
-    );
-    // Close in index order, then report and stop.
-    let mut indices: Vec<u32> = self.steps.values().map(|block| block.index).collect();
-    indices.sort_unstable();
-    out.extend(indices.into_iter().map(|index| StreamEvent::BlockEnd { index }));
-    if interaction.get("usage").is_some() {
-      out.push(StreamEvent::Usage(buffered::parse_usage(interaction)));
-    }
-    let has_tool_uses = self.steps.values().any(|block| block.kind == BlockKind::ToolUse);
-    out.push(StreamEvent::Stop(buffered::map_stop_reason(
-      interaction.get("status").and_then(Value::as_str),
-      has_tool_uses,
-    )));
-    Ok(out)
+    proofs
+      .into_iter()
+      .map(|(index, signature)| StreamEvent::ReasoningSignatureDelta { index, signature })
+      .collect()
   }
 
   /// Opens the step's block unless it exists. `streamed` marks a delta-driven open or update:
@@ -347,9 +310,7 @@ impl Decoder {
       }
       return;
     }
-    let block_index = self.next_index;
-    self.next_index += 1;
-    out.push(StreamEvent::BlockStart { index: block_index, kind });
+    let block_index = self.counter.open(kind, out);
     self.steps.insert(
       index,
       StepBlock {
@@ -361,6 +322,17 @@ impl Decoder {
         signature: None,
       },
     );
+  }
+
+  /// Opens (or updates) the step's block for a delta of `kind`, unless the step already has a block
+  /// of another kind: such a delta contradicts it, which is malformed traffic, tolerated by
+  /// dropping the delta. Says whether the delta may land.
+  fn open_matching(&mut self, index: usize, kind: BlockKind, out: &mut Vec<StreamEvent>) -> bool {
+    if self.steps.get(&index).is_some_and(|step| step.kind != kind) {
+      return false;
+    }
+    self.open(index, kind, true, out);
+    true
   }
 
   /// Fills what a completed step never streamed and remembers its payload: a step arriving in its
@@ -418,23 +390,67 @@ impl Decoder {
       }
     }
   }
+}
 
-  /// One step's completed payload arriving in its own event. The event may carry only the index.
-  fn handle_step_stop(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
-    let Some(index) = usize::try_from(value.get("index").and_then(Value::as_u64).unwrap_or(0)).ok()
-    else {
-      return;
-    };
-    let Some(step) = value.get("step") else { return };
-    if !self.steps.contains_key(&index) {
-      match step.get("type").and_then(Value::as_str) {
-        Some("thought") => self.open(index, BlockKind::Reasoning, false, out),
-        Some("function_call") => self.open(index, BlockKind::ToolUse, false, out),
-        Some("model_output") => self.open(index, BlockKind::Text, false, out),
-        _ => return,
-      }
+impl WireDecoder for Decoder {
+  /// Feeds one SSE record. The `[DONE]` marker is ignored; the `event:` line wins, and the
+  /// payload's `type` then `event_type` field follow, so all wire generations route.
+  fn feed(&mut self, event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
+    if data.trim() == "[DONE]" {
+      return Ok(Vec::new());
     }
-    self.fill(index, step, out);
+    if self.done {
+      return Err(Error::Malformed("event after the terminal interaction event".to_owned()));
+    }
+    let value: Value = serde_json::from_str(data)
+      .map_err(|error| Error::Malformed(format!("interactions event is not JSON: {error}")))?;
+    let event_type = event
+      .or_else(|| value.get("type").and_then(Value::as_str))
+      .or_else(|| value.get("event_type").and_then(Value::as_str))
+      .unwrap_or("");
+    let mut out = Vec::new();
+    match event_type {
+      "interaction.started" | "interaction.created" | "interaction.in_progress" => {}
+      "step.start" => self.handle_step_start(&value, &mut out),
+      "step.delta" => self.handle_step_delta(&value, &mut out)?,
+      "step.stop" | "step.completed" => self.handle_step_stop(&value, &mut out),
+      "interaction.completed"
+      | "interaction.incomplete"
+      | "interaction.budget_exceeded"
+      | "interaction.requires_action"
+      | "interaction.cancelled" => return Ok(self.handle_terminal(&value)),
+      "interaction.failed" => {
+        self.done = true;
+        let interaction = value.get("interaction").unwrap_or(&value);
+        return Err(buffered::decode_failed_error(interaction));
+      }
+      "error" => {
+        self.done = true;
+        return Err(decode_in_band(
+          value.get("error"),
+          &["code", "status"],
+          "upstream error event",
+        ));
+      }
+      // Unknown and future event types are tolerated.
+      _ => {}
+    }
+    Ok(out)
+  }
+}
+
+/// The step number an event names; an event without one names the first step.
+fn parse_step_index(value: &Value) -> Option<usize> {
+  usize::try_from(value.get("index").and_then(Value::as_u64).unwrap_or(0)).ok()
+}
+
+/// The kind of block a step's type opens, for the step types that stream into a block.
+fn get_step_block_kind(step: &Value) -> Option<BlockKind> {
+  match step.get("type").and_then(Value::as_str) {
+    Some("thought") => Some(BlockKind::Reasoning),
+    Some("function_call") => Some(BlockKind::ToolUse),
+    Some("model_output") => Some(BlockKind::Text),
+    _ => None,
   }
 }
 
@@ -488,17 +504,4 @@ fn decode_output_text(step: &Value) -> Option<String> {
     ),
     _ => None,
   }
-}
-
-/// Maps a bare `error` event to an upstream error.
-fn decode_error_event(value: &Value) -> Error {
-  let error = value.get("error");
-  let message = error
-    .and_then(|error| error.get("message"))
-    .and_then(Value::as_str)
-    .unwrap_or("upstream error event");
-  let code = error
-    .and_then(|error| error.get("code").or_else(|| error.get("status")))
-    .and_then(Value::as_str);
-  Error::from_in_band(code.map(str::to_owned), message.to_owned())
 }

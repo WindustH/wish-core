@@ -1,6 +1,5 @@
-use crate::executor::tool::{ToolCall, ToolOutcome};
 use crate::protocol::Request;
-use crate::session::{EventId, RunOutcome};
+use crate::session::{EventId, RunOutcome, ToolCall, ToolOutcome};
 use crate::storage::ListId;
 use std::sync::Arc;
 
@@ -25,6 +24,7 @@ pub enum SessionState {
   Compacting { resume: Box<SessionState> },
 }
 
+/// One call of a tool batch, and how far it went.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct ToolExecution {
   pub call: ToolCall,

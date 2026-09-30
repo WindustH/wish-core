@@ -23,13 +23,14 @@
 //!   errors map to `Error::from_in_band` with `error.status` as the code.
 
 use crate::protocol::error::Error;
-use crate::protocol::ReasoningOpaqueKind;
-use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
+use crate::protocol::http_error::decode_in_band;
+use crate::protocol::model_use::response::fold_thoughts_into_output;
+use crate::protocol::{ContentBlock, Message, ReasoningOpaqueKind, Response, StopReason, Usage};
 use serde_json::{Value, json};
 
 pub fn decode(body: &Value) -> Result<Response, Error> {
-  if let Some(error) = body.get("error") {
-    return Err(decode_error_object(error));
+  if body.get("error").is_some() {
+    return Err(decode_in_band_error(body));
   }
   if body.get("status").and_then(Value::as_str) == Some("failed") {
     return Err(decode_failed_error(body));
@@ -133,19 +134,16 @@ fn decode_block(block: &Value) -> Option<ContentBlock> {
 /// The failure a `failed` interaction reports: the error object it carries where it has one, and a
 /// plain statement of the status otherwise.
 pub(crate) fn decode_failed_error(body: &Value) -> Error {
-  match body.get("error") {
-    Some(error) => decode_error_object(error),
-    None => Error::from_in_band(None, "the interaction ended in failure".to_owned()),
+  if body.get("error").is_some() {
+    decode_in_band_error(body)
+  } else {
+    Error::from_in_band(None, "the interaction ended in failure".to_owned())
   }
 }
 
-fn decode_error_object(error: &Value) -> Error {
-  let message = error
-    .get("message")
-    .and_then(Value::as_str)
-    .unwrap_or("upstream reported an error without a message");
-  let code = error.get("status").and_then(Value::as_str);
-  Error::from_in_band(code.map(str::to_owned), message.to_owned())
+/// The failure the resource's `error` object reports.
+fn decode_in_band_error(body: &Value) -> Error {
+  decode_in_band(body.get("error"), &["status"], "upstream reported an error without a message")
 }
 
 fn decode_stop_reason(body: &Value, has_tool_uses: bool) -> StopReason {
@@ -170,17 +168,13 @@ pub(crate) fn map_stop_reason(status: Option<&str>, has_tool_uses: bool) -> Stop
   }
 }
 
-fn decode_usage(body: &Value) -> Usage {
-  parse_usage(body)
-}
-
 /// Maps the top-level `usage` object.
 ///
 /// Three naming generations are accepted: the counts the spec documents (`prompt_token_count`,
 /// `candidates_token_count`, `total_output_tokens`), the `total_*` counters the preview used, and
 /// the OpenAI-style pair. Thinking is reported beside the candidates rather than inside them, and
 /// is folded into `output_tokens` the way it is billed.
-pub(crate) fn parse_usage(body: &Value) -> Usage {
+pub(crate) fn decode_usage(body: &Value) -> Usage {
   let usage = body.get("usage");
   let field = |names: &[&str]| -> Option<u64> {
     usage.and_then(|usage| names.iter().find_map(|name| usage.get(name))).and_then(Value::as_u64)
@@ -191,10 +185,7 @@ pub(crate) fn parse_usage(body: &Value) -> Usage {
     input_tokens: field(&["prompt_token_count", "total_input_tokens", "prompt_tokens"]),
     cached_input_tokens: field(&["total_cached_tokens"]),
     cache_write_input_tokens: None,
-    output_tokens: match (candidates, thoughts) {
-      (Some(candidates), Some(thoughts)) => Some(candidates + thoughts),
-      (candidates, thoughts) => candidates.or(thoughts),
-    },
+    output_tokens: fold_thoughts_into_output(candidates, thoughts),
     reasoning_tokens: thoughts,
     total_tokens: field(&["total_token_count", "total_tokens"]),
   }

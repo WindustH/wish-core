@@ -2,10 +2,11 @@
 //!
 //! Conversions:
 //! - `model` travels in the body, since the URL carries no model segment.
-//! - Leading `System` messages become the top-level `system_instruction` string. A `System`
+//! - The leading run of `System` and `Developer` messages becomes the top-level
+//!   `system_instruction` string, its text blocks joined with newlines. A `System` or `Developer`
 //!   message past the leading run becomes a `user_input` step in place.
-//! - The conversation becomes a `steps[]` array of `user_input`, `model_output`, `function_call`,
-//!   `function_result` and `thought` steps. Images are flat blocks
+//! - The rest of the conversation becomes the `input[]` array of steps: `user_input`,
+//!   `model_output`, `function_call`, `function_result` and `thought`. Images are flat blocks
 //!   (`{"type": "image", "mime_type", "data"}`).
 //! - `Reasoning` replays a typed original `thought` step, preserving signed multipart summaries;
 //!   unsigned plaintext may become an unsigned thought, but unknown/foreign proofs are not reused.
@@ -20,8 +21,8 @@
 //!   before it.
 //!
 //! Trade-offs:
-//! - The wire has no developer role: a `Developer` message is sent as user input, so application
-//!   instructions travel with the user's own words.
+//! - The wire has no developer role: past the leading run a `Developer` message is sent as user
+//!   input, so application instructions travel with the user's own words.
 //! - `tool_choice`, `max_output_tokens` and `ReasoningConfig` share `generation_config`, which is
 //!   omitted when all of them are absent; `stream` is always sent, since one body serves both calls.
 //! - Of the reasoning axes only a tier word and a summary have a spelling (`thinking_level`, spelled
@@ -38,9 +39,10 @@
 //!   modeled.
 
 use crate::protocol::error::Error;
-use crate::protocol::ReasoningOpaqueKind;
+use crate::protocol::model_use::request::split_leading_instructions;
 use crate::protocol::{
-  ContentBlock, Message, ReasoningConfig, ReasoningSummary, Request, Tool, ToolChoice,
+  ContentBlock, Message, ReasoningConfig, ReasoningOpaqueKind, ReasoningSummary, Request, Tool,
+  ToolChoice,
 };
 use serde_json::{Map, Value, json};
 
@@ -51,10 +53,16 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   let mut body = Map::new();
   body.insert("model".into(), json!(request.model));
   body.insert("stream".into(), json!(request.stream));
-  let (instruction, rest) = split_leading_instructions(&request.conversation)?;
+  // The wire takes the leading instruction run at the top level; an instruction past it becomes
+  // user input inside `render_steps`.
+  let (instruction, rest) = split_leading_instructions(
+    &request.conversation,
+    "instruction can only carry text blocks on the interactions wire",
+  )?;
   body.insert("input".into(), Value::Array(render_steps(rest)?));
-  if let Some(instruction) = instruction {
-    body.insert("system_instruction".into(), json!(instruction));
+  let instruction: Vec<&str> = instruction.into_iter().flatten().collect();
+  if !instruction.is_empty() {
+    body.insert("system_instruction".into(), json!(instruction.join("\n")));
   }
   if !request.tools.is_empty() {
     let tools: Vec<Value> = request.tools.iter().map(render_tool).collect();
@@ -65,35 +73,6 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   }
   body.insert("store".into(), json!(false));
   Ok(Value::Object(body))
-}
-
-/// The instruction the leading `System` / `Developer` run spells out, and the conversation that
-/// remains after it: the wire takes the instruction at the top level, so the run is consumed here
-/// and an instruction past it becomes user input inside `render_steps`.
-fn split_leading_instructions(
-  conversation: &[Message],
-) -> Result<(Option<String>, &[Message]), Error> {
-  let mut text: Vec<&str> = Vec::new();
-  let mut index = 0;
-  while let Some(message) = conversation.get(index) {
-    let content = match message {
-      Message::System { content, .. } | Message::Developer { content, .. } => content,
-      _ => break,
-    };
-    for block in content {
-      match block {
-        ContentBlock::Text { text: block_text } => text.push(block_text),
-        _ => {
-          return Err(Error::Build(
-            "instruction can only carry text blocks on the interactions wire".to_owned(),
-          ));
-        }
-      }
-    }
-    index += 1;
-  }
-  let instruction = (!text.is_empty()).then(|| text.join("\n"));
-  Ok((instruction, &conversation[index..]))
 }
 
 fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
@@ -118,13 +97,14 @@ fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
         } else {
           None
         };
-        let step = replay_item
+        let step = match replay_item
           .filter(|item| item.get("type").and_then(Value::as_str) == Some("thought"))
-          .cloned()
+        {
+          Some(item) => Some(item.clone()),
+          None if opaque_kind.is_none() => render_unsigned_thought(plaintext),
           // A signed foreign thought cannot be treated as a Google Interactions proof.
-          .or_else(|| {
-            if opaque_kind.is_none() { render_thought(plaintext, "") } else { None }
-          });
+          None => None,
+        };
         if let Some(step) = step {
           steps.push(step);
         }
@@ -175,18 +155,12 @@ fn render_content_blocks(content: &[ContentBlock]) -> Vec<Value> {
   blocks
 }
 
-fn render_thought(plaintext: &str, signature: &str) -> Option<Value> {
-  if plaintext.is_empty() && signature.is_empty() {
+/// A thought step carrying readable text and no proof, or nothing when there is no text to carry.
+fn render_unsigned_thought(plaintext: &str) -> Option<Value> {
+  if plaintext.is_empty() {
     return None;
   }
-  let mut step = json!({"type": "thought"});
-  if !signature.is_empty() {
-    step["signature"] = json!(signature);
-  }
-  if !plaintext.is_empty() {
-    step["summary"] = json!([{"type": "text", "text": plaintext}]);
-  }
-  Some(step)
+  Some(json!({"type": "thought", "summary": [{"type": "text", "text": plaintext}]}))
 }
 
 fn render_tool(tool: &Tool) -> Value {

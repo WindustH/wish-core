@@ -1,19 +1,17 @@
 //! Reading a provider's model list over the network.
 //!
-//! The same round trip as an account read: the host and path from this tree's own source table,
-//! the wire's query, one `GET`, then the protocol's reading of the body. It carries no policy of
-//! its own: one attempt, and whether a failure is worth another try is the caller's decision.
-//! Paging is the caller's loop too - this reads one page and hands the next page's cursor back.
+//! The same round trip as an account read: the auth and headers from this tree's own source table,
+//! the host, path and wire query of the page asked for, one `GET`, then the protocol's reading of
+//! the body. It carries no policy of its own: one attempt, and whether a failure is worth another
+//! try is the caller's decision. Paging is the caller's loop too - this reads one page and hands the
+//! next page's cursor back.
 
 use super::source::find_source;
+use crate::protocol::attempt::Transport;
+use crate::protocol::endpoint::{AuthScheme, Credentials, Draft};
 use crate::protocol::error::Error;
 use crate::protocol::http_error;
-use crate::protocol::model_list::{
-  ModelCatalog, ModelListProtocol, Unsupported, build_page_query, parse_catalog_page,
-};
-use crate::protocol::outbound::AuthProtocol;
-use crate::protocol::outbound::Credentials;
-use crate::protocol::wire::Transport;
+use crate::protocol::model_list::{ModelListPage, ModelListProtocol, build_page_query, parse_page};
 
 /// The page size asked for when a caller has no opinion.
 pub const DEFAULT_PAGE_SIZE: u32 = 100;
@@ -21,7 +19,7 @@ pub const DEFAULT_PAGE_SIZE: u32 = 100;
 /// Which page of which list to read.
 #[derive(Clone, Debug)]
 pub struct ModelListQuery {
-  /// The host, which the caller owns: one catalog protocol is served from many providers.
+  /// The host, which the caller owns: one list protocol is served from many providers.
   pub base_url: String,
   /// The path on that host, `/v1/models` or `/models` where the service mounts it at the root.
   pub path: String,
@@ -29,7 +27,7 @@ pub struct ModelListQuery {
   pub cursor: Option<String>,
   /// How many models to ask for, where the wire has a page size.
   pub page_size: u32,
-  /// Read an OpenAI-shaped catalog without a key (for local servers with no authentication).
+  /// Read an OpenAI-shaped list without a key (for local servers with no authentication).
   pub unauthenticated: bool,
 }
 
@@ -50,33 +48,26 @@ impl ModelListQuery {
 ///
 /// # Errors
 ///
-/// [`Error::Unsupported`] when no source serves the protocol or the credentials are incomplete,
-/// [`Error::Transport`] when the
-/// network fails before a reply exists, [`Error::Upstream`] for a non-`2xx` reply, and
-/// [`Error::Malformed`] when the body is not the page its protocol promised.
+/// [`Error::Build`] when the credentials are incomplete, [`Error::Transport`] when the network
+/// fails before a reply exists, [`Error::Upstream`] for a non-`2xx` reply, and [`Error::Malformed`]
+/// when the body is not the page its protocol promised.
 pub async fn fetch<T: Transport>(
   transport: &T,
   protocol: ModelListProtocol,
   query: &ModelListQuery,
   credentials: &Credentials,
   now: u64,
-) -> Result<ModelCatalog, Error> {
-  let mut source = find_source(protocol)
-    .ok_or_else(|| {
-      Error::build_unsupported("model list", protocol, Unsupported::NoListing.get_text())
-    })?
-    .clone();
+) -> Result<ModelListPage, Error> {
+  let mut source = find_source(protocol);
   if query.unauthenticated && protocol == ModelListProtocol::OpenAiModels {
-    source.auth = AuthProtocol::None;
+    source.auth = AuthScheme::None;
   }
-  let wire_query = build_page_query(protocol, query.cursor.as_deref(), query.page_size)?;
-  let call =
-    source.build_call(Some(&query.base_url), Some(&query.path), &wire_query, credentials, now)?;
+  let draft = Draft::get(build_page_query(protocol, query.cursor.as_deref(), query.page_size));
+  let call = source.to_endpoint(Some(&query.base_url), Some(&query.path))?.build_call(
+    draft,
+    credentials,
+    now,
+  )?;
   let reply = transport.execute(&call).await?;
-  if !reply.is_success() {
-    let error = http_error::decode_provider_envelope(reply.status, &reply.body);
-    return Err(error.with_retry_after(reply.get_retry_after_ms()));
-  }
-  let body = http_error::decode_json_body(protocol.get_id(), &reply.body)?;
-  parse_catalog_page(protocol, &body)
+  parse_page(protocol, &http_error::read_provider_json(reply, protocol.get_id())?)
 }

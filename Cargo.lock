@@ -1850,7 +1850,6 @@ dependencies = [
  "lru",
  "process-wrap",
  "reqwest",
- "ring",
  "rmcp",
  "rusqlite",
  "serde",

@@ -1,14 +1,14 @@
 # Model list
 
 `src/protocol/model_list/` is the intermediate layer for what models a service says it offers. It
-converts one page of a catalog into `ModelCatalog`, so the UI can offer a model picker without
+converts one page of a catalog into `ModelListPage`, so the UI can offer a model picker without
 knowing which service answered.
 
 ```
 caller                      model_list                     service
 ──────────────────────────────────────────────────────────────────────────────
-ModelCatalog ◀── parse_catalog_page() ◀── model_list/<dialect>.rs ◀── one page ◀── HTTP
-              ── fetch() + build_page_query() ──▶ source.rs entry × Credentials ──▶ dispatch ──▶ HTTP
+ModelListPage ◀── parse_page() ◀── model_list/<dialect>.rs ◀── one page ◀── HTTP
+               ── fetch() + build_page_query() ──▶ source.rs entry × Credentials ──▶ build_call ──▶ HTTP
 ```
 
 `Client::get_model_list(&ModelListQuery)` calls `fetch` ([client](../client.md#calls)). It makes one
@@ -25,15 +25,15 @@ GET with no retry. A non-`2xx` body is decoded by `http_error::decode_provider_e
 | `GoogleModels` (`google_models`) | `x-goog-api-key` | `pageToken`, `pageSize` |
 | `BedrockModels` (`bedrock_models`) | SigV4 | none |
 
-Only the Codex entry pins a host and path (`chatgpt.com/backend-api/codex/models`). For the rest
-the caller supplies them. `ModelListQuery { base_url, path, cursor, page_size, unauthenticated }`
-always overrides the entry's host and path. `page_size` defaults to 100
-(`ModelListQuery::first`). A protocol with no source entry is `Error::Unsupported` (`NoListing`).
+No entry pins a host or a path: `ModelListQuery { base_url, path, cursor, page_size,
+unauthenticated }` always supplies both (the Codex preset's `model_list_path` is
+`/backend-api/codex/models`). `page_size` defaults to 100 (`ModelListQuery::first`). Every protocol
+has an entry; `find_source` is one match over them.
 
 ## Shape
 
 ```text
-ModelCatalog { protocol, models: [Model], next_cursor, warnings }
+ModelListPage { protocol, models: [Model], next_cursor, warnings }
 Model        { id, name, owner, created_at, context_window, max_output_tokens }
 ```
 

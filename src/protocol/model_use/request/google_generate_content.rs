@@ -36,9 +36,10 @@
 //!   (`cachedContents`) is not modeled.
 
 use crate::protocol::error::Error;
-use crate::protocol::ReasoningOpaqueKind;
+use crate::protocol::model_use::request::{AlternatingTurns, split_leading_instructions};
 use crate::protocol::{
-  ContentBlock, Message, ReasoningConfig, ReasoningSummary, Request, Tool, ToolChoice,
+  ContentBlock, Message, ReasoningConfig, ReasoningOpaqueKind, ReasoningSummary, Request, Tool,
+  ToolChoice,
 };
 use serde_json::{Map, Value, json};
 
@@ -46,7 +47,10 @@ use serde_json::{Map, Value, json};
 pub const HEADERS: &[(&str, &str)] = &[];
 
 pub fn render(request: &Request) -> Result<Value, Error> {
-  let (system, rest) = split_leading_instructions(&request.conversation)?;
+  let (system, rest) = split_leading_instructions(
+    &request.conversation,
+    "a system instruction can only carry text blocks on the generateContent wire",
+  )?;
   let contents = render_contents(rest)?;
   if contents.is_empty() {
     return Err(Error::Build("request has no contents".to_owned()));
@@ -54,6 +58,7 @@ pub fn render(request: &Request) -> Result<Value, Error> {
 
   let mut body = Map::new();
   if !system.is_empty() {
+    let system: Vec<String> = system.iter().map(|text| text.join("\n")).collect();
     body.insert(
       "systemInstruction".into(),
       json!({"role": "user", "parts": [{"text": system.join("\n")}]}),
@@ -116,40 +121,13 @@ fn render_thinking_config(config: &ReasoningConfig) -> Result<Option<Value>, Err
   Ok(Some(Value::Object(thinking)))
 }
 
-fn split_leading_instructions(
-  conversation: &[Message],
-) -> Result<(Vec<String>, &[Message]), Error> {
-  let mut system: Vec<String> = Vec::new();
-  let mut index = 0;
-  while let Some(message) = conversation.get(index) {
-    let content = match message {
-      Message::System { content, .. } | Message::Developer { content, .. } => content,
-      _ => break,
-    };
-    let mut text: Vec<&str> = Vec::new();
-    for block in content {
-      match block {
-        ContentBlock::Text { text: block_text } => text.push(block_text),
-        _ => {
-          return Err(Error::Build(
-            "a system instruction can only carry text blocks on the generateContent wire"
-              .to_owned(),
-          ));
-        }
-      }
-    }
-    system.push(text.join("\n"));
-    index += 1;
-  }
-  Ok((system, &conversation[index..]))
-}
-
 fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
-  let mut contents: Vec<(&'static str, Vec<Value>)> = Vec::new();
+  let mut contents = AlternatingTurns::default();
+  // The calls of the last model turn that still wait for their results, as (id, name).
   let mut pending: Vec<(String, String)> = Vec::new();
-  let mut index = 0;
-  while index < conversation.len() {
-    match &conversation[index] {
+  let mut rest = conversation;
+  while let [message, ..] = rest {
+    let used = match message {
       Message::UpstreamCompaction { .. } => {
         return Err(Error::Build(
           "the generateContent wire cannot carry a compacted conversation".to_owned(),
@@ -161,143 +139,144 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
       | Message::Developer { content, .. }
       | Message::User { content, .. } => {
         if let Some((_, name)) = pending.first() {
-          return Err(build_missing_response_error(name));
+          return Err(build_missing_result_error(name));
         }
-        push_turn(&mut contents, "user", render_user_parts(content)?);
-        index += 1;
+        contents.push("user", render_user_parts(content)?);
+        1
       }
       Message::Reasoning { .. } | Message::Assistant { .. } | Message::ToolUse { .. } => {
         if let Some((_, name)) = pending.first() {
-          return Err(build_missing_response_error(name));
+          return Err(build_missing_result_error(name));
         }
-        let mut parts: Vec<Value> = Vec::new();
-        let mut signature: Option<String> = None;
-        let push_part =
-          |parts: &mut Vec<Value>, mut part: Value, signature: &mut Option<String>| {
-            if part.get("thoughtSignature").is_none()
-              && let Some(value) = signature.take()
-            {
-              part["thoughtSignature"] = json!(value);
-            }
-            parts.push(part);
-          };
-        let mut used = 0;
-        while let Some(message) = conversation.get(index + used) {
-          match message {
-            Message::Reasoning { plaintext, signature: proof, opaque_kind, .. } => {
-              let proof = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::GoogleSignature, proof);
-              if plaintext.is_empty() {
-                if !proof.is_empty() {
-                  signature = Some(proof.to_owned());
-                }
-              } else {
-                let mut part = json!({"thought": true, "text": plaintext});
-                if !proof.is_empty() {
-                  part["thoughtSignature"] = json!(proof);
-                }
-                push_part(&mut parts, part, &mut signature);
-              }
-            }
-            Message::Assistant { content, .. } => {
-              for block in content {
-                match block {
-                  ContentBlock::Text { text } => {
-                    push_part(&mut parts, json!({"text": text}), &mut signature);
-                  }
-                  ContentBlock::Image { .. } => {
-                    return Err(Error::Build(
-                      "an assistant message cannot carry images on the generateContent wire"
-                        .to_owned(),
-                    ));
-                  }
-                }
-              }
-            }
-            Message::ToolUse { call_id, name, arguments, .. } => {
-              let mut function_call = json!({"name": name, "args": arguments});
-              if !call_id.is_empty() {
-                function_call["id"] = json!(call_id);
-              }
-              pending.push((call_id.clone(), name.clone()));
-              push_part(&mut parts, json!({"functionCall": function_call}), &mut signature);
-            }
-            _ => break,
-          }
-          used += 1;
-        }
-        push_turn(&mut contents, "model", parts);
-        index += used;
+        let (parts, used) = render_model_turn(rest, &mut pending)?;
+        contents.push("model", parts);
+        used
       }
       Message::ToolResult { .. } => {
-        if pending.is_empty() {
-          return Err(Error::Build(
-            "a tool result has no matching tool call on the generateContent wire".to_owned(),
-          ));
-        }
-        let mut parts: Vec<Value> = Vec::new();
-        let mut used = 0;
-        while let Some(Message::ToolResult { call_id, name, content, .. }) =
-          conversation.get(index + used)
-        {
-          match pending.get(used) {
-            Some((_, expected)) if expected == name => {}
-            Some((_, expected)) => {
-              return Err(Error::Build(format!(
-                "tool result for `{name}` does not match the expected tool call `{expected}` on the generateContent wire"
-              )));
-            }
-            None => {
-              return Err(Error::Build(format!(
-                "tool result for `{name}` has no matching tool call on the generateContent wire"
-              )));
-            }
-          }
-          parts.push(render_function_response(call_id, name, content));
-          used += 1;
-        }
-        if used != pending.len() {
-          return Err(build_missing_response_error(&pending[used].1));
-        }
+        let parts = render_function_responses(rest, &pending)?;
+        let used = parts.len();
         pending.clear();
-        push_turn(&mut contents, "user", parts);
-        index += used;
+        contents.push("user", parts);
+        used
       }
-    }
+    };
+    rest = &rest[used..];
   }
   if let Some((_, name)) = pending.first() {
-    return Err(build_missing_response_error(name));
+    return Err(build_missing_result_error(name));
   }
-  match contents.first() {
-    Some((role, _)) if *role != "user" => Err(Error::Build(
-      "the first turn must be a user message on the generateContent wire".to_owned(),
-    )),
-    _ => {
-      Ok(contents.into_iter().map(|(role, parts)| json!({"role": role, "parts": parts})).collect())
-    }
-  }
+  contents
+    .finish_from_user("parts", "the first turn must be a user message on the generateContent wire")
 }
 
-fn build_missing_response_error(name: &str) -> Error {
+/// The model turn the run of reasoning, text and calls at the head of `messages` makes, and how
+/// many messages it spans; each call joins `pending` until its result arrives.
+///
+/// A reasoning message that is only a signature is held back and lands on the next part that has
+/// no signature of its own, the part it seals.
+fn render_model_turn(
+  messages: &[Message],
+  pending: &mut Vec<(String, String)>,
+) -> Result<(Vec<Value>, usize), Error> {
+  let mut parts: Vec<Value> = Vec::new();
+  let mut signature: Option<String> = None;
+  let push_part = |parts: &mut Vec<Value>, mut part: Value, signature: &mut Option<String>| {
+    if part.get("thoughtSignature").is_none()
+      && let Some(value) = signature.take()
+    {
+      part["thoughtSignature"] = json!(value);
+    }
+    parts.push(part);
+  };
+  let mut used = 0;
+  for message in messages {
+    match message {
+      Message::Reasoning { plaintext, signature: proof, opaque_kind, .. } => {
+        let proof = ReasoningOpaqueKind::material_if_kind(
+          *opaque_kind,
+          ReasoningOpaqueKind::GoogleSignature,
+          proof,
+        );
+        if plaintext.is_empty() {
+          if !proof.is_empty() {
+            signature = Some(proof.to_owned());
+          }
+        } else {
+          let mut part = json!({"thought": true, "text": plaintext});
+          if !proof.is_empty() {
+            part["thoughtSignature"] = json!(proof);
+          }
+          push_part(&mut parts, part, &mut signature);
+        }
+      }
+      Message::Assistant { content, .. } => {
+        for block in content {
+          match block {
+            ContentBlock::Text { text } => {
+              push_part(&mut parts, json!({"text": text}), &mut signature);
+            }
+            ContentBlock::Image { .. } => {
+              return Err(Error::Build(
+                "an assistant message cannot carry images on the generateContent wire".to_owned(),
+              ));
+            }
+          }
+        }
+      }
+      Message::ToolUse { call_id, name, arguments, .. } => {
+        let mut function_call = json!({"name": name, "args": arguments});
+        if !call_id.is_empty() {
+          function_call["id"] = json!(call_id);
+        }
+        pending.push((call_id.clone(), name.clone()));
+        push_part(&mut parts, json!({"functionCall": function_call}), &mut signature);
+      }
+      _ => break,
+    }
+    used += 1;
+  }
+  Ok((parts, used))
+}
+
+/// The results at the head of `results`, which must answer the `pending` calls one by one and in
+/// order - by name, since the wire's calls carry no usable id - as the parts of the user turn that
+/// follows the calls.
+fn render_function_responses(
+  results: &[Message],
+  pending: &[(String, String)],
+) -> Result<Vec<Value>, Error> {
+  if pending.is_empty() {
+    return Err(Error::Build(
+      "a tool result has no matching tool call on the generateContent wire".to_owned(),
+    ));
+  }
+  let mut parts: Vec<Value> = Vec::new();
+  while let Some(Message::ToolResult { call_id, name, content, .. }) = results.get(parts.len()) {
+    match pending.get(parts.len()) {
+      Some((_, expected)) if expected == name => {}
+      Some((_, expected)) => {
+        return Err(Error::Build(format!(
+          "tool result for `{name}` does not match the expected tool call `{expected}` on the generateContent wire"
+        )));
+      }
+      None => {
+        return Err(Error::Build(format!(
+          "tool result for `{name}` has no matching tool call on the generateContent wire"
+        )));
+      }
+    }
+    parts.push(render_function_response(call_id, name, content));
+  }
+  if parts.len() != pending.len() {
+    return Err(build_missing_result_error(&pending[parts.len()].1));
+  }
+  Ok(parts)
+}
+
+fn build_missing_result_error(name: &str) -> Error {
   Error::Build(format!(
     "tool call `{name}` is not followed by its tool result on the generateContent wire"
   ))
-}
-
-fn push_turn(
-  turns: &mut Vec<(&'static str, Vec<Value>)>,
-  role: &'static str,
-  mut parts: Vec<Value>,
-) {
-  if parts.is_empty() {
-    return;
-  }
-  if let Some((last_role, last_parts)) = turns.last_mut()
-    && *last_role == role
-  {
-    last_parts.append(&mut parts);
-    return;
-  }
-  turns.push((role, parts));
 }
 
 fn render_user_parts(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {

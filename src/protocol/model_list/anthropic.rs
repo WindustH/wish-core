@@ -5,8 +5,8 @@
 //! - `created_at` is an ISO instant here rather than a unix second; it is kept exactly as the wire
 //!   wrote it, because a timestamp this shape does not convert is still a usable timestamp.
 //! - Cursors run both ways, and this reader follows the forward one: `last_id` becomes `next_cursor`
-//!   while `has_more` is true, and `page_query` sends it back as `after_id` beside the `limit` the
-//!   wire wants spelled out.
+//!   while `has_more` is true, and `build_page_query` sends it back as `after_id` beside the
+//!   `limit` the wire wants spelled out.
 //!
 //! Constraints:
 //! - The body is only a list when `data` is an array, and an entry without an id is dropped.
@@ -22,40 +22,32 @@
 use serde_json::Value;
 
 use crate::Error;
-use crate::protocol::model_list::{Model, ModelCatalog, ModelListProtocol};
-use crate::protocol::read_scalar_text;
+use crate::protocol::json_read::read_scalar_text;
+use crate::protocol::model_list::{
+  Model, ModelListPage, ModelListProtocol, read_entries, read_forward_cursor,
+};
 
 /// Reads one page.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Malformed`] when `data` is missing or is not an array.
-pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
-  let data = body
-    .get("data")
-    .and_then(Value::as_array)
-    .ok_or_else(|| Error::Malformed("anthropic model list missing `data` array".to_owned()))?;
-  let mut models = Vec::new();
-  let mut warnings = Vec::new();
-  for entry in data {
-    let Some(id) = entry.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) else {
-      warnings.push("an entry without an `id` was dropped".to_owned());
-      continue;
-    };
-    models.push(Model {
-      id: id.to_owned(),
+pub fn parse(body: &Value) -> Result<ModelListPage, Error> {
+  let (entries, warnings) = read_entries(body, "data", "id", "anthropic")?;
+  let models = entries
+    .into_iter()
+    .map(|(id, entry)| Model {
       name: entry.get("display_name").and_then(Value::as_str).map(str::to_owned),
-      owner: None,
       created_at: entry.get("created_at").and_then(read_scalar_text),
-      context_window: None,
-      max_output_tokens: None,
-    });
-  }
-  let next_cursor = match body.get("has_more").and_then(Value::as_bool) {
-    Some(true) => body.get("last_id").and_then(Value::as_str).map(str::to_owned),
-    _ => None,
-  };
-  Ok(ModelCatalog { protocol: ModelListProtocol::AnthropicModels, models, next_cursor, warnings })
+      ..Model::new(id)
+    })
+    .collect();
+  Ok(ModelListPage {
+    protocol: ModelListProtocol::AnthropicModels,
+    models,
+    next_cursor: read_forward_cursor(body),
+    warnings,
+  })
 }
 
 /// The query of a page: the forward cursor, and the page size the wire wants spelled out.

@@ -5,7 +5,7 @@ mod platform;
 mod process;
 mod runtime;
 
-pub use operation::{DataEncoding, KillMode, ShellOperation};
+use operation::{DataEncoding, KillMode, ShellOperation};
 pub use runtime::ShellTool;
 use std::{
   collections::BTreeMap,

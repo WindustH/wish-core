@@ -3,8 +3,8 @@
 //! Conversions:
 //! - `modelSummaries[].modelId` is the id, `modelName` the display name and `providerName` the
 //!   owner; nothing in this body says how much a model holds.
-//! - The answer is one page by construction, so `next_cursor` stays empty and `page_query` sends
-//!   nothing.
+//! - The answer is one page by construction, so `next_cursor` stays empty and `build_page_query`
+//!   sends nothing.
 //!
 //! Constraints:
 //! - The body is only a list when `modelSummaries` is an array, and an entry without a `modelId` is
@@ -12,7 +12,7 @@
 //!
 //! Trade-offs:
 //! - The service signs this request with SigV4 rather than a bearer key, exactly as the Converse
-//!   wire does: the source signs the call from the account's AWS material, and the host the region
+//!   wire does: the source signs the call from the account's AWS credentials, and the host the region
 //!   decides - `bedrock.<region>.amazonaws.com/foundation-models` - is the caller's fact to
 //!   supply.
 //! - The filters the same endpoint takes (`byProvider`, `byOutputModality`, `byInferenceType`) are
@@ -23,34 +23,24 @@
 use serde_json::Value;
 
 use crate::Error;
-use crate::protocol::model_list::{Model, ModelCatalog, ModelListProtocol};
+use crate::protocol::model_list::{Model, ModelListPage, ModelListProtocol, read_entries};
 
 /// Reads the list body.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Malformed`] when `modelSummaries` is missing or is not an array.
-pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
-  let summaries = body.get("modelSummaries").and_then(Value::as_array).ok_or_else(|| {
-    Error::Malformed("bedrock model list missing `modelSummaries` array".to_owned())
-  })?;
-  let mut models = Vec::new();
-  let mut warnings = Vec::new();
-  for entry in summaries {
-    let Some(id) = entry.get("modelId").and_then(Value::as_str).filter(|id| !id.is_empty()) else {
-      warnings.push("an entry without a `modelId` was dropped".to_owned());
-      continue;
-    };
-    models.push(Model {
-      id: id.to_owned(),
+pub fn parse(body: &Value) -> Result<ModelListPage, Error> {
+  let (entries, warnings) = read_entries(body, "modelSummaries", "modelId", "bedrock")?;
+  let models = entries
+    .into_iter()
+    .map(|(id, entry)| Model {
       name: entry.get("modelName").and_then(Value::as_str).map(str::to_owned),
       owner: entry.get("providerName").and_then(Value::as_str).map(str::to_owned),
-      created_at: None,
-      context_window: None,
-      max_output_tokens: None,
-    });
-  }
-  Ok(ModelCatalog {
+      ..Model::new(id)
+    })
+    .collect();
+  Ok(ModelListPage {
     protocol: ModelListProtocol::BedrockModels,
     models,
     next_cursor: None,

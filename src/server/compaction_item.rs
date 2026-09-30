@@ -30,6 +30,14 @@ pub(crate) fn get_handoff(item: &Message) -> Option<(Vec<ContentBlock>, bool)> {
   Some((content, handoff.get("translated").and_then(Value::as_bool).unwrap_or(false)))
 }
 
+/// Whether `provider` would read the item only through a handoff that is not there yet: it cannot
+/// read the item, which carries no handoff or only a placeholder.
+pub(crate) fn needs_handoff(item: &Message, provider: &str) -> bool {
+  matches!(item, Message::UpstreamCompaction { .. })
+    && !can_read(item, provider)
+    && !matches!(get_handoff(item), Some((_, true)))
+}
+
 /// A copy of the item carrying this handoff.
 pub(crate) fn with_handoff(item: &Message, content: &[ContentBlock], translated: bool) -> Message {
   let mut item = item.clone();

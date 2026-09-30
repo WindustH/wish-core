@@ -5,6 +5,11 @@
 //! per protocol under this one, so the shape and its translations are read together; a protocol with
 //! no renderer of its own shares the wire of one that has, differing only in endpoint and
 //! authentication.
+//!
+//! What several renderers agree on lives here too: the leading run of instructions the wires with a
+//! top-level instruction field lift out, the turns of the wires whose roles strictly alternate, and
+//! the thinking controls of the wires that carry Claude's parameters. Each renderer keeps its own
+//! wording for what it refuses.
 
 pub mod anthropic_messages;
 pub mod bedrock_converse;
@@ -14,9 +19,11 @@ pub mod mistral_conversations;
 pub mod openai_chat;
 pub mod openai_responses;
 
+use serde_json::{Value, json};
+
 use crate::protocol::error::Error;
 
-use super::message::Conversation;
+use super::message::{ContentBlock, Conversation, Message};
 use super::tool::Tool;
 
 /// How the model should pick among the tools it was given.
@@ -48,8 +55,8 @@ pub struct ReasoningConfig {
 }
 
 /// What one word of the budget preset asks for.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TierBudget {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TierBudget {
   /// Extended thinking, with this many tokens to spend.
   Tokens(u64),
   /// Thinking whose depth the model picks itself.
@@ -61,7 +68,7 @@ pub(crate) enum TierBudget {
 /// The wires that steer thinking by token budget share one preset instead of naming tiers of their
 /// own: each word is either a token budget or `adaptive`. A word outside the preset has no control
 /// to become and is reported as a build error.
-pub(crate) fn resolve_tier_budget(effort: &str) -> Result<TierBudget, Error> {
+fn resolve_tier_budget(effort: &str) -> Result<TierBudget, Error> {
   match effort {
     "low" => Ok(TierBudget::Tokens(1024)),
     "medium" => Ok(TierBudget::Tokens(4096)),
@@ -74,8 +81,42 @@ pub(crate) fn resolve_tier_budget(effort: &str) -> Result<TierBudget, Error> {
   }
 }
 
+/// Claude's own `thinking` object, shared by the wires that carry Claude's thinking parameters: the
+/// Messages wire itself and the Converse wire's bridge.
+///
+/// A depth tier selects the preset (extended thinking with its budget, or adaptive thinking),
+/// `enabled` alone selects adaptive thinking, and the off state is omission - `None` here - since
+/// the object has no `disabled` member. A config that both disables thinking and gives it a tier is
+/// the caller's to refuse first, in its own words.
+pub(crate) fn render_claude_thinking(config: &ReasoningConfig) -> Result<Option<Value>, Error> {
+  let thinking = match (config.enabled, config.effort.as_deref()) {
+    (Some(false) | None, None) => return Ok(None),
+    (_, Some(effort)) => match resolve_tier_budget(effort)? {
+      TierBudget::Tokens(budget_tokens) => {
+        json!({"type": "enabled", "budget_tokens": budget_tokens})
+      }
+      TierBudget::Adaptive => json!({"type": "adaptive"}),
+    },
+    (Some(true), None) => json!({"type": "adaptive"}),
+  };
+  Ok(Some(thinking))
+}
+
 /// How much room the answer keeps above the thinking budget.
-pub(crate) const ANSWER_HEADROOM: u64 = 4096;
+const ANSWER_HEADROOM: u64 = 4096;
+
+/// The output cap a Claude thinking budget leaves room under.
+///
+/// The model refuses to answer at or below the tokens it thinks with, so a cap that tight is raised
+/// to the budget plus [`ANSWER_HEADROOM`] instead of failing the call.
+pub(crate) fn lift_cap_above_budget(cap: u64, budget_tokens: u64) -> u64 {
+  if cap > budget_tokens { cap } else { budget_tokens + ANSWER_HEADROOM }
+}
+
+/// The `thinking.type` on/off switch several vendors patch into the Anthropic and chat wires.
+pub(crate) fn render_thinking_switch(enabled: bool) -> Value {
+  json!({"type": if enabled { "enabled" } else { "disabled" }})
+}
 
 /// Whether the service should also hand back a readable summary of its thinking.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -122,4 +163,80 @@ pub struct Request {
   pub reasoning: Option<ReasoningConfig>,
   /// Which caching to ask for (see [`PromptCache`]).
   pub cache: Option<PromptCache>,
+}
+
+/// The leading run of instructions - the `System` and `Developer` messages a conversation opens
+/// with - as the text blocks of each message, and the conversation that remains after it.
+///
+/// The wires with a top-level instruction field take the run there, each joining it by its own
+/// rule, and an instruction past the run is part of the conversation. Such a field only takes text,
+/// so a block of any other kind is refused in the wire's own words, `refusal`.
+pub(crate) fn split_leading_instructions<'a>(
+  conversation: &'a [Message],
+  refusal: &str,
+) -> Result<(Vec<Vec<&'a str>>, &'a [Message]), Error> {
+  let mut run = Vec::new();
+  let mut rest = conversation;
+  while let [Message::System { content, .. } | Message::Developer { content, .. }, tail @ ..] = rest
+  {
+    run.push(collect_instruction_text(content, refusal)?);
+    rest = tail;
+  }
+  Ok((run, rest))
+}
+
+/// The text blocks of one instruction message, in order; any other block is refused with
+/// `refusal`, because instructions only travel as text.
+pub(crate) fn collect_instruction_text<'a>(
+  content: &'a [ContentBlock],
+  refusal: &str,
+) -> Result<Vec<&'a str>, Error> {
+  content
+    .iter()
+    .map(|block| match block {
+      ContentBlock::Text { text } => Ok(text.as_str()),
+      _ => Err(Error::Build(refusal.to_owned())),
+    })
+    .collect()
+}
+
+/// The turns of a wire whose roles strictly alternate (Anthropic, Google, Converse), built one push
+/// at a time: a push lands on the turn before it when the role is the same, so the conversation's
+/// adjacent same-role messages become one turn, and an empty push adds nothing.
+#[derive(Default)]
+pub(crate) struct AlternatingTurns {
+  turns: Vec<(&'static str, Vec<Value>)>,
+}
+
+impl AlternatingTurns {
+  pub(crate) fn push(&mut self, role: &'static str, mut blocks: Vec<Value>) {
+    if blocks.is_empty() {
+      return;
+    }
+    if let Some((last_role, last_blocks)) = self.turns.last_mut()
+      && *last_role == role
+    {
+      last_blocks.append(&mut blocks);
+      return;
+    }
+    self.turns.push((role, blocks));
+  }
+
+  /// The turns as wire objects, `{"role", <blocks_key>: [...]}`, refused with `refusal` when the
+  /// first one is not a `user` turn: a wire that alternates opens with the caller.
+  pub(crate) fn finish_from_user(
+    self,
+    blocks_key: &str,
+    refusal: &str,
+  ) -> Result<Vec<Value>, Error> {
+    match self.turns.first() {
+      Some((role, _)) if *role != "user" => Err(Error::Build(refusal.to_owned())),
+      _ => Ok(self.finish(blocks_key)),
+    }
+  }
+
+  /// The turns as wire objects, `{"role", <blocks_key>: [...]}`, whichever role opens them.
+  pub(crate) fn finish(self, blocks_key: &str) -> Vec<Value> {
+    self.turns.into_iter().map(|(role, blocks)| json!({"role": role, blocks_key: blocks})).collect()
+  }
 }

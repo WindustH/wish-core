@@ -1,10 +1,8 @@
 //! Read a local image as native model input, without modifying the source file.
 use crate::{
-  executor::{
-    ExecutionControl,
-    tool::{ToolCall, ToolExecutor, ToolOutcome},
-  },
+  executor::{ExecutionControl, tool::ToolExecutor},
   protocol::{ContentBlock, Tool},
+  session::{ToolCall, ToolOutcome},
 };
 use base64::Engine;
 use serde::Deserialize;
@@ -74,14 +72,13 @@ impl ToolExecutor for ViewImageTool {
     if control.is_cancelled() {
       return ToolOutcome::Cancelled;
     }
-    let args = match serde_json::from_value(call.arguments.clone()) {
+    let args = match call.parse_arguments() {
       Ok(args) => args,
-      Err(error) => return ToolOutcome::Failed(error.to_string()),
+      Err(error) => return ToolOutcome::Failed(error),
     };
-    tokio::select! {
-      biased;
-      _ = control.wait_for_cancellation() => ToolOutcome::Cancelled,
-      result = self.read_image(args) => result.unwrap_or_else(ToolOutcome::Failed),
+    match control.run_until_cancelled(self.read_image(args)).await {
+      Some(result) => result.unwrap_or_else(ToolOutcome::Failed),
+      None => ToolOutcome::Cancelled,
     }
   }
 }

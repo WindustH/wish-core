@@ -10,7 +10,8 @@
 //! - `Reasoning` becomes a `reasoning` item: `ciphertext` -> `encrypted_content`, `plaintext` ->
 //!   `reasoning_text` content, and `display` -> the required `summary` array.
 //!   The mode's `reasoning_form` decides whether encrypted reasoning is requested
-//!   (`include: ["reasoning.encrypted_content"]`), sent as plaintext reasoning or dropped entirely.
+//!   (`include: ["reasoning.encrypted_content"]`) and sent back, or sent back as plaintext
+//!   reasoning; a reasoning item without the material its form sends is dropped.
 //! - A compacted history becomes a `compaction` item, carrying the opaque payload back verbatim
 //!   with the service's own id when it gave one.
 //! - Tools are flat (`{"type": "function", "name", ...}` without `strict`) and the choice is a plain
@@ -38,54 +39,21 @@
 //!   `stream: true`; the terminal response event then carries the usage, so nothing else is asked for.
 
 use crate::protocol::error::Error;
-use crate::protocol::ReasoningOpaqueKind;
+use crate::protocol::model_use::message::image_data_url;
+use crate::protocol::model_use::tool::tool_result_text;
 use crate::protocol::{
-  ContentBlock, Message, ReasoningConfig, ReasoningSummary, Request, Tool, ToolChoice,
+  ContentBlock, Message, ReasoningConfig, ReasoningOpaqueKind, ReasoningSummary, Request, Tool,
+  ToolChoice,
 };
 use serde_json::{Map, Value, json};
 
-/// Which of the wire's reasoning forms this endpoint is asked for, and whose deployment of the wire
-/// it is: the caller picks both.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ResponsesApiCompatMode {
-  pub reasoning_form: ReasoningForm,
-  /// Whose deployment of this wire the call goes to.
-  pub deployment: ResponsesDeployment,
-}
+pub use crate::protocol::model_use::mode::{ReasoningForm, ResponsesApiMode, ResponsesDeployment};
 
-/// Which form the reasoning round trip takes on this wire.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ReasoningForm {
-  /// Send reasoning back as plaintext `reasoning_text` content.
-  Plaintext,
-  /// Ask for encrypted reasoning (`include: ["reasoning.encrypted_content"]`) and send it back.
-  #[default]
-  Ciphertext,
-  /// Read reasoning, but never send it back.
-  NoSendBack,
-}
-
-/// Which deployment of this wire an endpoint lives on.
-///
-/// The body and the events are the same on both; what changes is what the call has to carry beside
-/// them, and what the reply says about the account.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ResponsesDeployment {
-  /// The platform API, which asks for nothing beyond auth.
-  #[default]
-  Platform,
-  /// The Codex backend a ChatGPT subscription is served from: it routes by markers of its own, and
-  /// the account's quota rides the reply.
-  Codex,
-}
-
-impl ResponsesDeployment {
-  /// Headers this deployment asks for besides auth and `content-type`.
-  pub(crate) fn get_headers(self) -> &'static [(&'static str, &'static str)] {
-    match self {
-      ResponsesDeployment::Platform => HEADERS,
-      ResponsesDeployment::Codex => CODEX_HEADERS,
-    }
+/// Headers the mode's deployment asks for besides auth and `content-type`.
+pub(crate) fn get_headers(mode: ResponsesApiMode) -> &'static [(&'static str, &'static str)] {
+  match mode.deployment {
+    ResponsesDeployment::Platform => HEADERS,
+    ResponsesDeployment::Codex => CODEX_HEADERS,
   }
 }
 
@@ -99,7 +67,7 @@ pub const HEADERS: &[(&str, &str)] = &[];
 pub const CODEX_HEADERS: &[(&str, &str)] =
   &[("originator", "codex_cli_rs"), ("oai-product-sku", "codex")];
 
-pub fn render(request: &Request, variant: ResponsesApiCompatMode) -> Result<Value, Error> {
+pub fn render(request: &Request, mode: ResponsesApiMode) -> Result<Value, Error> {
   let mut body = Map::new();
   body.insert("model".into(), json!(request.model));
   body.insert("store".into(), json!(false));
@@ -107,18 +75,18 @@ pub fn render(request: &Request, variant: ResponsesApiCompatMode) -> Result<Valu
     body.insert("prompt_cache_key".into(), json!(key));
   }
   // The Codex backend serves only streamed calls, so a buffered one asks for a reply it will not
-  // give; the same refusal as the cap above, made here rather than by the service.
-  if variant.deployment == ResponsesDeployment::Codex && !request.stream {
+  // give; refused here rather than by the service, like the output cap below.
+  if mode.deployment == ResponsesDeployment::Codex && !request.stream {
     return Err(Error::Build("the Codex deployment serves only streamed calls".to_owned()));
   }
   if request.stream {
     body.insert("stream".into(), json!(true));
   }
-  if variant.reasoning_form == ReasoningForm::Ciphertext {
+  if mode.reasoning_form == ReasoningForm::Ciphertext {
     body.insert("include".into(), json!(["reasoning.encrypted_content"]));
   }
   if let Some(max_output_tokens) = request.max_output_tokens {
-    if variant.deployment == ResponsesDeployment::Codex {
+    if mode.deployment == ResponsesDeployment::Codex {
       return Err(Error::Build("the Codex deployment takes no `max_output_tokens`".to_owned()));
     }
     body.insert("max_output_tokens".into(), json!(max_output_tokens));
@@ -126,7 +94,7 @@ pub fn render(request: &Request, variant: ResponsesApiCompatMode) -> Result<Valu
   if let Some(reasoning) = &request.reasoning {
     render_reasoning(reasoning, &mut body)?;
   }
-  body.insert("input".into(), Value::Array(render_items(&request.conversation, variant)?));
+  body.insert("input".into(), Value::Array(render_items(&request.conversation, mode)?));
   if !request.tools.is_empty() {
     let tools: Vec<Value> = request.tools.iter().map(render_tool).collect();
     body.insert("tools".into(), Value::Array(tools));
@@ -143,7 +111,7 @@ pub fn render(request: &Request, variant: ResponsesApiCompatMode) -> Result<Valu
 /// call's controls beside it.
 pub(crate) fn render_items(
   conversation: &[Message],
-  variant: ResponsesApiCompatMode,
+  mode: ResponsesApiMode,
 ) -> Result<Vec<Value>, Error> {
   let mut items: Vec<Value> = Vec::new();
   for message in conversation {
@@ -158,8 +126,12 @@ pub(crate) fn render_items(
         items.push(render_function_output_item(call_id, content))
       }
       Message::Reasoning { plaintext, display, ciphertext, opaque_kind, .. } => {
-        let ciphertext = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::OpenAiEncrypted, ciphertext);
-        if let Some(item) = render_reasoning_item(plaintext, display, ciphertext, variant) {
+        let ciphertext = ReasoningOpaqueKind::material_if_kind(
+          *opaque_kind,
+          ReasoningOpaqueKind::OpenAiEncrypted,
+          ciphertext,
+        );
+        if let Some(item) = render_reasoning_item(plaintext, display, ciphertext, mode) {
           items.push(item);
         }
       }
@@ -252,14 +224,14 @@ fn render_reasoning_item(
   plaintext: &str,
   display: &str,
   ciphertext: &str,
-  variant: ResponsesApiCompatMode,
+  mode: ResponsesApiMode,
 ) -> Option<Value> {
   let summary = if display.is_empty() {
     Vec::new()
   } else {
     vec![json!({"type": "summary_text", "text": display})]
   };
-  match variant.reasoning_form {
+  match mode.reasoning_form {
     ReasoningForm::Ciphertext if !ciphertext.is_empty() => {
       Some(json!({"type": "reasoning", "summary": summary, "encrypted_content": ciphertext}))
     }
@@ -275,7 +247,7 @@ fn render_input_part(block: &ContentBlock) -> Value {
     ContentBlock::Text { text } => json!({"type": "input_text", "text": text}),
     // The image travels in the data-URL shape this wire's `input_image` part expects.
     ContentBlock::Image { mime_type, data_base64 } => {
-      json!({"type": "input_image", "image_url": format!("data:{mime_type};base64,{data_base64}")})
+      json!({"type": "input_image", "image_url": image_data_url(mime_type, data_base64)})
     }
   }
 }
@@ -295,13 +267,9 @@ fn render_function_call_item(call_id: &str, name: &str, arguments: &Value) -> Va
 }
 
 fn render_function_output_item(call_id: &str, content: &Value) -> Value {
-  let output = match content {
-    Value::String(text) => text.clone(),
-    other => other.to_string(),
-  };
   json!({
     "type": "function_call_output",
     "call_id": call_id,
-    "output": output,
+    "output": tool_result_text(content),
   })
 }

@@ -1,41 +1,30 @@
 //! Incremental, byte-level SSE parser.
 //!
-//! Feeds raw bytes as they arrive from a response body and emits records for complete frames.
+//! Feeds raw bytes as they arrive from a response body and emits a [`Record`] for each complete
+//! dispatch: its `data:` payload (multi-line `data:` joined with `\n`) and its optional `event:`.
 //! Partial lines are retained until more bytes show up, so nothing ever blocks on a buffer
 //! boundary. Text is decoded lossily: a corrupted byte must not abort an otherwise valid stream.
-//!
-//! [`SseStream`] is the driver around the parser: it reads a [`ReplyStream`], drops comments, caps
-//! how many events one attempt may produce, and flushes a trailing event when a body ends without
-//! the blank line that would normally close it.
+//! Comments (`:`-prefixed lines, the heartbeats) are dropped here: no protocol reads them. An `id:`
+//! is not kept either - no protocol resumes a stream - but a record that carries only an id is
+//! still a record, as the framing says.
 
-use std::collections::VecDeque;
-
-use super::build_payload_error;
-use crate::protocol::error::Error;
-use crate::protocol::wire::ReplyStream;
-
-/// A parsed SSE record.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SseEvent {
-  /// A dispatch record: `data:` payload (multi-line `data:` joined with `\n`), optional `event:`.
-  Dispatch { event: Option<String>, data: String, id: Option<String> },
-  /// A comment line (`:`-prefixed). Heartbeats land here.
-  Comment(String),
-}
+use super::record::Record;
 
 /// A parser-side limit was exceeded; the stream is no longer trustworthy.
 #[derive(Debug, thiserror::Error)]
-pub enum SseError {
+pub(super) enum SseError {
   #[error("sse event exceeds {limit} bytes")]
   EventTooLarge { limit: usize },
 }
 
 /// One parser instance belongs to exactly one response body.
 #[derive(Debug)]
-pub struct SseParser {
+pub(super) struct SseParser {
   buffer: Vec<u8>,
   pending_event: Option<String>,
-  pending_id: Option<String>,
+  /// Whether the record being accumulated named an `id:`, which makes it a record to dispatch
+  /// even without data.
+  has_pending_id: bool,
   pending_data: String,
   has_pending_data: bool,
   /// Raw bytes charged to the record currently being accumulated. Ignored fields and comments
@@ -48,11 +37,11 @@ pub struct SseParser {
 
 impl SseParser {
   /// New parser with an explicit per-record byte cap.
-  pub fn with_max_event_bytes(max_event_bytes: usize) -> Self {
+  pub(super) fn with_max_event_bytes(max_event_bytes: usize) -> Self {
     Self {
       buffer: Vec::new(),
       pending_event: None,
-      pending_id: None,
+      has_pending_id: false,
       pending_data: String::new(),
       has_pending_data: false,
       pending_bytes: 0,
@@ -64,7 +53,7 @@ impl SseParser {
   ///
   /// An over-cap record returns [`SseError::EventTooLarge`], after which the parser must be
   /// abandoned.
-  pub fn feed(&mut self, chunk: &[u8]) -> Result<Vec<SseEvent>, SseError> {
+  pub(super) fn feed(&mut self, chunk: &[u8]) -> Result<Vec<Record>, SseError> {
     self.buffer.extend_from_slice(chunk);
     let mut out = Vec::new();
     let mut consumed = 0;
@@ -91,7 +80,7 @@ impl SseParser {
   /// Flushes end of stream: a trailing record without its blank line is still dispatched (lenient
   /// tail handling for truncated streams). An over-cap tail is an explicit error, never a silent
   /// drop.
-  pub fn finish(&mut self) -> Result<Vec<SseEvent>, SseError> {
+  pub(super) fn finish(&mut self) -> Result<Vec<Record>, SseError> {
     let mut out = Vec::new();
     self.enforce_cap()?;
     if !self.buffer.is_empty() {
@@ -126,7 +115,7 @@ impl SseParser {
     Ok(())
   }
 
-  fn handle_line(&mut self, line: &str, out: &mut Vec<SseEvent>) -> Result<(), SseError> {
+  fn handle_line(&mut self, line: &str, out: &mut Vec<Record>) -> Result<(), SseError> {
     if line.is_empty() {
       // A blank line is the record boundary.
       self.flush_pending(out);
@@ -148,115 +137,26 @@ impl SseParser {
         self.has_pending_data = true;
       }
       "event" => self.pending_event = Some(value.to_owned()),
-      "id" => self.pending_id = Some(value.to_owned()),
-      "" => out.push(SseEvent::Comment(value.to_owned())),
+      "id" => self.has_pending_id = true,
       _ => {
-        // Unknown field names (including `retry`) are ignored.
+        // Comments, and unknown field names (including `retry`), are ignored.
       }
     }
     Ok(())
   }
 
-  fn flush_pending(&mut self, out: &mut Vec<SseEvent>) {
-    if !self.has_pending_data && self.pending_event.is_none() && self.pending_id.is_none() {
+  fn flush_pending(&mut self, out: &mut Vec<Record>) {
+    if !self.has_pending_data && self.pending_event.is_none() && !self.has_pending_id {
       // Even a boundary with nothing to dispatch closes the charged record.
       self.pending_bytes = 0;
       return;
     }
-    let event = SseEvent::Dispatch {
+    out.push(Record {
       event: self.pending_event.take(),
       data: std::mem::take(&mut self.pending_data),
-      id: self.pending_id.take(),
-    };
-    out.push(event);
+    });
+    self.has_pending_id = false;
     self.has_pending_data = false;
     self.pending_bytes = 0;
-  }
-}
-
-/// One open response body, read as SSE.
-///
-/// The event ceiling is checked here rather than in the byte stream: only framing knows where an
-/// event ends. Comments (keep-alives) are dropped: no protocol reads them, and they must not count
-/// against the ceiling either.
-pub struct SseStream<S: ReplyStream> {
-  reply: S,
-  parser: SseParser,
-  pending: VecDeque<SseEvent>,
-  max_events: u64,
-  events: u64,
-  exhausted: bool,
-}
-
-impl<S: ReplyStream> SseStream<S> {
-  /// Reads `reply` as SSE, bounded by the limits the reply was opened with.
-  pub fn new(reply: S) -> Self {
-    let limits = reply.get_limits();
-    Self {
-      reply,
-      parser: SseParser::with_max_event_bytes(limits.max_event_bytes),
-      pending: VecDeque::new(),
-      max_events: limits.max_stream_events,
-      events: 0,
-      exhausted: false,
-    }
-  }
-
-  /// Status of the reply being streamed.
-  pub fn get_status(&self) -> u16 {
-    self.reply.get_status()
-  }
-
-  /// `retry-after` of the reply head, in milliseconds.
-  pub fn get_retry_after_ms(&self) -> Option<u64> {
-    self.reply.get_retry_after_ms()
-  }
-
-  /// The headers of the reply head, as received.
-  pub fn get_headers(&self) -> &[(String, String)] {
-    self.reply.get_headers()
-  }
-
-  /// Whether that status is in the `2xx` range.
-  pub fn is_success(&self) -> bool {
-    self.reply.is_success()
-  }
-
-  /// Best-effort body of a non-`2xx` reply, for the layer that classifies it.
-  pub async fn read_error_body(&mut self) -> Vec<u8> {
-    self.reply.read_error_body().await
-  }
-
-  /// The next dispatch record, or `None` at the end of the body.
-  pub async fn next(&mut self) -> Result<Option<SseEvent>, Error> {
-    loop {
-      if let Some(event) = self.pending.pop_front() {
-        if matches!(event, SseEvent::Comment(_)) {
-          continue;
-        }
-        self.events += 1;
-        if self.events > self.max_events {
-          return Err(build_payload_error(&format!("stream exceeds {} events", self.max_events)));
-        }
-        return Ok(Some(event));
-      }
-      if self.exhausted {
-        return Ok(None);
-      }
-      // Framing failed: the bytes are no longer trustworthy, so the stream is over either way.
-      match self.reply.next().await? {
-        Some(chunk) => {
-          let events =
-            self.parser.feed(&chunk).map_err(|error| build_payload_error(&error.to_string()))?;
-          self.pending.extend(events);
-        }
-        None => {
-          self.exhausted = true;
-          let events =
-            self.parser.finish().map_err(|error| build_payload_error(&error.to_string()))?;
-          self.pending.extend(events);
-        }
-      }
-    }
   }
 }

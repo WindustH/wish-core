@@ -10,13 +10,13 @@
 //! - Ids are kept as the service spelled them, except for the `models/` or
 //!   `publishers/<publisher>/models/` prefix of a Google resource name, which is stripped because
 //!   the wire wants the bare id back.
-//! - What cannot be represented is kept as text in [`ModelCatalog::warnings`] rather than guessed
+//! - What cannot be represented is kept as text in [`ModelListPage::warnings`] rather than guessed
 //!   at. A cursor comes from the service, except Qwen's next page number, which follows from the
 //!   page's own `page_no`, `page_size` and `total`.
 //!
-//! Each service's own reading of its page lives in a module below this one, and
-//! [`parse_catalog_page`] picks the one a protocol id names, while `source.rs` states where each
-//! of those pages is read from. Bedrock's catalog is read here as
+//! Each service's own reading of its page lives in a module below this one, and [`parse_page`]
+//! picks the one a protocol id names, while `source.rs` states where each of those pages is read
+//! from and [`build_page_query`] how the next one is asked for. Bedrock's list is read here as
 //! well, from a request its source signs with SigV4 - the same mechanism its Converse wire
 //! authenticates by.
 
@@ -52,9 +52,23 @@ pub struct Model {
   pub max_output_tokens: Option<u64>,
 }
 
+impl Model {
+  /// A model known by `id`, before anything else its entry says is read into it.
+  pub(crate) fn new(id: impl Into<String>) -> Self {
+    Self {
+      id: id.into(),
+      name: None,
+      owner: None,
+      created_at: None,
+      context_window: None,
+      max_output_tokens: None,
+    }
+  }
+}
+
 /// One page of a service's model list.
 #[derive(Clone, Debug)]
-pub struct ModelCatalog {
+pub struct ModelListPage {
   /// The protocol that read this page.
   pub protocol: ModelListProtocol,
   /// The models on this page, in the order the service listed them.
@@ -65,88 +79,26 @@ pub struct ModelCatalog {
   pub warnings: Vec<String>,
 }
 
-/// Which service's model list a page is read by.
-///
-/// One variant per service: the vocabulary this crate knows. [`ModelListProtocol::get_id`] is the same name
-/// in text, so the source table and any configuration boundary can carry it and
-/// [`FromStr`](std::str::FromStr) brings it back.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ModelListProtocol {
-  /// The list an OpenAI-compatible service mounts itself.
-  OpenAiModels,
-  /// The list a Codex subscription's own endpoint serves.
-  OpenAiCodexModels,
-  /// DashScope's list.
-  QwenModels,
-  /// Anthropic's list.
-  AnthropicModels,
-  /// Google's list.
-  GoogleModels,
-  /// Bedrock's list, which is read with a signed request.
-  BedrockModels,
-}
-
-impl ModelListProtocol {
-  /// Every protocol this crate knows.
-  pub const ALL: &[ModelListProtocol] = &[
-    ModelListProtocol::OpenAiModels,
-    ModelListProtocol::OpenAiCodexModels,
-    ModelListProtocol::QwenModels,
-    ModelListProtocol::AnthropicModels,
-    ModelListProtocol::GoogleModels,
-    ModelListProtocol::BedrockModels,
-  ];
-
-  /// The name this protocol is known by in text: what the source table, the documentation and a
-  /// page's own [`ModelCatalog::protocol`] say.
-  pub const fn get_id(self) -> &'static str {
-    match self {
-      ModelListProtocol::OpenAiModels => "openai_models",
-      ModelListProtocol::OpenAiCodexModels => "openai_codex_models",
-      ModelListProtocol::QwenModels => "qwen_models",
-      ModelListProtocol::AnthropicModels => "anthropic_models",
-      ModelListProtocol::GoogleModels => "google_models",
-      ModelListProtocol::BedrockModels => "bedrock_models",
-    }
-  }
-}
-
-/// Why a model list cannot be asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Unsupported {
-  /// No source serves the protocol: the wire publishes no list a request can ask for.
-  NoListing,
-}
-
-impl Unsupported {
-  /// The reason in the words a caller reads back.
-  pub const fn get_text(self) -> &'static str {
-    match self {
-      Unsupported::NoListing => "publishes no model list a request can ask for",
-    }
-  }
-}
-
-impl std::fmt::Display for ModelListProtocol {
-  fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    formatter.write_str(self.get_id())
-  }
-}
-
-impl std::str::FromStr for ModelListProtocol {
-  type Err = Error;
-
-  /// Reads back what [`ModelListProtocol::get_id`] wrote, for a boundary that carries text.
+text_id_enum! {
+  /// Which service's model list a page is read by.
   ///
-  /// # Errors
-  ///
-  /// [`Error::Build`] for a name this crate does not know.
-  fn from_str(id: &str) -> Result<Self, Self::Err> {
-    Self::ALL
-      .iter()
-      .copied()
-      .find(|protocol| protocol.get_id() == id)
-      .ok_or_else(|| Error::Build(format!("unknown model list protocol `{id}`")))
+  /// One variant per service: the vocabulary this crate knows. The text id is what the source
+  /// table, the documentation and any configuration boundary carry.
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  #[allow(clippy::enum_variant_names)] // The variants spell their ids.
+  pub enum ModelListProtocol (unknown: "unknown model list protocol `{}`") {
+    /// The list an OpenAI-compatible service mounts itself.
+    OpenAiModels => "openai_models",
+    /// The list a Codex subscription's own endpoint serves.
+    OpenAiCodexModels => "openai_codex_models",
+    /// DashScope's list.
+    QwenModels => "qwen_models",
+    /// Anthropic's list.
+    AnthropicModels => "anthropic_models",
+    /// Google's list.
+    GoogleModels => "google_models",
+    /// Bedrock's list, which is read with a signed request.
+    BedrockModels => "bedrock_models",
   }
 }
 
@@ -156,10 +108,7 @@ impl std::str::FromStr for ModelListProtocol {
 ///
 /// Returns [`Error::Malformed`] when the page is missing a container the protocol cannot work
 /// without; a merely absent field stays absent, with a warning.
-pub fn parse_catalog_page(
-  protocol: ModelListProtocol,
-  body: &Value,
-) -> Result<ModelCatalog, Error> {
+pub fn parse_page(protocol: ModelListProtocol, body: &Value) -> Result<ModelListPage, Error> {
   match protocol {
     ModelListProtocol::OpenAiModels => openai::parse(body),
     ModelListProtocol::OpenAiCodexModels => codex::parse(body),
@@ -176,13 +125,56 @@ pub fn build_page_query(
   protocol: ModelListProtocol,
   cursor: Option<&str>,
   page_size: u32,
-) -> Result<Vec<(String, String)>, Error> {
+) -> Vec<(String, String)> {
   match protocol {
-    ModelListProtocol::OpenAiModels => Ok(openai::build_page_query(cursor)),
-    ModelListProtocol::OpenAiCodexModels => Ok(codex::build_page_query()),
-    ModelListProtocol::QwenModels => Ok(qwen::build_page_query(cursor, page_size)),
-    ModelListProtocol::AnthropicModels => Ok(anthropic::build_page_query(cursor, page_size)),
-    ModelListProtocol::GoogleModels => Ok(google::build_page_query(cursor, page_size)),
-    ModelListProtocol::BedrockModels => Ok(bedrock::build_page_query()),
+    ModelListProtocol::OpenAiModels => openai::build_page_query(cursor),
+    ModelListProtocol::OpenAiCodexModels => codex::build_page_query(),
+    ModelListProtocol::QwenModels => qwen::build_page_query(cursor, page_size),
+    ModelListProtocol::AnthropicModels => anthropic::build_page_query(cursor, page_size),
+    ModelListProtocol::GoogleModels => google::build_page_query(cursor, page_size),
+    ModelListProtocol::BedrockModels => bedrock::build_page_query(),
+  }
+}
+
+/// One entry of a page that a call can use: its id, beside the entry itself.
+pub(crate) type Entry<'a> = (&'a str, &'a Value);
+
+/// The entries of a page that a call can use, in the order the service listed them, read from the
+/// `container` array with their ids under `id_key`.
+///
+/// An entry without an id is dropped with a warning, because a model that cannot be called is not
+/// a model; the warnings are the page's first ones, in the order the entries came.
+///
+/// # Errors
+///
+/// [`Error::Malformed`] when `container` is missing or is not an array, named as `service`'s.
+pub(crate) fn read_entries<'a>(
+  body: &'a Value,
+  container: &str,
+  id_key: &str,
+  service: &str,
+) -> Result<(Vec<Entry<'a>>, Vec<String>), Error> {
+  let entries = body
+    .get(container)
+    .and_then(Value::as_array)
+    .ok_or_else(|| Error::Malformed(format!("{service} model list missing `{container}` array")))?;
+  let article = if id_key.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+  let mut read = Vec::new();
+  let mut warnings = Vec::new();
+  for entry in entries {
+    match entry.get(id_key).and_then(Value::as_str).filter(|id| !id.is_empty()) {
+      Some(id) => read.push((id, entry)),
+      None => warnings.push(format!("an entry without {article} `{id_key}` was dropped")),
+    }
+  }
+  Ok((read, warnings))
+}
+
+/// The forward cursor of a page that pages by id: its `last_id`, while `has_more` says a next page
+/// exists - an id on its own promises none.
+pub(crate) fn read_forward_cursor(body: &Value) -> Option<String> {
+  match body.get("has_more").and_then(Value::as_bool) {
+    Some(true) => body.get("last_id").and_then(Value::as_str).map(str::to_owned),
+    _ => None,
   }
 }

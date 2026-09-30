@@ -3,25 +3,8 @@ mod calls;
 use crate::{
   protocol::{StopReason, Usage},
   session::GenerationId,
+  utils::time::Timestamp,
 };
-pub(super) use calls::record_stream_usage;
-
-/// Unix time in milliseconds. Ordering is defined by history sequence numbers, not wall time.
-#[derive(
-  Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
-pub struct Timestamp(pub u64);
-impl Timestamp {
-  pub fn now() -> Self {
-    Self(
-      std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64,
-    )
-  }
-}
 
 /// Local to one session; never reused, including across run invocations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -83,4 +66,11 @@ pub(crate) struct CallObservation {
   pub last_request_input_tokens: Option<u64>,
   pub last_request_estimated_tokens: Option<u64>,
   pub stop_reason: Option<StopReason>,
+}
+impl CallObservation {
+  /// Marks the call finished now, `started` being when the caller was first asked.
+  pub(crate) fn finish(&mut self, started: std::time::Instant) {
+    self.finished_at = Some(Timestamp::now());
+    self.elapsed_ms = Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64);
+  }
 }

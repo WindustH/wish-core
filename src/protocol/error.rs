@@ -2,27 +2,28 @@
 
 /// Everything that can go wrong on the way to a reply, divided by where it came from: `Build` is a
 /// request this crate refuses to render, `Unsupported` is a feature the protocol it was asked of
-/// does not carry, `Malformed` is an upstream payload that does not fit its
-/// wire, `Upstream` is a failure the service reported, `Transport` is a failure of the network
-/// itself, and `Renewal` is material that had expired before the call could be sent. [`Error::is_retryable`]
-/// judges whether a second attempt could help.
+/// does not carry, `Malformed` is an upstream payload that does not fit its wire, `Upstream` is a
+/// failure the service reported, `Transport` is a failure of the network itself, and `Renewal` is
+/// credentials that had expired before the call could be sent. [`Error::is_retryable`] judges
+/// whether a second attempt could help.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, thiserror::Error)]
 pub enum Error {
   /// The request cannot be rendered for this protocol: an axis the wire has no spelling for, a
   /// mandatory field left out, or a conversation the wire forbids.
   #[error("request build failed: {0}")]
   Build(String),
-  /// A feature was asked of a protocol that does not carry it: a model list a wire never
-  /// publishes, an account state that rides replies instead of a request of its own, or a
-  /// compaction call a wire does not have. This is configuration, not failure: sending the
-  /// same ask again cannot make the protocol grow the feature.
+  /// A feature was asked of a protocol that does not carry it: a read the client was never given
+  /// a protocol for, an account state that rides replies instead of a request of its own, a
+  /// compaction or a count a wire does not have, or a renewal a key cannot make. This is
+  /// configuration, not failure: sending the same ask again cannot make the protocol grow the
+  /// feature.
   #[error("unsupported {feature} on `{subject}`: {reason}")]
   Unsupported {
     /// The feature that was asked for, in the words its own module uses.
     feature: String,
-    /// What it was asked of: a protocol, a wire, a protocol.
+    /// What it was asked of: the protocol, or the auth scheme, that cannot serve it.
     subject: String,
-    /// Why the ask cannot be served, in the words the feature's `Unsupported` enum states it.
+    /// Why the ask cannot be served, in the words the feature's own module states it.
     reason: String,
   },
   /// The upstream payload does not fit the protocol or this crate's reading of it: a body that is
@@ -49,14 +50,14 @@ pub enum Error {
   /// its own words.
   #[error("transport failed: {0}")]
   Transport(TransportFailure),
-  /// The material had already run out before anything was sent: the outbound join refused it,
-  /// because its expiry had passed against the `now` the caller read. The move is a renewal
-  /// ([`Client::refresh_credentials`](crate::executor::model::client::Client::refresh_credentials), or an ADC
-  /// exchange) and material installed afresh - the same call over the same material will be
-  /// refused the same way.
+  /// The credentials had already run out before anything was sent: the endpoint refused them,
+  /// because their expiry had passed against the `now` the caller read. The move is a renewal
+  /// ([`Client::refresh_credentials`](crate::client::Client::refresh_credentials))
+  /// and credentials installed afresh - the same call over the same credentials will be refused
+  /// the same way.
   #[error("credential renewal needed: the material expired at {expires_at}")]
   Renewal {
-    /// The unix time the material stopped being accepted.
+    /// The unix time the credentials stopped being accepted.
     expires_at: u64,
   },
 }
@@ -86,6 +87,7 @@ impl Error {
         && message.contains("exceeds")
         && message.contains("maximum"))
   }
+
   /// An ask a protocol cannot serve, with the reason its feature states.
   pub(crate) fn build_unsupported(
     feature: &'static str,
@@ -136,26 +138,6 @@ impl Error {
     match self {
       Error::Upstream { retry_after_ms, .. } => *retry_after_ms,
       _ => None,
-    }
-  }
-
-  /// Whether this failure says the credential itself is spent - expired, refused, or unknown to
-  /// the service - so the caller's move is to renew the material (an ADC refresh, a new key) and
-  /// build the client again, not to send the same call over the same material.
-  ///
-  /// A `401` is that verdict from every wire this crate speaks. A `403` is it only when the AWS
-  /// family says so by get_name (`ExpiredToken`, `InvalidAccessKeyId`, `UnrecognizedClientException`),
-  /// because the same status from another service is a permission renewal will not change.
-  #[must_use]
-  pub fn needs_renewal(&self) -> bool {
-    match self {
-      Error::Renewal { .. } => true,
-      Error::Upstream { status: Some(401), .. } => true,
-      Error::Upstream { status: Some(403), code: Some(code), .. } => matches!(
-        code.as_str(),
-        "ExpiredToken" | "InvalidAccessKeyId" | "UnrecognizedClientException"
-      ),
-      _ => false,
     }
   }
 

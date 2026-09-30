@@ -14,17 +14,23 @@
 //! that breaks its own shape is indistinguishable from a malformed response body.
 //!
 //! The decoders live one module per protocol under this one, and [`StreamDecoder`] is the single
-//! place that picks between them, so a client names its protocol once and never matches again.
+//! place that picks between them, so a client names its protocol once and never matches again. It
+//! is also where a block ending becomes a completion: a block that closed on a normal record is
+//! followed by [`StreamEvent::BlockComplete`], which an interrupted stream's partial output relies
+//! on.
 //!
 //! Not every event is part of the answer: a stream may carry a reading beside it, such as the quota
-//! a Codex account_state has left. That becomes [`StreamEvent::Account`] - the accumulator keeps the last
+//! a Codex account has left. That becomes [`StreamEvent::Account`] - the accumulator keeps the last
 //! one it sees beside the messages, starting from the one
 //! [`StreamAccumulator::with_account_state`] was handed for the reply head.
 
+mod blocks;
 mod partial;
+#[allow(unused_imports)] // wish-test
+pub use partial::PartialContent;
 pub use partial::{
-  IncompleteReason, PartialBlock, PartialContent, PartialResponse, ReplayDisposition, StreamEnd,
-  StreamFinalization, ToolExecutionState,
+  IncompleteReason, PartialResponse, ReplayDisposition, StreamEnd, StreamFinalization,
+  ToolExecutionState,
 };
 
 pub mod anthropic_messages;
@@ -37,13 +43,13 @@ pub mod openai_responses;
 
 use std::collections::{BTreeMap, VecDeque};
 
-use serde_json::json;
-
 use crate::protocol::account_state::AccountState;
 use crate::protocol::error::Error;
 
-use super::message::{ContentBlock, Message, ReasoningOpaqueKind};
+use super::ReasoningReplay;
+use super::message::{ContentBlock, Message};
 use super::response::{Response, StopReason, Usage};
+use super::tool::parse_tool_arguments;
 
 /// Which protocol decodes a stream.
 pub enum StreamDecoder {
@@ -56,48 +62,60 @@ pub enum StreamDecoder {
   OpenAiResponses(openai_responses::Decoder),
 }
 
+/// What [`StreamDecoder`] asks of each protocol's decoder.
+trait WireDecoder {
+  /// Decodes one record: its `event:` name, when the wire sends one, and its `data:` payload.
+  fn feed(&mut self, event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error>;
+
+  /// Synthesizes the terminal events of a body that ended without one. Only a wire whose body
+  /// ending is its terminal has any; the others stay silent.
+  fn finish(&mut self) -> Result<Vec<StreamEvent>, Error> {
+    Ok(Vec::new())
+  }
+
+  /// Whether the block endings of the record just fed say their blocks are complete. A wire that
+  /// can close an item whose own status says otherwise answers for that record here.
+  fn confirms_block_ends(&self) -> bool {
+    true
+  }
+}
+
 impl StreamDecoder {
-  /// Feeds one SSE record: its `event:` get_name (usually redundant with the payload's `type`) and
-  /// its `data:` payload.
+  fn get_wire_mut(&mut self) -> &mut dyn WireDecoder {
+    match self {
+      StreamDecoder::AnthropicMessages(decoder) => decoder,
+      StreamDecoder::BedrockConverse(decoder) => decoder,
+      StreamDecoder::GoogleGenerateContent(decoder) => decoder,
+      StreamDecoder::GoogleInteractions(decoder) => decoder,
+      StreamDecoder::MistralConversations(decoder) => decoder,
+      StreamDecoder::OpenAiChat(decoder) => decoder,
+      StreamDecoder::OpenAiResponses(decoder) => decoder,
+    }
+  }
+
+  /// Feeds one SSE record: its `event:` name (usually redundant with the payload's `type`) and its
+  /// `data:` payload.
   pub fn feed(&mut self, event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
-    let events = match self {
-      StreamDecoder::AnthropicMessages(decoder) => decoder.feed(event, data),
-      StreamDecoder::BedrockConverse(decoder) => decoder.feed(event, data),
-      StreamDecoder::GoogleGenerateContent(decoder) => decoder.feed(event, data),
-      StreamDecoder::GoogleInteractions(decoder) => decoder.feed(event, data),
-      StreamDecoder::MistralConversations(decoder) => decoder.feed(event, data),
-      StreamDecoder::OpenAiChat(decoder) => decoder.feed(event, data),
-      StreamDecoder::OpenAiResponses(decoder) => decoder.feed(event, data),
-    }?;
-    // Responses can close an item whose own status is incomplete. Its closing event must
-    // not certify arguments or encrypted reasoning merely because the outer response is open.
-    let incomplete_item = matches!(self, StreamDecoder::OpenAiResponses(_))
-      && events.iter().any(|event| matches!(event, StreamEvent::BlockEnd { .. }))
-      && serde_json::from_str::<serde_json::Value>(data).ok().is_some_and(|value| {
-        value
-          .pointer("/item/status")
-          .and_then(serde_json::Value::as_str)
-          .is_some_and(|status| status != "completed")
-      });
-    if incomplete_item { Ok(events) } else { Ok(certify_blocks(events)) }
+    let wire = self.get_wire_mut();
+    let events = wire.feed(event, data)?;
+    // A block the wire closed without finishing it (a Responses item whose own status is
+    // incomplete) must not be completed merely because the outer response is still open.
+    if wire.confirms_block_ends() { Ok(append_block_completions(events)) } else { Ok(events) }
   }
 
   /// Synthesizes the terminal events of a body that ended without one. Only a protocol whose wire
   /// has no terminal marker (the body ending is the terminal) produces anything here; the others
   /// stay silent, and their accumulator then reports the missing stop event.
   pub fn finish(&mut self) -> Result<Vec<StreamEvent>, Error> {
-    let events = match self {
-      StreamDecoder::BedrockConverse(decoder) => decoder.finish(),
-      StreamDecoder::GoogleGenerateContent(decoder) => decoder.finish(),
-      _ => Ok(Vec::new()),
-    }?;
-    Ok(certify_blocks(events))
+    Ok(append_block_completions(self.get_wire_mut().finish()?))
   }
 }
 
-// Synthetic closing events on an abnormal terminal do not certify complete payloads.
-// Explicit block endings delivered in earlier records keep their certification.
-fn certify_blocks(events: Vec<StreamEvent>) -> Vec<StreamEvent> {
+/// Follows every block ending of a normal record with the completion of that block.
+///
+/// Synthetic closing events on an abnormal terminal (a stop other than `Stop` or `ToolUse`) do not
+/// complete their payloads; block endings delivered in earlier records keep their completions.
+fn append_block_completions(events: Vec<StreamEvent>) -> Vec<StreamEvent> {
   let normal = !events.iter().any(|event| {
     matches!(event,
     StreamEvent::Stop(reason) if !matches!(reason, StopReason::Stop | StopReason::ToolUse))
@@ -152,7 +170,7 @@ pub enum StreamEvent {
   BlockComplete { index: u32 },
   /// Cumulative usage, replacing what was reported before.
   Usage(Usage),
-  /// An account_state reading the stream itself carried, replacing whatever the reply head reported.
+  /// An account reading the stream itself carried, replacing whatever the reply head reported.
   Account(AccountState),
   /// An item the protocol handed over whole rather than streaming it in parts, at its own place in
   /// the index sequence: the opaque item a compacted history travels as.
@@ -164,7 +182,8 @@ pub enum StreamEvent {
 /// Rebuilds a [`Response`] from events, holding the stream to the contract above.
 #[derive(Default)]
 pub struct StreamAccumulator {
-  protocol: Option<super::ModelUseProtocol>,
+  /// How the protocol that produced the stream takes reasoning back; display-only without one.
+  replay: ReasoningReplay,
   blocks: BTreeMap<u32, Block>,
   /// Whole items, at the index they were handed over at, beside the blocks.
   items: BTreeMap<u32, Message>,
@@ -206,38 +225,24 @@ impl Block {
       arguments: String::new(),
     }
   }
-}
 
-/// The stream events are wire-neutral; provenance comes from the decoder's protocol.
-pub(super) fn reasoning_opaque_kind(
-  protocol: super::ModelUseProtocol,
-  signature: &str,
-  ciphertext: &str,
-  replay_item: Option<&serde_json::Value>,
-) -> Option<ReasoningOpaqueKind> {
-  use super::ModelUseProtocol as P;
-  let kind = match protocol {
-    P::AnthropicMessages(..) => ReasoningOpaqueKind::AnthropicSignature,
-    P::BedrockConverse => ReasoningOpaqueKind::BedrockSignature,
-    P::GoogleGenerateContent | P::GoogleVertexGenerateContent => ReasoningOpaqueKind::GoogleSignature,
-    P::GoogleInteractions => ReasoningOpaqueKind::GoogleInteractionsThought,
-    P::OpenAiResponses(..) => ReasoningOpaqueKind::OpenAiEncrypted,
-    P::OpenAiChat(..) | P::MistralConversations => return None,
-  };
-  let has_material = match kind {
-    ReasoningOpaqueKind::GoogleInteractionsThought => replay_item.is_some(),
-    ReasoningOpaqueKind::OpenAiEncrypted => !ciphertext.is_empty(),
-    ReasoningOpaqueKind::GoogleSignature => !signature.is_empty(),
-    _ => !signature.is_empty() || !ciphertext.is_empty(),
-  };
-  if !has_material {
-    return None;
+  /// A reasoning block as the message it becomes. The stream events are wire-neutral, so the
+  /// format of its opaque material is what `replay` - the producing protocol's rules - says it is.
+  fn into_reasoning(self, replay: &ReasoningReplay) -> Message {
+    Message::Reasoning {
+      metadata: Default::default(),
+      opaque_kind: replay.classify_material(
+        &self.signature,
+        &self.ciphertext,
+        self.replay_item.as_ref(),
+      ),
+      replay_item: self.replay_item,
+      display: self.display.unwrap_or_else(|| self.plaintext.clone()),
+      plaintext: self.plaintext,
+      signature: self.signature,
+      ciphertext: self.ciphertext,
+    }
   }
-  Some(match kind {
-    ReasoningOpaqueKind::AnthropicSignature if !ciphertext.is_empty() => ReasoningOpaqueKind::AnthropicRedacted,
-    ReasoningOpaqueKind::BedrockSignature if !ciphertext.is_empty() => ReasoningOpaqueKind::BedrockRedacted,
-    other => other,
-  })
 }
 
 impl StreamAccumulator {
@@ -246,13 +251,13 @@ impl StreamAccumulator {
   }
 
   /// Selects protocol-specific replay rules for interrupted reasoning. Without a protocol,
-  /// reasoning is display-only; text and certified tool calls can still be retained.
+  /// reasoning is display-only; text and completed tool calls can still be retained.
   /// Transparent reasoning prefixes can be replayed before completion; opaque payloads cannot.
   pub fn for_protocol(protocol: super::ModelUseProtocol) -> Self {
-    Self { protocol: Some(protocol), ..Self::default() }
+    Self { replay: protocol.get_reasoning_replay(), ..Self::default() }
   }
 
-  /// Carries the account_state reading the opening reply held into the rebuilt [`Response`].
+  /// Carries the account reading the opening reply held into the rebuilt [`Response`].
   ///
   /// That reading arrives with the reply head, before the first event, so it is handed over here
   /// rather than streamed; `None` leaves [`Response::account_state`] empty.
@@ -371,19 +376,7 @@ impl StreamAccumulator {
             content: vec![ContentBlock::Text { text: block.text }],
           }),
         },
-        BlockKind::Reasoning => {
-          messages.push(Message::Reasoning {
-            metadata: Default::default(),
-            opaque_kind: self.protocol.and_then(|protocol| reasoning_opaque_kind(
-              protocol, &block.signature, &block.ciphertext, block.replay_item.as_ref(),
-            )),
-            replay_item: block.replay_item,
-            display: block.display.unwrap_or_else(|| block.plaintext.clone()),
-            plaintext: block.plaintext,
-            signature: block.signature,
-            ciphertext: block.ciphertext,
-          });
-        }
+        BlockKind::Reasoning => messages.push(block.into_reasoning(&self.replay)),
         BlockKind::ToolUse => {
           let call_id = block.call_id.ok_or_else(|| {
             build_violation_error(&format!("tool block {index} closed without a call id"))
@@ -391,15 +384,9 @@ impl StreamAccumulator {
           let name = block.name.ok_or_else(|| {
             build_violation_error(&format!("tool block {index} closed without a name"))
           })?;
-          let arguments = if block.arguments.trim().is_empty() {
-            json!({})
-          } else {
-            serde_json::from_str(&block.arguments).map_err(|_| {
-              Error::Malformed(format!(
-                "arguments of streamed tool block {index} are not valid JSON"
-              ))
-            })?
-          };
+          let arguments = parse_tool_arguments(&block.arguments).map_err(|_| {
+            Error::Malformed(format!("arguments of streamed tool block {index} are not valid JSON"))
+          })?;
           messages.push(Message::ToolUse {
             metadata: Default::default(),
             call_id,

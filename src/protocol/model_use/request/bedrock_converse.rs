@@ -36,15 +36,19 @@
 //!   wire: `PromptCache::breakpoints` is dropped for models outside the Claude family (they reject
 //!   `cachePoint`), and the response half of the `additionalModelRequestFields` bridge is not read
 //!   yet.
-//! - The signing is not implemented yet - it belongs to the transport layer - so a real Converse
-//!   endpoint rejects a call until it is.
+//! - The SigV4 signature is not this renderer's business: it is computed over the finished call,
+//!   once the path, the body and the headers are final ([`crate::protocol::endpoint::sigv4`]).
 //! - A `Developer` message has no role of its own on this wire, so in the leading run its text joins
 //!   the same `system[]` blocks, and past it the model reads it as user input.
 
 use crate::protocol::error::Error;
-use crate::protocol::ReasoningOpaqueKind;
-use crate::protocol::model_use::request::{ANSWER_HEADROOM, TierBudget, resolve_tier_budget};
-use crate::protocol::{ContentBlock, Message, ReasoningConfig, Request, Tool, ToolChoice};
+use crate::protocol::model_use::request::{
+  AlternatingTurns, lift_cap_above_budget, render_claude_thinking, split_leading_instructions,
+};
+use crate::protocol::model_use::tool::tool_result_text;
+use crate::protocol::{
+  ContentBlock, Message, ReasoningConfig, ReasoningOpaqueKind, Request, Tool, ToolChoice,
+};
 use serde_json::{Map, Value, json};
 
 /// Headers every call carries, besides auth and `content-type`.
@@ -57,7 +61,11 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   let breakpoints = request.cache.as_ref().is_some_and(|cache| cache.breakpoints)
     && request.model.contains("anthropic");
   let mut body = Map::new();
-  let (system, conversation) = split_leading_instructions(&request.conversation)?;
+  let (system, conversation) = split_leading_instructions(
+    &request.conversation,
+    "a system block can only carry text on the converse wire",
+  )?;
+  let system: Vec<Value> = system.iter().flatten().map(|text| json!({"text": text})).collect();
   if !system.is_empty() {
     body.insert("system".into(), Value::Array(system));
   }
@@ -88,13 +96,9 @@ pub fn render(request: &Request) -> Result<Value, Error> {
     .and_then(Value::as_u64)
     && let Some(max_tokens) = request.max_output_tokens
   {
-    // The model refuses to answer at or below the tokens it thinks with: a cap that tight is raised
-    // instead of failing the call.
     body.insert(
       "inferenceConfig".into(),
-      json!({
-        "maxTokens": if max_tokens > budget_tokens { max_tokens } else { budget_tokens + ANSWER_HEADROOM }
-      }),
+      json!({"maxTokens": lift_cap_above_budget(max_tokens, budget_tokens)}),
     );
   }
   if breakpoints {
@@ -124,71 +128,22 @@ fn append_cache_point(array: Option<&mut Value>) {
   }
 }
 
-/// The bridge this provider-agnostic wire uses for Anthropic thinking parameters: the tier preset
-/// selects extended thinking, `enabled` alone selects adaptive thinking, and omission is the off
-/// state. The wire has no summary knob.
+/// The bridge this provider-agnostic wire uses for Anthropic thinking parameters: Claude's own
+/// `thinking` object, whose off state is omission. The wire has no summary knob.
 fn render_reasoning(config: &ReasoningConfig) -> Result<Option<Value>, Error> {
   if config.summary.is_some() {
     return Err(Error::Build("the converse wire has no reasoning summary axis".to_owned()));
   }
-  let thinking = match (config.enabled, config.effort.as_deref()) {
-    (Some(false), Some(_)) => {
-      return Err(Error::Build(
-        "thinking cannot be both disabled and given a depth tier on the converse wire".to_owned(),
-      ));
-    }
-    (Some(false) | None, None) => return Ok(None),
-    (_, Some(effort)) => match resolve_tier_budget(effort)? {
-      TierBudget::Tokens(budget_tokens) => {
-        json!({"type": "enabled", "budget_tokens": budget_tokens})
-      }
-      TierBudget::Adaptive => json!({"type": "adaptive"}),
-    },
-    (Some(true), None) => json!({"type": "adaptive"}),
-  };
-  Ok(Some(json!({"thinking": thinking})))
-}
-
-fn split_leading_instructions(conversation: &[Message]) -> Result<(Vec<Value>, &[Message]), Error> {
-  let mut blocks: Vec<Value> = Vec::new();
-  let mut index = 0;
-  while let Some(message) = conversation.get(index) {
-    let content = match message {
-      Message::System { content, .. } | Message::Developer { content, .. } => content,
-      _ => break,
-    };
-    for block in content {
-      match block {
-        ContentBlock::Text { text } => blocks.push(json!({"text": text})),
-        _ => {
-          return Err(Error::Build(
-            "a system block can only carry text on the converse wire".to_owned(),
-          ));
-        }
-      }
-    }
-    index += 1;
+  if config.enabled == Some(false) && config.effort.is_some() {
+    return Err(Error::Build(
+      "thinking cannot be both disabled and given a depth tier on the converse wire".to_owned(),
+    ));
   }
-  Ok((blocks, &conversation[index..]))
+  Ok(render_claude_thinking(config)?.map(|thinking| json!({"thinking": thinking})))
 }
 
 fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
-  let push = |turns: &mut Vec<Value>,
-              current: &mut Option<&'static str>,
-              blocks: &mut Vec<Value>,
-              role: &'static str,
-              block: Value| {
-    if *current != Some(role) {
-      if !blocks.is_empty() {
-        turns.push(json!({"role": current.unwrap(), "content": std::mem::take(blocks)}));
-      }
-      *current = Some(role);
-    }
-    blocks.push(block);
-  };
-  let mut turns: Vec<Value> = Vec::new();
-  let mut blocks: Vec<Value> = Vec::new();
-  let mut current: Option<&'static str> = None;
+  let mut turns = AlternatingTurns::default();
   let mut pending: Vec<String> = Vec::new();
   for message in conversation {
     match message {
@@ -200,19 +155,21 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
       // Past the leading run an instruction has no place in `system[]`: it rides as user input.
       Message::System { content, .. }
       | Message::Developer { content, .. }
-      | Message::User { content, .. } => {
-        for block in render_user_blocks(content)? {
-          push(&mut turns, &mut current, &mut blocks, "user", block);
-        }
-      }
+      | Message::User { content, .. } => turns.push("user", render_user_blocks(content)?),
       Message::Assistant { content, .. } => {
-        for block in render_assistant_blocks(content)? {
-          push(&mut turns, &mut current, &mut blocks, "assistant", block);
-        }
+        turns.push("assistant", render_assistant_blocks(content)?);
       }
       Message::Reasoning { plaintext, signature, ciphertext, opaque_kind, .. } => {
-        let signature = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::BedrockSignature, signature);
-        let ciphertext = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::BedrockRedacted, ciphertext);
+        let signature = ReasoningOpaqueKind::material_if_kind(
+          *opaque_kind,
+          ReasoningOpaqueKind::BedrockSignature,
+          signature,
+        );
+        let ciphertext = ReasoningOpaqueKind::material_if_kind(
+          *opaque_kind,
+          ReasoningOpaqueKind::BedrockRedacted,
+          ciphertext,
+        );
         let content = if !ciphertext.is_empty() {
           json!({"redactedContent": ciphertext})
         } else if !plaintext.is_empty() || !signature.is_empty() {
@@ -224,13 +181,7 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
         } else {
           continue;
         };
-        push(
-          &mut turns,
-          &mut current,
-          &mut blocks,
-          "assistant",
-          json!({"reasoningContent": content}),
-        );
+        turns.push("assistant", vec![json!({"reasoningContent": content})]);
       }
       Message::ToolUse { call_id, name, arguments, .. } => {
         if call_id.is_empty() {
@@ -239,12 +190,9 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           ));
         }
         pending.push(call_id.clone());
-        push(
-          &mut turns,
-          &mut current,
-          &mut blocks,
+        turns.push(
           "assistant",
-          json!({"toolUse": {"toolUseId": call_id, "name": name, "input": arguments}}),
+          vec![json!({"toolUse": {"toolUseId": call_id, "name": name, "input": arguments}})],
         );
       }
       Message::ToolResult { call_id, content, .. } => {
@@ -254,18 +202,15 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           )));
         };
         pending.remove(index);
-        push(
-          &mut turns,
-          &mut current,
-          &mut blocks,
+        turns.push(
           "user",
-          json!({
+          vec![json!({
             "toolResult": {
               "toolUseId": call_id,
               "status": "success",
               "content": render_tool_result_blocks(content),
             }
-          }),
+          })],
         );
       }
     }
@@ -276,10 +221,7 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
       pending.join(", ")
     )));
   }
-  if !blocks.is_empty() {
-    turns.push(json!({"role": current.unwrap(), "content": blocks}));
-  }
-  Ok(turns)
+  Ok(turns.finish("content"))
 }
 
 fn render_user_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
@@ -336,8 +278,7 @@ fn render_tool_choice(choice: ToolChoice) -> Value {
 fn render_tool_result_blocks(content: &Value) -> Value {
   let block = match content {
     Value::Object(_) => json!({"json": content}),
-    Value::String(text) => json!({"text": text}),
-    other => json!({"text": other.to_string()}),
+    other => json!({"text": tool_result_text(other)}),
   };
   Value::Array(vec![block])
 }

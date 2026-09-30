@@ -1,14 +1,16 @@
 //! Ordered user content. Editor tokens refer to session-local uploaded blobs;
 //! original text and the display order remain in metadata for queue editing.
-use super::{Blob, valid_blob};
 use crate::{
   protocol::{ContentBlock, Message},
-  server::{app::App, error::ApiError},
+  server::{
+    blobs::{self, is_blob_id},
+    error::ApiError,
+  },
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
+use std::{collections::HashSet, path::Path};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -44,7 +46,7 @@ fn ordered_parts(input: &Input) -> Result<Vec<Part>, ApiError> {
       let prefix = format!("<{}-", attachment.kind);
       let digest = token.strip_prefix(&prefix).and_then(|s| s.strip_suffix('>'));
       if !matches!(attachment.kind.as_str(), "image" | "file")
-        || !digest.is_some_and(|s| valid_blob(s) && s == attachment.id)
+        || !digest.is_some_and(|s| is_blob_id(s) && s == attachment.id)
         || !tokens.insert(token)
       {
         return Err(ApiError::bad_request("invalid or duplicate attachment placeholder"));
@@ -76,20 +78,15 @@ fn ordered_parts(input: &Input) -> Result<Vec<Part>, ApiError> {
   Ok(parts)
 }
 
-pub async fn message(app: &App, session_id: &str, mut input: Input) -> Result<Message, ApiError> {
+/// The message an input makes, its attachments read from the session's blobs.
+pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, ApiError> {
   let parts = ordered_parts(&input)?;
-  let dir = app.data_dir.join("blobs").join(session_id);
   let mut attachments = Vec::new();
   for attachment in &mut input.attachments {
-    if !valid_blob(&attachment.id) {
+    if !is_blob_id(&attachment.id) {
       return Err(ApiError::bad_request("invalid attachment id"));
     }
-    let blob: Blob = serde_json::from_slice(
-      &tokio::fs::read(dir.join(format!("{}.json", attachment.id)))
-        .await
-        .map_err(|_| ApiError::not_found())?,
-    )
-    .map_err(ApiError::internal)?;
+    let blob = blobs::read_description(blob_dir, &attachment.id).await?;
     attachment.byte_count = Some(blob.byte_count);
     let block = match attachment.kind.as_str() {
       "image" => {

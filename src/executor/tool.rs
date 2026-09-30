@@ -1,47 +1,9 @@
-use super::ExecutionControl;
-use serde_json::{Value, json};
+//! The contract a tool implementation fulfils, and the execution of one tool batch in the session's
+//! tool mode: calls are started, carried out and settled in the session, each step delivered.
+use super::{ExecutionControl, observe::deliver_new_events};
+use crate::session::{Session, SessionError, SessionEvent, ToolCall, ToolMode, ToolOutcome};
+use futures_util::future::join_all;
 use std::future::Future;
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct ToolCall {
-  pub call_id: String,
-  pub name: String,
-  pub arguments: Value,
-}
-
-/// An unknown result is distinct from failure: an external side effect may have happened.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub enum ToolOutcome {
-  Success(Value),
-  /// Extra model input, appended after all results in this tool batch to preserve tool pairing.
-  SuccessWithInput {
-    output: Value,
-    input: Vec<crate::protocol::ContentBlock>,
-  },
-  /// Success with application data kept on the result message and never sent to the model.
-  SuccessWithMetadata {
-    output: Value,
-    metadata: Value,
-  },
-  Failed(String),
-  Cancelled,
-  Unknown(String),
-}
-
-impl ToolOutcome {
-  pub(crate) fn encode_content(&self) -> Value {
-    match self {
-      Self::Success(value)
-      | Self::SuccessWithInput { output: value, .. }
-      | Self::SuccessWithMetadata { output: value, .. } => {
-        json!({"status": "success", "output": value})
-      }
-      Self::Failed(message) => json!({"status": "failed", "message": message}),
-      Self::Cancelled => json!({"status": "cancelled"}),
-      Self::Unknown(message) => json!({"status": "unknown", "message": message}),
-    }
-  }
-}
 
 /// Executors must observe cancellation and return after their work has stopped or its outcome
 /// is known to be unknown. The loop never drops a started execution to pretend it was cancelled.
@@ -54,16 +16,12 @@ pub trait ToolExecutor: Sync {
   ) -> impl Future<Output = ToolOutcome> + Send;
 }
 
-use super::observe::notify_observers;
-use crate::session::{Session, SessionError, SessionEvent, ToolMode};
-use futures_util::future::join_all;
-
 pub(super) async fn execute_tools(
   executor: &impl ToolExecutor,
   session: &mut Session,
   calls: &[ToolCall],
   control: &ExecutionControl,
-  cursor: &mut u64,
+  delivered: &mut u64,
   observe: &mut (impl FnMut(&SessionEvent) + Send),
 ) -> Result<(), SessionError> {
   match session.get_config().run.tools {
@@ -76,7 +34,7 @@ pub(super) async fn execute_tools(
           ToolOutcome::Failed(format!("unknown tool: {}", call.name))
         } else {
           session.start_tool(call)?;
-          notify_observers(session, cursor, observe)?;
+          deliver_new_events(session, delivered, observe)?;
           // A ToolStarted observer can request cancellation before any external effect.
           if control.is_cancelled() {
             ToolOutcome::Cancelled
@@ -86,7 +44,7 @@ pub(super) async fn execute_tools(
         };
         unknown |= matches!(outcome, ToolOutcome::Unknown(_));
         session.accept_tool_outcome(call, outcome)?;
-        notify_observers(session, cursor, observe)?;
+        deliver_new_events(session, delivered, observe)?;
       }
     }
     ToolMode::Parallel => {
@@ -95,7 +53,7 @@ pub(super) async fn execute_tools(
         let registered = is_registered(session, call);
         if registered && !control.is_cancelled() {
           session.start_tool(call)?;
-          notify_observers(session, cursor, observe)?;
+          deliver_new_events(session, delivered, observe)?;
         }
         futures.push(async move {
           if control.is_cancelled() {
@@ -109,12 +67,13 @@ pub(super) async fn execute_tools(
       }
       for (call, outcome) in calls.iter().zip(join_all(futures).await) {
         session.accept_tool_outcome(call, outcome)?;
-        notify_observers(session, cursor, observe)?;
+        deliver_new_events(session, delivered, observe)?;
       }
     }
   }
   Ok(())
 }
+
 fn is_registered(session: &Session, call: &ToolCall) -> bool {
   session.get_config().tools.iter().any(|tool| tool.name == call.name)
 }

@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 use crate::Error;
 use crate::protocol::account_state::{AccountState, AccountStateProtocol, QuotaWindow};
-use crate::protocol::read_scalar_text;
+use crate::protocol::json_read::read_scalar_text;
 
 /// Reads the credits body.
 ///
@@ -41,37 +41,15 @@ pub fn parse_credits(body: &Value) -> Result<AccountState, Error> {
   if topped_up.is_none() && spent.is_none() {
     return Err(Error::Malformed("openrouter credits body carries no amount".to_owned()));
   }
-  let reached = match (spent.as_deref(), topped_up.as_deref()) {
-    (Some(spent), Some(topped_up)) => spent
-      .parse::<f64>()
-      .ok()
-      .zip(topped_up.parse::<f64>().ok())
-      .map(|(spent, topped_up)| spent >= topped_up),
-    _ => None,
-  };
-  Ok(AccountState {
-    protocol: AccountStateProtocol::OpenrouterCredits,
-    quotas: vec![QuotaWindow {
-      id: "credits".to_owned(),
-      name: None,
-      unit: "usd".to_owned(),
-      // What the account paid in, against what every key of it has spent.
-      used: spent,
-      limit: topped_up,
-      remaining: None,
-      used_percent: None,
-      window: None,
-      resets_at: None,
-      reached,
-      unlimited: None,
-      parts: Vec::new(),
-    }],
-    balances: Vec::new(),
-    failure: None,
-    warnings: Vec::new(),
-    availability: None,
-    plan_type: None,
-  })
+  let mut state = AccountState::new(AccountStateProtocol::OpenrouterCredits);
+  state.quotas.push(QuotaWindow {
+    reached: is_spent(spent.as_deref(), topped_up.as_deref()),
+    // What the account paid in, against what every key of it has spent.
+    used: spent,
+    limit: topped_up,
+    ..QuotaWindow::new("credits", "usd")
+  });
+  Ok(state)
 }
 
 /// Reads the key body.
@@ -90,58 +68,35 @@ pub fn parse_key(body: &Value) -> Result<AccountState, Error> {
   if usage.is_none() && limit.is_none() && rate_limit.is_none() {
     return Err(Error::Malformed("openrouter key body carries no quota".to_owned()));
   }
-  let mut warnings = Vec::new();
-  let mut quotas = Vec::new();
+  let mut state = AccountState::new(AccountStateProtocol::OpenrouterKeyQuota);
   if usage.is_some() || limit.is_some() {
-    let reached = match (usage.as_deref(), limit.as_deref()) {
-      (Some(used), Some(limit)) => {
-        used.parse::<f64>().ok().zip(limit.parse::<f64>().ok()).map(|(used, limit)| used >= limit)
-      }
-      _ => None,
-    };
-    quotas.push(QuotaWindow {
-      id: "key_quota".to_owned(),
+    state.quotas.push(QuotaWindow {
       name: data.get("label").and_then(Value::as_str).map(str::to_owned),
-      unit: "usd".to_owned(),
+      reached: is_spent(usage.as_deref(), limit.as_deref()),
       used: usage,
       limit,
-      remaining: None,
-      used_percent: None,
-      window: None,
-      resets_at: None,
-      reached,
       // A ceiling the service reports as `null` is one it does not enforce.
       unlimited: data.get("limit").map(Value::is_null),
-      parts: Vec::new(),
+      ..QuotaWindow::new("key_quota", "usd")
     });
   }
   if let Some(rate_limit) = rate_limit {
-    quotas.push(QuotaWindow {
-      id: "rate_limit".to_owned(),
-      name: None,
-      unit: "requests".to_owned(),
-      used: None,
+    state.quotas.push(QuotaWindow {
       limit: rate_limit.get("requests").and_then(read_scalar_text),
-      remaining: None,
-      used_percent: None,
       // The window comes as a duration the service words itself (`10s`), so it is kept as it came.
       window: rate_limit.get("interval").map(|interval| json!({ "interval": interval })),
-      resets_at: None,
-      reached: None,
-      unlimited: None,
-      parts: Vec::new(),
+      ..QuotaWindow::new("rate_limit", "requests")
     });
   }
   if data.get("is_free_tier").and_then(Value::as_bool) == Some(true) {
-    warnings.push("is_free_tier is true; the key is on the free tier".to_owned());
+    state.warnings.push("is_free_tier is true; the key is on the free tier".to_owned());
   }
-  Ok(AccountState {
-    protocol: AccountStateProtocol::OpenrouterKeyQuota,
-    quotas,
-    balances: Vec::new(),
-    failure: None,
-    warnings,
-    availability: None,
-    plan_type: None,
-  })
+  Ok(state)
+}
+
+/// Whether what was spent has met the ceiling, when both are numbers.
+fn is_spent(spent: Option<&str>, ceiling: Option<&str>) -> Option<bool> {
+  let spent = spent?.parse::<f64>().ok()?;
+  let ceiling = ceiling?.parse::<f64>().ok()?;
+  Some(spent >= ceiling)
 }

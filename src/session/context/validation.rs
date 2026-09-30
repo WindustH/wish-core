@@ -1,5 +1,16 @@
 use crate::protocol::Message;
 use crate::session::SessionError;
+use serde_json::Value;
+
+/// Whether the session takes `message` as input: a user, system or developer message.
+pub(in crate::session) fn is_input(message: &Message) -> bool {
+  matches!(message, Message::User { .. } | Message::System { .. } | Message::Developer { .. })
+}
+
+/// Whether a tool call names itself and its tool, and passes an object of arguments.
+pub(in crate::session) fn is_valid_tool_use(call_id: &str, name: &str, arguments: &Value) -> bool {
+  !call_id.is_empty() && !name.is_empty() && arguments.is_object()
+}
 
 pub(in crate::session) fn validate_tool_pairs<'a>(
   messages: impl Iterator<Item = &'a Message>,
@@ -18,9 +29,7 @@ impl ToolPairValidator {
   pub fn accept(&mut self, message: &Message) -> Result<(), SessionError> {
     match message {
       Message::ToolUse { call_id, name, arguments, .. } => {
-        if call_id.is_empty()
-          || name.is_empty()
-          || !arguments.is_object()
+        if !is_valid_tool_use(call_id, name, arguments)
           || self.pending.insert(call_id.clone(), name.clone()).is_some()
         {
           return Err(SessionError::UnpairedTools);
@@ -31,9 +40,7 @@ impl ToolPairValidator {
           return Err(SessionError::UnpairedTools);
         }
       }
-      Message::User { .. } | Message::System { .. } | Message::Developer { .. }
-        if !self.pending.is_empty() =>
-      {
+      message if is_input(message) && !self.pending.is_empty() => {
         return Err(SessionError::UnpairedTools);
       }
       _ => {}

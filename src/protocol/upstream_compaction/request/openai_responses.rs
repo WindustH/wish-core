@@ -32,9 +32,8 @@
 
 use crate::protocol::Request;
 use crate::protocol::error::Error;
-use crate::protocol::model_use::request::openai_responses::{
-  self as model_use, ResponsesApiCompatMode, ResponsesDeployment, render_items,
-};
+use crate::protocol::model_use::mode::{ResponsesApiMode, ResponsesDeployment};
+use crate::protocol::model_use::request::openai_responses::{self as model_use, render_items};
 use crate::protocol::upstream_compaction::UpstreamCompactionRequest;
 use serde_json::{Map, Value, json};
 
@@ -45,10 +44,8 @@ use serde_json::{Map, Value, json};
 const COMPACTION_MARKER: &str = r#"{"request_kind":"compaction"}"#;
 
 /// What this deployment adds to a compaction call beside what its calls always carry.
-pub(crate) fn get_extra_headers(
-  variant: ResponsesApiCompatMode,
-) -> &'static [(&'static str, &'static str)] {
-  match variant.deployment {
+pub(crate) fn get_extra_headers(mode: ResponsesApiMode) -> &'static [(&'static str, &'static str)] {
+  match mode.deployment {
     // The platform endpoint is told what the call is by the path it goes to.
     ResponsesDeployment::Platform => &[],
     // The Codex backend is told by what the call says about itself: the feature it advertises as
@@ -60,15 +57,12 @@ pub(crate) fn get_extra_headers(
   }
 }
 
-pub fn render(
-  request: &UpstreamCompactionRequest,
-  variant: ResponsesApiCompatMode,
-) -> Result<Value, Error> {
-  match variant.deployment {
+pub fn render(request: &UpstreamCompactionRequest, mode: ResponsesApiMode) -> Result<Value, Error> {
+  match mode.deployment {
     ResponsesDeployment::Platform => {
       let mut body = Map::new();
       body.insert("model".into(), json!(request.model));
-      body.insert("input".into(), Value::Array(render_items(&request.conversation, variant)?));
+      body.insert("input".into(), Value::Array(render_items(&request.conversation, mode)?));
       Ok(Value::Object(body))
     }
     ResponsesDeployment::Codex => {
@@ -85,7 +79,7 @@ pub fn render(
           reasoning: request.reasoning.clone(),
           cache: request.cache.clone(),
         },
-        variant,
+        mode,
       )?;
       body
         .get_mut("input")

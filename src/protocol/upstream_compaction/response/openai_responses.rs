@@ -28,7 +28,7 @@ use serde_json::Value;
 
 pub fn decode(body: &Value) -> Result<UpstreamCompaction, Error> {
   if body.get("status").and_then(Value::as_str) == Some("failed") {
-    return Err(model_use::decode_upstream_error(body));
+    return Err(model_use::decode_in_band_error(body));
   }
   let mut conversation: Conversation = Vec::new();
   let mut warnings: Vec<String> = Vec::new();
@@ -37,7 +37,7 @@ pub fn decode(body: &Value) -> Result<UpstreamCompaction, Error> {
       // The item stands in for the history: the payload goes back exactly as it came, so it is kept
       // as it is and never read here.
       Some("compaction") => {
-        let (id, encrypted_content) = decode_compaction_payload(item)?;
+        let (id, encrypted_content) = model_use::decode_compaction_payload(item)?;
         conversation.push(Message::UpstreamCompaction {
           metadata: Default::default(),
           id,
@@ -61,23 +61,10 @@ pub fn decode(body: &Value) -> Result<UpstreamCompaction, Error> {
   }
   Ok(UpstreamCompaction {
     conversation,
-    usage: model_use::parse_usage(body),
+    usage: model_use::decode_usage(body),
     account_state: None,
     warnings,
   })
-}
-
-/// The service's own two parts of that item: its name for the compaction when it gave one, and the
-/// opaque payload it stands in for the history with.
-pub(crate) fn decode_compaction_payload(item: &Value) -> Result<(Option<String>, String), Error> {
-  let payload = item
-    .get("encrypted_content")
-    .and_then(Value::as_str)
-    .filter(|payload| !payload.is_empty())
-    .ok_or_else(|| {
-      Error::Malformed("a `compaction` item carries no `encrypted_content`".to_owned())
-    })?;
-  Ok((item.get("id").and_then(Value::as_str).map(str::to_owned), payload.to_owned()))
 }
 
 /// One message item, or why it cannot become one of our messages.
@@ -87,7 +74,9 @@ fn decode_message(item: &Value) -> Result<Message, String> {
     "user" => |content| Message::User { metadata: Default::default(), content },
     "assistant" => |content| Message::Assistant { metadata: Default::default(), content },
     "system" => |content| Message::System { metadata: Default::default(), content },
-    "developer" => |content| Message::Developer { metadata: Default::default(), fixed: Some(false), content },
+    "developer" => {
+      |content| Message::Developer { metadata: Default::default(), fixed: Some(false), content }
+    }
     other => return Err(format!("a `message` item with role `{other}` was dropped")),
   };
   let content: Vec<ContentBlock> = item

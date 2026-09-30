@@ -30,24 +30,16 @@ pub fn parse(body: &Value) -> Result<AccountState, Error> {
   if !body.is_object() {
     return Err(Error::Malformed("huggingface whoami body is not an object".to_owned()));
   }
-  let mut warnings = Vec::new();
-  let plan = match body.get("billing") {
+  let mut state = AccountState::new(AccountStateProtocol::HuggingfaceWhoamiBilling);
+  state.plan_type = match body.get("billing") {
     Some(billing) => billing.get("plan").and_then(Value::as_str).map(str::to_owned),
     None => {
-      warnings.push("no `billing` object is reported".to_owned());
+      state.warnings.push("no `billing` object is reported".to_owned());
       None
     }
   };
-  if plan.is_none() && body.get("billing").is_some() {
-    warnings.push("`billing` carries no plan".to_owned());
+  if state.plan_type.is_none() && body.get("billing").is_some() {
+    state.warnings.push("`billing` carries no plan".to_owned());
   }
-  Ok(AccountState {
-    protocol: AccountStateProtocol::HuggingfaceWhoamiBilling,
-    quotas: Vec::new(),
-    balances: Vec::new(),
-    failure: None,
-    warnings,
-    availability: None,
-    plan_type: plan,
-  })
+  Ok(state)
 }

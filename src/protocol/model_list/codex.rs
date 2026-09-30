@@ -7,8 +7,8 @@
 //! Constraints:
 //! - The body is only a list when `models` is an array, and an entry without a slug is dropped: a
 //!   model that cannot be called is not a model.
-//! - The catalog does not paginate, so `page_query` sends only the client version the endpoint asks
-//!   for and never a cursor.
+//! - The catalog does not paginate, so `build_page_query` sends only the client version the
+//!   endpoint asks for and never a cursor.
 //!
 //! Trade-offs:
 //! - The client version sent is the one the vendor's own client last reported: the endpoint asks for
@@ -20,7 +20,7 @@
 use serde_json::Value;
 
 use crate::Error;
-use crate::protocol::model_list::{Model, ModelCatalog, ModelListProtocol};
+use crate::protocol::model_list::{Model, ModelListPage, ModelListProtocol, read_entries};
 
 /// The client version the endpoint is asked as.
 const CLIENT_VERSION: &str = "0.154.0";
@@ -30,19 +30,11 @@ const CLIENT_VERSION: &str = "0.154.0";
 /// # Errors
 ///
 /// Returns [`Error::Malformed`] when `models` is missing or is not an array.
-pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
-  let entries = body
-    .get("models")
-    .and_then(Value::as_array)
-    .ok_or_else(|| Error::Malformed("codex model list missing `models` array".to_owned()))?;
-  let mut models = Vec::new();
-  let mut warnings = Vec::new();
+pub fn parse(body: &Value) -> Result<ModelListPage, Error> {
+  let (entries, mut warnings) = read_entries(body, "models", "slug", "codex")?;
   let mut metadata = false;
-  for entry in entries {
-    let Some(id) = entry.get("slug").and_then(Value::as_str).filter(|id| !id.is_empty()) else {
-      warnings.push("an entry without a `slug` was dropped".to_owned());
-      continue;
-    };
+  let mut models = Vec::new();
+  for (id, entry) in entries {
     for field in [
       "description",
       "default_reasoning_level",
@@ -53,12 +45,8 @@ pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
       metadata |= entry.get(field).is_some();
     }
     models.push(Model {
-      id: id.to_owned(),
       name: entry.get("display_name").and_then(Value::as_str).map(str::to_owned),
-      owner: None,
-      created_at: None,
-      context_window: None,
-      max_output_tokens: None,
+      ..Model::new(id)
     });
   }
   if metadata {
@@ -67,7 +55,7 @@ pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
         .to_owned(),
     );
   }
-  Ok(ModelCatalog {
+  Ok(ModelListPage {
     protocol: ModelListProtocol::OpenAiCodexModels,
     models,
     next_cursor: None,

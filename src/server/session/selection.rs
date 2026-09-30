@@ -1,13 +1,31 @@
-use super::*;
-use crate::server::{compaction_item, media::SessionModel};
+//! Changing a session's provider and model. While no operation runs, a change applies at once,
+//! unless the context holds an encrypted compaction item the new provider cannot read and that has
+//! no handoff yet. Then, and whenever an operation runs, the change is staged as the descriptor's
+//! pending selection and applied at the next boundary of a run (see `SelectionBoundary`), after the
+//! provider that made the item has written the handoff.
+use super::{Descriptor, SessionSlot};
+use crate::server::{
+  app::App, compaction_item, error::ApiError, provider::Provider, sampling,
+  session_model::SessionModel,
+};
 use crate::{
   Error,
-  executor::{BoundaryResult, ExecutionControl, RunBoundary, compaction::translation::{self, Handoff}, model::{CallResponse, ModelCaller}, notify_observers},
-  protocol::{
-    ContentBlock, Message, Request, TokenCount, UpstreamCompaction, UpstreamCompactionRequest, model_use::ModelUseProtocol,
+  executor::{
+    BoundaryResult, ExecutionControl, RunBoundary,
+    compaction::handoff::{self, HandoffContext, PreviousProvider},
+    deliver_new_events,
+    model::{CallResponse, ModelCaller},
   },
-  session::{RunOutcome, SessionError, SessionEvent},
+  protocol::{
+    Message, Request, TokenCount, UpstreamCompaction, UpstreamCompactionRequest,
+    model_use::ModelUseProtocol,
+  },
+  session::{Session, SessionConfig, SessionError, SessionEvent},
 };
+use axum::http::HeaderValue;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PendingSelection {
@@ -24,6 +42,10 @@ impl SwitchingModel {
   }
   fn current(&self) -> Arc<SessionModel> {
     self.0.read().unwrap().clone()
+  }
+  /// Switches to another model; a request already under way keeps the one it started with.
+  fn replace(&self, model: SessionModel) {
+    *self.0.write().unwrap() = Arc::new(model);
   }
 }
 impl ModelCaller for SwitchingModel {
@@ -60,165 +82,237 @@ impl RunBoundary for SelectionBoundary<'_> {
     &mut self,
     session: &mut Session,
     control: &ExecutionControl,
-    cursor: &mut u64,
+    delivered: &mut u64,
     observe: &mut (impl FnMut(&SessionEvent) + Send),
   ) -> Result<BoundaryResult, SessionError> {
-    self.slot.apply_selection(session, self.model, control, cursor, observe).await
+    self.slot.apply_selection(session, self.model, control, delivered, observe).await
   }
 }
 
-fn missing_context_placeholder() -> Vec<ContentBlock> {
-  vec![ContentBlock::Text {
-    text: "[Earlier conversation was compressed into an encrypted item by the previous provider. It could not be translated for this model, so part of the earlier context is missing. Ask for needed details rather than inventing them.]".into(),
-  }]
+/// A pending selection being applied at a boundary.
+struct Switch {
+  /// The descriptor it was read from: the switch applies only while it is still current.
+  selected: Descriptor,
+  pending: PendingSelection,
+  model: SessionModel,
+  /// Whether the provider switched from is still configured, to write a handoff for what only it
+  /// can read.
+  previous_available: bool,
+}
+impl Switch {
+  /// Whether the provider switched from can read an encrypted item now.
+  fn previous_reads(&self, item: &Message) -> bool {
+    self.previous_available && compaction_item::can_read(item, &self.selected.provider)
+  }
+}
+enum Prepared {
+  /// The context change a switch needs, if any: the one encrypted item the next provider cannot
+  /// read, replaced by a copy carrying its handoff, with later items of its kind left out.
+  Ready(Option<Box<HandoffContext>>),
+  Interrupted,
+}
+enum Committed {
+  Done {
+    translated: bool,
+  },
+  /// The descriptor changed since the switch was read.
+  Stale,
+  Interrupted,
+}
+
+/// The session engine's own errors are all a boundary may fail with.
+fn boundary_error(error: impl std::fmt::Display) -> SessionError {
+  SessionError::InvalidCompaction(error.to_string())
 }
 
 impl SessionSlot {
-  pub fn execution_provider(
-    &self,
-    app: &crate::server::app::App,
-  ) -> Result<(Arc<Provider>, String), ApiError> {
+  /// The provider an operation starts with: the session's, or when that one is gone, the pending
+  /// selection's, which applies at the operation's first boundary.
+  pub fn execution_provider(&self, app: &App) -> Result<Arc<Provider>, ApiError> {
     let descriptor = self.get_descriptor();
     match app.get_provider(&descriptor.provider) {
-      Ok(provider) => Ok((provider, descriptor.provider)),
+      Ok(provider) => Ok(provider),
       Err(error) => match descriptor.pending_selection {
-        Some(pending) => app.get_provider(&pending.provider).map(|provider| (provider, pending.provider)),
+        Some(pending) => app.get_provider(&pending.provider),
         None => Err(error),
       },
     }
   }
-
-  pub fn make_model(&self, provider: Arc<Provider>, provider_id: String) -> SessionModel {
+  /// The model this session calls a provider through: its client sampled into the index and
+  /// carrying the session's id.
+  pub fn make_model(&self, provider: Arc<Provider>) -> SessionModel {
     let session_id = self.get_descriptor().id;
-    let client = crate::server::sampling::observe_client(
+    let client = sampling::with_stream_sampling(
       &provider.client,
-      self.index.clone(),
+      self.management.clone(),
       self.tasks.clone(),
-      provider_id.clone(),
+      provider.id.clone(),
       Some(session_id.clone()),
     )
     .with_session_id(session_id);
-    SessionModel::new(provider, provider_id, self.image_dir.clone()).with_client(client)
+    SessionModel::new(provider, self.image_dir.clone(), client)
   }
+  /// Stages a selection while an operation runs. Only the model, reasoning and output limit may
+  /// differ from the config the session has, or has staged already.
+  pub fn stage_selection(
+    &self,
+    app: &App,
+    if_match: Option<&HeaderValue>,
+    provider: Option<&Value>,
+    config: SessionConfig,
+  ) -> Result<(), ApiError> {
+    self.edit_descriptor(if_match, |next| {
+      let mut current = match &next.pending_selection {
+        Some(pending) => json!(pending.config),
+        None => json!(self.status.lock().unwrap().config),
+      };
+      let mut desired = json!(config);
+      for key in ["model", "reasoning", "max_output_tokens"] {
+        current.as_object_mut().unwrap().remove(key);
+        desired.as_object_mut().unwrap().remove(key);
+      }
+      if current != desired {
+        return Err(ApiError::conflict(
+          "only model, reasoning and output limit can change while running",
+        ));
+      }
+      let provider = provider
+        .map(|v| v.as_str().ok_or_else(|| ApiError::bad_request("provider must be a string")))
+        .transpose()?
+        .unwrap_or_else(|| {
+          next.pending_selection.as_ref().map(|p| p.provider.as_str()).unwrap_or(&next.provider)
+        })
+        .to_owned();
+      app.get_provider(&provider)?;
+      next.pending_selection = Some(PendingSelection { provider, config });
+      Ok(())
+    })
+  }
+  /// Applies the pending selection, if there is one, at a boundary of the operation that `model`
+  /// serves: writes the handoff an encrypted item needs first, then switches the session's config,
+  /// provider and model together.
   pub async fn apply_selection(
     &self,
     session: &mut Session,
     model: &SwitchingModel,
     control: &ExecutionControl,
-    cursor: &mut u64,
+    delivered: &mut u64,
     observe: &mut (impl FnMut(&SessionEvent) + Send),
   ) -> Result<BoundaryResult, SessionError> {
     loop {
       if control.is_cancelled() {
         return Ok(BoundaryResult::Interrupted);
       }
-      let selected = self.get_descriptor();
-      let Some(pending) = selected.pending_selection.clone() else {
+      let Some(switch) = self.read_switch()? else {
         return Ok(BoundaryResult::Unchanged);
       };
-      let app = self
-        .app
-        .upgrade()
-        .ok_or_else(|| SessionError::InvalidCompaction("application closed".into()))?;
-      let provider = app
-        .get_provider(&pending.provider)
-        .map_err(|e| SessionError::InvalidCompaction(e.to_string()))?;
-      let next_model = self.make_model(provider, pending.provider.clone());
-      let mut translated = None;
-      let old_request = session.build_request()?;
-      let old_provider_live = app.get_provider(&selected.provider).is_ok();
-      let old_reads =
-        |item: &Message| old_provider_live && compaction_item::can_read(item, &selected.provider);
-      // An encrypted item the next provider cannot read travels as its readable handoff (see
-      // `compaction_item`). It needs one now when it has none, or only a placeholder that the
-      // current provider, which can read the item, can replace.
-      let positions: Vec<_> = old_request.conversation.iter().enumerate()
-        .filter_map(|(index, message)| {
-          let needed = matches!(message, Message::UpstreamCompaction { .. })
-            && !compaction_item::can_read(message, &pending.provider)
-            && match compaction_item::get_handoff(message) {
-              None => true,
-              Some((_, translated)) => !translated && old_reads(message),
-            };
-          needed.then_some(index)
-        })
-        .collect();
-      if let Some(&first) = positions.first() {
-        let active = session.get_active_generation()?;
-        let list = session.get_generation_entries(active.id)?;
-        let ids: Vec<_> = list.read_page(0, list.len()? as usize)?.items.iter().map(|id| **id).collect();
-        if ids.len() != old_request.conversation.len() {
-          return Err(SessionError::StaleGeneration);
-        }
-        let handoff = if positions.len() != 1 {
-          Handoff::Failed(RunOutcome::Failed(Error::Build("multiple encrypted compaction items cannot be translated together".into())))
-        } else if !old_reads(&old_request.conversation[first]) {
-          Handoff::Failed(RunOutcome::Failed(Error::Build(format!(
-            "previous provider `{}` is unavailable for encrypted context translation",
-            selected.provider,
-          ))))
-        } else {
-          let mut request = old_request.clone();
-          request.conversation.truncate(first + 1);
-          translation::generate_handoff(
-            model.current().as_ref(), session, control, cursor, observe, request, (first + 1) as u64,
-          ).await?
+      let translation =
+        match self.translate(&switch, session, model, control, delivered, observe).await? {
+          Prepared::Ready(translation) => translation,
+          Prepared::Interrupted => return Ok(BoundaryResult::Interrupted),
         };
-        if matches!(handoff, Handoff::Interrupted) || control.is_cancelled() {
-          return Ok(BoundaryResult::Interrupted);
+      match self.commit_switch(switch, translation, session, model, control)? {
+        Committed::Done { translated } => {
+          if translated {
+            deliver_new_events(session, delivered, observe)?;
+          }
+          self.persist_index().map_err(boundary_error)?;
+          return Ok(BoundaryResult::Changed);
         }
-        let (content, failure) = match handoff {
-          Handoff::Translated(content) => (content, None),
-          Handoff::Failed(outcome) => (missing_context_placeholder(), Some(outcome)),
-          Handoff::Interrupted => unreachable!(),
-        };
-        // The item stays, encrypted content and all, so the provider that made it reads it again
-        // after switching back; the handoff rides along for every other provider.
-        let replacement =
-          compaction_item::with_handoff(&old_request.conversation[first], &content, failure.is_none());
-        let after: Vec<_> = (first + 1..ids.len())
-          .filter(|index| !positions.contains(index))
-          .collect();
-        let conversation: Vec<_> = old_request.conversation[..first].iter()
-          .cloned()
-          .chain(std::iter::once(replacement.clone()))
-          .chain(after.iter().map(|index| old_request.conversation[*index].clone()))
-          .collect();
-        next_model.validate_request(&pending.config.build_request(conversation))
-          .map_err(|error| SessionError::InvalidCompaction(format!("translated context is invalid for the selected provider: {error}")))?;
-        translated = Some((active.id, ids[..first].to_vec(), replacement,
-          after.into_iter().map(|index| ids[index]).collect(), failure));
+        Committed::Stale => continue,
+        Committed::Interrupted => return Ok(BoundaryResult::Interrupted),
       }
-
-      let mut descriptor = self.descriptor.write().unwrap();
-      if descriptor.revision != selected.revision {
-        continue;
-      }
-      if control.is_cancelled() {
-        return Ok(BoundaryResult::Interrupted);
-      }
-      // Keep the handoff call attributed to its old provider before changing the descriptor.
-      self.index.save_calls(&descriptor, &self.calls)
-        .map_err(|error| SessionError::InvalidCompaction(error.to_string()))?;
-      let translated_now = translated.is_some();
-      if let Some((generation, prefix, replacement, suffix, failure)) = translated {
-        session.commit_compaction_translation(generation, prefix, replacement, suffix, failure, pending.config.clone())?;
-      } else {
-        session.set_config(pending.config)?;
-      }
-      descriptor.provider = pending.provider;
-      descriptor.pending_selection = None;
-      *model.0.write().unwrap() = Arc::new(next_model);
-      drop(descriptor);
-      let mut status = self.status.lock().unwrap();
-      status["config"] = json!(session.get_config());
-      status["standby_preparing"] = json!(false);
-      drop(status);
-      if translated_now {
-        notify_observers(session, cursor, observe)?;
-      }
-      self.persist_index().map_err(|error| SessionError::InvalidCompaction(error.to_string()))?;
-      return Ok(BoundaryResult::Changed);
     }
+  }
+  fn read_switch(&self) -> Result<Option<Switch>, SessionError> {
+    let selected = self.get_descriptor();
+    let Some(pending) = selected.pending_selection.clone() else { return Ok(None) };
+    let app = self.app.upgrade().ok_or_else(|| boundary_error("application closed"))?;
+    let provider = app.get_provider(&pending.provider).map_err(boundary_error)?;
+    let model = self.make_model(provider);
+    let previous_available = app.get_provider(&selected.provider).is_ok();
+    Ok(Some(Switch { selected, pending, model, previous_available }))
+  }
+  /// Writes the handoff the switch needs, when the context holds an encrypted item the next
+  /// provider cannot read. It travels as that handoff: one needs writing when the item has none, or
+  /// only a placeholder that the provider switched from, which can read the item, can replace.
+  async fn translate(
+    &self,
+    switch: &Switch,
+    session: &mut Session,
+    model: &SwitchingModel,
+    control: &ExecutionControl,
+    delivered: &mut u64,
+    observe: &mut (impl FnMut(&SessionEvent) + Send),
+  ) -> Result<Prepared, SessionError> {
+    let plan = handoff::plan_handoff(session, |message| {
+      compaction_item::needs_handoff(message, &switch.pending.provider)
+        && (compaction_item::get_handoff(message).is_none() || switch.previous_reads(message))
+    })?;
+    let Some(plan) = plan else { return Ok(Prepared::Ready(None)) };
+    let current = model.current();
+    let previous = PreviousProvider {
+      caller: current.as_ref(),
+      name: &switch.selected.provider,
+      reads_item: switch.previous_reads(plan.item()),
+    };
+    let written =
+      handoff::write_handoff(previous, session, control, delivered, observe, &plan).await?;
+    let Some((content, failure)) = written.into_content().filter(|_| !control.is_cancelled())
+    else {
+      return Ok(Prepared::Interrupted);
+    };
+    // The item stays, encrypted content and all, so the provider that made it reads it again
+    // after switching back; the handoff rides along for every other provider.
+    let replacement = compaction_item::with_handoff(plan.item(), &content, failure.is_none());
+    let (context, conversation) = plan.into_context(replacement, failure);
+    switch.model.validate_request(&switch.pending.config.build_request(conversation)).map_err(
+      |error| {
+        boundary_error(format!("translated context is invalid for the selected provider: {error}"))
+      },
+    )?;
+    Ok(Prepared::Ready(Some(Box::new(context))))
+  }
+  /// Switches the session's config (with the translation, if any), the descriptor's provider and
+  /// the model together, unless the descriptor changed since the switch was read.
+  fn commit_switch(
+    &self,
+    switch: Switch,
+    translation: Option<Box<HandoffContext>>,
+    session: &mut Session,
+    model: &SwitchingModel,
+    control: &ExecutionControl,
+  ) -> Result<Committed, SessionError> {
+    let mut descriptor = self.descriptor.write().unwrap();
+    if descriptor.revision != switch.selected.revision {
+      return Ok(Committed::Stale);
+    }
+    if control.is_cancelled() {
+      return Ok(Committed::Interrupted);
+    }
+    // Keep the handoff call attributed to its old provider before changing the descriptor.
+    let calls = self.reader.get_model_calls();
+    self.management.save_calls(&descriptor, &calls).map_err(boundary_error)?;
+    let translated = translation.is_some();
+    let Switch { pending, model: next_model, .. } = switch;
+    match translation.map(|translation| *translation) {
+      Some(HandoffContext { generation, prefix, replacement, suffix, failure }) => {
+        session.commit_compaction_translation(
+          generation,
+          prefix,
+          replacement,
+          suffix,
+          failure,
+          pending.config.clone(),
+        )?;
+      }
+      None => session.set_config(pending.config)?,
+    }
+    descriptor.provider = pending.provider;
+    descriptor.pending_selection = None;
+    model.replace(next_model);
+    drop(descriptor);
+    self.selection_applied(session.get_config());
+    Ok(Committed::Done { translated })
   }
 }

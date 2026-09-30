@@ -24,45 +24,25 @@ use crate::protocol::model_use::request::{PromptCache, ReasoningConfig, ToolChoi
 use crate::protocol::model_use::response::Usage;
 use crate::protocol::model_use::tool::Tool;
 
-/// The protocol kinds of upstream compaction: the wires that have this call at all.
-///
-/// Chosen when a client is built, beside the model-use protocol it pairs with, and refused there
-/// when the pairing is not one the crate knows: an ask this wire cannot serve never reaches the
-/// network.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UpstreamCompactionProtocol {
-  /// The OpenAI Responses family's `/compact` call, served buffered.
-  OpenAiResponses,
-  /// A deployment that answers a compaction on the streamed call it always serves: the trigger
-  /// rides the body, and the item standing in for the history arrives on the stream.
-  OpenAiResponsesStreamed,
-}
-
-impl UpstreamCompactionProtocol {
-  /// The name this protocol is known by in text.
-  pub const fn get_id(self) -> &'static str {
-    match self {
-      UpstreamCompactionProtocol::OpenAiResponses => "openai_responses",
-      UpstreamCompactionProtocol::OpenAiResponsesStreamed => "openai_responses_streamed",
-    }
+text_id_enum! {
+  /// The protocol kinds of upstream compaction: the wires that have this call at all.
+  ///
+  /// Chosen when a client is built, beside the model-use protocol it pairs with, and refused there
+  /// when the pairing is not one the crate knows: an ask this wire cannot serve never reaches the
+  /// network.
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  pub enum UpstreamCompactionProtocol (unknown: "unknown upstream compaction protocol `{}`") {
+    /// The OpenAI Responses family's `/compact` call, served buffered.
+    OpenAiResponses => "openai_responses",
+    /// A deployment that answers a compaction on the streamed call it always serves: the trigger
+    /// rides the body, and the item standing in for the history arrives on the stream.
+    OpenAiResponsesStreamed => "openai_responses_streamed",
   }
 }
 
-/// Why an upstream compaction cannot be asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Unsupported {
-  /// The wire has no compaction call of any kind.
-  NoCall,
-}
-
-impl Unsupported {
-  /// The reason in the words a caller reads back.
-  pub const fn get_text(self) -> &'static str {
-    match self {
-      Unsupported::NoCall => "has no upstream compaction call",
-    }
-  }
-}
+/// Why an upstream compaction cannot be asked of a wire, in the words a caller reads back: the wire
+/// has no compaction call of any kind.
+pub const NO_COMPACTION_CALL: &str = "has no upstream compaction call";
 
 /// One call that asks a service to stand in for a conversation.
 pub struct UpstreamCompactionRequest {
@@ -87,7 +67,7 @@ pub struct UpstreamCompaction {
   pub conversation: Conversation,
   /// What the compaction itself cost, as the service reported it.
   pub usage: Usage,
-  /// What the reply said about the account_state behind the key, when the endpoint names a reading.
+  /// What the reply said about the account behind the key, when the endpoint names a reading.
   pub account_state: Option<AccountState>,
   /// What the reader could not represent, one line each; a caller that cares checks this before
   /// trusting the conversation it got back.

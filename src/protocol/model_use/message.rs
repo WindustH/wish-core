@@ -135,13 +135,67 @@ pub enum Message {
 }
 
 impl ReasoningOpaqueKind {
-  /// Old persisted reasoning has no provenance: it can keep readable text, not opaque payloads.
-  pub(crate) fn matching<'a>(kind: Option<Self>, expected: Self, value: &'a str) -> &'a str {
-    if kind == Some(expected) { value } else { "" }
+  /// `material` when the message says it is of the `expected` format, and nothing otherwise.
+  ///
+  /// Opaque material only means something to the wire that produced it, and old persisted reasoning
+  /// has no provenance at all: such a message keeps its readable text, never its opaque payloads.
+  pub(crate) fn material_if_kind(kind: Option<Self>, expected: Self, material: &str) -> &str {
+    if kind == Some(expected) { material } else { "" }
   }
 }
 
+/// An inline image as the data URL the OpenAI-style wires take it in.
+pub(crate) fn image_data_url(mime_type: &str, data_base64: &str) -> String {
+  format!("data:{mime_type};base64,{data_base64}")
+}
+
 impl Message {
+  /// Readable reasoning that carries no proof: the text is both what goes back and what a reader
+  /// is shown.
+  pub(crate) fn reasoning_text(text: String) -> Self {
+    Self::Reasoning {
+      metadata: Value::Null,
+      replay_item: None,
+      opaque_kind: None,
+      display: text.clone(),
+      plaintext: text,
+      signature: String::new(),
+      ciphertext: String::new(),
+    }
+  }
+
+  /// Reasoning text with the proof the wire sealed it with. `kind` names the proof's format, and is
+  /// only recorded when there is a proof to name: an empty `signature` leaves plain text.
+  pub(crate) fn signed_reasoning(
+    text: String,
+    signature: String,
+    kind: ReasoningOpaqueKind,
+  ) -> Self {
+    Self::Reasoning {
+      metadata: Value::Null,
+      replay_item: None,
+      opaque_kind: (!signature.is_empty()).then_some(kind),
+      display: text.clone(),
+      plaintext: text,
+      signature,
+      ciphertext: String::new(),
+    }
+  }
+
+  /// Reasoning the wire handed back only as a payload that stands in for the text, of the `kind`
+  /// format: a redacted block, an encrypted item.
+  pub(crate) fn redacted_reasoning(ciphertext: String, kind: ReasoningOpaqueKind) -> Self {
+    Self::Reasoning {
+      metadata: Value::Null,
+      replay_item: None,
+      opaque_kind: Some(kind),
+      plaintext: String::new(),
+      display: String::new(),
+      signature: String::new(),
+      ciphertext,
+    }
+  }
+
   /// The fixed prefix stops at the first non-System or unpinned Developer message.
   pub fn is_fixed_instruction(&self) -> bool {
     match self {

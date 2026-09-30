@@ -20,15 +20,14 @@
 //!   code.
 
 use crate::protocol::error::Error;
-use crate::protocol::ReasoningOpaqueKind;
-use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
+use crate::protocol::http_error::decode_in_band;
+use crate::protocol::{ContentBlock, Message, ReasoningOpaqueKind, Response, StopReason, Usage};
 use serde_json::{Value, json};
 
 pub fn decode(body: &Value) -> Result<Response, Error> {
   // An in-band failure: this wire reports one with a `message` and a `__type` (or `code`) beside it.
-  if let Some(message) = body.get("message").and_then(Value::as_str) {
-    let code = body.get("__type").or_else(|| body.get("code")).and_then(Value::as_str);
-    return Err(Error::from_in_band(code.map(str::to_owned), message.to_owned()));
+  if body.get("message").and_then(Value::as_str).is_some() {
+    return Err(decode_in_band(Some(body), &["__type", "code"], ""));
   }
 
   let mut messages: Vec<Message> = Vec::new();
@@ -57,7 +56,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
   Ok(Response {
     messages,
     stop_reason: decode_stop_reason(body),
-    usage: decode_usage(body),
+    usage: decode_usage(body.get("usage")),
     account_state: None,
   })
 }
@@ -65,15 +64,10 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
 fn decode_reasoning(block: &Value) -> Option<Message> {
   let reasoning = block.get("reasoningContent")?;
   if let Some(ciphertext) = reasoning.get("redactedContent").and_then(Value::as_str) {
-    return Some(Message::Reasoning {
-      metadata: Default::default(),
-      replay_item: None,
-      opaque_kind: Some(ReasoningOpaqueKind::BedrockRedacted),
-      plaintext: String::new(),
-      display: String::new(),
-      signature: String::new(),
-      ciphertext: ciphertext.to_owned(),
-    });
+    return Some(Message::redacted_reasoning(
+      ciphertext.to_owned(),
+      ReasoningOpaqueKind::BedrockRedacted,
+    ));
   }
   let reasoning_text = reasoning.get("reasoningText");
   let text = reasoning_text
@@ -86,15 +80,11 @@ fn decode_reasoning(block: &Value) -> Option<Message> {
     .or_else(|| reasoning.get("signature"))
     .and_then(Value::as_str)
     .unwrap_or("");
-  Some(Message::Reasoning {
-    metadata: Default::default(),
-    replay_item: None,
-    opaque_kind: (!signature.is_empty()).then_some(ReasoningOpaqueKind::BedrockSignature),
-    plaintext: text.to_owned(),
-    display: text.to_owned(),
-    signature: signature.to_owned(),
-    ciphertext: String::new(),
-  })
+  Some(Message::signed_reasoning(
+    text.to_owned(),
+    signature.to_owned(),
+    ReasoningOpaqueKind::BedrockSignature,
+  ))
 }
 
 fn decode_tool_use(block: &Value) -> Result<Option<Message>, Error> {
@@ -130,11 +120,9 @@ pub(crate) fn map_stop_reason(reason: Option<&str>) -> StopReason {
   }
 }
 
-fn decode_usage(body: &Value) -> Usage {
-  parse_usage(body.get("usage"))
-}
-
-pub(crate) fn parse_usage(usage: Option<&Value>) -> Usage {
+/// Maps one `usage` object; shared with the stream decoder, whose `metadata` event carries the same
+/// object.
+pub(crate) fn decode_usage(usage: Option<&Value>) -> Usage {
   let field = |name: &str| usage.and_then(|usage| usage.get(name)).and_then(Value::as_u64);
   Usage {
     input_tokens: field("inputTokens"),

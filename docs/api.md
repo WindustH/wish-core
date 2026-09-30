@@ -100,6 +100,8 @@ engine error, for example
 | GET | `/version`, `/api/version` | Build name and version |
 | GET | `/api/status` | Session count and scheduler activity |
 | GET | `/api/storage` | Bytes on disk |
+| GET | `/api/storage/sessions` | What each session keeps |
+| POST | `/api/storage/prune` | Clear history the context no longer uses |
 | GET | `/api/events` | Application event stream (SSE) |
 | GET, PUT | `/api/config` | Read or replace the configuration |
 | GET | `/api/defaults` | Defaults for new sessions |
@@ -133,6 +135,9 @@ engine error, for example
 | POST | `/api/sessions/{id}/answer` | Answer or skip an `ask_user` form |
 | GET | `/api/mcp/servers` | Configured MCP servers and what is known of them |
 | POST | `/api/mcp/servers/{id}/check` | Connect to an MCP server and list its tools |
+| GET | `/api/search-presets` | The search services Wish knows |
+| GET | `/api/search/providers` | Configured search providers and whether each can search now |
+| POST | `/api/search/providers/{id}/check` | Run one test search on a saved search provider |
 | GET | `/api/sessions/{id}/mcp/servers` | MCP bridge: servers and tools (session token) |
 | GET | `/api/sessions/{id}/mcp/tool` | MCP bridge: one tool's definition (session token) |
 | POST | `/api/sessions/{id}/mcp/call` | MCP bridge: call a tool (session token) |
@@ -178,10 +183,64 @@ memory. Check `active_sessions` before restarting the server.
 ### `GET /api/storage`
 
 `{"bytes": {"total", "blobs", "executions", "session_data", "service_data"}, "counts": {...}}`.
-`session_data` is the engine database, `service_data` the management index,
-`blobs` the attachments and `executions` the captured shell output. The
-`counts` fields are reserved and currently `null`. Neither status endpoint
-loads any conversation.
+`session_data` is the engine database, `service_data` the management index
+(each with its WAL), `blobs` the attachments and `executions` the captured
+shell output; `total` is their sum, and nothing else in the data directory is
+counted. The `counts` fields are reserved and currently `null`. Neither status
+endpoint loads any conversation.
+
+### `GET /api/storage/sessions`
+
+Every session with what it keeps, newest first:
+
+```json
+{"sessions": [{"id": "8c1f...", "name": "Refactor parser", "provider": "openai", "model": "gpt-5",
+  "cwd": "/home/me/project", "created_at": 1758790000000, "updated_at": 1758790500000,
+  "phase": "Idle", "running": false, "tags": ["work"], "context_tokens": 48210,
+  "messages": {"user": 12, "assistant": 12, "tool_calls": 31},
+  "bytes": {"history": 812345, "attachments": 20480, "shell": 3072, "total": 835897}}],
+ "bytes": {"history": 812345, "attachments": 20480, "shell": 3072, "total": 835897}}
+```
+
+`history` is the session's records in the engine database, counted as stored
+values: the search index built over them and SQLite's own overhead are not
+included, so the sessions' totals stay below the database file's size.
+`attachments` and `shell` are the session's files under `blobs/` and `shell/`.
+`messages` counts the user and assistant messages and the tool calls in the
+session's history. No conversation is loaded.
+
+### `POST /api/storage/prune`
+
+Clears the history sessions keep but their context no longer uses. Body, every
+field optional: `{"sessions": ["8c1f..."], "before": 1758790000000, "dry_run": true}`.
+Without `sessions` every session is pruned; without `before` everything unused
+goes, and with it only what was recorded earlier.
+
+What goes, per session:
+
+- messages outside the active and standby contexts that are not waiting in the
+  queue;
+- events, except a suspended run's outcome;
+- the history records and search index of both;
+- the attachments, images and command output that only those messages named.
+  Uploads never sent, and commands still running, stay.
+
+What the context uses stays, so the conversation carries on. Entry IDs and
+history sequences keep their numbers: a cleared position is skipped when read.
+The timeline and history search no longer show what was cleared.
+
+```json
+{"messages": 1592, "events": 7040, "files": 461,
+ "bytes": {"history": 27152989, "files": 1667460, "total": 28820449},
+ "sessions": [{"id": "8c1f...", "messages": 12, "events": 80, "files": 3, "bytes": {...}}],
+ "skipped": [{"id": "5d0e...", "reason": "running"}],
+ "database": {"before": 106714016, "after": 38690816}}
+```
+
+A running session is skipped rather than waited for. With `dry_run` nothing
+changes and the counts tell what would go. Otherwise the database is compacted
+once at the end: `database` gives its size on disk before and after, and each
+pruned session's event stream gets `{"type": "history_pruned"}`.
 
 ## Configuration
 
@@ -353,7 +412,7 @@ Session endpoints return a session as `{"session": descriptor, "status": status}
 {
   "session": {
     "id": "8c1f...", "name": "Refactor parser", "provider": "openai",
-    "cwd": "/home/me/project", "tools": {"shell": true, "ask_user": true, "mcp": false},
+    "cwd": "/home/me/project", "tools": {"shell": true, "ask_user": true, "mcp": false, "web_search": true},
     "created_at": 1758790000000, "updated_at": 1758790500000, "revision": 7
   },
   "status": {
@@ -370,7 +429,7 @@ Descriptor fields:
 
 | Field | Meaning |
 | --- | --- |
-| `tools` | The session's optional built-in tools: `{"shell", "ask_user", "mcp"}`, each a boolean |
+| `tools` | The session's optional built-in tools: `{"shell", "ask_user", "mcp", "web_search"}`, each a boolean |
 | `shell_command` | The session's own `{program, args}`. Absent when it follows the global `shell` setting |
 | `pending_selection` | A provider/model change made while running, not yet in effect |
 
@@ -406,8 +465,8 @@ Status fields:
 
 Every session gets `history_search`, `history_read`, `history_query` and
 `view_image`. With `tools.shell` it also gets `shell_start`, `shell_edit`,
-`shell_poll`, `shell_write` and `shell_kill`, and with `tools.ask_user` it gets
-`ask_user`. On updates `tools` may list these names; any other name is
+`shell_poll`, `shell_write` and `shell_kill`, with `tools.ask_user` it gets
+`ask_user`, and with `tools.web_search` it gets [`web_search`](#web-search). On updates `tools` may list these names; any other name is
 rejected. With the shell on, `shell_start`'s description ends with a fixed note
 on `wish mcp` (see [MCP servers](#mcp-servers)). `tools.mcp` adds no tool and
 changes nothing in the tool list: it decides whether that command may reach
@@ -436,7 +495,8 @@ loading any conversation.
 
 `provider`, `cwd` (an existing absolute directory) and `config` are required.
 `tools` switches optional tools; each switch left out keeps its default: no
-shell, `ask_user` on and MCP on. `initial_messages` optionally seeds the context with
+shell, no web search, `ask_user` on and MCP on. `web_search` stays off, even when
+asked for, while no search provider can answer. `initial_messages` optionally seeds the context with
 messages. Returns `201`
 with the session. `404` if the provider is unknown or disabled.
 
@@ -463,7 +523,8 @@ Returns the updated session.
 
 Deletes the session, its attachments and its shell output, and stops its
 background commands and its own MCP server instances. Returns `204`, or `409` while it runs. Usage statistics
-are kept.
+are kept. The room its history took in the database, search index included,
+goes back to the file system before the response.
 
 ### `POST /api/sessions/{id}/fork`
 

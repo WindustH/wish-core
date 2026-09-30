@@ -1,7 +1,9 @@
+use super::{Session, SessionError, SessionEvent};
 use crate::protocol::model_use::{
   request::{PromptCache, ReasoningConfig},
   tool::Tool,
 };
+use serde_json::Value;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default)]
 pub enum ToolMode {
@@ -43,10 +45,15 @@ impl SessionConfig {
       compaction: None,
     }
   }
+  /// Refuses settings no session can run with.
+  pub(in crate::session) fn validate(&self) -> Result<(), SessionError> {
+    match &self.compaction {
+      Some(compaction) => compaction.validate(),
+      None => Ok(()),
+    }
+  }
 }
 
-use super::{Session, SessionError, SessionEvent};
-use serde_json::Value;
 impl Session {
   pub fn get_metadata(&self) -> &Value {
     &self.record.metadata
@@ -54,7 +61,8 @@ impl Session {
   pub fn set_metadata(&mut self, value: Value) -> Result<(), SessionError> {
     self.update(move |transaction| {
       transaction.record.metadata = value.clone();
-      transaction.record_event(SessionEvent::MetadataUpdated(value))
+      transaction.record_event(SessionEvent::MetadataUpdated(value))?;
+      Ok(())
     })
   }
   pub fn get_config(&self) -> &SessionConfig {
@@ -62,9 +70,7 @@ impl Session {
   }
   pub fn set_config(&mut self, config: SessionConfig) -> Result<(), SessionError> {
     self.require_stable()?;
-    if let Some(compaction) = &config.compaction {
-      compaction.validate()?;
-    }
+    config.validate()?;
     self.update(move |transaction| {
       for id in [transaction.record.active, transaction.record.standby] {
         let mut generation = transaction.load_generation(id)?;
@@ -72,7 +78,8 @@ impl Session {
         transaction.save_generation(&generation)?;
       }
       transaction.record.config = config.clone();
-      transaction.record_event(SessionEvent::ConfigUpdated(Box::new(config)))
+      transaction.record_event(SessionEvent::ConfigUpdated(Box::new(config)))?;
+      Ok(())
     })
   }
 }

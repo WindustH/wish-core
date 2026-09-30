@@ -2,10 +2,11 @@
 use crate::session::statistics::CallObservation;
 use crate::{
   Error,
-  protocol::{ContentBlock, Message, Request, StreamEvent, Usage},
+  protocol::{ContentBlock, Message, Request, StopReason, StreamEvent, Usage},
 };
 
-pub(in crate::executor) fn combine_usage(previous: Option<Usage>, current: Usage) -> Usage {
+/// The usage of two requests of one logical call summed; a field either leaves unknown stays so.
+pub(super) fn combine_usage(previous: Option<Usage>, current: Usage) -> Usage {
   let Some(previous) = previous else {
     return current;
   };
@@ -25,7 +26,9 @@ pub(in crate::executor) fn combine_usage(previous: Option<Usage>, current: Usage
   }
 }
 
-pub(in crate::executor) struct Continuation {
+/// A logical call so far: the request its next segment sends, the output its earlier segments
+/// kept, their summed usage and the next unused block index.
+pub(super) struct Continuation {
   pub request: Request,
   pub messages: Vec<Message>,
   pub usage: Option<Usage>,
@@ -35,13 +38,24 @@ impl Continuation {
   pub fn new(request: &Request) -> Self {
     Self { request: request.clone(), messages: Vec::new(), usage: None, next_index: 0 }
   }
-  pub fn extend(&mut self, messages: Vec<Message>) {
+  /// Keeps what a segment cut off at its output limit retained, and asks the next segment to go on
+  /// from there: the retained output joins the request, then an instruction to continue.
+  pub fn append_cut_output(&mut self, messages: Vec<Message>) {
     self.request.conversation.extend(messages.clone());
     self.messages.extend(messages);
     self.request.conversation.push(Message::User {
       metadata: Default::default(),
       content: vec![ContentBlock::Text { text: "Your previous response reached its output limit. Continue from where it stopped without repeating content already provided. Reissue any cut-off tool call in full if still needed.".into() }],
     });
+  }
+  /// The observation of the next segment, numbering its blocks after the ones before it.
+  pub fn observe_next_segment(&self) -> SegmentObservation {
+    SegmentObservation {
+      call: CallObservation::default(),
+      previous_usage: self.usage,
+      index_offset: self.next_index,
+      next_index: self.next_index,
+    }
   }
 }
 
@@ -66,7 +80,7 @@ impl SegmentObservation {
   /// Observers see unique block indices, cumulative usage, and only the final stop event.
   pub fn map_event(&mut self, mut event: StreamEvent) -> Result<Option<StreamEvent>, Error> {
     match &mut event {
-      StreamEvent::Stop(crate::protocol::StopReason::MaxOutputLengthExceeded) => return Ok(None),
+      StreamEvent::Stop(StopReason::MaxOutputLengthExceeded) => return Ok(None),
       StreamEvent::Usage(usage) => *usage = combine_usage(self.previous_usage, *usage),
       StreamEvent::BlockStart { index, .. }
       | StreamEvent::TextDelta { index, .. }

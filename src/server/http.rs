@@ -1,68 +1,60 @@
+//! The HTTP API: the routes, and the two layers every request passes - cross-origin rules and the
+//! bearer token. Everything lives under `/api` except the unauthenticated `/health` and `/version`.
 mod ask;
-pub(crate) mod content;
+mod config;
+mod content;
 mod directories;
+mod history;
 mod manage;
 mod mcp;
 mod providers;
+mod search;
 mod sessions;
-mod statistics;
-use crate::server::{app::App, error::ApiError};
+mod sse;
+mod status;
+mod storage;
+mod usage;
+use crate::server::{app::App, codex_login, error::ApiError, presets};
 use axum::{
   Json, Router,
   extract::{Request, State},
   http::{HeaderValue, Method, StatusCode, header},
   middleware::{self, Next},
   response::{IntoResponse, Response},
-  routing::{get, post, put},
+  routing::{delete, get, post, put},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub fn build_router(app: Arc<App>) -> Router {
   let api = Router::new()
-    .route("/status", get(statistics::status))
-    .route("/storage", get(statistics::storage))
-    .route("/usage", get(statistics::global_usage))
-    .route("/usage/series", get(statistics::global_series))
-    .route("/usage/daily", get(statistics::global_daily))
-    .route("/sessions/{id}/usage", get(statistics::session_usage))
-    .route("/sessions/{id}/usage/series", get(statistics::session_series))
-    .route("/sessions/{id}/usage/daily", get(statistics::session_daily))
-    .route("/sessions/{id}/ask", post(ask::ask))
-    .route("/sessions/{id}/input", post(content::input))
-    .route("/sessions/{id}/blobs", post(content::upload))
-    .route("/sessions/{id}/blobs/{blob}", get(content::download))
-    .route("/sessions/{id}/blobs/{blob}/meta", get(content::metadata))
-    .route("/sessions/{id}/history", get(content::timeline))
-    .route("/config", get(manage::configuration).put(manage::save_configuration))
-    .route("/proxy-environment", get(|| async { Json(crate::server::config::proxy_environment()) }))
-    .route("/shells", get(|| async { Json(crate::server::config::shell_catalog()) }))
-    .route("/defaults", get(manage::defaults))
+    .route("/status", get(status::status))
+    .route("/events", get(status::events))
+    .route("/version", get(version))
+    .route("/storage", get(storage::storage))
+    .route("/storage/sessions", get(storage::session_storage))
+    .route("/storage/prune", post(storage::prune))
+    .route("/usage", get(usage::global_usage))
+    .route("/usage/series", get(usage::global_series))
+    .route("/usage/daily", get(usage::global_daily))
+    .route("/sessions/{id}/usage", get(usage::session_usage))
+    .route("/sessions/{id}/usage/series", get(usage::session_series))
+    .route("/sessions/{id}/usage/daily", get(usage::session_daily))
+    .route("/config", get(config::get).put(config::save))
+    .route("/proxy-environment", get(config::proxy_environment))
+    .route("/shells", get(config::shells))
+    .route("/defaults", get(config::defaults))
     .route("/directories", get(directories::list))
-    .route("/events", get(manage::events))
-    .route(
-      "/version",
-      get(|| async { Json(json!({"name":"wish","version":env!("CARGO_PKG_VERSION")})) }),
-    )
-    .route("/sessions/{id}/context/clear", post(manage::clear_context))
-    .route("/sessions/{id}/fork", post(manage::fork))
-    .route(
-      "/sessions/{id}/queue/{entry}",
-      axum::routing::delete(manage::cancel_input).patch(manage::move_input),
-    )
-    .route("/provider-presets", get(|| async { Json(crate::server::presets::catalog()) }))
+    .route("/provider-presets", get(|| async { Json(presets::provider_presets()) }))
+    .route("/search-presets", get(|| async { Json(presets::search_presets()) }))
+    .route("/search/providers", get(search::list))
+    .route("/search/providers/{id}/check", post(search::check))
     .route("/providers", get(providers::list))
     .route("/providers/{id}", get(providers::get))
     .route("/providers/{id}/models", get(providers::models))
     .route("/providers/{id}/account", get(providers::account))
-    .route(
-      "/providers/{id}/chatgpt-login",
-      post(crate::server::codex_login::start).get(crate::server::codex_login::status),
-    )
-    .route(
-      "/providers/{id}/chatgpt-login/complete",
-      post(crate::server::codex_login::complete),
-    )
+    .route("/providers/{id}/chatgpt-login", post(codex_login::start).get(codex_login::status))
+    .route("/providers/{id}/chatgpt-login/complete", post(codex_login::complete))
     .route("/providers/{id}/call", post(providers::call))
     .route("/providers/{id}/count-tokens", post(providers::count))
     .route("/providers/{id}/compact", post(providers::compact))
@@ -71,12 +63,20 @@ pub fn build_router(app: Arc<App>) -> Router {
       "/sessions/{id}",
       get(sessions::get).patch(manage::update_session).delete(manage::delete_session),
     )
+    .route("/sessions/{id}/fork", post(manage::fork))
+    .route("/sessions/{id}/context/clear", post(manage::clear_context))
     .route("/sessions/{id}/messages", post(sessions::enqueue))
+    .route("/sessions/{id}/input", post(content::input))
+    .route("/sessions/{id}/queue/{entry}", delete(manage::cancel_input).patch(manage::move_input))
+    .route("/sessions/{id}/blobs", post(content::upload))
+    .route("/sessions/{id}/blobs/{blob}", get(content::download))
+    .route("/sessions/{id}/blobs/{blob}/meta", get(content::metadata))
     .route("/sessions/{id}/config", put(sessions::set_config))
     .route("/sessions/{id}/metadata", put(sessions::set_metadata))
     .route("/sessions/{id}/shell", put(sessions::set_shell))
     .route("/sessions/{id}/tools", put(sessions::set_tools))
     .route("/sessions/{id}/answer", post(sessions::answer))
+    .route("/sessions/{id}/ask", post(ask::ask))
     .route("/sessions/{id}/run", post(sessions::run))
     .route("/sessions/{id}/interrupt", post(sessions::interrupt))
     .route("/sessions/{id}/compact", post(sessions::compact))
@@ -86,9 +86,10 @@ pub fn build_router(app: Arc<App>) -> Router {
     .route("/sessions/{id}/generations", get(sessions::generations))
     .route("/sessions/{id}/generations/{generation}/entries", get(sessions::generation_entries))
     .route("/sessions/{id}/calls", get(sessions::calls))
-    .route("/sessions/{id}/history/query", post(sessions::query_history))
-    .route("/sessions/{id}/history/search", post(sessions::search_history))
-    .route("/sessions/{id}/history/{sequence}", get(sessions::read_history))
+    .route("/sessions/{id}/history", get(history::timeline))
+    .route("/sessions/{id}/history/query", post(history::query))
+    .route("/sessions/{id}/history/search", post(history::search))
+    .route("/sessions/{id}/history/{sequence}", get(history::read))
     .route("/mcp/servers", get(mcp::list))
     .route("/mcp/servers/{id}/check", post(mcp::check))
     .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
@@ -101,19 +102,19 @@ pub fn build_router(app: Arc<App>) -> Router {
   Router::new()
     .nest("/api", api)
     .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
-    .route(
-      "/version",
-      get(|| async { Json(json!({"name":"wish","version":env!("CARGO_PKG_VERSION")})) }),
-    )
+    .route("/version", get(version))
     .fallback(|| async { ApiError::not_found() })
     .layer(middleware::from_fn_with_state(app.clone(), cross_origin))
     .with_state(app)
+}
+async fn version() -> Json<Value> {
+  Json(json!({"name":"wish","version":env!("CARGO_PKG_VERSION")}))
 }
 /// Pages from other origins may call a server that requires a token: they cannot
 /// act without knowing it. A server without one answers its own origin only, so
 /// an arbitrary web page cannot drive a local agent through the visitor's browser.
 async fn cross_origin(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
-  if app.token.is_none() || !request.headers().contains_key(header::ORIGIN) {
+  if app.bearer_token.is_none() || !request.headers().contains_key(header::ORIGIN) {
     return next.run(request).await;
   }
   let preflight = request.method() == Method::OPTIONS
@@ -141,7 +142,7 @@ async fn cross_origin(State(app): State<Arc<App>>, request: Request, next: Next)
   response
 }
 async fn authorize(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
-  if let Some(token) = &app.token {
+  if let Some(token) = &app.bearer_token {
     let supplied = request
       .headers()
       .get("authorization")

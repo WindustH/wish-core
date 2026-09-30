@@ -1,13 +1,8 @@
-//! Model requests, streaming, token counting, provider discovery.
+//! The model side of a run: the `ModelCaller` contract a provider client fulfils, and one logical
+//! model call - its segments, continued past output limits, with stream events delivered live.
 mod caller;
-pub mod client;
 mod continuation;
 mod execute;
-mod observer;
-pub use observer::{StreamObserver, StreamObserverFactory};
-pub mod tokens;
 
-pub use caller::{ModelCaller, ModelStream};
-pub use client::{CallResponse, Client, EventStream};
-pub(super) use continuation::{Continuation, combine_usage};
+pub use caller::{CallResponse, ModelCaller, ModelStream};
 pub(super) use execute::{ModelResult, execute_model};

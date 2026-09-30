@@ -3,7 +3,7 @@ use crate::protocol::{Message, error::Error};
 
 /// Boundaries never split a model turn's reasoning/text/calls or its complete tool-result batch.
 /// Wire rendering must additionally validate any replacement assembled from these units.
-pub fn find_boundaries(messages: &[Message]) -> Result<Vec<usize>, Error> {
+pub fn find_replay_unit_boundaries(messages: &[Message]) -> Result<Vec<usize>, Error> {
   let mut boundaries = vec![0];
   let mut pending: Vec<(&str, &str)> = Vec::new();
   for (index, message) in messages.iter().enumerate() {

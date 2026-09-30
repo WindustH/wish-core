@@ -38,6 +38,11 @@ transaction. A step is frozen once released:
 | Step | Change |
 | --- | --- |
 | `m0001_mcp_switch` | A session's MCP switch now only decides what `wish mcp` answers, so `session.tools.mcp` in every session record and `defaults.tools.mcp` are set to `true` |
+| `m0002_web_search` | Sessions gain a `web_search` switch: on in `defaults.tools`, off in every existing session record so its tool list and prompt cache stay; a configuration with a ChatGPT (Codex) provider and no search providers gets one borrowing that account |
+| `m0003_tool_batches` | A tool batch is deleted once its tools finish; the batches earlier runs left behind are deleted, except the one a session still executing tools names |
+| `m0004_compact_storage` | Deleting a session gives its room back: `wish.sqlite` is set to incremental auto-vacuum and its FTS tables are merged, dropping the text of history deleted earlier |
+| `m0005_short_outcomes` | A session record's `status.last_operation.outcome` keeps only its short form (`StreamFailed: {reason}`, `ModelStopped: {stop_reason}`); records saved before the server trimmed it held the partial or whole response |
+| `m0006_standby_lists` | A standby generation's entry list is deleted when the standby gets a new one without being activated; in each session, the entry lists earlier builds left behind that way - every entry list neither its queue nor one of its generations names - are deleted |
 
 ## Running them
 
@@ -49,6 +54,8 @@ transaction. A step is frozen once released:
    number, its reason and the copy's location, and nothing has been written.
 4. Commit `wish.sqlite`, then `management.sqlite`; replace the configuration file atomically (only
    when a step changed it, keeping its permissions); write `format.json`.
+5. `VACUUM` both databases, which returns what the steps deleted and applies a layout a step set
+   (such as `auto_vacuum`); a failure here is only printed.
 
 The writes in step 4 cannot be one transaction. A crash between them leaves `format.json` at the old
 version, and the next start repeats the steps, which is why steps are repeatable. A failed commit

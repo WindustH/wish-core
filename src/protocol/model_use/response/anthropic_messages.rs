@@ -19,21 +19,20 @@
 //!   block. Errors map to `Error::Upstream` with `error.type` as the code.
 
 use crate::protocol::error::Error;
-use crate::protocol::ReasoningOpaqueKind;
-use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
+use crate::protocol::http_error::decode_in_band;
+use crate::protocol::{ContentBlock, Message, ReasoningOpaqueKind, Response, StopReason, Usage};
 use serde_json::{Value, json};
 
 pub fn decode(body: &Value) -> Result<Response, Error> {
   if body.get("type").and_then(Value::as_str) == Some("error") {
-    let error = body.get("error");
-    let message = error
-      .and_then(|error| error.get("message"))
-      .and_then(Value::as_str)
-      .unwrap_or("upstream reported an error without a message");
-    let code = error.and_then(|error| error.get("type")).and_then(Value::as_str);
-    return Err(Error::from_in_band(code.map(str::to_owned), message.to_owned()));
+    return Err(decode_in_band(
+      body.get("error"),
+      &["type"],
+      "upstream reported an error without a message",
+    ));
   }
 
+  let stop_reason = map_stop_reason(body.get("stop_reason").and_then(Value::as_str));
   let mut messages: Vec<Message> = Vec::new();
   let mut content: Vec<ContentBlock> = Vec::new();
   let flush = |messages: &mut Vec<Message>, content: &mut Vec<ContentBlock>| {
@@ -45,40 +44,26 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
   };
   if let Some(blocks) = body.get("content").and_then(Value::as_array) {
     for block in blocks {
+      let field = |name: &str| block.get(name).and_then(Value::as_str).unwrap_or("").to_owned();
       match block.get("type").and_then(Value::as_str) {
-        Some("text") => content.push(ContentBlock::Text {
-          text: block.get("text").and_then(Value::as_str).unwrap_or("").to_owned(),
-        }),
+        Some("text") => content.push(ContentBlock::Text { text: field("text") }),
         Some("thinking") => {
           flush(&mut messages, &mut content);
-          let thinking = block.get("thinking").and_then(Value::as_str).unwrap_or("");
-          messages.push(Message::Reasoning {
-            metadata: Default::default(),
-            replay_item: None,
-            opaque_kind: (!block.get("signature").and_then(Value::as_str).unwrap_or("").is_empty())
-              .then_some(ReasoningOpaqueKind::AnthropicSignature),
-            plaintext: thinking.to_owned(),
-            display: thinking.to_owned(),
-            signature: block.get("signature").and_then(Value::as_str).unwrap_or("").to_owned(),
-            ciphertext: String::new(),
-          });
+          messages.push(Message::signed_reasoning(
+            field("thinking"),
+            field("signature"),
+            ReasoningOpaqueKind::AnthropicSignature,
+          ));
         }
         Some("redacted_thinking") => {
           flush(&mut messages, &mut content);
-          messages.push(Message::Reasoning {
-            metadata: Default::default(),
-            replay_item: None,
-            opaque_kind: Some(ReasoningOpaqueKind::AnthropicRedacted),
-            plaintext: String::new(),
-            display: String::new(),
-            signature: String::new(),
-            ciphertext: block.get("data").and_then(Value::as_str).unwrap_or("").to_owned(),
-          });
+          messages.push(Message::redacted_reasoning(
+            field("data"),
+            ReasoningOpaqueKind::AnthropicRedacted,
+          ));
         }
-        Some("tool_use")
-          if map_stop_reason(body.get("stop_reason").and_then(Value::as_str))
-            != StopReason::MaxOutputLengthExceeded =>
-        {
+        // The calls of a capped reply may be cut short, so they are not read at all.
+        Some("tool_use") if stop_reason != StopReason::MaxOutputLengthExceeded => {
           flush(&mut messages, &mut content);
           messages.push(decode_tool_use(block)?);
         }
@@ -87,12 +72,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
     }
   }
   flush(&mut messages, &mut content);
-  Ok(Response {
-    messages,
-    stop_reason: map_stop_reason(body.get("stop_reason").and_then(Value::as_str)),
-    usage: decode_usage(body),
-    account_state: None,
-  })
+  Ok(Response { messages, stop_reason, usage: decode_usage(body), account_state: None })
 }
 
 fn decode_tool_use(block: &Value) -> Result<Message, Error> {
@@ -126,24 +106,42 @@ pub fn map_stop_reason(reason: Option<&str>) -> StopReason {
 }
 
 fn decode_usage(body: &Value) -> Usage {
-  let usage = body.get("usage");
-  let field =
-    |name: &str| -> Option<u64> { usage.and_then(|usage| usage.get(name)).and_then(Value::as_u64) };
+  let mut total = Usage::default();
+  if let Some(usage) = body.get("usage") {
+    merge_usage(&mut total, usage);
+  }
+  total
+}
+
+/// Merges one wire usage object into a running total: the counters it carries replace the ones
+/// before, input is folded as `input_tokens` plus both cache counters, and the total is derived
+/// once both sides are known.
+///
+/// A buffered body carries one usage object and a stream several, which the stream decoder merges
+/// one after another into the total it re-emits; both paths read the counters the same way.
+pub(crate) fn merge_usage(total: &mut Usage, usage: &Value) {
+  let field = |name: &str| usage.get(name).and_then(Value::as_u64);
   let cached = field("cache_read_input_tokens");
   let cache_write = field("cache_creation_input_tokens");
-  let input = field("input_tokens").map(|input| {
-    input.saturating_add(cached.unwrap_or(0)).saturating_add(cache_write.unwrap_or(0))
-  });
-  let output = field("output_tokens");
-  let total = input.zip(output).map(|(input, output)| input.saturating_add(output));
-  Usage {
-    input_tokens: input,
-    cached_input_tokens: cached,
-    cache_write_input_tokens: cache_write,
-    output_tokens: output,
-    reasoning_tokens: usage
-      .and_then(|usage| usage.pointer("/output_tokens_details/thinking_tokens"))
-      .and_then(Value::as_u64),
-    total_tokens: total,
+  if let Some(cached) = cached {
+    total.cached_input_tokens = Some(cached);
+  }
+  if let Some(cache_write) = cache_write {
+    total.cache_write_input_tokens = Some(cache_write);
+  }
+  if let Some(input) = field("input_tokens") {
+    total.input_tokens =
+      Some(input.saturating_add(cached.unwrap_or(0)).saturating_add(cache_write.unwrap_or(0)));
+  }
+  if let Some(output) = field("output_tokens") {
+    total.output_tokens = Some(output);
+  }
+  if let Some(thinking) =
+    usage.pointer("/output_tokens_details/thinking_tokens").and_then(Value::as_u64)
+  {
+    total.reasoning_tokens = Some(thinking);
+  }
+  if let (Some(input), Some(output)) = (total.input_tokens, total.output_tokens) {
+    total.total_tokens = Some(input.saturating_add(output));
   }
 }

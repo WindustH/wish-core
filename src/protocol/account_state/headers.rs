@@ -25,7 +25,9 @@
 //!   limits them apart.
 
 use crate::Error;
-use crate::protocol::account_state::{AccountState, AccountStateProtocol, QuotaWindow};
+use crate::protocol::account_state::{
+  AccountState, AccountStateProtocol, QuotaWindow, read_header,
+};
 
 /// One window a dialect reads out of a reply's headers.
 struct HeaderWindow {
@@ -173,54 +175,28 @@ pub fn parse(
     .iter()
     .find(|dialect| dialect.protocol == protocol)
     .ok_or_else(|| Error::Malformed(format!("`{protocol}` is not read from headers")))?;
-  let mut quotas = Vec::new();
+  let read = |name: Option<&str>| name.and_then(|name| read_header(headers, name));
+  let mut state = AccountState::new(protocol);
   for window in dialect.windows {
     let quota = QuotaWindow {
-      id: window.id.to_owned(),
-      name: None,
-      unit: window.unit.to_owned(),
-      used: None,
-      limit: window.limit.and_then(|name| get_header_value(headers, name)),
-      remaining: window.remaining.and_then(|name| get_header_value(headers, name)),
-      used_percent: None,
-      window: None,
-      resets_at: window.resets_at.and_then(|name| get_header_value(headers, name)),
-      reached: None,
-      unlimited: None,
-      parts: Vec::new(),
+      limit: read(window.limit),
+      remaining: read(window.remaining),
+      resets_at: read(window.resets_at),
+      ..QuotaWindow::new(window.id, window.unit)
     };
     // A window whose headers all stayed away is not a window the service reported.
     if quota.limit.is_none() && quota.remaining.is_none() && quota.resets_at.is_none() {
       continue;
     }
-    quotas.push(quota);
+    state.quotas.push(quota);
   }
-  let mut warnings = Vec::new();
-  if quotas.is_empty() {
-    warnings.push(format!("this reply carried none of the {protocol} headers"));
+  if state.quotas.is_empty() {
+    state.warnings.push(format!("this reply carried none of the {protocol} headers"));
   }
-  Ok(AccountState {
-    protocol,
-    quotas,
-    balances: Vec::new(),
-    failure: None,
-    warnings,
-    availability: None,
-    plan_type: None,
-  })
+  Ok(state)
 }
 
 /// Whether a protocol is read from a reply's headers.
 pub(crate) fn is_header_dialect(protocol: AccountStateProtocol) -> bool {
   DIALECTS.iter().any(|dialect| dialect.protocol == protocol)
-}
-
-/// A header's value, trimmed: an empty header is a header the service did not send.
-fn get_header_value(headers: &[(String, String)], name: &str) -> Option<String> {
-  headers
-    .iter()
-    .find(|(key, _)| key.eq_ignore_ascii_case(name))
-    .map(|(_, value)| value.trim())
-    .filter(|value| !value.is_empty())
-    .map(str::to_owned)
 }

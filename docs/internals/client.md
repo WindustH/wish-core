@@ -1,24 +1,23 @@
 # Client
 
-`src/executor/model/client.rs` is one upstream, ready to call: a `ModelUseProtocol` (one wire's
-renderer, reader, stream decoder and error envelope), an [`Outbound`](protocol/outbound.md) target
-(where calls go, how they are proven), `Credentials` (the account's material, placed at dispatch
-time) and a `Transport` (one attempt each). It does nothing else, except run the retry loop: the
+`src/client.rs` is one upstream, ready to call: a `ModelUseProtocol` (one wire's
+renderer, reader, stream decoder and error envelope), an [`Endpoint`](protocol/endpoint.md) target
+(where calls go, how they are proven), `Credentials` (what the account is reached with, placed when
+each call is built) and a `Transport` (one attempt each). It does nothing else, except run the retry loop: the
 one policy that has to sit where the attempt is made. This page is the only description of retry.
 
 ```rust
 let transport = ReqwestTransport::new(Limits::default(), Proxy::Environment)?;
-let outbound =
-  Outbound::new("https://api.anthropic.com", "/v1/messages", AuthProtocol::Header("x-api-key"))?;
+let endpoint =
+  Endpoint::new("https://api.anthropic.com", "/v1/messages", AuthScheme::Header("x-api-key"))?;
 let client = Client::new(
   ModelUseProtocol::AnthropicMessages(MessagesApiCompatMode::default()),
-  outbound,
+  endpoint,
   transport,
 )
 .with_credentials(Credentials::from_api_key("sk-ant-..."))
 .with_model_list(ModelListProtocol::AnthropicModels)
-.with_account_state(AccountStateProtocol::AnthropicRatelimitHeaders)
-.with_retry(RetryPolicy::default());
+.with_account_state(AccountStateProtocol::AnthropicRatelimitHeaders);
 ```
 
 The server builds its clients in [`src/server/provider.rs`](../../src/server/provider.rs).
@@ -28,7 +27,7 @@ The server builds its clients in [`src/server/provider.rs`](../../src/server/pro
 | Axis | Set by | Notes |
 | --- | --- | --- |
 | `ModelUseProtocol` | `Client::new` | the conversation wire ([model-use](protocol/model-use.md)) |
-| `AuthProtocol` | the `Outbound` | placement and renewal ([outbound](protocol/outbound.md)) |
+| `AuthScheme` | the `Endpoint` | placement and renewal ([endpoint](protocol/endpoint.md)) |
 | `ModelListProtocol` | `with_model_list` | optional |
 | `AccountStateProtocol` | `with_account_state` | optional |
 | `UpstreamCompactionProtocol` | `with_upstream_compaction` | optional; pairing checked, returns `Result` |
@@ -42,25 +41,29 @@ Asking a client for a feature it was not given, or one its protocol cannot serve
 `with_session_id` binds the ID that fills `{session}` header templates and the code-agent body
 fields. Unbound, each model call gets a fresh UUID. With `CodeAgentIdentity::Codex` on Responses,
 the body gets `prompt_cache_key` (unless set) and `client_metadata{session_id,thread_id}`. With
-`Claude` on Messages it gets `metadata.user_id`. `with_stream_observer` attaches a per-attempt
-`StreamObserver`. The server uses it for throughput sampling ([statistics](statistics.md)).
+`Claude` on Messages it gets `metadata.user_id`. `with_attempt_observer` attaches an
+`AttemptObserver`, made for every physical streaming attempt, retries and streamed compaction
+included. The server uses it for throughput sampling ([statistics](statistics.md)).
 
 ## Credentials
 
-For a subscription, the material carries tokens instead of a key (`api_key` = access token,
-`refresh_token`, `expires_at`, `account_id`). The auth protocol carries the renewal beside the
-placement, for example `AuthProtocol::Bearer(Some(CredentialsRefreshProtocol::OAuth))`.
-`Client::are_credentials_expired` asks whether the material has run out.
-`Client::refresh_credentials` returns renewed material (OAuth or Google ADC) and
-`Client::set_credentials` installs it. A `dispatch` over spent material is refused as
-`Error::Renewal` before anything is sent. Storing what the exchange rotated stays with the caller.
+For a subscription, the credentials carry tokens instead of a key (`api_key` = access token,
+`refresh_token`, `expires_at`, `account_id`). The auth scheme carries the renewal beside the
+placement: `AuthScheme::Bearer(Some(CredentialRenewal::CodexOAuth))`.
+`Client::refresh_credentials` returns renewed credentials and installs them nowhere; the server
+saves them in the provider's configuration, which builds the client again. A `build_call` over spent credentials is refused
+as `Error::Renewal` before anything is sent. Storing what the exchange rotated stays with the
+caller.
 
 ## Calls
 
 `call(&request)` is the single model-use entry point. `Request.stream` selects its result:
 
 - `false` returns `CallResponse::Complete(Box<Response>)`.
-- `true` returns `CallResponse::Stream(EventStream)`.
+- `true` returns `CallResponse::Stream(EventStream)` (`src/client/stream.rs`).
+
+`CallResponse` belongs to the executor's `ModelCaller` contract (`executor::model`), which
+`Client` implements: the executor only knows that trait ([executor](executor.md)).
 
 The same field drives request construction: the body `stream`/usage options where the wire has
 them, or the streaming URL for Google GenerateContent and Bedrock. The Codex deployment refuses a
@@ -104,7 +107,7 @@ Two reads, each over its own protocol and each a single attempt without retry:
   ([account-state](protocol/account-state.md)). `base_url` overrides the source's host.
 
 `with_account_state` serves two readings. A reply-borne protocol (rate-limit headers, the Codex
-quota frame) fills `Response::account_state` and `stream.get_account_state()` on every call. If
+quota frame) fills `Response::account_state`, and the accumulator of a stream, on every call. If
 that reading cannot be parsed, the model call itself fails. A protocol with a request of its own
 is read by `get_account_state`.
 
@@ -118,18 +121,18 @@ effects.
 | Lane | Loop | What is replaced |
 | --- | --- | --- |
 | buffered `call`, `count_tokens`, `compact_upstream` | `utils::retry::retry` | the whole attempt |
-| streamed `call` | `stream_with_retries` in client.rs | the attempt, until the first event is in hand |
-| `get_model_list`, `get_account_state`, OAuth/ADC exchanges | none | nothing: one attempt |
+| streamed `call` | `utils::retry::retry` | the attempt: the opening and its first event |
+| `get_model_list`, `get_account_state`, `search`, Codex OAuth exchanges | none | nothing: one attempt |
 
-A streamed call reads its first event before handing the stream over. Until then a retryable
+A streamed attempt reads its first event before the stream is handed over. Until then a retryable
 failure replaces the attempt. After that, failures are terminal, because a replay would splice a
 second copy of the answer into what the caller has seen. Streamed Codex compaction is the
 exception: it replaces the whole attempt, since nothing reaches the caller before the compaction
 item does.
 
-`RetryPolicy::default()`: 3 attempts, 500 ms initial delay, ×2 per attempt, 30 s cap, full jitter.
-An upstream `Retry-After` (delta-seconds or HTTP date, capped at 1 h) is a floor on the delay.
-`max_attempts: 1` disables retry.
+Every client retries by `RetryPolicy::default()`: 3 attempts, 500 ms initial delay, ×2 per
+attempt, 30 s cap, full jitter. An upstream `Retry-After` (delta-seconds or HTTP date, capped at
+1 h) is a floor on the delay.
 
 ## Limits and the stream-head retry
 

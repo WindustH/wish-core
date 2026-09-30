@@ -1,6 +1,9 @@
 # Built-in tools
 
 `tool` contains implementations; `executor::tool` contains the execution contract and dispatch.
+`ToolCall` and `ToolOutcome` are session data (`session::{ToolCall, ToolOutcome}`): the session
+keeps them in its state and history. `ToolCall::parse_arguments` reads a call's arguments into a
+serde type, with the error text the model is told.
 
 ```rust
 pub trait ToolExecutor: Sync {
@@ -20,10 +23,11 @@ model.
 The server's dispatcher is `SessionTools`
 ([`src/server/session/tools.rs`](../../src/server/session/tools.rs)). Every session gets
 `history_search`, `history_read`, `history_query` and `view_image`. The session's switches
-(`descriptor.tools`) add the five shell tools and `ask_user`. The `ShellTool` starts the first time
-the shell is switched on and stays alive while it is off, so background commands still report. The
-server rewrites `config.tools` to exactly that set and rejects a config naming any other tool
-(`no executor for tool X`) ([`src/server/session.rs`](../../src/server/session.rs)).
+(`descriptor.tools`) add the five shell tools, `ask_user` and `web_search`; the `mcp` switch adds no
+tool (see [MCP](mcp.md)). The `ShellTool` starts the first time the shell is switched on and stays
+alive while it is off, so background commands still report. The server rewrites `config.tools` to
+exactly that set and rejects a config naming any other tool (`no executor for tool X`), in the same
+file.
 
 ```rust
 use crate::tool::shell::{ShellConfig, ShellTool};
@@ -63,7 +67,8 @@ capture directory `data_dir/shell/<session id>`. The command is the session's ow
 (`PUT /api/sessions/{id}/shell`), otherwise the configured global shell, which follows later
 config saves. An override that no longer resolves falls back to the global shell when the session
 opens. Deleting a session removes its capture directory
-([`src/server/session.rs`](../../src/server/session.rs), [API](../api.md#sessions)).
+([`src/server/session.rs`](../../src/server/session.rs),
+[`src/server/session/tools.rs`](../../src/server/session/tools.rs), [API](../api.md#sessions)).
 
 ### Operations
 
@@ -183,8 +188,8 @@ if the model later polled the command to completion or killed it.
 
 ## History tools
 
-`tool::search_history::SearchHistoryTool::new(&session)` binds a `HistoryReader` to one session's
-permanent history. Tool arguments cannot select another session.
+`tool::history::HistoryTools::new(&session)` binds the session's `SessionReader` to its permanent
+history. Tool arguments cannot select another session.
 
 | Tool | Required Inputs | Optional Inputs | Behavior |
 | --- | --- | --- | --- |
@@ -216,10 +221,36 @@ preserving call/result pairing for parallel batches.
 
 Server-owned: `SessionTools` saves the bytes to `data_dir/blobs/<session id>/<sha256>`, adds
 `output.session_path`, and keeps only the image block. At request time the server projects stored
-images ([`src/server/media.rs`](../../src/server/media.rs)). Each image becomes an
+images ([`src/server/session_model.rs`](../../src/server/session_model.rs)). Each image becomes an
 `[Image sha256:…]` notice plus its blob path, and the image itself is sent only when the model's
 declared `input_modalities` allow it. If the upstream rejects images before streaming, the call is
 retried once with notices only. Stored conversation always keeps the original images.
+
+## `web_search`
+
+`tool::web_search::WebSearchTool::new(backend, conversation)` searches the web through `backend`, a
+`SearchBackend` the application supplies: it runs one search and returns the `Answer` (the
+provider that answered, its display name and the results) or why every provider failed.
+`conversation` names the session, for a service that keeps one conversation across searches. The
+tool's description and schema never name a service, so the model's request stays the same
+whichever provider answers.
+
+| Input | Meaning |
+| --- | --- |
+| `query` | Required; at most 400 characters |
+| `allowed_domains`, `blocked_domains` | At most 20 domain names each; subdomains included |
+| `recency` | `day`, `week`, `month` or `year` |
+| `max_results` | 1 to 20, default 10 |
+
+The model receives the results as text: numbered title and URL, site and date when known, a
+snippet of at most 600 characters, any warnings, and a note that the results come from the web and
+are not verified. The result is `SuccessWithMetadata`, with `{query, provider, provider_name,
+results, warnings}` kept on the stored result message for the page. A failure of every provider is
+`Failed("web search failed: …")`; an interrupt cancels the search.
+
+Server-owned: `SessionTools` supplies a backend that asks the configured search providers in
+order ([`src/server/search.rs`](../../src/server/search.rs),
+[configuration](../configuration.md#web-search)); the session's `web_search` switch adds the tool.
 
 ## `ask_user`
 

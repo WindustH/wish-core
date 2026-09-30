@@ -1,20 +1,33 @@
 //! Typed SQLite objects and paged lists. Transactions publish cache changes only after commit.
+
+/// SQL for the interned key of the list named by parameter 1: items and history-index rows refer
+/// to a list by that key.
+macro_rules! list_key {
+  () => {
+    "(SELECT id FROM wish_list_keys WHERE name=?1)"
+  };
+}
+
 mod cache;
 mod database;
+pub(crate) mod history_index;
 mod list;
-mod object;
-pub(crate) mod search;
 mod transaction;
 
 pub(crate) use database::OwnerGuard;
-pub use database::{Storage, StorageOptions};
-pub use list::{ListId, PAGE_SIZE, Page, ReadList, StoredList};
-pub use object::StoredObject;
+pub use database::{NamespaceUsage, Storage, StorageOptions};
+pub use list::{ListId, Page, ReadList};
 pub use transaction::Transaction;
 
 use serde::{Serialize, de::DeserializeOwned};
-pub trait StoredValue: Clone + Serialize + DeserializeOwned + Send + Sync + 'static {}
-impl<T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static> StoredValue for T {}
+
+/// A value storage can keep: an object, or the items of a list.
+pub trait StoredValue: Clone + Serialize + DeserializeOwned + Send + Sync + 'static {
+  /// The kind a value is stored under, beside it in the database. A value is read back only as the
+  /// kind it was written as, so this string is part of the database format: it stays the same when
+  /// the type is renamed or moved, and changing it needs a migration.
+  const KIND: &'static str;
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {

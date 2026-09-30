@@ -1,0 +1,138 @@
+{
+  "presets": [
+    {
+      "id": "openai_codex_search",
+      "name": "ChatGPT",
+      "brand": "OpenAI",
+      "protocol": "codex_alpha_search",
+      "borrows_from": [
+        "openai_codex"
+      ],
+      "base_url_from_provider": true,
+      "key": "borrowed"
+    },
+    {
+      "id": "kimi_code_search",
+      "name": "Kimi Code",
+      "brand": "Kimi",
+      "protocol": "kimi_code_search",
+      "borrows_from": [
+        "kimi_code"
+      ],
+      "base_url_from_provider": true,
+      "key": "borrowed"
+    },
+    {
+      "id": "minimax_coding_plan_search",
+      "name": "MiniMax Token Plan",
+      "brand": "MiniMax",
+      "protocol": "minimax_coding_plan_search",
+      "borrows_from": [
+        "minimax_token_cn",
+        "minimax_token_global"
+      ],
+      "base_url_by_lender": {
+        "minimax_token_cn": "https://api.minimaxi.com",
+        "minimax_token_global": "https://api.minimax.io"
+      },
+      "key": "borrowed"
+    },
+    {
+      "id": "tavily_keyless",
+      "name": "Tavily Free",
+      "brand": "Tavily",
+      "protocol": "tavily_keyless_search",
+      "key": "none",
+      "region": "global",
+      "docs_url": "https://docs.tavily.com/documentation/keyless"
+    },
+    {
+      "id": "tavily",
+      "name": "Tavily",
+      "brand": "Tavily",
+      "protocol": "tavily_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://app.tavily.com",
+      "docs_url": "https://docs.tavily.com/documentation/api-reference/endpoint/search"
+    },
+    {
+      "id": "exa",
+      "name": "Exa",
+      "brand": "Exa",
+      "protocol": "exa_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://dashboard.exa.ai/api-keys",
+      "docs_url": "https://exa.ai/docs/reference/search"
+    },
+    {
+      "id": "perplexity_search",
+      "name": "Perplexity",
+      "brand": "Perplexity",
+      "protocol": "perplexity_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://www.perplexity.ai/account/api/keys",
+      "docs_url": "https://docs.perplexity.ai/docs/search/quickstart"
+    },
+    {
+      "id": "brave",
+      "name": "Brave Search",
+      "brand": "Brave",
+      "protocol": "brave_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://api-dashboard.search.brave.com/app/keys",
+      "docs_url": "https://api-dashboard.search.brave.com/app/documentation/web-search/get-started"
+    },
+    {
+      "id": "serper",
+      "name": "Serper",
+      "protocol": "serper_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://serper.dev/api-keys",
+      "docs_url": "https://serper.dev"
+    },
+    {
+      "id": "jina",
+      "name": "Jina",
+      "brand": "Jina",
+      "protocol": "jina_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://jina.ai/api-dashboard/key-manager",
+      "docs_url": "https://jina.ai/reader"
+    },
+    {
+      "id": "searxng",
+      "name": "SearXNG",
+      "brand": "SearXNG",
+      "protocol": "searxng_search",
+      "key": "none",
+      "base_url_required": true,
+      "base_url_placeholder": "http://127.0.0.1:8888",
+      "docs_url": "https://docs.searxng.org/dev/search_api.html"
+    },
+    {
+      "id": "bocha",
+      "name": "博查 Bocha",
+      "brand": "Bocha",
+      "protocol": "bocha_search",
+      "key": "required",
+      "region": "cn",
+      "key_url": "https://open.bochaai.com",
+      "docs_url": "https://bocha-ai.feishu.cn/wiki/RXEOw02rFiwzGSkd9mUcqoeAnNK"
+    },
+    {
+      "id": "metaso",
+      "name": "秘塔 Metaso",
+      "protocol": "metaso_search",
+      "key": "required",
+      "region": "cn",
+      "key_url": "https://metaso.cn/search-api/api-keys",
+      "docs_url": "https://metaso.cn/search-api/playground"
+    }
+  ]
+}

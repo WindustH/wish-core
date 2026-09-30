@@ -9,19 +9,21 @@ session.rs          Session definition and exports
 session/
  +-- lifecycle      create / load / import / delete
  +-- config         settings and metadata
- +-- control        handles and interruption intentions
- +-- queue          durable input, reordering, cancellation and consumption
- +-- machine/       state, next actions and run outcomes
+ +-- queue          SessionSender: durable input, reordering, cancellation; consumption
+ +-- reader         SessionReader: the session's lists, for any task
+ +-- machine/       state, next actions, tool batches and run outcomes
  +-- context/       generations, compaction commits, requests and validation
- +-- history/       message entries, events, their ordered history and its index
+ +-- history/       message entries, events, their ordered history, its index and queries
  +-- statistics/    model call records
- +-- persistence    stored header and SessionTransaction
+ +-- persistence    stored header, stored kinds and the transaction boundaries
  +-- error          session errors
 ```
 
 Each area contains its types and operations. `SessionTransaction` methods are implemented in
-the area that owns the operation, while `persistence` owns the shared transaction boundary.
-State, messages, events and call observations can therefore commit together.
+the area that owns the operation, while `persistence` owns the shared transaction boundaries:
+`Session::update` for the owner's changes, `Session::read` for its reads (rolled back, so they
+change nothing) and `SessionSender::transact` for changes made beside the owner. State, messages,
+events and call observations can therefore commit together.
 
 ```text
 Session header                 independently stored, paged collections
@@ -42,36 +44,43 @@ its complete current context in memory.
 ```rust
 let storage = Storage::open("wish.sqlite", StorageOptions::default())?;
 let mut session = Session::create(storage.clone(), "my-session", SessionConfig::new("model"))?;
-session.enqueue_message(message)?;
+session.create_sender().enqueue_message(message)?;
 // Later, including in another process:
 drop(session);
 let session = Session::load(storage, "my-session")?;
-let page = session.get_history().read_page(0, 128)?;
+let page = session.reader().get_history().read_page(0, 128)?;
 ```
 
-`Session::new(config)` uses an in-memory SQLite database. `from_request` imports paired stable
-history into one. `import_history(messages)` appends a protocol-valid conversation to an existing
-session at a stable boundary. `create_context_entry(message)` stores an entry outside the active
-context, for use in a prepared generation. `delete()` removes the session's whole storage
-namespace, including its history index. Session requests always use `ToolChoice::Auto`, including
-when an imported request selected another strategy. `RunOptions` only controls tool execution
-mode (`ToolMode::Serial` by default, or `Parallel`); there is no maximum turn count. Unknown config
+`Session::new(config)` uses an in-memory SQLite database. `import_history(messages)` appends a
+protocol-valid conversation to the active context at a stable boundary: a message joins it and its
+history as `Imported`, and one that was a summary or other context-only entry where it came from
+(`Summary`, `Context`) keeps that origin and joins the context only, with later summaries starting
+after it. The server imports a new session's initial messages this way, a fork's included.
+`delete()` removes the session's whole storage namespace, including its history index. Session
+requests always use `ToolChoice::Auto`. `RunOptions` only controls tool execution mode
+(`ToolMode::Serial` by default, or `Parallel`); there is no maximum turn count. Unknown config
 fields are rejected.
 
-All getters for long collections return read-only, lazy handles. `get_history`, `get_entries`,
-`get_events`, `get_generations`, `get_generation_entries`, `get_message_queue` and
-`get_model_calls` support bounded page reads. `get_active_generation` and `get_standby_generation`
-load one header. Small config/state getters expose the owning handle's working state. Each session
-has one live owner per `Storage`; opening it again returns `AlreadyOpen`. Dropping that handle
-releases ownership. Other tasks use `SessionSender` and read-only list handles. There are no
-revision checks or cross-process ownership leases.
+`Session::reader()` is the session's `SessionReader`: a cloneable, read-only view of its lists that
+never claims the owner, so it can be kept while an executor holds the session and after the owner
+is gone. `get_history`, `get_entries`, `get_events`, `get_generations`,
+`get_generation_entry_ids(id)`, `get_message_queue` and `get_model_calls` return lazy list handles
+for bounded page reads; `get_entry`, `get_event` and `get_generation` read one value, and
+`read_generation_entry_ids` a generation's whole context. The reader also answers the history
+queries ([history](history.md)). The session header's own fields are the owner's:
+`get_active_generation`, `get_standby_generation`, `get_state`, `get_config`, `get_metadata` and
+`get_queue_head`. Each session has one live owner per `Storage`; opening it again returns
+`AlreadyOpen`. Dropping that handle releases ownership. Other tasks use a `SessionSender` and a
+`SessionReader`. There are no revision checks or cross-process ownership leases.
 
 ## Input queue
 
 Only `User`, `System` and `Developer` messages can be enqueued (`SessionError::InvalidInput`
-otherwise). `create_sender()` returns a durable input handle usable during model/tool execution.
-Sending atomically commits the message, queue reference and `MessageQueued` event without
-interrupting execution. The runner consumes the whole pending queue at a stable boundary, as one
+otherwise). `create_sender()` returns a `SessionSender`, a durable input handle usable during
+model/tool execution and after the owner is gone. `enqueue_message` atomically commits the
+message, queue reference and `MessageQueued` event without interrupting execution or changing the
+phase; the run collects the input at its next stable boundary (`collect_inputs` moves an idle
+session to `Ready`). The runner consumes the whole pending queue at a stable boundary, as one
 `InputsConsumed` event. Queue positions below `get_queue_head()` have been consumed; the queue log
 remains addressable. Suspended sessions require explicit `resume()` before consuming more input.
 
@@ -82,9 +91,13 @@ Pending input can be edited until it is consumed, including while a model or too
 | `move_queued_input(entry, before)` | moves a pending entry before another pending entry, or to the end with `None` | `InputMoved` |
 | `cancel_queued_input(entry)` | removes a pending entry from the queue; the entry itself stays stored | `InputCancelled` |
 
-Both are on `SessionSender` and `SessionHandle`, and `cancel_queued_input` also on `Session`. Both
-run in one transaction with enqueue and consumption, and return `InvalidEntry` for an entry that
-is not pending.
+Both are on `SessionSender`. Both run in one transaction with enqueue and consumption, and return
+`InvalidEntry` for an entry that is not pending.
+
+A sender never changes the session header. The owner keeps the header in memory and saves it whole
+with each change it makes, so a change a sender made to it would be overwritten; senders only
+append to and edit the session's lists, and `SessionSender::transact` refuses, and rolls back, a
+transaction that changed the header.
 
 ## Events and generations
 
@@ -108,8 +121,12 @@ rejects unconsumed queued entries. Replacement references are stored in a fresh 
 events retain the list ID and its original length. Activation preserves the entries appended
 since preparation. Old history and sealed generations remain readable. The server's
 `POST /api/sessions/{id}/context/clear` uses this pair. Automatic summarization and cutover use the
-separate [compaction](compaction.md) workflow. Sealed generations are never garbage-collected;
-only `delete()` removes a session's data.
+separate [compaction](compaction.md) workflow.
+
+Every generation list is the session's own `{key}/lists/{n}`. Sealed generations are never
+garbage-collected; only `delete()` removes them. A standby's list is different: when the standby is
+given a new one without being activated - prepared again, emptied, or replaced by a cutover's
+trimmed context - the old list is deleted, since nothing reads it once no generation names it.
 
 ## Crash settlement
 
@@ -125,38 +142,27 @@ automatically. `settle_interrupted()` closes such a run without replaying anythi
 
 A `Running` model call record is closed as `Interrupted` or `Failed` in the same transaction.
 The server calls `settle_interrupted` when it opens a session that is not stable, and after a run
-returns an error (server-owned: [`src/server/session.rs`](../../src/server/session.rs)).
+returns an error (server-owned: [`src/server/session.rs`](../../src/server/session.rs),
+[`src/server/session/run.rs`](../../src/server/session/run.rs)).
 Graceful interruption is handled by the [executor](executor.md). `resume()` does not check that
 unknown tool outcomes were reconciled; it only requires a stable state.
 
 ## Timestamps and calls
 
 Messages have creation timestamps on `Entry`; event timestamps live on `HistoryRecord`. Both also
-carry an optional originating `model_call_id`. `get_model_calls()` pages logical model calls, and
-`get_model_call(id)` retrieves one ([statistics](statistics.md)). Message metadata is
-application-owned.
+carry an optional originating `model_call_id`. The reader's `get_model_calls()` pages logical model
+calls ([statistics](statistics.md)). Message metadata is application-owned.
 
-Use a [HistoryReader](history.md) for indexed message-type/time filters, full-text search and
-selective expansion, including across compaction.
+Use the [reader's history queries](history.md) for indexed message-type/time filters, full-text
+search and selective expansion, including across compaction.
 
-## Session control
+## Running beside the owner
 
-`create_handle()` returns a cloneable `SessionHandle` with `enqueue_message`, the queue edits above,
-`interrupt()` and `build_context_snapshot()`. Use it while the executor holds `&mut Session`.
-`Session::interrupt()` exposes the same intention directly when the session is available.
-Interruption returns true when a run is registered (including repeated requests), false when
-idle, suspended without a runner, or after the runner has exited. Acknowledgement is not
-completion: await `executor::run` to finish cleanup. The server interrupts through the run's
-`ExecutionControl` instead ([executor](executor.md#control-scopes)).
+A run is interrupted through the `ExecutionControl` its caller gave it; there is no session-level
+interrupt ([executor](executor.md#control-scopes)). Dropping a run's future leaves active persisted
+work unreconciled; it is not graceful shutdown.
 
-A request targets only the current run. No interrupt is queued for a future run, and a new run gets
-fresh execution cancellation state. Registration is removed on return, error, or future drop.
-Dropping a future still leaves active persisted work unreconciled; it is not graceful shutdown.
-Handles belong to a live Session owner. After dropping/loading that owner, create a new control
-handle; old handles cannot interrupt its replacement. `SessionSender` remains usable for durable
-input alone, including while the owner is absent. Interrupt intentions are not persisted.
-
-`SessionHandle::build_context_snapshot()` reads committed active context in one storage
+`SessionSender::build_context_snapshot()` reads committed active context in one storage
 transaction, including while the executor owns the session. An unfinished tool batch
 and its assistant turn are excluded. The returned request does not include queued input
 and does not mutate session state. The server's BTW endpoint `POST /api/sessions/{id}/ask` is built on

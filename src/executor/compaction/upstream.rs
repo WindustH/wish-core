@@ -1,47 +1,40 @@
-use super::{Failure, Sizing, check_cancelled, measure};
+//! A cutover through the caller's upstream compaction: the provider compacts the whole active
+//! context into an opaque item, and the new context is the fixed prefix, that item and the latest
+//! user message, all three indivisible.
+use super::{Failure, call_status, check_cancelled, measure, trigger::CutoverPlan};
 use crate::{
   Error,
-  executor::{ExecutionControl, model::ModelCaller, observe::notify_observers},
-  protocol::{Message, Request, upstream_compaction::UpstreamCompactionRequest},
+  executor::{ExecutionControl, model::ModelCaller, observe::record_and_deliver},
+  protocol::{Message, upstream_compaction::UpstreamCompactionRequest},
   session::{
-    CompactionReason, RunOutcome, Session, SessionEvent,
-    statistics::{CallObservation, ModelCallStatus, Timestamp},
+    RunOutcome, Session, SessionEvent,
+    statistics::{CallObservation, ModelCallPurpose},
   },
 };
-use futures_util::{
-  future::{Either, select},
-  pin_mut,
-};
 
-pub(super) struct Plan<'a> {
-  pub request: Request,
-  pub fixed: usize,
-  pub reason: CompactionReason,
-  pub sizing: Sizing<'a>,
-}
-
-pub(super) async fn replace_context(
+pub(super) async fn replace_with_upstream(
   caller: &impl ModelCaller,
   session: &mut Session,
   control: &ExecutionControl,
-  cursor: &mut u64,
+  delivered: &mut u64,
   observe: &mut (impl FnMut(&SessionEvent) + Send),
-  plan: Plan<'_>,
+  plan: CutoverPlan,
 ) -> Result<(), Failure> {
-  let Plan { mut request, fixed, reason, sizing } = plan;
+  let CutoverPlan { reason, mut request, config, calibration } = plan;
+  let fixed =
+    request.conversation.iter().take_while(|message| message.is_fixed_instruction()).count();
   let active = session.get_active_generation()?;
-  let list = session.get_generation_entries(active.id)?;
-  let entries: Vec<_> =
-    list.read_page(0, list.len()? as usize)?.items.iter().map(|id| **id).collect();
+  let entries = session.reader().read_generation_entry_ids(active.id)?;
   let latest_user =
     request.conversation.iter().rposition(|message| matches!(message, Message::User { .. }));
   check_cancelled(control)?;
-  session.start_upstream_compaction_call(entries.len() as u64)?;
-  session.record_events(vec![(
-    Timestamp::now(),
+  session.start_model_call(ModelCallPurpose::UpstreamCompaction, entries.len() as u64)?;
+  record_and_deliver(
+    session,
+    delivered,
+    observe,
     SessionEvent::UpstreamCompactionStarted { generation: active.id },
-  )])?;
-  notify_observers(session, cursor, observe)?;
+  )?;
   let started = std::time::Instant::now();
   // Send the whole active conversation, including any earlier opaque compaction body, with the
   // prompt controls the conversation calls send, so a compaction made on a model call reads their
@@ -54,41 +47,29 @@ pub(super) async fn replace_context(
     reasoning: request.reasoning.clone(),
     cache: request.cache.clone(),
   };
-  let result = {
-    let compacting = caller.compact_upstream(&input);
-    let interrupted = control.wait_for_cancellation();
-    pin_mut!(compacting, interrupted);
-    match select(interrupted, compacting).await {
-      Either::Left(_) => Err(Failure::Outcome(RunOutcome::Interrupted)),
-      Either::Right((result, _)) => result.map_err(Failure::from),
-    }
+  let result = match control.run_until_cancelled(caller.compact_upstream(&input)).await {
+    Some(result) => result.map_err(RunOutcome::Failed),
+    None => Err(RunOutcome::Interrupted),
   };
-  let status = match &result {
-    Ok(_) => ModelCallStatus::Completed,
-    Err(Failure::Outcome(RunOutcome::Interrupted)) => ModelCallStatus::Interrupted,
-    Err(_) => ModelCallStatus::Failed,
+  let mut observation = CallObservation {
+    usage: result.as_ref().map(|response| response.usage).unwrap_or_default(),
+    ..Default::default()
   };
-  session.complete_compaction_call(
-    CallObservation {
-      finished_at: Some(Timestamp::now()),
-      elapsed_ms: Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
-      usage: result.as_ref().map(|response| response.usage).unwrap_or_default(),
-      ..Default::default()
-    },
-    status,
-  )?;
-  let response = result?;
+  observation.finish(started);
+  session.complete_compaction_call(observation, call_status(&result))?;
+  let response = result.map_err(Failure::Outcome)?;
   let body: Vec<_> = response
     .conversation
     .iter()
     .filter(|message| matches!(message, Message::UpstreamCompaction { .. }))
     .cloned()
     .collect();
-  session.record_events(vec![(
-    Timestamp::now(),
+  record_and_deliver(
+    session,
+    delivered,
+    observe,
     SessionEvent::UpstreamCompactionCompleted(Box::new(response)),
-  )])?;
-  notify_observers(session, cursor, observe)?;
+  )?;
   if body.is_empty() {
     return Err(Error::Malformed("upstream compaction returned no compaction body".into()).into());
   }
@@ -99,8 +80,8 @@ pub(super) async fn replace_context(
     .cloned()
     .collect();
   caller.validate_request(&request)?;
-  let measurement = measure(caller, control, sizing.config, &request, sizing.calibration).await?;
-  if measurement.tokens > sizing.config.target_tokens {
+  let measurement = measure(caller, control, &config, &request, calibration).await?;
+  if measurement.tokens > config.target_tokens {
     return Err(Error::Build("compaction target cannot accommodate the fixed prompt, upstream compaction body and latest user message".into()).into());
   }
   check_cancelled(control)?;

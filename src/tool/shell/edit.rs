@@ -1,3 +1,5 @@
+//! The files a `shell_edit` command edits: read before launch, compared after exit, and each
+//! change reported as a unified diff.
 use super::ShellError;
 use imara_diff::{
   Algorithm, Diff, InternedInput, Interner, Token, UnifiedDiffConfig, UnifiedDiffPrinter,

@@ -1,3 +1,5 @@
+//! The shell tool's runtime: the registry of one tool's executions, and each operation on them -
+//! start, edit, poll, write and kill - with the foreground wait of a command started.
 use super::{
   DataEncoding, KillMode, ShellConfig, ShellError, ShellOperation,
   edit::{EditCapture, EditResult},
@@ -5,10 +7,8 @@ use super::{
   platform::{self, ProcessTree},
   process::{self, Execution, Snapshot, Status},
 };
-use crate::executor::{
-  ExecutionControl,
-  tool::{ToolCall, ToolExecutor, ToolOutcome},
-};
+use crate::executor::{ExecutionControl, tool::ToolExecutor};
+use crate::session::{ToolCall, ToolOutcome};
 use base64::Engine;
 use serde_json::{Value, json};
 use std::{
@@ -100,6 +100,10 @@ impl ShellTool {
       .cloned()
       .ok_or_else(|| ShellError::ExecutionNotFound(id.into()))
   }
+  /// Whether the execution `id` is still running, so its capture is still being written.
+  pub fn is_running(&self, id: &str) -> bool {
+    self.get_execution(id).is_ok_and(|execution| execution.get_snapshot().status == Status::Running)
+  }
   /// Stop all owned process groups and await reaping. Captures and completed handles are retained.
   pub async fn shutdown(&self) -> Result<(), ShellError> {
     let executions: Vec<_> = {
@@ -124,7 +128,7 @@ impl ShellTool {
     let _ = execution.wait_for_exit().await;
     read_output(&execution, 0, 0, DataEncoding::Utf8).await
   }
-  pub async fn run(&self, operation: ShellOperation, control: &ExecutionControl) -> ToolOutcome {
+  async fn run(&self, operation: ShellOperation, control: &ExecutionControl) -> ToolOutcome {
     if control.is_cancelled() {
       return ToolOutcome::Cancelled;
     }
@@ -141,7 +145,7 @@ impl ShellTool {
         }
       }
       ShellOperation::Edit { command, diff, check_diff } => {
-        return self.edit(command, diff, check_diff, control).await.unwrap_or_else(failure);
+        return self.edit(command, diff, check_diff, control).await.unwrap_or_else(Into::into);
       }
       ShellOperation::Poll { execution_id, offset, max_bytes, wait_ms, encoding } => {
         self
@@ -172,7 +176,7 @@ impl ShellTool {
         Err(error) => Err(error),
       },
     };
-    result.map(ToolOutcome::Success).unwrap_or_else(failure)
+    result.map(ToolOutcome::Success).unwrap_or_else(Into::into)
   }
   async fn spawn(
     &self,
@@ -307,10 +311,7 @@ impl ShellTool {
       if tokio::time::Instant::now() >= deadline {
         break "soft_timeout";
       }
-      tokio::select! {
-        _ = control.wait_for_cancellation() => {},
-        _ = tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + Duration::from_millis(20))) => {},
-      }
+      wait_tick(deadline, control).await;
     };
     let mut output =
       read_output(&execution, 0, self.inner.config.inline_bytes, DataEncoding::Utf8).await?;
@@ -342,11 +343,9 @@ impl ShellTool {
     }
     let execution = self.spawn(command, None, false, edits, control).await?;
     let mut foreground = Foreground { execution: execution.clone(), returned: false };
-    let (snapshot, reason) = tokio::select! {
-      snapshot = execution.wait_for_exit() => (snapshot?, "exited"),
-      _ = control.wait_for_cancellation() => {
-        (execution.terminate(KillMode::Graceful).await?, "interrupted")
-      }
+    let (snapshot, reason) = match control.run_until_cancelled(execution.wait_for_exit()).await {
+      Some(snapshot) => (snapshot?, "exited"),
+      None => (execution.terminate(KillMode::Graceful).await?, "interrupted"),
     };
     foreground.returned = true;
     let mut output =
@@ -387,10 +386,7 @@ impl ShellTool {
       {
         return read_output(&execution, offset, max_bytes, encoding).await;
       }
-      tokio::select! {
-        _ = control.wait_for_cancellation() => {},
-        _ = tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + Duration::from_millis(20))) => {},
-      }
+      wait_tick(deadline, control).await;
     }
   }
 }
@@ -401,6 +397,11 @@ impl ToolExecutor for ShellTool {
       Err(error) => ToolOutcome::Failed(error.to_string()),
     }
   }
+}
+/// Waits one polling tick, ended early by `deadline` or by cancellation.
+async fn wait_tick(deadline: tokio::time::Instant, control: &ExecutionControl) {
+  let tick = deadline.min(tokio::time::Instant::now() + Duration::from_millis(20));
+  control.run_until_cancelled(tokio::time::sleep_until(tick)).await;
 }
 fn resolve_deadline(duration: Duration) -> Result<tokio::time::Instant, ShellError> {
   tokio::time::Instant::now()
@@ -433,10 +434,14 @@ async fn read_output(
   Ok(output)
 }
 
-fn failure(error: ShellError) -> ToolOutcome {
-  match error {
-    ShellError::Interrupted => ToolOutcome::Cancelled,
-    ShellError::Unknown(message) => ToolOutcome::Unknown(message),
-    error => ToolOutcome::Failed(error.to_string()),
+/// The outcome a shell error reports: an interruption cancels, and a lost process leaves the
+/// outcome unknown.
+impl From<ShellError> for ToolOutcome {
+  fn from(error: ShellError) -> Self {
+    match error {
+      ShellError::Interrupted => ToolOutcome::Cancelled,
+      ShellError::Unknown(message) => ToolOutcome::Unknown(message),
+      error => ToolOutcome::Failed(error.to_string()),
+    }
   }
 }

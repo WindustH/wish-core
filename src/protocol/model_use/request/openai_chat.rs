@@ -13,7 +13,8 @@
 //!   with `tool_calls` (`content: null` when there is no text); `ToolUse` messages with no text
 //!   ahead of them are one assistant turn too - consecutive ones (with replayed `Reasoning`
 //!   between) share a single assistant message, because the wire insists every `tool_calls`
-//!   message is followed by its tool replies.
+//!   message is followed by its tool replies. A turn that opened with text takes only the calls
+//!   right after it: a `Reasoning` there ends the turn and leads the next one.
 //! - `ToolResult` becomes `{"role": "tool", "tool_call_id", "content"}`, passing a string payload
 //!   through and stringifying anything else.
 //! - `Reasoning` is replayed on the assistant turn that follows it: under `reasoning_content` for
@@ -51,210 +52,20 @@
 //!   not modelled yet.
 
 use crate::protocol::error::Error;
+use crate::protocol::model_use::message::image_data_url;
+use crate::protocol::model_use::mistral_chunks::render_thinking_chunk;
+use crate::protocol::model_use::mode::REASONING_FIELD;
+use crate::protocol::model_use::request::{
+  collect_instruction_text, render_thinking_switch, split_leading_instructions,
+};
+use crate::protocol::model_use::tool::tool_result_text;
 use crate::protocol::{ContentBlock, Message, ReasoningConfig, Request, Tool, ToolChoice};
 use serde_json::{Map, Value, json};
 
+pub use crate::protocol::model_use::mode::ChatCompletionApiCompatMode;
+
 /// Headers every call carries, besides auth and `content-type`.
 pub const HEADERS: &[(&str, &str)] = &[];
-
-/// The assistant-message field plaintext reasoning rides in.
-pub(crate) const REASONING_FIELD: &str = "reasoning_content";
-
-/// Which reasoning extension this chat endpoint speaks on top of the official wire, and which
-/// instruction roles it takes.
-///
-/// The official wire has no reasoning round trip at all; every vendor patches one in differently,
-/// so each patch is its own mode however small the difference between two of them is. `Official`
-/// and `Compatible` are the plain wire: nothing is read and nothing is sent. They differ only in
-/// instruction roles, which only OpenAI's own endpoint takes as they are.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ChatCompletionApiCompatMode {
-  /// OpenAI's own endpoint: reasoning is neither read nor sent.
-  #[default]
-  Official,
-  /// Any other endpoint that speaks the plain wire (routers, local servers, hosts of open models):
-  /// reasoning as on `Official`, instructions in the one form every such endpoint takes.
-  Compatible,
-  /// `reasoning_content`, which must be replayed whenever tools are in play.
-  DeepSeek,
-  /// `reasoning_content` plus `thinking.clear_thinking: false` (the default strips the history).
-  Zai,
-  /// `reasoning_content` plus `thinking.keep: "all"` (k2.6 needs it; k2.7-code fixes it to that).
-  KimiK2,
-  /// `reasoning_content`; k3 has no `thinking` object.
-  KimiK3,
-  /// `reasoning_content` plus `preserve_thinking: true` (Bailian keeps nothing by default).
-  Qwen,
-  /// `reasoning_content` plus `reasoning_split: true` (otherwise the thoughts stay in `content`).
-  MiniMax,
-  /// `reasoning_content`; the history is kept unconditionally.
-  Mimo,
-  /// `reasoning_content`; the history is kept unconditionally.
-  TokenHub,
-  /// Reasoning rides in `content` as `thinking` chunks, and the history is replayed the same way.
-  Mistral,
-}
-
-impl ChatCompletionApiCompatMode {
-  /// Whether this is Mistral's own chat wire, which spells a few things its own way: reasoning in
-  /// `content` chunks, `max_tokens` for the cap, no `store` or `stream_options`, `any` for a
-  /// required tool call, and `model_length` for context exhaustion.
-  pub(crate) fn is_mistral(self) -> bool {
-    matches!(self, ChatCompletionApiCompatMode::Mistral)
-  }
-
-  /// Whether this is the plain wire, with no reasoning extension on top.
-  pub(crate) fn is_plain(self) -> bool {
-    matches!(self, ChatCompletionApiCompatMode::Official | ChatCompletionApiCompatMode::Compatible)
-  }
-
-  /// Where this vendor takes instruction messages, and under which role.
-  fn get_instruction_placement(self) -> InstructionPlacement {
-    match self {
-      ChatCompletionApiCompatMode::Official => InstructionPlacement::Native,
-      // Verified against the live APIs (DeepSeek, Zhipu) or documented (Kimi's system prompt
-      // re-inserted after many turns).
-      ChatCompletionApiCompatMode::DeepSeek
-      | ChatCompletionApiCompatMode::Zai
-      | ChatCompletionApiCompatMode::KimiK2
-      | ChatCompletionApiCompatMode::KimiK3 => InstructionPlacement::System,
-      // Documented as first-only (Qwen, TokenHub, Mistral), or undocumented on a vendor whose open
-      // template drops a later one (MiniMax), or undocumented (MiMo, anything compatible).
-      ChatCompletionApiCompatMode::Qwen
-      | ChatCompletionApiCompatMode::MiniMax
-      | ChatCompletionApiCompatMode::Mimo
-      | ChatCompletionApiCompatMode::TokenHub
-      | ChatCompletionApiCompatMode::Mistral
-      | ChatCompletionApiCompatMode::Compatible => InstructionPlacement::LeadingSystem,
-    }
-  }
-
-  /// The controls this vendor takes on the chat wire: the round-trip knobs the mode always sends,
-  /// plus whichever of the caller's reasoning axes the vendor documents. An axis the vendor has no
-  /// spelling for is rejected, never dropped.
-  fn render_controls(
-    self,
-    config: Option<&ReasoningConfig>,
-    body: &mut Map<String, Value>,
-  ) -> Result<(), Error> {
-    let enabled = config.and_then(|config| config.enabled);
-    let effort = config.and_then(|config| config.effort.as_deref());
-    if let Some(config) = config {
-      if config.summary.is_some() {
-        return Err(Error::Build(
-          "the chat completions wire has no reasoning summary axis".to_owned(),
-        ));
-      }
-      if enabled == Some(false) && effort.is_some() {
-        return Err(Error::Build(
-          "reasoning cannot be both disabled and given an effort on the chat completions wire"
-            .to_owned(),
-        ));
-      }
-    }
-    match self {
-      ChatCompletionApiCompatMode::Official | ChatCompletionApiCompatMode::Compatible => {
-        if enabled.is_some() {
-          return Err(Error::Build(
-            "the plain chat completions wire has no reasoning on/off switch".to_owned(),
-          ));
-        }
-      }
-      ChatCompletionApiCompatMode::DeepSeek => {
-        if let Some(enabled) = enabled {
-          body.insert(
-            "thinking".into(),
-            json!({"type": if enabled { "enabled" } else { "disabled" }}),
-          );
-        }
-      }
-      ChatCompletionApiCompatMode::Zai => {
-        let thinking = match enabled {
-          Some(false) => json!({"type": "disabled"}),
-          _ => json!({"type": "enabled", "clear_thinking": false}),
-        };
-        body.insert("thinking".into(), thinking);
-      }
-      ChatCompletionApiCompatMode::KimiK2 => {
-        let thinking = match enabled {
-          Some(false) => json!({"type": "disabled"}),
-          _ => json!({"type": "enabled", "keep": "all"}),
-        };
-        body.insert("thinking".into(), thinking);
-      }
-      ChatCompletionApiCompatMode::KimiK3 => {
-        if enabled.is_some() {
-          return Err(Error::Build("kimi-k3 keeps thinking on at all times".to_owned()));
-        }
-      }
-      ChatCompletionApiCompatMode::Qwen => {
-        body.insert("preserve_thinking".into(), json!(true));
-        if let Some(enabled) = enabled {
-          body.insert("enable_thinking".into(), json!(enabled));
-        }
-      }
-      ChatCompletionApiCompatMode::MiniMax => {
-        body.insert("reasoning_split".into(), json!(true));
-        match enabled {
-          Some(false) => {
-            return Err(Error::Build(
-              "minimax has no thinking off switch on the chat wire".to_owned(),
-            ));
-          }
-          Some(true) => {
-            body.insert("thinking".into(), json!({"type": "adaptive"}));
-          }
-          None => {}
-        }
-      }
-      ChatCompletionApiCompatMode::Mimo => {
-        if let Some(enabled) = enabled {
-          body.insert(
-            "thinking".into(),
-            json!({"type": if enabled { "enabled" } else { "disabled" }}),
-          );
-        }
-      }
-      ChatCompletionApiCompatMode::TokenHub => {
-        if enabled.is_some() {
-          return Err(Error::Build("the tokenhub chat wire has no reasoning controls".to_owned()));
-        }
-      }
-      ChatCompletionApiCompatMode::Mistral => {
-        // One knob with two ends: the on/off axis is spelled as an effort word when the caller gave
-        // no word of their own.
-        if let Some(enabled) = enabled.filter(|_| effort.is_none()) {
-          body.insert("reasoning_effort".into(), json!(if enabled { "high" } else { "none" }));
-        }
-      }
-    }
-    match (
-      self,
-      matches!(
-        self,
-        ChatCompletionApiCompatMode::Official
-          | ChatCompletionApiCompatMode::Compatible
-          | ChatCompletionApiCompatMode::DeepSeek
-          | ChatCompletionApiCompatMode::Zai
-          | ChatCompletionApiCompatMode::KimiK3
-          | ChatCompletionApiCompatMode::Qwen
-          | ChatCompletionApiCompatMode::Mistral
-      ),
-      effort,
-    ) {
-      (_, true, Some(effort)) => {
-        body.insert("reasoning_effort".into(), json!(effort.to_lowercase()));
-      }
-      (_, false, Some(_)) => {
-        return Err(Error::Build(
-          "this vendor takes no reasoning effort on the chat wire".to_owned(),
-        ));
-      }
-      (_, _, None) => {}
-    }
-    Ok(())
-  }
-}
 
 pub fn render(request: &Request, mode: ChatCompletionApiCompatMode) -> Result<Value, Error> {
   let mut body = Map::new();
@@ -277,7 +88,7 @@ pub fn render(request: &Request, mode: ChatCompletionApiCompatMode) -> Result<Va
     let field = if mode.is_mistral() { "max_tokens" } else { "max_completion_tokens" };
     body.insert(field.into(), json!(max_output_tokens));
   }
-  mode.render_controls(request.reasoning.as_ref(), &mut body)?;
+  render_reasoning(mode, request.reasoning.as_ref(), &mut body)?;
   if !request.tools.is_empty() {
     let tools: Vec<Value> = request.tools.iter().map(render_tool).collect();
     body.insert("tools".into(), Value::Array(tools));
@@ -288,26 +99,138 @@ pub fn render(request: &Request, mode: ChatCompletionApiCompatMode) -> Result<Va
   Ok(Value::Object(body))
 }
 
+/// The reasoning controls this vendor takes on the chat wire: the round-trip knobs the mode always
+/// sends, plus whichever of the caller's reasoning axes the vendor documents. An axis the vendor
+/// has no spelling for is rejected, never dropped.
+fn render_reasoning(
+  mode: ChatCompletionApiCompatMode,
+  config: Option<&ReasoningConfig>,
+  body: &mut Map<String, Value>,
+) -> Result<(), Error> {
+  use ChatCompletionApiCompatMode as Mode;
+  let enabled = config.and_then(|config| config.enabled);
+  let effort = config.and_then(|config| config.effort.as_deref());
+  if let Some(config) = config {
+    if config.summary.is_some() {
+      return Err(Error::Build(
+        "the chat completions wire has no reasoning summary axis".to_owned(),
+      ));
+    }
+    if enabled == Some(false) && effort.is_some() {
+      return Err(Error::Build(
+        "reasoning cannot be both disabled and given an effort on the chat completions wire"
+          .to_owned(),
+      ));
+    }
+  }
+  match mode {
+    Mode::Official | Mode::Compatible => {
+      if enabled.is_some() {
+        return Err(Error::Build(
+          "the plain chat completions wire has no reasoning on/off switch".to_owned(),
+        ));
+      }
+    }
+    Mode::DeepSeek | Mode::Mimo => {
+      if let Some(enabled) = enabled {
+        body.insert("thinking".into(), render_thinking_switch(enabled));
+      }
+    }
+    Mode::Zai => {
+      let thinking = match enabled {
+        Some(false) => json!({"type": "disabled"}),
+        _ => json!({"type": "enabled", "clear_thinking": false}),
+      };
+      body.insert("thinking".into(), thinking);
+    }
+    Mode::KimiK2 => {
+      let thinking = match enabled {
+        Some(false) => json!({"type": "disabled"}),
+        _ => json!({"type": "enabled", "keep": "all"}),
+      };
+      body.insert("thinking".into(), thinking);
+    }
+    Mode::KimiK3 => {
+      if enabled.is_some() {
+        return Err(Error::Build("kimi-k3 keeps thinking on at all times".to_owned()));
+      }
+    }
+    Mode::Qwen => {
+      body.insert("preserve_thinking".into(), json!(true));
+      if let Some(enabled) = enabled {
+        body.insert("enable_thinking".into(), json!(enabled));
+      }
+    }
+    Mode::MiniMax => {
+      body.insert("reasoning_split".into(), json!(true));
+      match enabled {
+        Some(false) => {
+          return Err(Error::Build(
+            "minimax has no thinking off switch on the chat wire".to_owned(),
+          ));
+        }
+        Some(true) => {
+          body.insert("thinking".into(), json!({"type": "adaptive"}));
+        }
+        None => {}
+      }
+    }
+    Mode::TokenHub => {
+      if enabled.is_some() {
+        return Err(Error::Build("the tokenhub chat wire has no reasoning controls".to_owned()));
+      }
+    }
+    Mode::Mistral => {
+      // One knob with two ends: the on/off axis is spelled as an effort word when the caller gave
+      // no word of their own.
+      if let Some(enabled) = enabled.filter(|_| effort.is_none()) {
+        body.insert("reasoning_effort".into(), json!(if enabled { "high" } else { "none" }));
+      }
+    }
+  }
+  if let Some(effort) = effort {
+    let takes_effort = matches!(
+      mode,
+      Mode::Official
+        | Mode::Compatible
+        | Mode::DeepSeek
+        | Mode::Zai
+        | Mode::KimiK3
+        | Mode::Qwen
+        | Mode::Mistral
+    );
+    if !takes_effort {
+      return Err(Error::Build(
+        "this vendor takes no reasoning effort on the chat wire".to_owned(),
+      ));
+    }
+    body.insert("reasoning_effort".into(), json!(effort.to_lowercase()));
+  }
+  Ok(())
+}
+
 fn render_messages(
   conversation: &[Message],
   mode: ChatCompletionApiCompatMode,
 ) -> Result<Vec<Value>, Error> {
   let mut messages: Vec<Value> = Vec::new();
   let mut pending_reasoning: Option<String> = None;
-  let mut index = 0;
-  let placement = mode.get_instruction_placement();
+  let placement = get_instruction_placement(mode);
+  let mut rest = conversation;
   if placement == InstructionPlacement::LeadingSystem {
-    let leading = conversation
-      .iter()
-      .take_while(|message| matches!(message, Message::System { .. } | Message::Developer { .. }))
-      .count();
-    if leading > 0 {
-      messages.push(render_leading_instructions(&conversation[..leading])?);
-      index = leading;
+    let (run, after) = split_leading_instructions(
+      conversation,
+      "a `system` message can only carry text blocks on the chat completions wire",
+    )?;
+    if !run.is_empty() {
+      let text: Vec<String> = run.iter().map(|text| text.join("\n")).collect();
+      messages.push(json!({ "role": "system", "content": text.join("\n\n") }));
     }
+    rest = after;
   }
-  while index < conversation.len() {
-    match &conversation[index] {
+  while let [message, tail @ ..] = rest {
+    rest = tail;
+    match message {
       Message::System { content, .. } => {
         pending_reasoning = None;
         messages.push(render_placed_instruction("system", content, placement)?);
@@ -324,10 +247,9 @@ fn render_messages(
         messages.push(render_user(content)?);
       }
       Message::Assistant { content, .. } => {
-        let (message, used) =
-          render_assistant(content, &conversation[index + 1..], pending_reasoning.take(), mode)?;
-        messages.push(message);
-        index += used;
+        let mut tool_calls = Vec::new();
+        rest = &rest[collect_tool_calls(rest, &mut tool_calls, None, mode)..];
+        messages.push(render_assistant(content, tool_calls, pending_reasoning.take(), mode)?);
       }
       Message::ToolUse { call_id, name, arguments, .. } => {
         // A turn that called tools without writing text still is one assistant turn. Parallel
@@ -336,22 +258,7 @@ fn render_messages(
         // rejected upstream, so the whole run shares one message here.
         let mut reasoning = pending_reasoning.take().unwrap_or_default();
         let mut tool_calls = vec![render_tool_use(call_id, name, arguments)];
-        let mut used = 0;
-        while let Some(following) = conversation.get(index + 1 + used) {
-          match following {
-            Message::ToolUse { call_id, name, arguments, .. } => {
-              tool_calls.push(render_tool_use(call_id, name, arguments));
-              used += 1;
-            }
-            Message::Reasoning { plaintext, .. } => {
-              if !mode.is_plain() {
-                reasoning.push_str(plaintext);
-              }
-              used += 1;
-            }
-            _ => break,
-          }
-        }
+        rest = &rest[collect_tool_calls(rest, &mut tool_calls, Some(&mut reasoning), mode)..];
         let mut message = json!({
           "role": "assistant",
           "content": Value::Null,
@@ -359,7 +266,6 @@ fn render_messages(
         });
         attach_reasoning(&mut message, (!reasoning.is_empty()).then_some(reasoning), mode);
         messages.push(message);
-        index += used;
       }
       Message::Reasoning { plaintext, .. } => {
         // Replayed reasoning is dropped before the plain wire, which has no field for it.
@@ -372,9 +278,38 @@ fn render_messages(
         messages.push(render_tool_result(call_id, content));
       }
     }
-    index += 1;
   }
   Ok(messages)
+}
+
+/// Collects the `ToolUse` run at the head of `following` into `tool_calls` and says how many
+/// messages it spans.
+///
+/// A turn that opened with a call takes in the `Reasoning` between its calls as well, appending its
+/// text to `reasoning` where the wire replays it; a turn that opened with text passes `None` and
+/// stops at the first message that is not a call, so a `Reasoning` there leads the next turn.
+fn collect_tool_calls(
+  following: &[Message],
+  tool_calls: &mut Vec<Value>,
+  mut reasoning: Option<&mut String>,
+  mode: ChatCompletionApiCompatMode,
+) -> usize {
+  let mut used = 0;
+  for message in following {
+    match (message, reasoning.as_mut()) {
+      (Message::ToolUse { call_id, name, arguments, .. }, _) => {
+        tool_calls.push(render_tool_use(call_id, name, arguments));
+      }
+      (Message::Reasoning { plaintext, .. }, Some(reasoning)) => {
+        if !mode.is_plain() {
+          reasoning.push_str(plaintext);
+        }
+      }
+      _ => break,
+    }
+    used += 1;
+  }
+  used
 }
 
 /// Where a vendor takes instruction messages, and under which role.
@@ -387,6 +322,22 @@ enum InstructionPlacement {
   /// One `system` message, first: the leading instruction run merges into it, and a later
   /// instruction rides as user input.
   LeadingSystem,
+}
+
+/// Where this vendor takes instruction messages, and under which role.
+fn get_instruction_placement(mode: ChatCompletionApiCompatMode) -> InstructionPlacement {
+  use ChatCompletionApiCompatMode as Mode;
+  match mode {
+    Mode::Official => InstructionPlacement::Native,
+    // Verified against the live APIs (DeepSeek, Zhipu) or documented (Kimi's system prompt
+    // re-inserted after many turns).
+    Mode::DeepSeek | Mode::Zai | Mode::KimiK2 | Mode::KimiK3 => InstructionPlacement::System,
+    // Documented as first-only (Qwen, TokenHub, Mistral), or undocumented on a vendor whose open
+    // template drops a later one (MiniMax), or undocumented (MiMo, anything compatible).
+    Mode::Qwen | Mode::MiniMax | Mode::Mimo | Mode::TokenHub | Mode::Mistral | Mode::Compatible => {
+      InstructionPlacement::LeadingSystem
+    }
+  }
 }
 
 /// One instruction message where the conversation has it. Under `LeadingSystem` the leading run is
@@ -403,34 +354,12 @@ fn render_placed_instruction(
   }
 }
 
-/// The leading instruction run as the single `system` message a first-only vendor takes.
-fn render_leading_instructions(run: &[Message]) -> Result<Value, Error> {
-  let mut parts = Vec::new();
-  for message in run {
-    if let Message::System { content, .. } | Message::Developer { content, .. } = message {
-      parts.push(get_instruction_text("system", content)?);
-    }
-  }
-  Ok(json!({ "role": "system", "content": parts.join("\n\n") }))
-}
-
 fn render_instruction(role: &str, content: &[ContentBlock]) -> Result<Value, Error> {
-  Ok(json!({ "role": role, "content": get_instruction_text(role, content)? }))
-}
-
-fn get_instruction_text(role: &str, content: &[ContentBlock]) -> Result<String, Error> {
-  let mut text: Vec<&str> = Vec::new();
-  for block in content {
-    match block {
-      ContentBlock::Text { text: block_text } => text.push(block_text),
-      _ => {
-        return Err(Error::Build(format!(
-          "a `{role}` message can only carry text blocks on the chat completions wire"
-        )));
-      }
-    }
-  }
-  Ok(text.join("\n"))
+  let text = collect_instruction_text(
+    content,
+    &format!("a `{role}` message can only carry text blocks on the chat completions wire"),
+  )?;
+  Ok(json!({ "role": role, "content": text.join("\n") }))
 }
 
 fn render_user(content: &[ContentBlock]) -> Result<Value, Error> {
@@ -453,7 +382,7 @@ fn render_user(content: &[ContentBlock]) -> Result<Value, Error> {
       ContentBlock::Image { mime_type, data_base64 } => {
         parts.push(json!({
           "type": "image_url",
-          "image_url": { "url": format!("data:{mime_type};base64,{data_base64}") },
+          "image_url": { "url": image_data_url(mime_type, data_base64) },
         }));
       }
     }
@@ -461,19 +390,14 @@ fn render_user(content: &[ContentBlock]) -> Result<Value, Error> {
   Ok(json!({ "role": "user", "content": parts }))
 }
 
+/// An assistant message: its text, the `tool_calls` that follow it, and the reasoning replayed
+/// ahead of it.
 fn render_assistant(
   content: &[ContentBlock],
-  following: &[Message],
+  tool_calls: Vec<Value>,
   reasoning: Option<String>,
   mode: ChatCompletionApiCompatMode,
-) -> Result<(Value, usize), Error> {
-  let mut tool_uses: Vec<Value> = Vec::new();
-  let mut used = 0;
-  while let Some(Message::ToolUse { call_id, name, arguments, .. }) = following.get(used) {
-    tool_uses.push(render_tool_use(call_id, name, arguments));
-    used += 1;
-  }
-
+) -> Result<Value, Error> {
   let mut text: Vec<&str> = Vec::new();
   for block in content {
     match block {
@@ -487,13 +411,13 @@ fn render_assistant(
   }
   let text = text.join("\n");
   let content_value =
-    if text.is_empty() && !tool_uses.is_empty() { Value::Null } else { json!(text) };
+    if text.is_empty() && !tool_calls.is_empty() { Value::Null } else { json!(text) };
   let mut message = json!({ "role": "assistant", "content": content_value });
-  if !tool_uses.is_empty() {
-    message["tool_calls"] = Value::Array(tool_uses);
+  if !tool_calls.is_empty() {
+    message["tool_calls"] = Value::Array(tool_calls);
   }
   attach_reasoning(&mut message, reasoning, mode);
-  Ok((message, used))
+  Ok(message)
 }
 
 /// Replays the reasoning of an assistant turn: under the protocol's field, or as the leading
@@ -517,15 +441,6 @@ fn attach_reasoning(
   message[REASONING_FIELD] = json!(reasoning);
 }
 
-/// The chunk a replayed thought travels in on this wire.
-fn render_thinking_chunk(reasoning: &str) -> Value {
-  json!({
-    "type": "thinking",
-    "closed": true,
-    "thinking": [{ "type": "text", "text": reasoning }],
-  })
-}
-
 fn render_tool_use(call_id: &str, name: &str, arguments: &Value) -> Value {
   json!({
     "id": call_id,
@@ -535,14 +450,10 @@ fn render_tool_use(call_id: &str, name: &str, arguments: &Value) -> Value {
 }
 
 fn render_tool_result(call_id: &str, content: &Value) -> Value {
-  let content = match content {
-    Value::String(text) => text.clone(),
-    other => other.to_string(),
-  };
   json!({
     "role": "tool",
     "tool_call_id": call_id,
-    "content": content,
+    "content": tool_result_text(content),
   })
 }
 

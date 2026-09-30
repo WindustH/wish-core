@@ -23,16 +23,17 @@ use rmcp::{
 use serde_json::{Map, Value, json};
 use std::{
   collections::{BTreeMap, HashMap},
-  path::PathBuf,
+  future::Future,
+  path::{Path, PathBuf},
   process::Stdio,
   sync::{Arc, Mutex},
   time::Duration,
 };
-use tokio::io::AsyncReadExt;
+use tokio::{io::AsyncReadExt, process::ChildStderr};
 
 /// How long a server has to start and finish the handshake. Generous, because a first `npx` run
 /// downloads the server before it starts.
-const STARTUP: Duration = Duration::from_secs(120);
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 /// The end of a local server's standard error kept for telling why it failed.
 const STDERR_TAIL: usize = 8 * 1024;
 
@@ -58,7 +59,7 @@ pub enum McpError {
   Unknown(String),
 }
 
-fn classify(error: ServiceError) -> McpError {
+fn to_mcp_error(error: ServiceError) -> McpError {
   match error {
     ServiceError::McpError(error) => McpError::Rejected(error.message.into_owned()),
     ServiceError::Timeout { timeout } => McpError::Unknown(format!(
@@ -106,84 +107,74 @@ impl Connection {
     let handler = Handler { tools_changed: Box::new(tools_changed) };
     match endpoint {
       Endpoint::Stdio { command, args, env, cwd } => {
-        let mut program = tokio::process::Command::new(command);
-        program.args(args).envs(env).current_dir(cwd);
-        let mut wrapped = process_wrap::tokio::CommandWrap::from(program);
-        #[cfg(unix)]
-        wrapped.wrap(process_wrap::tokio::ProcessGroup::leader());
-        #[cfg(windows)]
-        wrapped.wrap(process_wrap::tokio::JobObject);
-        wrapped.wrap(process_wrap::tokio::KillOnDrop);
-        let (transport, stderr) = TokioChildProcess::builder(wrapped)
-          .stderr(Stdio::piped())
-          .spawn()
-          .map_err(|error| McpError::Connect(format!("could not start `{command}`: {error}")))?;
-        let tail = Arc::new(Mutex::new(String::new()));
-        if let Some(mut stderr) = stderr {
-          let tail = tail.clone();
-          tokio::spawn(async move {
-            let mut buffer = [0; 4096];
-            while let Ok(read) = stderr.read(&mut buffer).await {
-              if read == 0 {
-                break;
-              }
-              let mut tail = tail.lock().unwrap();
-              tail.push_str(&String::from_utf8_lossy(&buffer[..read]));
-              if tail.len() > STDERR_TAIL {
-                let mut cut = tail.len() - STDERR_TAIL;
-                while !tail.is_char_boundary(cut) {
-                  cut += 1;
-                }
-                tail.drain(..cut);
-              }
-            }
-          });
-        }
-        let service = match tokio::time::timeout(STARTUP, handler.serve(transport)).await {
-          Ok(Ok(service)) => service,
-          Ok(Err(error)) => {
-            // The server's own words usually say more than the handshake's failure.
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            return Err(McpError::Connect(with_stderr(
-              format!("the server failed to start: {error}"),
-              &tail,
-            )));
-          }
-          Err(_) => {
-            return Err(McpError::Connect(with_stderr(
-              format!("the server did not finish starting within {} seconds", STARTUP.as_secs()),
-              &tail,
-            )));
-          }
-        };
-        Ok(Self { service, stderr: Some(tail) })
+        Self::open_stdio(handler, command, args, env, cwd).await
       }
-      Endpoint::Http { url, headers, proxy } => {
-        let client = http::HttpClient::new(proxy.clone())
-          .map_err(|error| McpError::Connect(error.to_string()))?;
-        let mut custom = HashMap::new();
-        for (name, value) in headers {
-          let name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|error| McpError::Connect(format!("header `{name}`: {error}")))?;
-          let value = HeaderValue::from_str(value)
-            .map_err(|error| McpError::Connect(format!("header `{name}`: {error}")))?;
-          custom.insert(name, value);
-        }
-        let mut config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
-        config.custom_headers = custom;
-        let transport = StreamableHttpClientTransport::with_client(client, config);
-        let service = match tokio::time::timeout(STARTUP, handler.serve(transport)).await {
-          Ok(Ok(service)) => service,
-          Ok(Err(error)) => return Err(McpError::Connect(format!("could not connect: {error}"))),
-          Err(_) => {
-            return Err(McpError::Connect(format!(
-              "the server did not answer the handshake within {} seconds",
-              STARTUP.as_secs()
-            )));
-          }
-        };
-        Ok(Self { service, stderr: None })
+      Endpoint::Http { url, headers, proxy } => Self::open_http(handler, url, headers, proxy).await,
+    }
+  }
+
+  /// Starts a local server in a process group of its own, keeping the end of its standard error.
+  async fn open_stdio(
+    handler: Handler,
+    command: &str,
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    cwd: &Path,
+  ) -> Result<Self, McpError> {
+    let mut program = tokio::process::Command::new(command);
+    program.args(args).envs(env).current_dir(cwd);
+    let mut wrapped = process_wrap::tokio::CommandWrap::from(program);
+    #[cfg(unix)]
+    wrapped.wrap(process_wrap::tokio::ProcessGroup::leader());
+    #[cfg(windows)]
+    wrapped.wrap(process_wrap::tokio::JobObject);
+    wrapped.wrap(process_wrap::tokio::KillOnDrop);
+    let (transport, stderr) = TokioChildProcess::builder(wrapped)
+      .stderr(Stdio::piped())
+      .spawn()
+      .map_err(|error| McpError::Connect(format!("could not start `{command}`: {error}")))?;
+    let tail = spawn_stderr_tail(stderr);
+    match handshake(handler.serve(transport)).await {
+      Ok(service) => Ok(Self { service, stderr: Some(tail) }),
+      Err(Some(error)) => {
+        // The server's own words usually say more than the handshake's failure.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        Err(McpError::Connect(with_stderr(format!("the server failed to start: {error}"), &tail)))
       }
+      Err(None) => Err(McpError::Connect(with_stderr(
+        format!("the server did not finish starting within {} seconds", STARTUP_TIMEOUT.as_secs()),
+        &tail,
+      ))),
+    }
+  }
+
+  /// Reaches a remote server through wish's HTTP client.
+  async fn open_http(
+    handler: Handler,
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    proxy: &Proxy,
+  ) -> Result<Self, McpError> {
+    let client =
+      http::HttpClient::new(proxy.clone()).map_err(|error| McpError::Connect(error.to_string()))?;
+    let mut custom = HashMap::new();
+    for (name, value) in headers {
+      let name = HeaderName::from_bytes(name.as_bytes())
+        .map_err(|error| McpError::Connect(format!("header `{name}`: {error}")))?;
+      let value = HeaderValue::from_str(value)
+        .map_err(|error| McpError::Connect(format!("header `{name}`: {error}")))?;
+      custom.insert(name, value);
+    }
+    let mut config = StreamableHttpClientTransportConfig::with_uri(url);
+    config.custom_headers = custom;
+    let transport = StreamableHttpClientTransport::with_client(client, config);
+    match handshake(handler.serve(transport)).await {
+      Ok(service) => Ok(Self { service, stderr: None }),
+      Err(Some(error)) => Err(McpError::Connect(format!("could not connect: {error}"))),
+      Err(None) => Err(McpError::Connect(format!(
+        "the server did not answer the handshake within {} seconds",
+        STARTUP_TIMEOUT.as_secs()
+      ))),
     }
   }
 
@@ -206,7 +197,7 @@ impl Connection {
 
   /// Every tool the server offers, as the protocol describes them.
   pub async fn list_tools(&self) -> Result<Vec<Value>, McpError> {
-    let tools = self.service.peer().list_all_tools().await.map_err(classify)?;
+    let tools = self.service.peer().list_all_tools().await.map_err(to_mcp_error)?;
     Ok(tools.iter().filter_map(|tool| serde_json::to_value(tool).ok()).collect())
   }
 
@@ -225,11 +216,11 @@ impl Connection {
     let mut options = PeerRequestOptions::with_timeout(timeout);
     options.reset_timeout_on_progress = true;
     let handle =
-      self.service.peer().send_cancellable_request(request, options).await.map_err(classify)?;
+      self.service.peer().send_cancellable_request(request, options).await.map_err(to_mcp_error)?;
     let mut pending = PendingCall { peer: handle.peer.clone(), id: Some(handle.id.clone()) };
     let result = handle.await_response().await;
     pending.id = None;
-    match result.map_err(classify)? {
+    match result.map_err(to_mcp_error)? {
       ServerResult::CallToolResult(result) => {
         serde_json::to_value(result).map_err(|error| McpError::Rejected(error.to_string()))
       }
@@ -264,6 +255,41 @@ impl Drop for PendingCall {
       });
     }
   }
+}
+
+/// Awaits a server's handshake for at most [`STARTUP_TIMEOUT`]: its failure, or `None` when the
+/// time ran out.
+async fn handshake<S, E>(serving: impl Future<Output = Result<S, E>>) -> Result<S, Option<E>> {
+  match tokio::time::timeout(STARTUP_TIMEOUT, serving).await {
+    Ok(result) => result.map_err(Some),
+    Err(_) => Err(None),
+  }
+}
+
+/// Keeps the last [`STDERR_TAIL`] bytes a local server writes to its standard error.
+fn spawn_stderr_tail(stderr: Option<ChildStderr>) -> Arc<Mutex<String>> {
+  let tail = Arc::new(Mutex::new(String::new()));
+  if let Some(mut stderr) = stderr {
+    let tail = tail.clone();
+    tokio::spawn(async move {
+      let mut buffer = [0; 4096];
+      while let Ok(read) = stderr.read(&mut buffer).await {
+        if read == 0 {
+          break;
+        }
+        let mut tail = tail.lock().unwrap();
+        tail.push_str(&String::from_utf8_lossy(&buffer[..read]));
+        if tail.len() > STDERR_TAIL {
+          let mut cut = tail.len() - STDERR_TAIL;
+          while !tail.is_char_boundary(cut) {
+            cut += 1;
+          }
+          tail.drain(..cut);
+        }
+      }
+    });
+  }
+  tail
 }
 
 fn with_stderr(message: String, tail: &Mutex<String>) -> String {

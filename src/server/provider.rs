@@ -1,44 +1,50 @@
+//! Model providers: their configuration as the file holds it, and the client each one is built
+//! into. A configuration save rebuilds them all.
 use crate::server::{
-  config::{ProxyConfig, read_secret},
-  error::ApiError,
+  config::ProxyConfig, error::ApiError, management::ManagementStore,
+  model_catalog::ModelCatalogCache, presets, sampling,
 };
 use crate::{
-  executor::model::{Client, client::CodeAgentIdentity},
+  client::{Client, CodeAgentIdentity},
   protocol::{
     TokenCountProtocol,
     account_state::AccountStateProtocol,
+    endpoint::{AuthScheme, CredentialField, CredentialRenewal, Credentials, Endpoint},
     model_list::ModelListProtocol,
     model_use::{
       ModelUseProtocol,
-      request::{
-        anthropic_messages::MessagesApiCompatMode as Messages,
-        openai_chat::ChatCompletionApiCompatMode as Chat,
-        openai_responses::{ReasoningForm, ResponsesApiCompatMode, ResponsesDeployment},
+      mode::{
+        ChatCompletionApiCompatMode as Chat, MessagesApiCompatMode as Messages, ReasoningForm,
+        ResponsesApiMode, ResponsesDeployment,
       },
     },
-    outbound::{AuthProtocol, CredentialField, Credentials, CredentialsRefreshProtocol, Outbound},
     upstream_compaction::UpstreamCompactionProtocol,
   },
   transport::ReqwestTransport,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
+use tokio_util::task::TaskTracker;
 
 pub type ModelClient = Client<ReqwestTransport>;
+/// The providers by id, as the application holds them.
+pub type Providers = BTreeMap<String, Arc<Provider>>;
 
 // Keep these defaults in step with the official stable CLI releases. Provider headers can
 // override either value without changing the request-body identity fields.
 const CODEX_USER_AGENT: &str = "codex_cli_rs/0.156.1";
 const CLAUDE_USER_AGENT: &str = "claude-cli/2.1.278 (external, cli)";
+/// How Wish names itself to a service that wants a client name.
+pub const WISH_USER_AGENT: &str = concat!("wish/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
   pub display_name: Option<String>,
   pub preset: Option<String>,
-  #[serde(default = "enabled")]
+  #[serde(default = "crate::server::config::yes")]
   pub enabled: bool,
-  #[serde(default = "enabled")]
+  #[serde(default = "crate::server::config::yes")]
   pub proxy_enabled: bool,
   pub api_key: Option<String>,
   #[serde(default)]
@@ -69,8 +75,11 @@ pub struct ProviderConfig {
   /// regional twin (`open.bigmodel.cn` beside `api.z.ai`). Absent, the protocol's own host.
   pub account_state_base_url: Option<String>,
 }
-fn enabled() -> bool {
-  true
+impl ProviderConfig {
+  /// Whether this is the Codex subscription preset, signed in through ChatGPT.
+  pub fn is_codex(&self) -> bool {
+    self.preset.as_deref() == Some("openai_codex")
+  }
 }
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -84,40 +93,40 @@ pub enum Auth {
 }
 
 pub struct Provider {
+  /// The provider's key in the configuration.
+  pub id: String,
   pub client: ModelClient,
   pub config: ProviderConfig,
   /// Pages read for `GET /providers/{id}/models`, so reopening a picker does not reread the
-  /// service. Rebuilt providers start empty; see [`crate::server::catalog`].
-  pub catalog: crate::server::catalog::CatalogCache,
+  /// service. Rebuilt providers start empty; see [`crate::server::model_catalog`].
+  pub catalog: ModelCatalogCache,
 }
 impl Provider {
-  pub fn build(config: ProviderConfig, proxy: &ProxyConfig) -> Result<Self, ApiError> {
-    if let Some(id) = &config.preset {
-      if crate::server::presets::find(id).is_none() {
-        return Err(ApiError::bad_request(format!("unknown provider preset: {id}")));
-      }
+  pub fn build(id: String, config: ProviderConfig, proxy: &ProxyConfig) -> Result<Self, ApiError> {
+    if let Some(preset) = &config.preset
+      && presets::find_provider(preset).is_none()
+    {
+      return Err(ApiError::bad_request(format!("unknown provider preset: {preset}")));
     }
     let auth = match config.auth {
-      Auth::None => AuthProtocol::None,
-      Auth::Bearer if config.preset.as_deref() == Some("openai_codex") => {
-        AuthProtocol::Bearer(Some(CredentialsRefreshProtocol::OAuth))
-      }
-      Auth::Bearer => AuthProtocol::Bearer(None),
-      Auth::AnthropicKey => AuthProtocol::Header("x-api-key"),
-      Auth::GoogleKey => AuthProtocol::Header("x-goog-api-key"),
-      Auth::SigV4 => AuthProtocol::SigV4,
+      Auth::None => AuthScheme::None,
+      Auth::Bearer if config.is_codex() => AuthScheme::Bearer(Some(CredentialRenewal::CodexOAuth)),
+      Auth::Bearer => AuthScheme::Bearer(None),
+      Auth::AnthropicKey => AuthScheme::Header("x-api-key"),
+      Auth::GoogleKey => AuthScheme::Header("x-goog-api-key"),
+      Auth::SigV4 => AuthScheme::SigV4,
     };
-    let mut outbound = Outbound::new(&config.base_url, &config.path, auth)?;
+    let mut endpoint = Endpoint::new(&config.base_url, &config.path, auth)?;
     // Existing saved provider configs keep their own header maps when a preset is updated.
     // Apply current preset defaults here, then let explicit config headers override them.
     match config.preset.as_deref() {
       Some("opencode_go") => {
-        outbound = outbound
+        endpoint = endpoint
           .with_header("x-opencode-session", "{session}")
-          .with_header("user-agent", &format!("wish/{}", env!("CARGO_PKG_VERSION")));
+          .with_header("user-agent", WISH_USER_AGENT);
       }
       Some("openai_codex") => {
-        outbound = outbound
+        endpoint = endpoint
           .with_header("user-agent", CODEX_USER_AGENT)
           .with_header("session-id", "{session}")
           .with_header("thread-id", "{session}")
@@ -125,18 +134,18 @@ impl Provider {
           .with_credential_header("chatgpt-account-id", CredentialField::AccountId);
       }
       Some("openai") => {
-        outbound = outbound
+        endpoint = endpoint
           .with_header("user-agent", CODEX_USER_AGENT)
           .with_header("originator", "codex_cli_rs");
         if config.protocol == "openai_responses" {
-          outbound = outbound
+          endpoint = endpoint
             .with_header("session-id", "{session}")
             .with_header("thread-id", "{session}")
             .with_header("x-client-request-id", "{session}");
         }
       }
       Some("anthropic") => {
-        outbound = outbound
+        endpoint = endpoint
           .with_header("user-agent", CLAUDE_USER_AGENT)
           .with_header("x-app", "cli")
           .with_header("x-claude-code-session-id", "{session}");
@@ -144,7 +153,7 @@ impl Provider {
       _ => {}
     }
     for (key, value) in &config.headers {
-      outbound = outbound.with_header(key, value);
+      endpoint = endpoint.with_header(key, value);
     }
     let mut credentials = Credentials::default();
     if config.enabled {
@@ -162,23 +171,15 @@ impl Provider {
       }
     }
     for (field, value) in values {
-      let value = Some(value);
-      match field.as_str() {
-        "region" => credentials.region = value,
-        "access_key_id" => credentials.access_key_id = value,
-        "secret_access_key" => credentials.secret_access_key = value,
-        "session_token" => credentials.session_token = value,
-        "account_id" => credentials.account_id = value,
-        "workspace_id" => credentials.workspace_id = value,
-        "team_id" => credentials.team_id = value,
-        "organization" => credentials.organization = value,
-        "project" => credentials.project = value,
+      // The key has a setting of its own, so the map names only the fields beside it.
+      match CredentialField::from_name(&field) {
+        Some(known) if known != CredentialField::ApiKey => credentials.set_field(known, value),
         _ => return Err(ApiError::bad_request(format!("unknown credential: {field}"))),
       }
     }
     let mut client = Client::new(
       parse_protocol(&config.protocol)?,
-      outbound,
+      endpoint,
       ReqwestTransport::new(Default::default(), proxy.policy(config.proxy_enabled))?
         .with_stream_total(std::time::Duration::from_secs(30 * 60)),
     )
@@ -193,19 +194,16 @@ impl Provider {
       _ => {}
     }
     if let Some(value) = &config.token_count {
-      client = client.with_token_count(match value.as_str() {
-        "openai_responses" => TokenCountProtocol::OpenAiResponses,
-        "anthropic_messages" => TokenCountProtocol::AnthropicMessages,
-        "google_generate_content" => TokenCountProtocol::GoogleGenerateContent,
-        _ => return Err(ApiError::bad_request("unknown token-count protocol")),
-      })?;
+      let protocol = value
+        .parse::<TokenCountProtocol>()
+        .map_err(|_| ApiError::bad_request("unknown token-count protocol"))?;
+      client = client.with_token_count(protocol)?;
     }
     if let Some(value) = &config.compaction {
-      client = client.with_upstream_compaction(match value.as_str() {
-        "openai_responses" => UpstreamCompactionProtocol::OpenAiResponses,
-        "openai_responses_streamed" => UpstreamCompactionProtocol::OpenAiResponsesStreamed,
-        _ => return Err(ApiError::bad_request("unknown compaction protocol")),
-      })?;
+      let protocol = value
+        .parse::<UpstreamCompactionProtocol>()
+        .map_err(|_| ApiError::bad_request("unknown compaction protocol"))?;
+      client = client.with_upstream_compaction(protocol)?;
     }
     if let Some(value) = &config.model_list {
       client = client.with_model_list(
@@ -217,17 +215,61 @@ impl Provider {
         value.parse::<AccountStateProtocol>().map_err(|e| ApiError::bad_request(e.to_string()))?,
       );
     }
-    Ok(Self { client, config, catalog: Default::default() })
+    Ok(Self { id, client, config, catalog: Default::default() })
   }
-  pub fn describe(&self, id: &str) -> serde_json::Value {
+  /// The client identity this provider's model calls carry, for a request made with its account
+  /// outside a model call: a configured `user-agent`, else the one its preset sends.
+  pub fn get_user_agent(&self) -> Option<String> {
+    let configured =
+      self.config.headers.iter().find(|(name, _)| name.eq_ignore_ascii_case("user-agent"));
+    if let Some((_, value)) = configured {
+      return Some(value.clone());
+    }
+    match self.config.preset.as_deref() {
+      Some("openai" | "openai_codex") => Some(CODEX_USER_AGENT.to_owned()),
+      Some("anthropic") => Some(CLAUDE_USER_AGENT.to_owned()),
+      Some("opencode_go") => Some(WISH_USER_AGENT.to_owned()),
+      _ => None,
+    }
+  }
+  pub fn describe(&self) -> serde_json::Value {
     // Static headers may contain credentials too. Never serialize provider config to HTTP.
-    let preset = self.config.preset.as_deref().and_then(crate::server::presets::find);
-    serde_json::json!({"id":id,"display_name":self.config.display_name,"preset":self.config.preset,"enabled":self.config.enabled,
+    let preset = self.config.preset.as_deref().and_then(presets::find_provider);
+    serde_json::json!({"id":self.id,"display_name":self.config.display_name,"preset":self.config.preset,"enabled":self.config.enabled,
       "brand":preset.map(|p|&p["provider"]),"reasoning_efforts":preset.map(|p|&p["reasoning_efforts"]),
       "max_output_tokens":preset.map(|p|&p["max_output_tokens"]),"protocol":self.config.protocol,"base_url":self.config.base_url,
       "token_count":self.config.token_count,"compaction":self.config.compaction,
       "model_list":self.config.model_list,"account_state":self.config.account_state,"models":self.config.models})
   }
+}
+/// Builds every configured provider, each client sampling its streams into the index.
+pub fn build_all(
+  configs: &BTreeMap<String, ProviderConfig>,
+  proxy: &ProxyConfig,
+  management: &Arc<ManagementStore>,
+  tasks: &TaskTracker,
+) -> Result<Providers, ApiError> {
+  let mut providers = BTreeMap::new();
+  for (id, config) in configs {
+    let mut provider = Provider::build(id.clone(), config.clone(), proxy)?;
+    provider.client = sampling::with_stream_sampling(
+      &provider.client,
+      management.clone(),
+      tasks.clone(),
+      id.clone(),
+      None,
+    );
+    providers.insert(id.clone(), Arc::new(provider));
+  }
+  Ok(providers)
+}
+/// A secret the configuration names by environment variable.
+pub fn read_secret(name: &str) -> Result<String, String> {
+  let value = std::env::var(name).map_err(|_| format!("environment variable {name} is missing"))?;
+  if value.is_empty() {
+    return Err(format!("environment variable {name} is empty"));
+  }
+  Ok(value)
 }
 fn parse_protocol(name: &str) -> Result<ModelUseProtocol, ApiError> {
   Ok(match name {
@@ -243,11 +285,11 @@ fn parse_protocol(name: &str) -> Result<ModelUseProtocol, ApiError> {
     "tokenhub_chat" => ModelUseProtocol::OpenAiChat(Chat::TokenHub),
     "mistral_chat" => ModelUseProtocol::OpenAiChat(Chat::Mistral),
     "openai_responses" => ModelUseProtocol::OpenAiResponses(Default::default()),
-    "plaintext_responses" => ModelUseProtocol::OpenAiResponses(ResponsesApiCompatMode {
+    "plaintext_responses" => ModelUseProtocol::OpenAiResponses(ResponsesApiMode {
       reasoning_form: ReasoningForm::Plaintext,
       ..Default::default()
     }),
-    "codex_responses" => ModelUseProtocol::OpenAiResponses(ResponsesApiCompatMode {
+    "codex_responses" => ModelUseProtocol::OpenAiResponses(ResponsesApiMode {
       deployment: ResponsesDeployment::Codex,
       ..Default::default()
     }),

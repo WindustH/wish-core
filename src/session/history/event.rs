@@ -1,4 +1,3 @@
-use crate::executor::tool::{ToolCall, ToolOutcome};
 use crate::protocol::{
   StreamEvent,
   account_state::AccountState,
@@ -7,7 +6,10 @@ use crate::protocol::{
     stream::PartialResponse,
   },
 };
-use crate::session::{EntryId, GenerationId, RunOutcome, SessionConfig, SessionPhase};
+use crate::session::{
+  EntryId, GenerationId, RunOutcome, SessionConfig, SessionPhase, TokenMeasurement, ToolCall,
+  ToolOutcome,
+};
 use crate::storage::ListId;
 use serde_json::Value;
 
@@ -22,7 +24,7 @@ pub enum SessionEvent {
   CompactionSummaryStarted {
     source_start: u64,
     source_end: u64,
-    measurement: crate::executor::model::tokens::TokenMeasurement,
+    measurement: TokenMeasurement,
   },
   CompactionSummary {
     generation: GenerationId,
@@ -53,9 +55,10 @@ pub enum SessionEvent {
     active: GenerationId,
     reason: crate::session::CompactionReason,
     removed_entries: u64,
-    measurement: crate::executor::model::tokens::TokenMeasurement,
+    measurement: TokenMeasurement,
   },
   Created(Box<SessionConfig>),
+  /// No longer recorded; kept so the history of earlier builds still loads.
   ContextEntryCreated {
     entry: EntryId,
   },
@@ -114,4 +117,56 @@ pub enum SessionEvent {
     previous: GenerationId,
     active: GenerationId,
   },
+}
+impl SessionEvent {
+  /// Whether the event belongs to the model call running as it is recorded. Settings, input and
+  /// context switches happen beside any call.
+  pub(in crate::session) fn belongs_to_call(&self) -> bool {
+    !matches!(
+      self,
+      Self::Created(_)
+        | Self::ContextEntryCreated { .. }
+        | Self::MetadataUpdated(_)
+        | Self::ConfigUpdated(_)
+        | Self::InputMoved { .. }
+        | Self::MessageQueued { .. }
+        | Self::InputsConsumed { .. }
+        | Self::GenerationPrepared { .. }
+        | Self::GenerationActivated { .. }
+    )
+  }
+  /// The variant's name, which history filters select events by.
+  pub(in crate::session) fn type_name(&self) -> &'static str {
+    match self {
+      Self::UpstreamCompactionStarted { .. } => "UpstreamCompactionStarted",
+      Self::UpstreamCompactionCompleted(..) => "UpstreamCompactionCompleted",
+      Self::CompactionSummaryStarted { .. } => "CompactionSummaryStarted",
+      Self::CompactionSummary { .. } => "CompactionSummary",
+      Self::CompactionSummaryFailed { .. } => "CompactionSummaryFailed",
+      Self::CompactionTranslationStarted { .. } => "CompactionTranslationStarted",
+      Self::CompactionTranslationFailed { .. } => "CompactionTranslationFailed",
+      Self::CompactionTranslationCompleted { .. } => "CompactionTranslationCompleted",
+      Self::ContextCompacted { .. } => "ContextCompacted",
+      Self::Created(..) => "Created",
+      Self::ContextEntryCreated { .. } => "ContextEntryCreated",
+      Self::ResponseRejected(..) => "ResponseRejected",
+      Self::MetadataUpdated(..) => "MetadataUpdated",
+      Self::ConfigUpdated(..) => "ConfigUpdated",
+      Self::MessageQueued { .. } => "MessageQueued",
+      Self::InputMoved { .. } => "InputMoved",
+      Self::InputCancelled { .. } => "InputCancelled",
+      Self::InputsConsumed { .. } => "InputsConsumed",
+      Self::StateChanged { .. } => "StateChanged",
+      Self::TurnStarted { .. } => "TurnStarted",
+      Self::ModelStream(..) => "ModelStream",
+      Self::ResponseAccepted { .. } => "ResponseAccepted",
+      Self::ResponseInterrupted(..) => "ResponseInterrupted",
+      Self::ToolStarted(..) => "ToolStarted",
+      Self::ToolFinished { .. } => "ToolFinished",
+      Self::StableBoundary { .. } => "StableBoundary",
+      Self::Finished(..) => "Finished",
+      Self::GenerationPrepared { .. } => "GenerationPrepared",
+      Self::GenerationActivated { .. } => "GenerationActivated",
+    }
+  }
 }

@@ -32,13 +32,13 @@
 //! - A window the companion does not report at all is a warning, so a plan that drops one still
 //!   reads as the rest of itself.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::Error;
 use crate::protocol::account_state::{
-  AccountState, AccountStateProtocol, Balance, Failure, FailureKind, QuotaWindow,
+  AccountState, AccountStateProtocol, Balance, Failure, FailureKind, QuotaWindow, minutes_window,
 };
-use crate::protocol::{convert_ratio_to_percent, read_scalar_text};
+use crate::protocol::json_read::{convert_ratio_to_percent, read_scalar_text};
 
 /// Reads the open-platform balance body, which needs its `data` object to be one at all.
 ///
@@ -55,51 +55,37 @@ pub fn parse_balance(body: &Value) -> Result<AccountState, Error> {
   {
     return Err(Error::Malformed("kimi balance body carries no balance".to_owned()));
   }
-  let mut warnings = Vec::new();
-  let mut failure = None;
+  let mut state = AccountState::new(AccountStateProtocol::KimiOpenBalance);
   let code = body.get("code").and_then(Value::as_i64).unwrap_or(0);
   if code != 0 || body.get("status").and_then(Value::as_bool) == Some(false) {
     let detail = body.get("scode").and_then(Value::as_str).unwrap_or("");
-    failure = Some(Failure {
-      kind: FailureKind::Unknown,
-      code: Some(if detail.is_empty() { code.to_string() } else { detail.to_owned() }),
-      message: "the balance service rejected the read".to_owned(),
-    });
+    state.failure = Some(Failure::rejected(
+      Some(if detail.is_empty() { code.to_string() } else { detail.to_owned() }),
+      None,
+      "the balance service rejected the read",
+    ));
   }
   let cash = data.get("cash_balance").and_then(read_scalar_text);
   if cash.as_deref().is_some_and(|cash| cash.starts_with('-')) {
-    warnings.push("cash_balance is negative; the account is in arrears".to_owned());
+    state.warnings.push("cash_balance is negative; the account is in arrears".to_owned());
   }
   let available = data.get("available_balance").and_then(read_scalar_text);
-  if failure.is_none()
+  if state.failure.is_none()
     && available.as_deref().is_some_and(|left| left.parse::<f64>().is_ok_and(|left| left <= 0.0))
   {
-    failure = Some(Failure {
+    state.failure = Some(Failure {
       kind: FailureKind::Unpaid,
       code: None,
       message: "available_balance is not above zero; the service refuses calls".to_owned(),
     });
   }
-  Ok(AccountState {
-    protocol: AccountStateProtocol::KimiOpenBalance,
-    quotas: Vec::new(),
-    balances: vec![Balance {
-      currency: "CNY".to_owned(),
-      available,
-      total: None,
-      cash,
-      granted: None,
-      topped_up: None,
-      voucher: data.get("voucher_balance").and_then(read_scalar_text),
-      credit: None,
-      owed: None,
-      minor_unit: None,
-    }],
-    failure,
-    warnings,
-    availability: None,
-    plan_type: None,
-  })
+  state.balances.push(Balance {
+    available,
+    cash,
+    voucher: data.get("voucher_balance").and_then(read_scalar_text),
+    ..Balance::new("CNY")
+  });
+  Ok(state)
 }
 
 /// The plan windows the code companion reports: the field it words each under, the id the window is
@@ -121,96 +107,78 @@ pub fn parse_companion(body: &Value) -> Result<AccountState, Error> {
   let Some(usages) = body.get("usages").filter(|usages| usages.is_object()) else {
     return Err(Error::Malformed("kimi companion body missing `usages` object".to_owned()));
   };
-  let mut warnings = Vec::new();
-  let mut quotas = Vec::new();
+  let mut state = AccountState::new(AccountStateProtocol::KimiCodeCompanionUsage);
   for (field, id, minutes) in WINDOWS {
     let Some(limit) = usages.get(*field) else {
-      warnings.push(format!("`{field}` window is not reported"));
+      state.warnings.push(format!("`{field}` window is not reported"));
       continue;
     };
-    let ratio = limit.get("used_ratio").and_then(read_scalar_text);
-    if ratio.is_none() {
-      warnings.push(format!("`{field}` reports no used_ratio"));
-    }
-    quotas.push(QuotaWindow {
-      id: (*id).to_owned(),
-      name: Some((*field).to_owned()),
-      // A plan window reports no amounts, only the share of its allowance that is spent.
-      unit: "unknown".to_owned(),
-      used: None,
-      limit: None,
-      remaining: None,
-      used_percent: ratio.as_deref().and_then(convert_ratio_to_percent),
-      window: minutes.map(|minutes| json!({ "duration": minutes, "unit": "minutes" })),
-      resets_at: limit.get("reset_time").and_then(read_scalar_text),
-      reached: ratio
-        .as_deref()
-        .and_then(|ratio| ratio.parse::<f64>().ok())
-        .map(|ratio| ratio >= 1.0),
-      unlimited: None,
-      parts: Vec::new(),
-    });
+    state.quotas.push(read_plan_window(field, id, *minutes, limit, &mut state.warnings));
   }
-  let wallet = body.get("boosterWallet");
-  if let Some(balance) = wallet.and_then(|wallet| wallet.get("balance")) {
-    quotas.push(QuotaWindow {
-      id: "booster".to_owned(),
+  if let Some(wallet) = body.get("boosterWallet") {
+    read_wallet(wallet, &mut state);
+  }
+  if state.quotas.is_empty() {
+    return Err(Error::Malformed("kimi companion body carries no usage".to_owned()));
+  }
+  Ok(state)
+}
+
+/// One plan window: no amounts, only the share of its allowance that is spent.
+fn read_plan_window(
+  field: &str,
+  id: &str,
+  minutes: Option<i64>,
+  limit: &Value,
+  warnings: &mut Vec<String>,
+) -> QuotaWindow {
+  let ratio = limit.get("used_ratio").and_then(read_scalar_text);
+  if ratio.is_none() {
+    warnings.push(format!("`{field}` reports no used_ratio"));
+  }
+  QuotaWindow {
+    name: Some(field.to_owned()),
+    used_percent: ratio.as_deref().and_then(convert_ratio_to_percent),
+    window: minutes.map(minutes_window),
+    resets_at: limit.get("reset_time").and_then(read_scalar_text),
+    reached: ratio.as_deref().and_then(|ratio| ratio.parse::<f64>().ok()).map(|ratio| ratio >= 1.0),
+    ..QuotaWindow::new(id, "unknown")
+  }
+}
+
+/// The booster wallet: its credits as one window, its monthly charge limit as another, and a
+/// warning when that limit is reported while not enforced.
+fn read_wallet(wallet: &Value, state: &mut AccountState) {
+  if let Some(balance) = wallet.get("balance") {
+    state.quotas.push(QuotaWindow {
       name: Some(balance.get("type").and_then(Value::as_str).unwrap_or("booster").to_owned()),
-      unit: "credits".to_owned(),
-      used: None,
       limit: balance.get("amount").and_then(read_scalar_text),
       remaining: balance.get("amountLeft").and_then(read_scalar_text),
-      used_percent: None,
-      window: None,
-      resets_at: None,
-      reached: None,
-      unlimited: None,
-      parts: Vec::new(),
+      ..QuotaWindow::new("booster", "credits")
     });
   }
-  let charge_limit = wallet.and_then(|wallet| wallet.get("monthlyChargeLimit"));
+  let charge_limit = wallet.get("monthlyChargeLimit");
   if let Some(limit) =
     charge_limit.and_then(|limit| limit.get("priceInCents")).and_then(read_scalar_text)
   {
     let currency = charge_limit.and_then(|limit| limit.get("currency")).and_then(Value::as_str);
-    quotas.push(QuotaWindow {
-      id: "monthly_charge".to_owned(),
+    state.quotas.push(QuotaWindow {
       // The amounts are minor units, so the currency the service named belongs in the name.
       name: Some(match currency {
         Some(currency) => format!("monthly charge limit ({currency})"),
         None => "monthly charge limit".to_owned(),
       }),
-      unit: "currency_minor".to_owned(),
       used: wallet
-        .and_then(|wallet| wallet.get("monthlyUsed"))
+        .get("monthlyUsed")
         .and_then(|used| used.get("priceInCents"))
         .and_then(read_scalar_text),
       limit: Some(limit),
-      remaining: None,
-      used_percent: None,
-      window: None,
-      resets_at: None,
-      reached: None,
-      unlimited: None,
-      parts: Vec::new(),
+      ..QuotaWindow::new("monthly_charge", "currency_minor")
     });
   }
-  if wallet.and_then(|wallet| wallet.get("monthlyChargeLimitEnabled")).and_then(Value::as_bool)
-    == Some(false)
-  {
-    warnings
+  if wallet.get("monthlyChargeLimitEnabled").and_then(Value::as_bool) == Some(false) {
+    state
+      .warnings
       .push("monthlyChargeLimitEnabled is false; the charge limit is not enforced".to_owned());
   }
-  if quotas.is_empty() {
-    return Err(Error::Malformed("kimi companion body carries no usage".to_owned()));
-  }
-  Ok(AccountState {
-    protocol: AccountStateProtocol::KimiCodeCompanionUsage,
-    quotas,
-    balances: Vec::new(),
-    failure: None,
-    warnings,
-    availability: None,
-    plan_type: None,
-  })
 }

@@ -14,7 +14,6 @@
 //! - `plan_type` is the plan, kept as `plan_type`; a frame carries it beside `rate_limits`, and the
 //!   account endpoint carries it at the top. A body that names a `status` reports it as the
 //!   availability.
-//! - `plan_type` is the plan, kept as `plan_type`; a frame carries it beside `rate_limits`.
 //! - `rate_limits.credits.balance` becomes a `credits` [`Balance`], and an `unlimited` window is
 //!   added beside it when the service says the credits never run out.
 //! - The `x-codex-*` headers say the same two windows in percentages: a used percent, a window
@@ -48,94 +47,52 @@
 //! - `code_review_rate_limit` is not read: it is null on every body seen, and a meter nobody has
 //!   seen is a shape to guess at.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::Error;
-use crate::protocol::account_state::{AccountState, AccountStateProtocol, Balance, QuotaWindow};
-use crate::protocol::read_scalar_text;
+use crate::protocol::account_state::{
+  AccountState, AccountStateProtocol, Balance, QuotaWindow, minutes_window, read_header,
+};
+use crate::protocol::json_read::read_scalar_text;
 
 /// Reads the quota payload of a rate-limit frame, which needs `rate_limits` to be one at all.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Malformed`] when `rate_limits` is missing.
-pub fn parse(body: &Value) -> Result<AccountState, Error> {
+pub fn parse_rate_limit_payload(body: &Value) -> Result<AccountState, Error> {
   let limits = body
     .get("rate_limits")
     .ok_or_else(|| Error::Malformed("codex quota body missing `rate_limits`".to_owned()))?;
-  let mut quotas = Vec::new();
+  let mut state = AccountState::new(AccountStateProtocol::OpenAiCodexQuotaHeaders);
   for id in ["primary", "secondary"] {
     let Some(window) = limits.get(id) else { continue };
-    quotas.push(QuotaWindow {
-      id: id.to_owned(),
-      name: None,
-      unit: "unknown".to_owned(),
-      used: window.get("used").and_then(read_scalar_text),
-      limit: window.get("limit").and_then(read_scalar_text),
-      remaining: window.get("remaining").and_then(read_scalar_text),
-      used_percent: window.get("used_percent").and_then(read_scalar_text),
-      window: window
-        .get("window_minutes")
-        .map(|minutes| json!({ "duration": minutes, "unit": "minutes" })),
-      resets_at: window
-        .get("reset_at")
-        .or_else(|| window.get("resets_at"))
-        .and_then(read_scalar_text),
-      reached: None,
-      unlimited: None,
-      parts: Vec::new(),
+    state.quotas.push(QuotaWindow {
+      window: window.get("window_minutes").cloned().map(minutes_window),
+      ..read_window_amounts(id, window)
     });
   }
-  let mut balances = Vec::new();
   if let Some(credits) = limits.get("credits") {
     let exists =
       credits.get("exists").or_else(|| credits.get("has_credits")).and_then(Value::as_bool)
         == Some(true);
     let unlimited = credits.get("unlimited").and_then(Value::as_bool) == Some(true);
     if exists {
-      balances.push(Balance {
-        currency: "credits".to_owned(),
+      state.balances.push(Balance {
         available: credits.get("balance").and_then(read_scalar_text),
-        total: None,
-        cash: None,
-        granted: None,
-        topped_up: None,
-        voucher: None,
-        credit: None,
-        owed: None,
-        minor_unit: None,
+        ..Balance::new("credits")
       });
       if unlimited {
-        quotas.push(QuotaWindow {
-          id: "credits".to_owned(),
-          name: None,
-          unit: "credits".to_owned(),
-          used: None,
-          limit: None,
-          remaining: None,
-          used_percent: None,
-          window: None,
-          resets_at: None,
-          reached: None,
-          unlimited: Some(true),
-          parts: Vec::new(),
-        });
+        state.quotas.push(unlimited_credits());
       }
     }
   }
-  Ok(AccountState {
-    protocol: AccountStateProtocol::OpenAiCodexQuotaHeaders,
-    quotas,
-    balances,
-    failure: None,
-    warnings: Vec::new(),
-    availability: None,
-    plan_type: body
-      .get("plan_type")
-      .or_else(|| limits.get("plan_type"))
-      .and_then(Value::as_str)
-      .map(str::to_owned),
-  })
+  state.plan_type = body
+    .get("plan_type")
+    .or_else(|| limits.get("plan_type"))
+    .and_then(Value::as_str)
+    .map(str::to_owned);
+  Ok(state)
 }
 
 /// Reads the account endpoint's reading (`GET /backend-api/wham/usage`), the active truth about a
@@ -144,30 +101,23 @@ pub fn parse(body: &Value) -> Result<AccountState, Error> {
 /// A missing `rate_limit` is not an error: the body may still name the plan and the account's
 /// standing, which is a reading of its own.
 pub fn parse_usage(body: &Value) -> AccountState {
-  let mut quotas = Vec::new();
-  let mut warnings = Vec::new();
+  let mut state = AccountState::new(AccountStateProtocol::OpenAiCodexUsage);
   if let Some(limit) = body.get("rate_limit").filter(|limit| limit.is_object()) {
-    append_meter_windows("", limit, &mut quotas);
+    append_meter_windows("", limit, &mut state.quotas);
   }
   for meter in body.get("additional_rate_limits").and_then(Value::as_array).into_iter().flatten() {
     let Some(name) = meter.get("limit_name").and_then(Value::as_str) else {
-      warnings.push("an additional rate limit without a `limit_name` was dropped".to_owned());
+      state.warnings.push("an additional rate limit without a `limit_name` was dropped".to_owned());
       continue;
     };
     match meter.get("rate_limit").filter(|limit| limit.is_object()) {
-      Some(limit) => append_meter_windows(name, limit, &mut quotas),
-      None => warnings.push(format!("the `{name}` meter reports no rate limit")),
+      Some(limit) => append_meter_windows(name, limit, &mut state.quotas),
+      None => state.warnings.push(format!("the `{name}` meter reports no rate limit")),
     }
   }
-  AccountState {
-    protocol: AccountStateProtocol::OpenAiCodexUsage,
-    quotas,
-    balances: Vec::new(),
-    failure: None,
-    warnings,
-    availability: body.get("status").and_then(Value::as_str).map(str::to_owned),
-    plan_type: body.get("plan_type").and_then(Value::as_str).map(str::to_owned),
-  }
+  state.availability = body.get("status").and_then(Value::as_str).map(str::to_owned);
+  state.plan_type = body.get("plan_type").and_then(Value::as_str).map(str::to_owned);
+  state
 }
 
 /// One meter's two windows and the meter's own standing: the account's meter when `name` is empty,
@@ -177,112 +127,69 @@ fn append_meter_windows(name: &str, limit: &Value, quotas: &mut Vec<QuotaWindow>
   for window in ["primary", "secondary"] {
     let key = format!("{window}_window");
     let Some(value) = limit.get(&key).filter(|value| value.is_object()) else { continue };
+    let id = if name.is_empty() { window.to_owned() } else { format!("{name}:{window}") };
     quotas.push(QuotaWindow {
-      id: if name.is_empty() { window.to_owned() } else { format!("{name}:{window}") },
       name: (!name.is_empty()).then(|| name.to_owned()),
-      unit: "unknown".to_owned(),
-      used: value.get("used").and_then(read_scalar_text),
-      limit: value.get("limit").and_then(read_scalar_text),
-      remaining: value.get("remaining").and_then(read_scalar_text),
-      used_percent: value.get("used_percent").and_then(read_scalar_text),
       window: value
         .get("limit_window_seconds")
         .and_then(Value::as_u64)
-        .map(|seconds| json!({ "duration": seconds / 60, "unit": "minutes" })),
-      resets_at: value
-        .get("reset_at")
-        .or_else(|| value.get("resets_at"))
-        .and_then(read_scalar_text),
+        .map(|seconds| minutes_window(seconds / 60)),
       reached,
-      unlimited: None,
-      parts: Vec::new(),
+      ..read_window_amounts(id, value)
     });
   }
+}
+
+/// The amounts one window reports the same way in a frame and on the account endpoint: what is
+/// spent, the allowance, what is left, the share spent and when it resets.
+fn read_window_amounts(id: impl Into<String>, window: &Value) -> QuotaWindow {
+  QuotaWindow {
+    used: window.get("used").and_then(read_scalar_text),
+    limit: window.get("limit").and_then(read_scalar_text),
+    remaining: window.get("remaining").and_then(read_scalar_text),
+    used_percent: window.get("used_percent").and_then(read_scalar_text),
+    resets_at: window
+      .get("reset_at")
+      .or_else(|| window.get("resets_at"))
+      .and_then(read_scalar_text),
+    ..QuotaWindow::new(id, "unknown")
+  }
+}
+
+/// The window that says a subscription's credits never run out.
+fn unlimited_credits() -> QuotaWindow {
+  QuotaWindow { unlimited: Some(true), ..QuotaWindow::new("credits", "credits") }
 }
 
 /// Reads the `x-codex-*` headers of a reply, when it carried any.
 ///
 /// `None` means the head said nothing about the account, which is not the same as a head that said
 /// the account has nothing left.
-pub fn from_headers(headers: &[(String, String)]) -> Option<AccountState> {
-  let mut quotas = Vec::new();
+pub fn parse_headers(headers: &[(String, String)]) -> Option<AccountState> {
+  let mut state = AccountState::new(AccountStateProtocol::OpenAiCodexQuotaHeaders);
   for id in ["primary", "secondary"] {
-    let percent = get_header(headers, &format!("x-codex-{id}-used-percent"));
-    let window = get_header(headers, &format!("x-codex-{id}-window-minutes"));
-    let resets_at = get_header(headers, &format!("x-codex-{id}-reset-at"));
+    let percent = read_header(headers, &format!("x-codex-{id}-used-percent"));
+    let window = read_header(headers, &format!("x-codex-{id}-window-minutes"));
+    let resets_at = read_header(headers, &format!("x-codex-{id}-reset-at"));
     if percent.is_none() && window.is_none() && resets_at.is_none() {
       continue;
     }
-    quotas.push(QuotaWindow {
-      id: id.to_owned(),
-      name: None,
-      unit: "unknown".to_owned(),
-      used: None,
-      limit: None,
-      remaining: None,
+    state.quotas.push(QuotaWindow {
       used_percent: percent,
-      window: window.and_then(|minutes| {
-        // A head spells the length as text; a number is what the endpoint's own reading carries.
-        minutes.parse::<u64>().ok().map(|minutes| json!({ "duration": minutes, "unit": "minutes" }))
-      }),
+      // A head spells the length as text; a number is what the endpoint's own reading carries.
+      window: window.and_then(|minutes| minutes.parse::<u64>().ok()).map(minutes_window),
       resets_at,
-      reached: None,
-      unlimited: None,
-      parts: Vec::new(),
+      ..QuotaWindow::new(id, "unknown")
     });
   }
-  let mut balances = Vec::new();
-  let mut warnings = Vec::new();
-  if get_header(headers, "x-codex-credits-unlimited").as_deref() == Some("true") {
-    quotas.push(QuotaWindow {
-      id: "credits".to_owned(),
-      name: None,
-      unit: "credits".to_owned(),
-      used: None,
-      limit: None,
-      remaining: None,
-      used_percent: None,
-      window: None,
-      resets_at: None,
-      reached: None,
-      unlimited: Some(true),
-      parts: Vec::new(),
-    });
-  } else if get_header(headers, "x-codex-credits-has-credits").as_deref() == Some("true") {
-    balances.push(Balance {
-      currency: "credits".to_owned(),
-      available: None,
-      total: None,
-      cash: None,
-      granted: None,
-      topped_up: None,
-      voucher: None,
-      credit: None,
-      owed: None,
-      minor_unit: None,
-    });
-    warnings.push("the head reports credits without a balance".to_owned());
+  if read_header(headers, "x-codex-credits-unlimited").as_deref() == Some("true") {
+    state.quotas.push(unlimited_credits());
+  } else if read_header(headers, "x-codex-credits-has-credits").as_deref() == Some("true") {
+    state.balances.push(Balance::new("credits"));
+    state.warnings.push("the head reports credits without a balance".to_owned());
   }
-  if quotas.is_empty() && balances.is_empty() {
+  if state.quotas.is_empty() && state.balances.is_empty() {
     return None;
   }
-  Some(AccountState {
-    protocol: AccountStateProtocol::OpenAiCodexQuotaHeaders,
-    quotas,
-    balances,
-    failure: None,
-    warnings,
-    availability: None,
-    plan_type: None,
-  })
-}
-
-/// One header's value, trimmed: an empty header is a header the service did not send.
-fn get_header(headers: &[(String, String)], name: &str) -> Option<String> {
-  headers
-    .iter()
-    .find(|(key, _)| key.eq_ignore_ascii_case(name))
-    .map(|(_, value)| value.trim())
-    .filter(|value| !value.is_empty())
-    .map(str::to_owned)
+  Some(state)
 }

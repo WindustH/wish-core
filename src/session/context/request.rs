@@ -1,42 +1,26 @@
-use crate::protocol::Request;
-use crate::session::persistence::SessionTransaction;
-use crate::session::statistics::Timestamp;
-use crate::session::{Entry, EntryId, Session, SessionError};
-use crate::storage::PAGE_SIZE;
+use super::validate_tool_pairs;
+use crate::protocol::{Message, Request, model_use::request::ToolChoice};
+use crate::session::persistence::{SessionRecord, SessionTransaction};
+use crate::session::{EntryId, Session, SessionConfig, SessionError, SessionSender, SessionState};
+use crate::utils::time::Timestamp;
 
 impl Session {
   pub fn build_request(&self) -> Result<Request, SessionError> {
-    let recorded_at = Timestamp::now();
-    let mut record = self.record.clone();
-    let key = self.key.clone();
-    self.storage.transaction(move |tx| {
-      SessionTransaction { record: &mut record, tx, key: &key, recorded_at }.build_request()
-    })
+    self.read(|transaction| transaction.build_request())
   }
 }
 impl SessionTransaction<'_, '_> {
+  /// The request the active context makes, with the session's settings.
   pub fn build_request(&mut self) -> Result<Request, SessionError> {
     let generation = self.load_generation(self.record.active)?;
-    let length = self.tx.list_len::<EntryId>(&generation.entries)?;
     let mut messages = Vec::new();
-    let mut start = 0;
-    while start < length {
-      let page = self.tx.read_page::<EntryId>(&generation.entries, start, PAGE_SIZE as usize)?;
-      for id in &page.items {
-        let entry = self
-          .tx
-          .get_item::<Entry>(&self.record.entries, id.0 as u64)?
-          .ok_or(SessionError::InvalidEntry(**id))?;
-        messages.push(entry.message.clone());
-      }
-      start += page.items.len() as u64;
+    for id in self.store.read_from::<EntryId>(&generation.entries, 0)? {
+      messages.push(self.load_entry(*id)?.message.clone());
     }
     Ok(self.record.config.build_request(messages))
   }
 }
 
-use crate::protocol::{Message, model_use::request::ToolChoice};
-use crate::session::SessionConfig;
 impl SessionConfig {
   pub(crate) fn build_request(&self, conversation: Vec<Message>) -> Request {
     Request {
@@ -52,18 +36,16 @@ impl SessionConfig {
   }
 }
 
-impl crate::session::SessionHandle {
+impl SessionSender {
   /// Atomically snapshot committed context without borrowing the running session.
   /// An in-flight tool batch is excluded as a whole, including its assistant turn.
   pub fn build_context_snapshot(&self) -> Result<Request, SessionError> {
-    let key = self.sender.key.clone();
-    self.sender.storage.transaction(move |tx| {
-      let mut record =
-        (*tx.load_object::<crate::session::persistence::SessionRecord>(&key)?).clone();
-      let pending_tools =
-        matches!(record.state, crate::session::SessionState::ExecutingTools { .. });
+    let key = self.key.clone();
+    self.storage.rehearse(move |store| {
+      let mut record = (*store.load_object::<SessionRecord>(&key)?).clone();
+      let pending_tools = matches!(record.state, SessionState::ExecutingTools { .. });
       let mut request =
-        SessionTransaction { record: &mut record, tx, key: &key, recorded_at: Timestamp::now() }
+        SessionTransaction { record: &mut record, store, key: &key, recorded_at: Timestamp::now() }
           .build_request()?;
       if pending_tools {
         while matches!(
@@ -73,7 +55,7 @@ impl crate::session::SessionHandle {
           request.conversation.pop();
         }
       }
-      crate::session::context::validate_tool_pairs(request.conversation.iter())?;
+      validate_tool_pairs(request.conversation.iter())?;
       Ok(request)
     })
   }

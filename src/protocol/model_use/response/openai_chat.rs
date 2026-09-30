@@ -6,7 +6,7 @@
 //! - MiniMax refuses a call with `200` and `base_resp.status_code`, which becomes an in-band
 //!   `Error::Upstream` rather than the missing-`choices` shape it would otherwise look like.
 //! - Reasoning becomes a `Reasoning` message ahead of the assistant content: from the flat
-//!   `reasoning_content` extension where the variant has it, or from the `thinking` chunks Mistral
+//!   `reasoning_content` extension where the mode has it, or from the `thinking` chunks Mistral
 //!   folds into `content`.
 //! - `finish_reason` maps `stop` to `Stop`, `length` to `MaxOutputLengthExceeded`, `tool_calls` (or
 //!   the older `function_call`) to `ToolUse` and `content_filter` (or a vendor's `sensitive`) to
@@ -24,20 +24,20 @@
 //!   the vendor's schema and its prose spell the type differently.
 
 use crate::protocol::error::Error;
-use crate::protocol::model_use::request::openai_chat::{
-  ChatCompletionApiCompatMode, REASONING_FIELD,
-};
+use crate::protocol::http_error::decode_in_band;
+use crate::protocol::model_use::mistral_chunks::{join_text_chunks, join_thinking_chunks};
+use crate::protocol::model_use::mode::{ChatCompletionApiCompatMode, REASONING_FIELD};
+use crate::protocol::model_use::tool::parse_tool_arguments;
 use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 pub fn decode(body: &Value, mode: ChatCompletionApiCompatMode) -> Result<Response, Error> {
   if let Some(error) = body.get("error") {
-    let message = error
-      .get("message")
-      .and_then(Value::as_str)
-      .unwrap_or("upstream reported an error without a message");
-    let code = error.get("code").and_then(Value::as_str);
-    return Err(Error::from_in_band(code.map(str::to_owned), message.to_owned()));
+    return Err(decode_in_band(
+      Some(error),
+      &["code"],
+      "upstream reported an error without a message",
+    ));
   }
 
   // MiniMax refuses a call with `200` and its own envelope, and no `choices` at all.
@@ -53,6 +53,7 @@ pub fn decode(body: &Value, mode: ChatCompletionApiCompatMode) -> Result<Respons
   let message = choice
     .get("message")
     .ok_or_else(|| Error::Malformed("choice carries no message".to_owned()))?;
+  let stop_reason = decode_stop_reason(choice, mode);
 
   let mut content: Vec<ContentBlock> = Vec::new();
   match message.get("content") {
@@ -60,19 +61,16 @@ pub fn decode(body: &Value, mode: ChatCompletionApiCompatMode) -> Result<Respons
       content.push(ContentBlock::Text { text: text.to_owned() });
     }
     Some(Value::Array(chunks)) if mode.is_mistral() => {
-      let text: String = chunks
-        .iter()
-        .filter(|chunk| get_chunk_type(chunk) == Some("text"))
-        .filter_map(|chunk| chunk.get("text").and_then(Value::as_str))
-        .collect();
+      let text = join_text_chunks(chunks);
       if !text.is_empty() {
         content.push(ContentBlock::Text { text });
       }
     }
     _ => {}
   }
+  // The calls of a capped reply may be cut short, so they are not read at all.
   let mut tool_uses: Vec<Message> = Vec::new();
-  if decode_stop_reason(choice, mode) != StopReason::MaxOutputLengthExceeded
+  if stop_reason != StopReason::MaxOutputLengthExceeded
     && let Some(calls) = message.get("tool_calls").and_then(Value::as_array)
   {
     for call in calls {
@@ -90,12 +88,7 @@ pub fn decode(body: &Value, mode: ChatCompletionApiCompatMode) -> Result<Respons
     messages.push(Message::Assistant { metadata: Default::default(), content });
   }
   messages.extend(tool_uses);
-  Ok(Response {
-    messages,
-    stop_reason: decode_stop_reason(choice, mode),
-    usage: decode_usage(body),
-    account_state: None,
-  })
+  Ok(Response { messages, stop_reason, usage: decode_usage(body), account_state: None })
 }
 
 /// Captures the assistant message's reasoning, when the mode speaks the extension.
@@ -105,7 +98,7 @@ fn decode_reasoning(
 ) -> Result<Option<Message>, Error> {
   // Only the flat `reasoning_content` field carries reasoning here: the official wire has no such
   // field, and Mistral spells its reasoning in `content` chunks instead.
-  if mode.is_plain() || mode.is_mistral() {
+  if !mode.has_reasoning_field() {
     return Ok(None);
   }
   let name = REASONING_FIELD;
@@ -114,15 +107,7 @@ fn decode_reasoning(
   if text.is_empty() {
     return Ok(None);
   }
-  Ok(Some(Message::Reasoning {
-    metadata: Default::default(),
-    replay_item: None,
-    opaque_kind: None,
-    plaintext: text.to_owned(),
-    display: text.to_owned(),
-    signature: String::new(),
-    ciphertext: String::new(),
-  }))
+  Ok(Some(Message::reasoning_text(text.to_owned())))
 }
 
 fn decode_tool_use(call: &Value) -> Result<Message, Error> {
@@ -137,11 +122,9 @@ fn decode_tool_use(call: &Value) -> Result<Message, Error> {
     .get("name")
     .and_then(Value::as_str)
     .ok_or_else(|| Error::Malformed("tool call function is missing `name`".to_owned()))?;
-  let arguments = match function.get("arguments").and_then(Value::as_str) {
-    Some(raw) if !raw.trim().is_empty() => serde_json::from_str(raw)
-      .map_err(|_| Error::Malformed("tool call arguments are not valid JSON".to_owned()))?,
-    _ => json!({}),
-  };
+  let raw = function.get("arguments").and_then(Value::as_str).unwrap_or_default();
+  let arguments = parse_tool_arguments(raw)
+    .map_err(|_| Error::Malformed("tool call arguments are not valid JSON".to_owned()))?;
   Ok(Message::ToolUse {
     metadata: Default::default(),
     call_id: call_id.to_owned(),
@@ -159,30 +142,11 @@ fn decode_thinking_chunks(
     return Ok(None);
   }
   let Some(chunks) = message.get("content").and_then(Value::as_array) else { return Ok(None) };
-  let mut plaintext = String::new();
-  for chunk in chunks.iter().filter(|chunk| is_thinking(chunk)) {
-    let parts = chunk
-      .get("thinking")
-      .and_then(Value::as_array)
-      .ok_or_else(|| Error::Malformed("`thinking` chunk carries no `thinking` list".to_owned()))?;
-    for part in parts {
-      if let Some(text) = part.get("text").and_then(Value::as_str) {
-        plaintext.push_str(text);
-      }
-    }
-  }
+  let plaintext = join_thinking_chunks(chunks)?;
   if plaintext.is_empty() {
     return Ok(None);
   }
-  Ok(Some(Message::Reasoning {
-    metadata: Default::default(),
-    replay_item: None,
-    opaque_kind: None,
-    plaintext: plaintext.clone(),
-    display: plaintext,
-    signature: String::new(),
-    ciphertext: String::new(),
-  }))
+  Ok(Some(Message::reasoning_text(plaintext)))
 }
 
 /// The refusal MiniMax reports inside a `2xx` payload, when this is one.
@@ -198,17 +162,6 @@ pub(crate) fn decode_refusal_error(payload: &Value) -> Option<Error> {
     .filter(|message| !message.is_empty())
     .unwrap_or("the service refused the call without a message");
   Some(Error::from_in_band(Some(status.to_string()), message.to_owned()))
-}
-
-/// The `type` of one content chunk.
-pub(crate) fn get_chunk_type(chunk: &Value) -> Option<&str> {
-  chunk.get("type").and_then(Value::as_str)
-}
-
-/// Whether a content chunk is a thought: the vendor's schema spells the type `thinking`, its prose
-/// spells it `think`, so both are read.
-pub(crate) fn is_thinking(chunk: &Value) -> bool {
-  matches!(get_chunk_type(chunk), Some("thinking" | "think"))
 }
 
 fn decode_stop_reason(choice: &Value, mode: ChatCompletionApiCompatMode) -> StopReason {
@@ -232,11 +185,9 @@ pub(crate) fn map_stop_reason(
   }
 }
 
-fn decode_usage(body: &Value) -> Usage {
-  parse_usage(body)
-}
-
-pub(crate) fn parse_usage(body: &Value) -> Usage {
+/// Maps the top-level `usage` object; shared with the stream decoder, whose usage chunk carries the
+/// same object.
+pub(crate) fn decode_usage(body: &Value) -> Usage {
   let usage = body.get("usage");
   let field = |path: &[&str]| -> Option<u64> {
     let mut node = usage?;

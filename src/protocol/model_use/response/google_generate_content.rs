@@ -19,13 +19,14 @@
 //!   wire's error envelope maps to `Error::Upstream` with `error.status` as the code.
 
 use crate::protocol::error::Error;
-use crate::protocol::ReasoningOpaqueKind;
-use crate::protocol::{ContentBlock, Message, Response, StopReason, Usage};
+use crate::protocol::http_error::decode_in_band;
+use crate::protocol::model_use::response::fold_thoughts_into_output;
+use crate::protocol::{ContentBlock, Message, ReasoningOpaqueKind, Response, StopReason, Usage};
 use serde_json::{Value, json};
 
 pub fn decode(body: &Value) -> Result<Response, Error> {
   if body.get("error").is_some() {
-    return Err(decode_upstream_error(body));
+    return Err(decode_in_band_error(body));
   }
 
   let mut messages: Vec<Message> = Vec::new();
@@ -53,15 +54,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
         }
         _ => {
           flush(messages, content);
-          messages.push(Message::Reasoning {
-            metadata: Default::default(),
-            replay_item: None,
-            opaque_kind: Some(ReasoningOpaqueKind::GoogleSignature),
-            plaintext: String::new(),
-            display: String::new(),
-            signature: proof.to_owned(),
-            ciphertext: String::new(),
-          });
+          messages.push(build_signature_only(proof));
         }
       }
     };
@@ -71,15 +64,11 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
       if part.get("thought") == Some(&Value::Bool(true)) {
         if let Some(text) = part.get("text").and_then(Value::as_str) {
           flush(&mut messages, &mut content);
-          messages.push(Message::Reasoning {
-            metadata: Default::default(),
-            replay_item: None,
-            opaque_kind: (!signature.is_empty()).then_some(ReasoningOpaqueKind::GoogleSignature),
-            plaintext: text.to_owned(),
-            display: text.to_owned(),
-            signature: signature.to_owned(),
-            ciphertext: String::new(),
-          });
+          messages.push(Message::signed_reasoning(
+            text.to_owned(),
+            signature.to_owned(),
+            ReasoningOpaqueKind::GoogleSignature,
+          ));
           continue;
         }
         land_signature(&mut messages, &mut content, signature);
@@ -88,15 +77,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
       if let Some(function_call) = part.get("functionCall") {
         flush(&mut messages, &mut content);
         if !signature.is_empty() {
-          messages.push(Message::Reasoning {
-            metadata: Default::default(),
-            replay_item: None,
-            opaque_kind: Some(ReasoningOpaqueKind::GoogleSignature),
-            plaintext: String::new(),
-            display: String::new(),
-            signature: signature.to_owned(),
-            ciphertext: String::new(),
-          });
+          messages.push(build_signature_only(signature));
         }
         messages.push(decode_function_call(function_call)?);
         continue;
@@ -104,15 +85,7 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
       if let Some(text) = part.get("text").and_then(Value::as_str) {
         if !signature.is_empty() {
           flush(&mut messages, &mut content);
-          messages.push(Message::Reasoning {
-            metadata: Default::default(),
-            replay_item: None,
-            opaque_kind: Some(ReasoningOpaqueKind::GoogleSignature),
-            plaintext: String::new(),
-            display: String::new(),
-            signature: signature.to_owned(),
-            ciphertext: String::new(),
-          });
+          messages.push(build_signature_only(signature));
         }
         content.push(ContentBlock::Text { text: text.to_owned() });
         continue;
@@ -139,14 +112,15 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
   })
 }
 
-pub(crate) fn decode_upstream_error(body: &Value) -> Error {
-  let error = body.get("error");
-  let message = error
-    .and_then(|error| error.get("message"))
-    .and_then(Value::as_str)
-    .unwrap_or("upstream reported an error without a message");
-  let code = error.and_then(|error| error.get("status")).and_then(Value::as_str);
-  Error::from_in_band(code.map(str::to_owned), message.to_owned())
+/// A signature-only reasoning message: the proof of the part that follows it, without text of its
+/// own.
+fn build_signature_only(proof: &str) -> Message {
+  Message::signed_reasoning(String::new(), proof.to_owned(), ReasoningOpaqueKind::GoogleSignature)
+}
+
+/// The failure an `error` object in a body or a stream chunk reports.
+pub(crate) fn decode_in_band_error(body: &Value) -> Error {
+  decode_in_band(body.get("error"), &["status"], "upstream reported an error without a message")
 }
 
 fn decode_function_call(function_call: &Value) -> Result<Message, Error> {
@@ -182,15 +156,11 @@ pub(crate) fn map_stop_reason(finish: Option<&str>, has_tool_uses: bool) -> Stop
   }
 }
 
-fn decode_usage(body: &Value) -> Usage {
-  parse_usage(body)
-}
-
 /// Maps the top-level `usageMetadata`. The wire reports thinking tokens separately in
 /// `thoughtsTokenCount` while billing them as output; `output_tokens` folds them in so the
 /// number is what the model was charged, matching the dialects whose completion count already
 /// includes reasoning.
-pub(crate) fn parse_usage(body: &Value) -> Usage {
+pub(crate) fn decode_usage(body: &Value) -> Usage {
   let usage = body.get("usageMetadata");
   let field =
     |key: &str| -> Option<u64> { usage.and_then(|usage| usage.get(key)).and_then(Value::as_u64) };
@@ -200,10 +170,7 @@ pub(crate) fn parse_usage(body: &Value) -> Usage {
     input_tokens: field("promptTokenCount"),
     cached_input_tokens: field("cachedContentTokenCount"),
     cache_write_input_tokens: None,
-    output_tokens: match (candidates, thoughts) {
-      (Some(candidates), Some(thoughts)) => Some(candidates + thoughts),
-      (candidates, thoughts) => candidates.or(thoughts),
-    },
+    output_tokens: fold_thoughts_into_output(candidates, thoughts),
     reasoning_tokens: thoughts,
     total_tokens: field("totalTokenCount"),
   }

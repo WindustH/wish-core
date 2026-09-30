@@ -1,248 +1,42 @@
+//! A session's content from the page: uploaded blobs, and user input - text with attachments -
+//! which is queued and wakes the session.
 mod input;
-use crate::server::{
-  app::App,
-  error::{ApiError, blocking},
-  session::SessionSlot,
-};
-use crate::session::history::query::{
-  HistoryContent, HistoryCursor, HistoryFilter, HistoryKind, HistoryOrder, HistoryPageRequest,
-};
+use crate::server::{app::App, blobs, error::ApiError};
 use axum::{
   Json,
   body::Bytes,
-  extract::{Path, Query, State},
+  extract::{Path, State},
   http::{HeaderMap, StatusCode, header},
 };
 use input::Input;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
-#[derive(Serialize, Deserialize)]
-pub struct Blob {
-  pub id: String,
-  pub mime_type: String,
-  pub byte_count: usize,
-  pub path: String,
-}
-fn valid_blob(id: &str) -> bool {
-  id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit())
-}
+
 pub async fn upload(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   body: Bytes,
-) -> Result<Json<Blob>, ApiError> {
-  app.require_open()?;
-  app.get_session(&id).await?.require_live()?;
-  let hash = format!("{:x}", Sha256::digest(&body));
-  let dir = app.data_dir.join("blobs").join(&id);
-  tokio::fs::create_dir_all(&dir).await.map_err(ApiError::internal)?;
-  let path = dir.join(&hash);
-  tokio::fs::write(&path, &body).await.map_err(ApiError::internal)?;
-  let mime = if body.starts_with(b"\x89PNG\r\n\x1a\n") {
-    "image/png"
-  } else if body.starts_with(b"\xff\xd8\xff") {
-    "image/jpeg"
-  } else if body.starts_with(b"GIF8") {
-    "image/gif"
-  } else if body.len() >= 12 && &body[..4] == b"RIFF" && &body[8..12] == b"WEBP" {
-    "image/webp"
-  } else {
-    "application/octet-stream"
-  };
-  let blob = Blob {
-    id: hash.clone(),
-    mime_type: mime.into(),
-    byte_count: body.len(),
-    path: tokio::fs::canonicalize(&path)
-      .await
-      .map_err(ApiError::internal)?
-      .to_string_lossy()
-      .into_owned(),
-  };
-  tokio::fs::write(dir.join(format!("{hash}.json")), serde_json::to_vec(&blob).unwrap())
-    .await
-    .map_err(ApiError::internal)?;
-  Ok(Json(blob))
+) -> Result<Json<blobs::Blob>, ApiError> {
+  app.lifecycle.require_open()?;
+  app.get_session(&id).await?;
+  Ok(Json(blobs::save_upload(&app.data_dir.blobs(&id), &body).await?))
 }
 pub async fn download(
   State(app): State<Arc<App>>,
   Path((id, blob)): Path<(String, String)>,
 ) -> Result<(HeaderMap, Vec<u8>), ApiError> {
-  app.get_session(&id).await?.require_live()?;
-  if !valid_blob(&blob) {
+  app.get_session(&id).await?;
+  if !blobs::is_blob_id(&blob) {
     return Err(ApiError::not_found());
   }
-  let body =
-    tokio::fs::read(app.data_dir.join("blobs").join(id).join(blob)).await.map_err(|e| {
-      if e.kind() == std::io::ErrorKind::NotFound {
-        ApiError::not_found()
-      } else {
-        ApiError::internal(e)
-      }
-    })?;
+  let body = blobs::read(&app.data_dir.blobs(&id), &blob).await?;
   let mut headers = HeaderMap::new();
   headers.insert(header::CONTENT_TYPE, "application/octet-stream".parse().unwrap());
   headers
     .insert(header::HeaderName::from_static("x-content-type-options"), "nosniff".parse().unwrap());
   Ok((headers, body))
 }
-pub async fn input(
-  State(app): State<Arc<App>>,
-  Path(id): Path<String>,
-  Json(input): Json<Input>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-  app.require_open()?;
-  let slot = app.get_session(&id).await?;
-  slot.require_live()?;
-  let message = input::message(&app, &id, input).await?;
-  let owner = slot.clone();
-  let entry = blocking(move || Ok(owner.handle.enqueue_message(message)?)).await?;
-  slot.touch()?;
-  schedule(app, slot);
-  Ok((StatusCode::ACCEPTED, Json(json!({"entry":entry}))))
-}
-pub(crate) fn schedule(app: Arc<App>, slot: Arc<SessionSlot>) {
-  let generation = slot.auto_run_generation.load(std::sync::atomic::Ordering::SeqCst);
-  let tasks = app.tasks.clone();
-  tasks.spawn(async move {
-    let mut session = slot.session.clone().lock_owned().await;
-    let setup = (|| -> Result<_, ApiError> {
-      let closing = app.closing.lock().unwrap();
-      if *closing
-        || generation != slot.auto_run_generation.load(std::sync::atomic::Ordering::SeqCst)
-      {
-        return Ok(None);
-      }
-      slot.require_live()?;
-      if session.get_queue_head() >= session.get_message_queue().len()? {
-        return Ok(None);
-      }
-      if !session.get_state().is_stable() {
-        if slot.control.lock().unwrap().is_none() {
-          session.settle_interrupted().map_err(ApiError::internal)?;
-          slot.update_snapshot(&session);
-        } else {
-          return Err(ApiError::conflict("session has unfinished execution"));
-        }
-      }
-      let (provider, provider_id) = slot.execution_provider(&app)?;
-      session.resume()?;
-      slot.update_snapshot(&session);
-      let control = crate::executor::ExecutionControl::new();
-      *slot.control.lock().unwrap() = Some(control.clone());
-      {
-        let mut status = slot.status.lock().unwrap();
-        status["running"] = json!(true);
-        status.as_object_mut().unwrap().remove("state");
-      }
-      slot.persist_index()?;
-      Ok(Some((provider, provider_id, control)))
-    })();
-    match setup {
-      Ok(Some((provider, provider_id, control))) =>
-        slot.execute(provider, provider_id, session, control, false).await,
-      Ok(None) => {}
-      Err(e) => {
-        let _ = slot.events.send(json!({"type":"operation_failed","error":e.to_string()}));
-      }
-    }
-  });
-}
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Timeline {
-  include_outcomes: bool,
-  limit: usize,
-  before: Option<u64>,
-  after: Option<u64>,
-  order: String,
-}
-impl Default for Timeline {
-  fn default() -> Self {
-    Self { include_outcomes: false, limit: 40, before: None, after: None, order: "desc".into() }
-  }
-}
-pub async fn timeline(
-  State(app): State<Arc<App>>,
-  Path(id): Path<String>,
-  Query(query): Query<Timeline>,
-) -> Result<Json<Value>, ApiError> {
-  let reader = app.get_session(&id).await?.history.clone();
-  blocking(move || {
-    let order = match query.order.as_str() {
-      "asc" => HistoryOrder::OldestFirst,
-      "desc" => HistoryOrder::NewestFirst,
-      _ => return Err(ApiError::bad_request("invalid order")),
-    };
-    let base = reader.query_history(
-      HistoryFilter { kind: Some(HistoryKind::Message), ..Default::default() },
-      HistoryPageRequest { limit: 1, ..Default::default() },
-    )?;
-    let cursor = if let Some(before) = query.before {
-      Some(HistoryCursor {
-        end_sequence: before.min(base.end_sequence),
-        after_sequence: before,
-        order,
-      })
-    } else {
-      query.after.map(|after| HistoryCursor {
-        end_sequence: base.end_sequence,
-        after_sequence: after,
-        order,
-      })
-    };
-    let page = reader.query_history(
-      HistoryFilter { kind: Some(HistoryKind::Message), ..Default::default() },
-      HistoryPageRequest { limit: query.limit, order, cursor: cursor.clone() },
-    )?;
-    let mut matches = page.items;
-    let mut has_more = page.next.is_some();
-    if query.include_outcomes {
-      let outcomes = reader.query_history(
-        HistoryFilter {
-          kind: Some(HistoryKind::Event),
-          event_types: vec!["Finished".into()],
-          ..Default::default()
-        },
-        HistoryPageRequest { limit: query.limit, order, cursor },
-      )?;
-      has_more |= outcomes.next.is_some();
-      matches.extend(outcomes.items);
-      matches.sort_by_key(|item| item.record.sequence);
-      if order == HistoryOrder::NewestFirst {
-        matches.reverse();
-      }
-      has_more |= matches.len() > query.limit;
-      matches.truncate(query.limit);
-    }
-    let next = if has_more {
-      matches.last().map(|item| HistoryCursor {
-        end_sequence: page.end_sequence,
-        after_sequence: item.record.sequence,
-        order,
-      })
-    } else {
-      None
-    };
-    let mut items = Vec::new();
-    for item in &matches {
-      if let Some(item) = reader.read_history_item(item.record.sequence)? {
-        if let HistoryContent::Event(event) = &item.content {
-          if let Some(event) = crate::server::session::web_event(event) {
-            items.push(json!({"record":item.record,"content":{"kind":"event","value":event}}));
-          }
-        } else {
-          items.push(json!(item));
-        }
-      }
-    }
-    Ok(Json(json!({"items":items,"next":next,"end_sequence":page.end_sequence})))
-  })
-  .await
-}
-
 #[derive(Serialize)]
 pub struct BlobMetadata {
   id: String,
@@ -253,13 +47,23 @@ pub async fn metadata(
   State(app): State<Arc<App>>,
   Path((id, blob)): Path<(String, String)>,
 ) -> Result<Json<BlobMetadata>, ApiError> {
-  app.get_session(&id).await?.require_live()?;
-  if !valid_blob(&blob) {
+  app.get_session(&id).await?;
+  if !blobs::is_blob_id(&blob) {
     return Err(ApiError::not_found());
   }
-  let bytes = tokio::fs::read(app.data_dir.join("blobs").join(id).join(format!("{blob}.json")))
-    .await
-    .map_err(|_| ApiError::not_found())?;
-  let item: Blob = serde_json::from_slice(&bytes).map_err(ApiError::internal)?;
+  let item = blobs::read_description(&app.data_dir.blobs(&id), &blob).await?;
   Ok(Json(BlobMetadata { id: item.id, mime_type: item.mime_type, byte_count: item.byte_count }))
+}
+pub async fn input(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Json(input): Json<Input>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+  app.lifecycle.require_open()?;
+  let slot = app.get_session(&id).await?;
+  let message = input::message(&app.data_dir.blobs(&id), input).await?;
+  let entry = slot.enqueue(message).await?;
+  slot.touch()?;
+  slot.schedule(&app);
+  Ok((StatusCode::ACCEPTED, Json(json!({"entry":entry}))))
 }

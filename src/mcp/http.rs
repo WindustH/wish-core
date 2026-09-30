@@ -43,7 +43,9 @@ impl HttpClient {
     Ok(Self { client })
   }
 
-  fn build(
+  /// `request` with what every request to the server carries: the accepted types, the auth and
+  /// custom headers rmcp hands over, and the session once there is one.
+  fn with_common_headers(
     &self,
     request: reqwest::RequestBuilder,
     session_id: Option<&str>,
@@ -98,7 +100,12 @@ impl StreamableHttpClient for HttpClient {
     let attached = session_id.is_some();
     let body = serde_json::to_vec(&message)?;
     let response = self
-      .build(self.client.post(uri.as_ref()), session_id.as_deref(), auth_header, custom_headers)
+      .with_common_headers(
+        self.client.post(uri.as_ref()),
+        session_id.as_deref(),
+        auth_header,
+        custom_headers,
+      )
       .header(CONTENT_TYPE, JSON)
       .body(body)
       .send()
@@ -169,7 +176,12 @@ impl StreamableHttpClient for HttpClient {
     custom_headers: HashMap<HeaderName, HeaderValue>,
   ) -> Result<(), Failure> {
     let response = self
-      .build(self.client.delete(uri.as_ref()), Some(&session_id), auth_header, custom_headers)
+      .with_common_headers(
+        self.client.delete(uri.as_ref()),
+        Some(&session_id),
+        auth_header,
+        custom_headers,
+      )
       .send()
       .await
       .map_err(StreamableHttpError::Client)?;
@@ -188,8 +200,12 @@ impl StreamableHttpClient for HttpClient {
     auth_header: Option<String>,
     custom_headers: HashMap<HeaderName, HeaderValue>,
   ) -> Result<BoxStream<'static, Result<Sse, SseError>>, Failure> {
-    let mut request =
-      self.build(self.client.get(uri.as_ref()), session_id.as_deref(), auth_header, custom_headers);
+    let mut request = self.with_common_headers(
+      self.client.get(uri.as_ref()),
+      session_id.as_deref(),
+      auth_header,
+      custom_headers,
+    );
     if let Some(id) = last_event_id {
       request = request.header(LAST_EVENT_ID, id);
     }

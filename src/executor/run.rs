@@ -1,11 +1,16 @@
+//! A session run: the loop that asks the Session state machine for its next action and carries it
+//! out - a model call, a tool batch or the end of the run - with cutovers at stable points and a
+//! standby summary prepared beside the work.
 use super::{
   ExecutionControl,
+  compaction::{self, StandbySummarizer, StandbyWait},
   model::{self, ModelCaller, ModelResult},
-  observe::notify_observers,
+  observe::deliver_new_events,
   tool::{self, ToolExecutor},
 };
+use crate::protocol::StopReason;
 use crate::session::{
-  RunOutcome, Session, SessionAction, SessionError, SessionEvent, SessionState,
+  CompactionReason, RunOutcome, Session, SessionAction, SessionError, SessionEvent, SessionState,
 };
 
 /// Drive a session until idle or suspended. Resume a suspended session explicitly before calling.
@@ -13,6 +18,7 @@ use crate::session::{
 /// ephemeral; other events are recorded before delivery. History retains finalized messages.
 /// Signal cancellation and await completion; dropping this future during I/O leaves an active
 /// state that rejects another run rather than silently repeating potentially effective work.
+#[allow(dead_code)] // wish-test
 pub async fn run(
   model_caller: &impl ModelCaller,
   session: &mut Session,
@@ -23,37 +29,44 @@ pub async fn run(
   run_with_boundary(model_caller, session, tool_executor, control, observe, NoBoundary).await
 }
 
-/// A selection change runs only while the session is at a stable action boundary.
-/// The observer cursor lets a long handoff publish its start before awaiting the old provider.
+/// What applying a [`RunBoundary`] did.
 pub enum BoundaryResult {
   Unchanged,
+  /// The configuration changed; a standby summary prepared for the old one is discarded.
   Changed,
+  /// The run was interrupted meanwhile, and finishes as `Interrupted`.
   Interrupted,
 }
+
+/// Application-owned configuration changes, applied only at a run's stable action boundaries.
 pub trait RunBoundary: Send {
+  /// Applies pending changes before the run's next action. `delivered` - how much of the history
+  /// the observer has had - and the observer let a long change publish its own events before it
+  /// awaits I/O.
   fn apply(
     &mut self,
     session: &mut Session,
     control: &ExecutionControl,
-    cursor: &mut u64,
+    delivered: &mut u64,
     observe: &mut (impl FnMut(&SessionEvent) + Send),
   ) -> impl std::future::Future<Output = Result<BoundaryResult, SessionError>> + Send;
 }
+#[allow(dead_code)] // wish-test
 struct NoBoundary;
 impl RunBoundary for NoBoundary {
   async fn apply(
     &mut self,
     _session: &mut Session,
     _control: &ExecutionControl,
-    _cursor: &mut u64,
+    _delivered: &mut u64,
     _observe: &mut (impl FnMut(&SessionEvent) + Send),
   ) -> Result<BoundaryResult, SessionError> {
     Ok(BoundaryResult::Unchanged)
   }
 }
 
-/// Apply application-owned configuration changes only between model/tool actions.
-/// Return true when changed; any in-flight standby plan built for the old config is discarded.
+/// [`run`], with `boundary` applied at every stable action boundary, the first included, so the
+/// model call or tool batch under way always finishes first.
 pub async fn run_with_boundary(
   model_caller: &impl ModelCaller,
   session: &mut Session,
@@ -66,105 +79,23 @@ pub async fn run_with_boundary(
   if matches!(session.get_state(), SessionState::Suspended { .. }) {
     return Err(SessionError::Suspended);
   }
-  let registration = session.begin_run_control();
-  let check_session = registration.create_interruption_check();
-  let parent = control.clone();
-  let execution = ExecutionControl::inherit(move || parent.is_cancelled() || check_session());
-  let _scope = execution.create_scope();
-  let interrupted = async {
-    let session_interrupt = registration.wait_for_interruption();
-    let executor_cancel = control.wait_for_cancellation();
-    futures_util::pin_mut!(session_interrupt, executor_cancel);
-    let _ = futures_util::future::select(session_interrupt, executor_cancel).await;
-  };
-  let running = run_session(model_caller, session, tool_executor, &execution, &mut observe, boundary);
-  futures_util::pin_mut!(interrupted, running);
-  match futures_util::future::select(interrupted, running).await {
-    futures_util::future::Either::Left(((), running)) => {
-      execution.cancel();
-      running.await
-    }
-    futures_util::future::Either::Right((result, _)) => result,
-  }
+  run_scoped(session, control, async |session, control| {
+    run_session(model_caller, session, tool_executor, control, &mut observe, boundary).await
+  })
+  .await
 }
 
-use std::future::Future;
-use std::pin::Pin;
-use futures_util::{
-  future::{Either, select},
-  pin_mut,
-};
-use crate::session::statistics::Timestamp;
-
-/// A standby summary is speculative maintenance. Keep its failure visible in history and live
-/// state, but do not fail or suspend the foreground conversation that it was preparing for.
-fn record_standby_failure(
-  session: &mut Session,
-  outcome: RunOutcome,
-  cursor: &mut u64,
-  observe: &mut (impl FnMut(&SessionEvent) + Send),
-) -> Result<(), SessionError> {
-  session.record_events(vec![(
-    Timestamp::now(),
-    SessionEvent::CompactionSummaryFailed { outcome },
-  )])?;
-  notify_observers(session, cursor, observe)
-}
-
-/// Commits a finished standby summary, or records its failure without failing the run.
-fn settle_standby_summary(
-  summary: Result<super::compaction::StandbySummaryResult, super::compaction::Failure>,
-  session: &mut Session,
-  cursor: &mut u64,
-  observe: &mut (impl FnMut(&SessionEvent) + Send),
-) -> Result<(), SessionError> {
-  match summary {
-    Ok(result) => super::compaction::commit_standby_summary(session, result, cursor, observe),
-    Err(super::compaction::Failure::Outcome(outcome)) => {
-      record_standby_failure(session, outcome, cursor, observe)
-    }
-    Err(super::compaction::Failure::Session(error)) => Err(error),
-  }
-}
-
-/// What ended the wait for a standby summary after the conversation finished.
-enum FinishedWait {
-  Summary(Box<Result<super::compaction::StandbySummaryResult, super::compaction::Failure>>),
-  Cancelled,
-  Input,
-}
-
-async fn await_standby_task(
-  task: Option<
-    Pin<
-      Box<
-        dyn Future<
-            Output = Result<
-              super::compaction::StandbySummaryResult,
-              super::compaction::Failure,
-            >,
-          > + Send
-          + '_,
-      >,
-    >,
-  >,
+/// Runs `body` as a run of the session, on a child of `control`: the caller's cancellation reaches
+/// it, and `body` is still awaited then, so it settles what it started. The child is cancelled
+/// however this ends, a dropped future included, so work scoped to the run ends with it.
+pub(super) async fn run_scoped<T>(
   session: &mut Session,
   control: &ExecutionControl,
-  cursor: &mut u64,
-  observe: &mut (impl FnMut(&SessionEvent) + Send),
-) -> Result<Option<RunOutcome>, SessionError> {
-  if let Some(task) = task {
-    let cancelled = control.wait_for_cancellation();
-    pin_mut!(cancelled, task);
-    match select(cancelled, task).await {
-      Either::Left(_) => {
-        session.finish_run(RunOutcome::Interrupted)?;
-        return Ok(Some(RunOutcome::Interrupted));
-      }
-      Either::Right((summary, _)) => settle_standby_summary(summary, session, cursor, observe)?,
-    }
-  }
-  Ok(None)
+  body: impl AsyncFnOnce(&mut Session, &ExecutionControl) -> T,
+) -> T {
+  let scoped = control.child();
+  let _cancel = scoped.cancel_on_drop();
+  body(session, &scoped).await
 }
 
 async fn run_session(
@@ -175,202 +106,66 @@ async fn run_session(
   mut observe: impl FnMut(&SessionEvent) + Send,
   mut boundary: impl RunBoundary,
 ) -> Result<RunOutcome, SessionError> {
-  let mut cursor = session.get_history().len()?;
-  let mut standby_task: Option<
-    Pin<
-      Box<
-        dyn Future<
-            Output = Result<
-              super::compaction::StandbySummaryResult,
-              super::compaction::Failure,
-            >,
-          > + Send
-          + '_,
-      >,
-    >,
-  > = None;
+  let mut delivered = session.reader().get_history().len()?;
+  let mut standby = StandbySummarizer::new(model_caller, control);
   loop {
     if session.get_state().is_stable() {
-      match boundary.apply(session, control, &mut cursor, &mut observe).await? {
-        BoundaryResult::Changed => standby_task = None,
+      match boundary.apply(session, control, &mut delivered, &mut observe).await? {
+        BoundaryResult::Changed => standby.discard(),
         BoundaryResult::Interrupted => {
-          session.finish_run(RunOutcome::Interrupted)?;
-          notify_observers(session, &mut cursor, &mut observe)?;
-          return Ok(RunOutcome::Interrupted);
+          return finish_interrupted(session, &mut delivered, &mut observe);
         }
         BoundaryResult::Unchanged => {}
       }
     }
     session.collect_inputs()?;
-    notify_observers(session, &mut cursor, &mut observe)?;
-    if matches!(session.get_state(), SessionState::Ready { .. }) {
-      if let Some((reason, calibration, request, fixed)) =
-        super::compaction::check_compaction_reason(session, None)?
-      {
-        if let Some(outcome) = await_standby_task(
-          standby_task.take(),
-          session,
-          control,
-          &mut cursor,
-          &mut observe,
-        )
-        .await?
-        {
-          return Ok(outcome);
-        }
-        let outcome = super::compaction::cutover_compaction(
-          model_caller,
-          session,
-          control,
-          &mut cursor,
-          &mut observe,
-          reason,
-          calibration,
-          request,
-          fixed,
-        )
-        .await?;
-        if let Some(outcome) = outcome {
-          return Ok(outcome);
-        }
+    deliver_new_events(session, &mut delivered, &mut observe)?;
+    if matches!(session.get_state(), SessionState::Ready { .. })
+      && let Some(plan) = compaction::find_cutover(session, None)?
+    {
+      if let StandbyWait::Cancelled = standby.settle(session, &mut delivered, &mut observe).await? {
+        return finish_interrupted(session, &mut delivered, &mut observe);
+      }
+      let cutover =
+        compaction::cutover(model_caller, session, control, &mut delivered, &mut observe, plan);
+      if let Some(outcome) = cutover.await? {
+        return Ok(outcome);
       }
     }
     if control.is_cancelled() && matches!(session.get_state(), SessionState::Ready { .. }) {
-      standby_task = None;
+      standby.discard();
       session.finish_run(RunOutcome::Interrupted)?;
     }
     let action = session.advance()?;
-    notify_observers(session, &mut cursor, &mut observe)?;
-
-    if standby_task.is_none()
-      && session.get_config().compaction.is_some()
-      && !model_caller.supports_upstream_compaction()
-      && !control.is_cancelled()
-    {
-      if let Ok(Some(plan)) =
-        super::compaction::plan_standby_summary(model_caller, session, control).await
-      {
-        let started_at = Timestamp::now();
-        session.record_events(vec![(
-          started_at,
-          SessionEvent::CompactionSummaryStarted {
-            source_start: plan.start,
-            source_end: plan.end,
-            measurement: plan.measurement.clone(),
-          },
-        )])?;
-        notify_observers(session, &mut cursor, &mut observe)?;
-        standby_task = Some(Box::pin(super::compaction::execute_standby_summary(
-          model_caller,
-          control,
-          plan,
-        )));
-      }
-    }
+    deliver_new_events(session, &mut delivered, &mut observe)?;
+    standby.start_next(session, &mut delivered, &mut observe).await?;
 
     match action {
       SessionAction::Finished(outcome) => {
         // A standby summary still in flight never holds back new input: input queued meanwhile is
         // collected at once, and the summary goes on beside the next model call or tool batch.
-        if let (Some(task), SessionState::Idle) = (standby_task.as_mut(), session.get_state()) {
-          let mut arrivals = session.watch_input_arrivals();
-          let waited = if session.has_queued_input()? {
-            FinishedWait::Input
-          } else {
-            let cancelled = control.wait_for_cancellation();
-            let arrived = arrivals.changed();
-            pin_mut!(cancelled, arrived);
-            match select(task.as_mut(), select(cancelled, arrived)).await {
-              Either::Left((summary, _)) => FinishedWait::Summary(Box::new(summary)),
-              Either::Right((Either::Left(_), _)) => FinishedWait::Cancelled,
-              Either::Right((Either::Right(_), _)) => FinishedWait::Input,
-            }
-          };
-          match waited {
-            FinishedWait::Input => continue,
-            FinishedWait::Summary(summary) => {
-              settle_standby_summary(*summary, session, &mut cursor, &mut observe)?;
-              return Ok(outcome);
-            }
-            // Cancellation is settled below, as for a summary awaited without input in view.
-            FinishedWait::Cancelled => {}
-          }
-        }
-        if let Some(finished_outcome) = await_standby_task(
-          standby_task.take(),
-          session,
-          control,
-          &mut cursor,
-          &mut observe,
-        )
-        .await?
-        {
-          return Ok(finished_outcome);
-        }
-        return Ok(outcome);
+        return match standby.wait_after_finish(session, &mut delivered, &mut observe).await? {
+          StandbyWait::Input => continue,
+          StandbyWait::Settled => Ok(outcome),
+          StandbyWait::Cancelled => finish_interrupted(session, &mut delivered, &mut observe),
+        };
       }
       SessionAction::CallModel(request) => {
-        let ((result, observation), completed_summary) = if let Some(mut task) = standby_task.take() {
-          let (model_res, completed_summary) = {
-            let model_future = model::execute_model(
-              model_caller,
-              &request,
-              session,
-              control,
-              &mut cursor,
-              &mut observe,
-            );
-            pin_mut!(model_future);
-            let either = select(task.as_mut(), model_future.as_mut()).await;
-            match either {
-              Either::Left((summary_res, _)) => {
-                let model_res = model_future.await;
-                (model_res, Some(summary_res))
-              }
-              Either::Right((model_res, _)) => {
-                standby_task = Some(task);
-                (model_res, None)
-              }
-            }
-          };
-          (model_res?, completed_summary)
-        } else {
-          (
-            model::execute_model(
-              model_caller,
-              &request,
-              session,
-              control,
-              &mut cursor,
-              &mut observe,
-            )
-            .await?,
-            None,
-          )
-        };
-        if let Some(summary) = completed_summary {
-          match summary {
-            Ok(res) => {
-              let _ = super::compaction::commit_standby_summary(
-                session,
-                res,
-                &mut cursor,
-                &mut observe,
-              );
-            }
-            Err(super::compaction::Failure::Outcome(outcome)) => {
-              record_standby_failure(session, outcome, &mut cursor, &mut observe)?;
-            }
-            Err(super::compaction::Failure::Session(error)) => return Err(error),
-          }
+        let estimator = session.get_config().compaction.as_ref().map(|config| config.estimator);
+        let calling =
+          model::execute_model(model_caller, &request, control, estimator, &mut observe);
+        let ((result, observation), summary) = standby.beside(calling).await;
+        // Input queued during the call.
+        deliver_new_events(session, &mut delivered, &mut observe)?;
+        if let Some(summary) = summary {
+          summary.settle(session, &mut delivered, &mut observe)?;
         }
-
         let context_rejected = match &result {
           ModelResult::Complete(response) => {
-            response.stop_reason == crate::protocol::StopReason::ContextLengthExceeded
+            response.stop_reason == StopReason::ContextLengthExceeded
           }
           ModelResult::Failed(outcome) => outcome.is_context_length_exceeded(),
-          _ => false,
+          ModelResult::Interrupted(_) => false,
         };
         match result {
           ModelResult::Complete(response) => session.accept_response(response, observation)?,
@@ -379,88 +174,67 @@ async fn run_session(
         }
         if context_rejected && session.get_config().compaction.is_some() && !control.is_cancelled()
         {
-          if let Some(outcome) = await_standby_task(
-            standby_task.take(),
-            session,
-            control,
-            &mut cursor,
-            &mut observe,
-          )
-          .await?
+          if let StandbyWait::Cancelled =
+            standby.settle(session, &mut delivered, &mut observe).await?
           {
-            return Ok(outcome);
+            return finish_interrupted(session, &mut delivered, &mut observe);
           }
-          let previous = session.get_active_generation()?.id;
-          super::compaction::maintain(
-            model_caller,
-            session,
-            control,
-            &mut cursor,
-            &mut observe,
-            Some(crate::session::CompactionReason::ContextRejected),
-          )
-          .await?;
-          if session.get_active_generation()?.id != previous {
-            session.resume()?;
-          }
+          recover_context_rejection(model_caller, session, control, &mut delivered, &mut observe)
+            .await?;
         }
       }
       SessionAction::ExecuteTools(calls) => {
-        let completed_summary = if let Some(mut task) = standby_task.take() {
-          let (tool_res, completed_summary) = {
-            let tool_future = tool::execute_tools(
-              tool_executor,
-              session,
-              &calls,
-              control,
-              &mut cursor,
-              &mut observe,
-            );
-            pin_mut!(tool_future);
-            let either = select(task.as_mut(), tool_future.as_mut()).await;
-            match either {
-              Either::Left((summary_res, _)) => {
-                let tool_res = tool_future.await;
-                (tool_res, Some(summary_res))
-              }
-              Either::Right((tool_res, _)) => {
-                standby_task = Some(task);
-                (tool_res, None)
-              }
-            }
-          };
-          tool_res?;
-          completed_summary
-        } else {
-          tool::execute_tools(
-            tool_executor,
-            session,
-            &calls,
-            control,
-            &mut cursor,
-            &mut observe,
-          )
-          .await?;
-          None
-        };
-        if let Some(summary) = completed_summary {
-          match summary {
-            Ok(res) => {
-              let _ = super::compaction::commit_standby_summary(
-                session,
-                res,
-                &mut cursor,
-                &mut observe,
-              );
-            }
-            Err(super::compaction::Failure::Outcome(outcome)) => {
-              record_standby_failure(session, outcome, &mut cursor, &mut observe)?;
-            }
-            Err(super::compaction::Failure::Session(error)) => return Err(error),
-          }
+        let executing = tool::execute_tools(
+          tool_executor,
+          session,
+          &calls,
+          control,
+          &mut delivered,
+          &mut observe,
+        );
+        let (executed, summary) = standby.beside(executing).await;
+        executed?;
+        if let Some(summary) = summary {
+          summary.settle(session, &mut delivered, &mut observe)?;
         }
         session.complete_tools()?;
       }
     }
   }
+}
+
+/// Finishes the run as interrupted and delivers what that recorded.
+fn finish_interrupted(
+  session: &mut Session,
+  delivered: &mut u64,
+  observe: &mut (impl FnMut(&SessionEvent) + Send),
+) -> Result<RunOutcome, SessionError> {
+  session.finish_run(RunOutcome::Interrupted)?;
+  deliver_new_events(session, delivered, observe)?;
+  Ok(RunOutcome::Interrupted)
+}
+
+/// Compacts after the model rejected the context as too long. The failed call already finished
+/// the run; a new generation resumes it, otherwise that failure stands.
+async fn recover_context_rejection(
+  model_caller: &impl ModelCaller,
+  session: &mut Session,
+  control: &ExecutionControl,
+  delivered: &mut u64,
+  observe: &mut (impl FnMut(&SessionEvent) + Send),
+) -> Result<(), SessionError> {
+  let previous = session.get_active_generation()?.id;
+  compaction::force_cutover(
+    model_caller,
+    session,
+    control,
+    delivered,
+    observe,
+    CompactionReason::ContextRejected,
+  )
+  .await?;
+  if session.get_active_generation()?.id != previous {
+    session.resume()?;
+  }
+  Ok(())
 }

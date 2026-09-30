@@ -1,3 +1,5 @@
+//! One execution of a shell command: its shared state, stdin writes, termination, and the
+//! supervisor task that waits for the process, kills its group on request and records how it ended.
 use super::edit::{EditCapture, EditResult};
 use super::{KillMode, ShellError, platform::ProcessTree};
 use crate::executor::ExecutionControl;
@@ -117,14 +119,11 @@ impl Execution {
     };
     let mut interrupted = false;
     let mut timed_out = false;
-    tokio::select! {
-      biased;
-      _ = control.wait_for_cancellation() => interrupted = true,
-      result = tokio::time::timeout(self.write_timeout, writing) => match result {
-        Ok(Err(failure)) => error = Some(failure.to_string()),
-        Err(_) => timed_out = true,
-        Ok(Ok(())) => {},
-      }
+    match control.run_until_cancelled(tokio::time::timeout(self.write_timeout, writing)).await {
+      None => interrupted = true,
+      Some(Ok(Err(failure))) => error = Some(failure.to_string()),
+      Some(Err(_)) => timed_out = true,
+      Some(Ok(Ok(()))) => {}
     }
     WriteResult {
       accepted_bytes: accepted,

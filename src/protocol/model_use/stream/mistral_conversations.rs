@@ -27,6 +27,8 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use super::WireDecoder;
+use super::blocks::{LazyBlocks, end_blocks_in_order};
 use crate::protocol::error::Error;
 use crate::protocol::model_use::response::mistral_conversations as buffered;
 use crate::protocol::{BlockKind, StopReason, StreamEvent};
@@ -34,9 +36,8 @@ use crate::protocol::{BlockKind, StopReason, StreamEvent};
 /// Decodes one conversations stream.
 #[derive(Default)]
 pub struct Decoder {
-  next_index: u32,
-  text_block: Option<u32>,
-  reasoning_block: Option<u32>,
+  blocks: LazyBlocks,
+  /// `tool_call_id` -> our block index.
   tool_blocks: HashMap<String, u32>,
   saw_tool_use: bool,
   done: bool,
@@ -47,95 +48,22 @@ impl Decoder {
     Self::default()
   }
 
-  /// Feeds one SSE record: the payload's own `type`, or the event name when it carries none.
-  pub fn feed(&mut self, event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
-    if data.trim() == "[DONE]" {
-      return Ok(Vec::new());
-    }
-    if self.done {
-      return Err(Error::Malformed("event after the conversation ended".to_owned()));
-    }
-    let payload: Value = serde_json::from_str(data)
-      .map_err(|error| Error::Malformed(format!("conversation event is not JSON: {error}")))?;
-    let kind = payload.get("type").and_then(Value::as_str).or(event).unwrap_or("");
-    let mut out = Vec::new();
-    match kind {
-      "conversation.response.started" | "response.started" => {}
-      "message.output.delta" | "message.output" => {
-        if let Some(content) = payload.get("content").filter(|content| !content.is_null()) {
-          self.decode_content(content, &mut out)?;
-        }
-      }
-      "function.call.delta" | "function.call" => self.decode_function_call(&payload, &mut out)?,
-      "conversation.response.done" | "response.done" => {
-        if payload.get("usage").is_some_and(|usage| !usage.is_null()) {
-          out.push(StreamEvent::Usage(buffered::parse_usage(&payload)));
-        }
-        out.extend(self.finish());
-      }
-      "conversation.response.error" | "response.error" => {
-        let code = payload.get("code").map(|code| match code {
-          Value::String(code) => code.clone(),
-          other => other.to_string(),
-        });
-        return Err(Error::from_in_band(
-          code,
-          payload
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("upstream reported an error without a message")
-            .to_owned(),
-        ));
-      }
-      _ => {}
-    }
-    Ok(out)
-  }
-
   /// Closes every open block in index order, then stops the turn.
-  fn finish(&mut self) -> Vec<StreamEvent> {
+  fn terminate(&mut self) -> Vec<StreamEvent> {
     self.done = true;
-    let mut indices: Vec<u32> = self.tool_blocks.values().copied().collect();
-    indices.extend(self.text_block);
-    indices.extend(self.reasoning_block);
-    indices.sort_unstable();
+    let mut out = Vec::new();
+    let indices = self.tool_blocks.values().copied().chain(self.blocks.get_opened()).collect();
+    end_blocks_in_order(indices, &mut out);
     let stop = if self.saw_tool_use { StopReason::ToolUse } else { StopReason::Stop };
-    indices
-      .into_iter()
-      .map(|index| StreamEvent::BlockEnd { index })
-      .chain([StreamEvent::Stop(stop)])
-      .collect()
+    out.push(StreamEvent::Stop(stop));
+    out
   }
 
   /// One `content` delta: a plain string, or a chunk list carrying text and thoughts.
   fn decode_content(&mut self, content: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
     match content {
-      Value::String(text) => self.emit_text_delta(text, out),
-      Value::Array(chunks) => {
-        for chunk in chunks {
-          if buffered::get_chunk_type(chunk) == Some("text") {
-            if let Some(text) = chunk.get("text").and_then(Value::as_str) {
-              self.emit_text_delta(text, out);
-            }
-            continue;
-          }
-          if !buffered::is_thinking(chunk) {
-            continue;
-          }
-          let parts = chunk.get("thinking").and_then(Value::as_array).ok_or_else(|| {
-            Error::Malformed("`thinking` chunk carries no `thinking` list".to_owned())
-          })?;
-          for part in parts {
-            let Some(text) =
-              part.get("text").and_then(Value::as_str).filter(|text| !text.is_empty())
-            else {
-              continue;
-            };
-            let index = self.open_reasoning(out);
-            out.push(StreamEvent::ReasoningDelta { index, delta: text.to_owned() });
-          }
-        }
-      }
+      Value::String(text) => self.blocks.push_text(text, out),
+      Value::Array(chunks) => self.blocks.push_chunks(chunks, out)?,
       _ => {
         return Err(Error::Malformed(
           "`content` delta is neither a string nor a chunk list".to_owned(),
@@ -157,11 +85,9 @@ impl Decoder {
     let index = match self.tool_blocks.get(call_id) {
       Some(index) => *index,
       None => {
-        let index = self.next_index;
-        self.next_index += 1;
+        let index = self.blocks.counter.open(BlockKind::ToolUse, out);
         self.tool_blocks.insert(call_id.to_owned(), index);
         self.saw_tool_use = true;
-        out.push(StreamEvent::BlockStart { index, kind: BlockKind::ToolUse });
         index
       }
     };
@@ -177,35 +103,53 @@ impl Decoder {
     });
     Ok(())
   }
+}
 
-  /// One text delta, ignoring the empty ones a chunk list is full of.
-  fn emit_text_delta(&mut self, text: &str, out: &mut Vec<StreamEvent>) {
-    if text.is_empty() {
-      return;
+impl WireDecoder for Decoder {
+  /// Feeds one SSE record: the payload's own `type`, or the event name when it carries none.
+  fn feed(&mut self, event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
+    if data.trim() == "[DONE]" {
+      return Ok(Vec::new());
     }
-    let index = self.open_text(out);
-    out.push(StreamEvent::TextDelta { index, delta: text.to_owned() });
-  }
-
-  fn open_text(&mut self, out: &mut Vec<StreamEvent>) -> u32 {
-    if let Some(index) = self.text_block {
-      return index;
+    if self.done {
+      return Err(Error::Malformed("event after the conversation ended".to_owned()));
     }
-    let index = self.next_index;
-    self.next_index += 1;
-    self.text_block = Some(index);
-    out.push(StreamEvent::BlockStart { index, kind: BlockKind::Text });
-    index
-  }
-
-  fn open_reasoning(&mut self, out: &mut Vec<StreamEvent>) -> u32 {
-    if let Some(index) = self.reasoning_block {
-      return index;
+    let payload: Value = serde_json::from_str(data)
+      .map_err(|error| Error::Malformed(format!("conversation event is not JSON: {error}")))?;
+    let kind = payload.get("type").and_then(Value::as_str).or(event).unwrap_or("");
+    let mut out = Vec::new();
+    match kind {
+      "conversation.response.started" | "response.started" => {}
+      "message.output.delta" | "message.output" => {
+        if let Some(content) = payload.get("content").filter(|content| !content.is_null()) {
+          self.decode_content(content, &mut out)?;
+        }
+      }
+      "function.call.delta" | "function.call" => self.decode_function_call(&payload, &mut out)?,
+      "conversation.response.done" | "response.done" => {
+        if payload.get("usage").is_some_and(|usage| !usage.is_null()) {
+          out.push(StreamEvent::Usage(buffered::decode_usage(&payload)));
+        }
+        out.extend(self.terminate());
+      }
+      "conversation.response.error" | "response.error" => {
+        // The code may come as a number, so whatever value it is is kept as text, unlike the
+        // string codes the other in-band errors are read with.
+        let code = payload.get("code").map(|code| match code {
+          Value::String(code) => code.clone(),
+          other => other.to_string(),
+        });
+        return Err(Error::from_in_band(
+          code,
+          payload
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("upstream reported an error without a message")
+            .to_owned(),
+        ));
+      }
+      _ => {}
     }
-    let index = self.next_index;
-    self.next_index += 1;
-    self.reasoning_block = Some(index);
-    out.push(StreamEvent::BlockStart { index, kind: BlockKind::Reasoning });
-    index
+    Ok(out)
   }
 }

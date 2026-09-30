@@ -4,17 +4,17 @@
 
 | Variant | Meaning |
 | --- | --- |
-| `Build(String)` | a request we will not render or dispatch |
+| `Build(String)` | a request we will not render or build a call for |
 | `Unsupported { feature, subject, reason }` | a feature asked of a client or protocol that does not carry it |
 | `Malformed(String)` | a payload that does not fit its wire |
 | `Upstream { status, code, message, retry_after_ms }` | a failure the service reported; `status: None` for a refusal inside a `2xx` |
 | `Transport(TransportFailure)` | a failure of the attempt itself; `TransportFailure.retryable` carries the judgment |
-| `Renewal { expires_at }` | the credential had already expired when the call was dispatched, so nothing was sent |
+| `Renewal { expires_at }` | the credential had already expired when the call was built, so nothing was sent |
 
 `Error` is `Serialize`/`Deserialize`, so it is stored in `RunOutcome::Failed` and
 `IncompleteReason::Failed`. Nothing is judged twice. The transport reports the attempt's phase and
 whether another attempt is safe. A dialect or `http_error.rs` reports what the payload said.
-`dispatch` reports `Build` and `Renewal`. `Error::is_retryable` is the single retry verdict, which
+`Endpoint::build_call` reports `Build` and `Renewal`. `Error::is_retryable` is the single retry verdict, which
 the [client](../client.md#retry) spends.
 
 One call, with every place an error can leave it:
@@ -24,7 +24,7 @@ One call, with every place an error can leave it:
   a client     a feature the protocol does not carry    never worth a retry
      │
   Request ─────────┐
-  Outbound ×       ├─(1) render, resolve, dispatch ────▶  Error::Build / Error::Renewal
+  Endpoint ×       ├─(1) render, resolve, build_call ──▶  Error::Build / Error::Renewal
   Credentials ─────┘                                     we cannot render or prove this request
                      │  a Call
                      ▼
@@ -65,10 +65,8 @@ the payload says the service refused (`Upstream` with no status to blame).
 before a stream's first event. `retry-after` is parsed as delta-seconds or an HTTP date and capped
 at one hour.
 
-Two more predicates classify an error for the layers above:
+One more predicate classifies an error for the layers above:
 
-- `needs_renewal()`: `Renewal`, a 401, or a 403 with an AWS credential code (`ExpiredToken`,
-  `InvalidAccessKeyId`, `UnrecognizedClientException`).
 - `is_context_length_exceeded()`: known codes (`context_length_exceeded`,
   `model_context_window_exceeded`, `prompt_too_long`) or known messages on a 400/413/in-band error.
   The executor uses it to trigger [compaction](../compaction.md) on explicit context rejection.

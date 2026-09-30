@@ -1,10 +1,12 @@
-//! Browser authorization for the Codex subscription preset.
+//! Browser authorization for the Codex subscription preset: the login attempt, the callback the
+//! browser returns to (or the redirect a person pastes back), and the worker that renews the
+//! tokens before they run out. The token exchanges themselves are [`codex_oauth`]'s.
 
-use crate::protocol::outbound::oauth;
-use crate::protocol::outbound::{AuthProtocol, Credentials, Draft, Outbound, Tokens};
-use crate::protocol::wire::{Method, Transport};
+use crate::protocol::endpoint::codex_oauth;
+use crate::protocol::endpoint::{Credentials, Tokens};
 use crate::server::{app::App, error::ApiError};
 use crate::transport::{Proxy, ReqwestTransport};
+use crate::utils::time::unix_seconds;
 use axum::{
   Json, Router,
   extract::{Path, Query, State},
@@ -19,7 +21,7 @@ use sha2::{Digest, Sha256};
 use std::{
   collections::HashMap,
   sync::Arc,
-  time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+  time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -67,15 +69,12 @@ pub async fn start(
   State(app): State<Arc<App>>,
   Path(provider_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-  app.require_open()?;
+  app.lifecycle.require_open()?;
   let provider = app.get_provider(&provider_id)?;
-  if provider.config.preset.as_deref() != Some("openai_codex") {
+  if !provider.config.is_codex() {
     return Err(ApiError::bad_request("ChatGPT login is available only for the Codex preset"));
   }
-  let proxy = {
-    let config = app.configuration.lock().await;
-    config.config.proxy.policy(provider.config.proxy_enabled)
-  };
+  let proxy = app.config_file.lock().await.config.proxy.policy(provider.config.proxy_enabled);
   let mut current = app.codex_login.attempt.lock().await;
   if let Some(previous) = current.take() {
     previous.grant.end.cancel();
@@ -86,13 +85,13 @@ pub async fn start(
   let state = uuid::Uuid::new_v4().to_string();
   let verifier = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
   let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-  let issuer = issuer();
+  let issuer = codex_oauth::issuer();
   let mut url =
     reqwest::Url::parse(&format!("{issuer}/oauth/authorize")).map_err(ApiError::internal)?;
   url
     .query_pairs_mut()
     .append_pair("response_type", "code")
-    .append_pair("client_id", oauth::CLIENT_ID)
+    .append_pair("client_id", codex_oauth::CLIENT_ID)
     .append_pair("redirect_uri", &redirect_uri)
     .append_pair(
       "scope",
@@ -106,14 +105,7 @@ pub async fn start(
     .append_pair("originator", "codex_cli_rs");
   let attempt_id = uuid::Uuid::new_v4().to_string();
   let end = CancellationToken::new();
-  let grant = LoginGrant {
-    state,
-    verifier,
-    redirect_uri,
-    issuer,
-    proxy,
-    end: end.clone(),
-  };
+  let grant = LoginGrant { state, verifier, redirect_uri, issuer, proxy, end: end.clone() };
   *current = Some(LoginAttempt {
     id: attempt_id.clone(),
     provider: provider_id.clone(),
@@ -130,9 +122,9 @@ pub async fn start(
     provider: provider_id,
   });
   let router = Router::new().route("/auth/callback", get(callback)).with_state(context);
-  let shutdown = app.stop.clone();
+  let shutdown = app.lifecycle.stop.clone();
   let worker_app = Arc::clone(&app);
-  app.tasks.spawn(async move {
+  app.lifecycle.tasks.spawn(async move {
     let _ = axum::serve(listener, router)
       .with_graceful_shutdown(async move {
         tokio::select! {
@@ -152,7 +144,7 @@ pub async fn status(
   Path(provider_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
   let provider = app.get_provider(&provider_id)?;
-  if provider.config.preset.as_deref() != Some("openai_codex") {
+  if !provider.config.is_codex() {
     return Err(ApiError::bad_request("ChatGPT login is available only for the Codex preset"));
   }
   let attempt = app.codex_login.attempt.lock().await;
@@ -169,7 +161,7 @@ pub async fn complete(
   Path(provider_id): Path<String>,
   Json(input): Json<CallbackUrl>,
 ) -> Result<Json<Value>, ApiError> {
-  app.require_open()?;
+  app.lifecycle.require_open()?;
   let (id, grant) = {
     let attempt = app.codex_login.attempt.lock().await;
     let current = attempt.as_ref().filter(|a| a.provider == provider_id).ok_or_else(|| {
@@ -195,40 +187,26 @@ pub async fn complete(
   let mut state = None;
   let mut code = None;
   for (name, value) in url.query_pairs() {
-    if name == "state" {
-      if state.replace(value.into_owned()).is_some() {
-        return Err(ApiError::bad_request("redirect URL has duplicate state"));
-      }
-    } else if name == "code" {
-      if code.replace(value.into_owned()).is_some() {
-        return Err(ApiError::bad_request("redirect URL has duplicate code"));
-      }
+    let (seen, name) = match name.as_ref() {
+      "state" => (&mut state, "state"),
+      "code" => (&mut code, "code"),
+      _ => continue,
+    };
+    if seen.replace(value.into_owned()).is_some() {
+      return Err(ApiError::bad_request(format!("redirect URL has duplicate {name}")));
     }
   }
   if state.as_deref() != Some(grant.state.as_str()) {
     return Err(ApiError::bad_request("authorization state did not match"));
   }
-  let code = code.filter(|value| !value.is_empty()).ok_or_else(|| {
-    ApiError::bad_request("redirect URL contains no authorization code")
-  })?;
+  let code = code
+    .filter(|value| !value.is_empty())
+    .ok_or_else(|| ApiError::bad_request("redirect URL contains no authorization code"))?;
   if !app.codex_login.claim(&id).await {
     return Err(ApiError::conflict("login attempt is no longer pending"));
   }
-  let result = match exchange_code(&grant, &code).await {
-    Ok(tokens) => app.codex_login.persist_if_active(&app, &id, &provider_id, &tokens).await,
-    Err(error) => Err(error),
-  };
-  grant.end.cancel();
-  match result {
-    Ok(()) => {
-      app.codex_login.finish(&id, "complete", None).await;
-      Ok(Json(json!({"status":"complete"})))
-    }
-    Err(error) => {
-      app.codex_login.finish(&id, "failed", Some(error.to_string())).await;
-      Err(error)
-    }
-  }
+  app.codex_login.redeem(&app, &id, &grant, &provider_id, &code).await?;
+  Ok(Json(json!({"status":"complete"})))
 }
 
 impl LoginManager {
@@ -245,6 +223,28 @@ impl LoginManager {
     true
   }
 
+  /// Exchanges the authorization code a claimed attempt brought back for tokens, saves them, and
+  /// ends the attempt with how that went.
+  async fn redeem(
+    &self,
+    app: &App,
+    id: &str,
+    grant: &LoginGrant,
+    provider: &str,
+    code: &str,
+  ) -> Result<(), ApiError> {
+    let result = match exchange_code(grant, code).await {
+      Ok(tokens) => self.persist_if_active(app, id, provider, &tokens).await,
+      Err(error) => Err(error),
+    };
+    match &result {
+      Ok(()) => self.finish(id, "complete", None).await,
+      Err(error) => self.finish(id, "failed", Some(error.to_string())).await,
+    }
+    grant.end.cancel();
+    result
+  }
+
   async fn persist_if_active(
     &self,
     app: &App,
@@ -256,12 +256,14 @@ impl LoginManager {
     if !attempt.as_ref().is_some_and(|a| a.id == id && a.status == "processing") {
       return Err(ApiError::conflict("login attempt was replaced"));
     }
-    app.persist_codex_credentials(provider, &Credentials::default().renew(tokens)).await
+    save_credentials(app, provider, &Credentials::default().renew(tokens)).await
   }
 
   async fn finish(&self, id: &str, status: &'static str, error: Option<String>) {
     let mut attempt = self.attempt.lock().await;
-    if let Some(current) = attempt.as_mut().filter(|a| a.id == id && (a.status == "pending" || a.status == "processing")) {
+    if let Some(current) =
+      attempt.as_mut().filter(|a| a.id == id && (a.status == "pending" || a.status == "processing"))
+    {
       current.status = status;
       current.error = error;
     }
@@ -287,14 +289,6 @@ async fn bind_callback() -> Result<tokio::net::TcpListener, ApiError> {
   Err(ApiError::conflict("Codex login callback ports 1455 and 1457 are unavailable"))
 }
 
-fn issuer() -> String {
-  #[cfg(debug_assertions)]
-  if let Ok(value) = std::env::var("WISH_TEST_CODEX_ISSUER") {
-    return value.trim_end_matches('/').to_owned();
-  }
-  oauth::ISSUER.to_owned()
-}
-
 async fn callback(
   State(context): State<Arc<Callback>>,
   Query(query): Query<HashMap<String, String>>,
@@ -313,48 +307,28 @@ async fn callback(
   if !context.app.codex_login.claim(&context.attempt_id).await {
     return (StatusCode::CONFLICT, Html("Login attempt is no longer active")).into_response();
   }
-  let result = match exchange_code(&context.grant, code).await {
-    Ok(tokens) => context.app.codex_login.persist_if_active(&context.app, &context.attempt_id, &context.provider, &tokens).await,
-    Err(error) => Err(error),
-  };
-  match result {
-    Ok(()) => {
-      context.app.codex_login.finish(&context.attempt_id, "complete", None).await;
-      context.grant.end.cancel();
-      Html("<meta charset=\"utf-8\"><h1>ChatGPT 登录成功</h1><p>可以返回 Wish。</p><script>window.close()</script>").into_response()
-    }
-    Err(error) => {
-      context.app.codex_login.finish(&context.attempt_id, "failed", Some(error.to_string())).await;
-      context.grant.end.cancel();
-      (StatusCode::BAD_GATEWAY, Html("ChatGPT login failed; return to Wish for details"))
-        .into_response()
-    }
+  let redeemed = context
+    .app
+    .codex_login
+    .redeem(&context.app, &context.attempt_id, &context.grant, &context.provider, code)
+    .await;
+  match redeemed {
+    Ok(()) => Html("<meta charset=\"utf-8\"><h1>ChatGPT 登录成功</h1><p>可以返回 Wish。</p><script>window.close()</script>").into_response(),
+    Err(_) => (StatusCode::BAD_GATEWAY, Html("ChatGPT login failed; return to Wish for details"))
+      .into_response(),
   }
 }
 
 async fn exchange_code(grant: &LoginGrant, code: &str) -> Result<Tokens, ApiError> {
   let transport = ReqwestTransport::new(Default::default(), grant.proxy.clone())?;
-  let mut form = reqwest::Url::parse("https://form.invalid/").map_err(ApiError::internal)?;
-  form
-    .query_pairs_mut()
-    .append_pair("grant_type", "authorization_code")
-    .append_pair("client_id", oauth::CLIENT_ID)
-    .append_pair("code", code)
-    .append_pair("redirect_uri", &grant.redirect_uri)
-    .append_pair("code_verifier", &grant.verifier);
-  let target = Outbound::new(&grant.issuer, "/oauth/token", AuthProtocol::None)?;
-  let call = target.dispatch(
-    Draft {
-      method: Method::Post,
-      path: None,
-      query: Vec::new(),
-      headers: vec![("content-type".to_owned(), "application/x-www-form-urlencoded".to_owned())],
-      body: form.query().unwrap_or_default().as_bytes().to_vec(),
-    },
-    &Credentials::default(),
-    0,
-  )?;
-  let reply = transport.execute(&call).await?;
+  let reply = codex_oauth::post_authorization_code(
+    &transport,
+    &grant.issuer,
+    code,
+    &grant.redirect_uri,
+    &grant.verifier,
+  )
+  .await?;
   if !reply.is_success() {
     return Err(ApiError::bad_request(format!(
       "ChatGPT token exchange returned HTTP {}",
@@ -362,20 +336,52 @@ async fn exchange_code(grant: &LoginGrant, code: &str) -> Result<Tokens, ApiErro
     )));
   }
   let body: Value = serde_json::from_slice(&reply.body).map_err(ApiError::internal)?;
-  let tokens = oauth::decode_tokens(&body)?;
+  let tokens = codex_oauth::decode_tokens(&body)?;
   if tokens.account_id.as_deref().unwrap_or_default().is_empty() {
     return Err(ApiError::bad_request("ChatGPT login did not return a Codex account ID"));
   }
   Ok(tokens)
 }
 
+/// Replaces one Codex provider's OAuth material through a configuration save, without it passing
+/// through the configuration API. When another save lands first, it tries again on top of that one.
+async fn save_credentials(app: &App, id: &str, credentials: &Credentials) -> Result<(), ApiError> {
+  for _ in 0..3 {
+    let (revision, mut next) = {
+      let current = app.config_file.lock().await;
+      (current.revision.clone(), current.config.clone())
+    };
+    let provider = next.providers.get_mut(id).ok_or_else(ApiError::not_found)?;
+    if !provider.is_codex() {
+      return Err(ApiError::bad_request("provider is not an OpenAI Codex preset"));
+    }
+    provider.api_key = Some(credentials.api_key.clone());
+    provider.api_key_env = None;
+    if let Some(refresh_token) = &credentials.refresh_token {
+      provider.refresh_token = Some(refresh_token.clone());
+    }
+    provider.expires_at = credentials.expires_at;
+    if let Some(account_id) = &credentials.account_id {
+      provider.credentials.insert("account_id".to_owned(), account_id.clone());
+      provider.credentials_env.remove("account_id");
+    }
+    let value = serde_json::to_value(next).map_err(ApiError::internal)?;
+    match app.save_config(revision, value).await {
+      Ok(_) => return Ok(()),
+      Err(error) if error.status == StatusCode::CONFLICT => continue,
+      Err(error) => return Err(error),
+    }
+  }
+  Err(ApiError::conflict("configuration kept changing during Codex login"))
+}
+
 pub fn start_refresh_worker(app: &Arc<App>) {
   let worker = Arc::clone(app);
-  app.tasks.spawn(async move {
+  app.lifecycle.tasks.spawn(async move {
     loop {
       refresh_due(&worker).await;
       tokio::select! {
-        _ = worker.stop.cancelled() => break,
+        _ = worker.lifecycle.stop.cancelled() => break,
         _ = tokio::time::sleep(Duration::from_secs(60)) => {},
       }
     }
@@ -383,23 +389,21 @@ pub fn start_refresh_worker(app: &Arc<App>) {
 }
 
 async fn refresh_due(app: &Arc<App>) {
-  let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+  let now = unix_seconds();
   let due: Vec<_> = app
-    .providers
-    .read()
-    .unwrap()
-    .iter()
-    .filter(|(_, provider)| {
-      provider.config.preset.as_deref() == Some("openai_codex")
+    .get_providers()
+    .into_values()
+    .filter(|provider| {
+      provider.config.is_codex()
         && provider.config.refresh_token.as_deref().is_some_and(|token| !token.is_empty())
         && provider.config.expires_at.is_some_and(|expires| expires <= now + REFRESH_MARGIN)
     })
-    .map(|(id, provider)| (id.clone(), Arc::clone(provider)))
     .collect();
-  for (id, provider) in due {
+  for provider in due {
+    let id = &provider.id;
     match provider.client.refresh_credentials().await {
       Ok(tokens) => {
-        if let Err(error) = app.persist_codex_credentials(&id, &tokens).await {
+        if let Err(error) = save_credentials(app, id, &tokens).await {
           eprintln!("Codex token refresh for {id} could not be saved: {error}");
         }
       }

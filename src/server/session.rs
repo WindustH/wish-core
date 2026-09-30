@@ -1,26 +1,45 @@
+//! Open sessions. A `SessionSlot` holds one while the server runs: the engine's session behind a
+//! lock, a sender and a reader beside it, and the descriptor - the application's own record of the session:
+//! its name, provider, working directory and tool switches. The descriptor and the session's
+//! status together are its index record, which the session list reads.
+//!
+//! - `run` starts, schedules and interrupts operations, and runs them;
+//! - `status` keeps the status the API reports, and turns engine events into web events;
+//! - `selection` changes provider and model, now or at an operation's next boundary;
+//! - `tools` holds the built-in tools and the switches that decide which a session has.
 mod live;
+mod run;
 pub mod selection;
+mod status;
 mod tools;
-use crate::server::{config::ShellSettings, error::ApiError, provider::Provider};
-use crate::{
-  executor::{self, ExecutionControl},
-  protocol::StreamEvent,
-  session::{
-    Entry, EntryId, Generation, HistoryReader, RunOutcome, Session, SessionConfig, SessionEvent,
-    SessionHandle,
-    statistics::{ModelCallPurpose, ModelCallRecord, ModelCallStatus},
-  },
-  storage::ReadList,
-  tool::{
-    shell::{ShellCommand, ShellConfig},
-    view_image::ViewImageTool,
-  },
+
+pub use run::Operation;
+pub use status::web_event;
+pub use tools::{ToolChanges, ToolSwitches};
+
+use crate::server::{
+  app::App,
+  config::ShellSettings,
+  error::{ApiError, blocking},
+  management::ManagementStore,
 };
+use crate::{
+  executor::ExecutionControl,
+  protocol::Message,
+  session::{EntryId, Session, SessionConfig, SessionReader, SessionSender},
+  tool::shell::{ShellCommand, ShellConfig},
+  utils::time::Timestamp,
+};
+use axum::http::HeaderValue;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use status::SessionStatus;
 use std::{
   path::PathBuf,
-  sync::{Arc, Mutex, RwLock},
+  sync::{
+    Arc, Mutex, RwLock, Weak,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+  },
 };
 use tokio::sync::{Mutex as AsyncMutex, broadcast};
 use tools::SessionTools;
@@ -28,26 +47,28 @@ use tools::SessionTools;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
+  /// A provider and config chosen while an operation ran, applied at its next boundary.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub pending_selection: Option<selection::PendingSelection>,
   pub name: String,
   pub updated_at: u64,
+  /// Advanced by every edit through `edit_descriptor`, which an `If-Match` header names.
   pub revision: u64,
   pub id: String,
   pub provider: String,
   pub cwd: PathBuf,
   /// Which optional built-in tools the session has.
-  pub tools: crate::server::config::ToolSwitches,
+  pub tools: ToolSwitches,
   /// This session's own shell; absent while it follows the application's.
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  pub shell_command: Option<ShellSettings>,
+  #[serde(rename = "shell_command", default, skip_serializing_if = "Option::is_none")]
+  pub shell_override: Option<ShellSettings>,
   pub created_at: u64,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSession {
   #[serde(default)]
-  pub initial_messages: Vec<crate::protocol::Message>,
+  pub initial_messages: Vec<Message>,
   /// Where each initial message came from, when it came from another session (a fork); missing
   /// origins are `Imported`.
   #[serde(skip)]
@@ -57,49 +78,51 @@ pub struct CreateSession {
   pub provider: String,
   pub config: SessionConfig,
   pub cwd: PathBuf,
-  /// Optional tools to switch from the API defaults: no shell, `ask_user` on.
+  /// Optional tools to switch from the API defaults: no shell and no web search, `ask_user` and
+  /// MCP on.
   #[serde(default)]
-  pub tools: crate::server::config::ToolChanges,
+  pub tools: ToolChanges,
   #[serde(default)]
   pub metadata: Value,
 }
 
 pub struct SessionSlot {
-  pub descriptor: RwLock<Descriptor>,
-  pub index: Arc<crate::server::management::ManagementStore>,
-  pub global_events: broadcast::Sender<Value>,
-  pub auto_run_generation: std::sync::atomic::AtomicU64,
-  pub deleted: std::sync::atomic::AtomicBool,
+  descriptor: RwLock<Descriptor>,
+  management: Arc<ManagementStore>,
+  /// The application's events, where the session list hears of changes.
+  global_events: broadcast::Sender<Value>,
+  /// Advanced by every interrupt: a run scheduled before one does not start after it.
+  schedule_epoch: AtomicU64,
+  deleted: AtomicBool,
   pub session: Arc<AsyncMutex<Session>>,
-  pub selection_edit: Arc<AsyncMutex<()>>,
-  pub handle: SessionHandle,
-  pub history: HistoryReader,
-  pub entries: ReadList<Entry>,
-  pub generations: ReadList<Generation>,
-  pub calls: ReadList<ModelCallRecord>,
-  pub queue: Mutex<ReadList<EntryId>>,
+  /// Serializes descriptor edits, which never wait for an operation.
+  pub update_lock: Arc<AsyncMutex<()>>,
+  /// Queues input while an operation holds the session.
+  pub sender: SessionSender,
+  /// Reads the session's history and lists while an operation holds it.
+  pub reader: SessionReader,
   pub tools: SessionTools,
   /// The command this session's shell tool starts, whether or not the tool is on.
-  pub shell_command: Arc<RwLock<ShellCommand>>,
-  pub image_dir: PathBuf,
+  effective_shell: Arc<RwLock<ShellCommand>>,
+  /// The session's blobs, where its images are saved.
+  image_dir: PathBuf,
   /// What this session's shell shows the MCP bridge; made anew each time the session opens, since
   /// its shells do not outlive the process.
   pub mcp_token: String,
   tasks: tokio_util::task::TaskTracker,
-  app: std::sync::Weak<crate::server::app::App>,
+  app: Weak<App>,
+  /// This session's live events, for `GET /sessions/{id}/events`.
   pub events: broadcast::Sender<Value>,
   live: Mutex<live::LivePreview>,
-  pub status: Mutex<Value>,
-  pub control: Mutex<Option<ExecutionControl>>,
+  status: Mutex<SessionStatus>,
+  /// The running operation's, while one runs.
+  control: Mutex<Option<ExecutionControl>>,
 }
 impl SessionSlot {
   pub async fn open(
+    app: &Arc<App>,
     descriptor: Descriptor,
     mut session: Session,
-    data_dir: PathBuf,
-    index: Arc<crate::server::management::ManagementStore>,
-    global_events: broadcast::Sender<Value>,
-    app: std::sync::Weak<crate::server::app::App>,
   ) -> Result<Arc<Self>, ApiError> {
     if !session.get_state().is_stable() {
       session.settle_interrupted().map_err(ApiError::internal)?;
@@ -107,358 +130,132 @@ impl SessionSlot {
     // A session's own shell wins; otherwise it starts from the application's and
     // follows later saves (see `follow_global_shell`). An override that no longer
     // resolves (the program was removed) falls back to the application's.
-    let shell_command = {
-      let global = app.upgrade().map_or_else(ShellCommand::platform_default, |app| {
-        app.shell.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
-      });
-      let own = descriptor.shell_command.as_ref().and_then(|settings| settings.resolve().ok());
-      Arc::new(RwLock::new(own.unwrap_or(global)))
-    };
-    let mut shell_config =
-      ShellConfig::new(&descriptor.cwd, data_dir.join("shell").join(&descriptor.id));
-    shell_config.command = Arc::clone(&shell_command);
+    let own = descriptor.shell_override.as_ref().and_then(|settings| settings.resolve().ok());
+    let effective_shell =
+      Arc::new(RwLock::new(own.unwrap_or_else(|| app.shell.read().unwrap().clone())));
+    let mut shell_config = ShellConfig::new(&descriptor.cwd, app.data_dir.shell(&descriptor.id));
+    shell_config.command = Arc::clone(&effective_shell);
     let mcp_token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
     // Set whether or not MCP is on: the bridge checks the switch, and the environment stays as it is.
-    if let Some(app) = app.upgrade() {
-      shell_config.env.extend(app.get_mcp_environment(&descriptor.id, &mcp_token));
-    }
-    let image_dir = std::path::absolute(data_dir.join("blobs").join(&descriptor.id))
-      .map_err(ApiError::internal)?;
-    let tasks = app.upgrade().expect("session application is alive").tasks.clone();
-    let tools = SessionTools::new(
-      shell_config,
-      &session,
-      app.clone(),
-      descriptor.id.clone(),
-      image_dir.clone(),
-    );
-    tools.switch(descriptor.tools).await?;
-    let status = Mutex::new(snapshot(&session));
+    shell_config.env.extend(app.mcp.bridge.shell_environment(&descriptor.id, &mcp_token));
+    let image_dir =
+      std::path::absolute(app.data_dir.blobs(&descriptor.id)).map_err(ApiError::internal)?;
+    let switches = descriptor.tools;
+    let status = Mutex::new(SessionStatus::read(&session));
     let (events, _) = broadcast::channel(256);
-    Ok(Arc::new(Self {
+    let slot = Arc::new_cyclic(|slot| Self {
+      tools: SessionTools::new(slot.clone(), shell_config, &session, &descriptor.id),
       descriptor: RwLock::new(descriptor),
-      index,
-      global_events,
-      auto_run_generation: std::sync::atomic::AtomicU64::new(0),
-      deleted: std::sync::atomic::AtomicBool::new(false),
-      handle: session.create_handle(),
-      history: session.create_history_reader(),
-      entries: session.get_entries(),
-      generations: session.get_generations(),
-      calls: session.get_model_calls(),
-      queue: Mutex::new(session.get_message_queue()),
+      management: app.management.clone(),
+      global_events: app.events.clone(),
+      schedule_epoch: AtomicU64::new(0),
+      deleted: AtomicBool::new(false),
+      sender: session.create_sender(),
+      reader: session.reader().clone(),
       session: Arc::new(AsyncMutex::new(session)),
-      selection_edit: Arc::new(AsyncMutex::new(())),
-      tools,
-      shell_command,
+      update_lock: Arc::new(AsyncMutex::new(())),
+      effective_shell,
       image_dir,
       mcp_token,
-      tasks,
-      app,
+      tasks: app.lifecycle.tasks.clone(),
+      app: Arc::downgrade(app),
       events,
       live: Mutex::new(live::LivePreview::default()),
       status,
       control: Mutex::new(None),
-    }))
-  }
-  pub fn configure_tools(&self, mut config: SessionConfig) -> Result<SessionConfig, ApiError> {
-    let switches = self.descriptor.read().unwrap().tools;
-    for tool in &config.tools {
-      let is_valid = match tool.name.as_str() {
-        "view_image" | "history_search" | "history_read" | "history_query" => true,
-        "shell_start" | "shell_edit" | "shell_poll" | "shell_write" | "shell_kill" => {
-          switches.shell
-        }
-        "ask_user" => switches.ask_user,
-        _ => false,
-      };
-      if !is_valid {
-        return Err(ApiError::bad_request(format!("no executor for tool {}", tool.name)));
-      }
-    }
-    config.tools.clear();
-    config.tools.extend(self.tools.get_history_specifications());
-    config.tools.push(ViewImageTool.get_specification());
-    if switches.shell
-      && let Some(shell) = self.tools.shell()
-    {
-      let mut specifications = shell.get_specifications();
-      for specification in &mut specifications {
-        if specification.name == "shell_start" {
-          specification.description.push_str(crate::server::mcp::SHELL_NOTE);
-        }
-      }
-      config.tools.extend(specifications);
-    }
-    if switches.ask_user {
-      config.tools.push(self.tools.ask_user.get_specification());
-    }
-    Ok(config)
-  }
-  /// Turns optional tools on or off; the caller then reinstalls the session's tool list.
-  pub async fn switch_tools(
-    &self,
-    changes: crate::server::config::ToolChanges,
-  ) -> Result<(), ApiError> {
-    let previous = self.descriptor.read().unwrap().tools;
-    let next = previous.with(changes);
-    self.tools.switch(next).await?;
-    self.descriptor.write().unwrap().tools = next;
-    if previous.mcp
-      && !next.mcp
-      && let Some(app) = self.app.upgrade()
-    {
-      app.mcp.close_session(&self.get_descriptor().id);
-    }
-    Ok(())
-  }
-  pub fn describe(&self) -> Value {
-    {
-      let mut status = self.status.lock().unwrap().clone();
-      status["queue_count"] = json!(
-        self
-          .queue
-          .lock()
-          .unwrap()
-          .len()
-          .unwrap_or(0)
-          .saturating_sub(status["queue_head"].as_u64().unwrap_or(0))
-      );
-      status["pending_questions"] = json!(self.tools.ask_user.snapshot());
-      let mut descriptor = self.get_descriptor();
-      if let Some(pending) = &descriptor.pending_selection {
-        descriptor.provider = pending.provider.clone();
-        status["config"] = json!(pending.config);
-        status["selection_pending"] = json!(true);
-      }
-      json!({"session":descriptor,"status":status})
-    }
+    });
+    slot.tools.switch(switches).await?;
+    Ok(slot)
   }
   pub fn get_descriptor(&self) -> Descriptor {
     self.descriptor.read().unwrap().clone()
   }
-  /// Applies the application's new shell unless this session has its own.
-  pub fn follow_global_shell(&self, global: &ShellCommand) {
-    if self.descriptor.read().unwrap().shell_command.is_none() {
-      *self.shell_command.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = global.clone();
-    }
-  }
-  /// Gives this session its own shell, or with None returns it to the application's.
-  pub fn set_shell(
+  /// Edits the descriptor, checking the revision an `If-Match` header names. The edit works on a
+  /// copy, which the session takes - a revision on, stamped now - once the index holds it.
+  pub fn edit_descriptor(
     &self,
-    settings: Option<ShellSettings>,
-    global: &ShellCommand,
+    if_match: Option<&HeaderValue>,
+    edit: impl FnOnce(&mut Descriptor) -> Result<(), ApiError>,
   ) -> Result<(), ApiError> {
-    if !self.descriptor.read().unwrap().tools.shell {
-      return Err(ApiError::bad_request("this session has no shell tool"));
-    }
-    let next = match &settings {
-      Some(settings) => settings.resolve()?,
-      None => global.clone(),
-    };
-    *self.shell_command.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = next;
-    self.descriptor.write().unwrap().shell_command = settings;
-    self.persist_index()
-  }
-  pub fn require_live(&self) -> Result<(), ApiError> {
-    if self.deleted.load(std::sync::atomic::Ordering::Acquire) {
-      Err(ApiError::not_found())
-    } else {
-      Ok(())
-    }
-  }
-  pub fn persist_index(&self) -> Result<(), ApiError> {
-    self.require_live()?;
-    let mut record = self.describe();
-    // `describe` previews a pending provider to the UI. Persist the actual provider so a restart
-    // can still ask it to translate an encrypted compaction item before applying the selection.
-    record["session"] = json!(self.get_descriptor());
-    self.index.save(&record)?;
-    let _ =
-      self.global_events.send(json!({"type":"session_changed","id":self.get_descriptor().id}));
+    let mut descriptor = self.descriptor.write().unwrap();
+    expect_revision(if_match, descriptor.revision)?;
+    let mut next = descriptor.clone();
+    edit(&mut next)?;
+    next.revision += 1;
+    next.updated_at = Timestamp::now().0;
+    self.management.save(&self.index_record(&next))?;
+    *descriptor = next;
+    drop(descriptor);
+    self.announce_change();
     Ok(())
   }
-  /// The session, unless an operation holds it. An operation that has just ended keeps it a moment
-  /// longer - its status already reads as stopped while it records its end - and a request arriving
-  /// then waits that out instead of being told the session is running.
-  pub async fn lock_idle(&self) -> Option<tokio::sync::OwnedMutexGuard<Session>> {
-    if let Ok(guard) = self.session.clone().try_lock_owned() {
-      return Some(guard);
-    }
-    if self.control.lock().unwrap().is_some() {
-      return None;
-    }
-    tokio::time::timeout(std::time::Duration::from_millis(500), self.session.clone().lock_owned())
-      .await
-      .ok()
+  /// Refuses an edit made against a revision the descriptor has moved past.
+  pub fn check_revision(&self, if_match: Option<&HeaderValue>) -> Result<(), ApiError> {
+    expect_revision(if_match, self.descriptor.read().unwrap().revision)
   }
   /// Marks the session as just used - a user message or answer arrived - and saves the index, so
   /// the session list, ordered by `updated_at`, brings it to the top at once.
   pub fn touch(&self) -> Result<(), ApiError> {
-    self.descriptor.write().unwrap().updated_at = crate::session::statistics::Timestamp::now().0;
+    self.descriptor.write().unwrap().updated_at = Timestamp::now().0;
     self.persist_index()
   }
-  pub fn update_snapshot(&self, session: &Session) {
-    *self.queue.lock().unwrap() = session.get_message_queue();
-    *self.status.lock().unwrap() = snapshot(session);
+  /// The session as the API shows it.
+  pub fn describe(&self) -> Value {
+    let mut record = self.index_record(&self.get_descriptor());
+    preview_pending_selection(&mut record);
+    record
   }
-  pub fn interrupt(&self) -> bool {
-    self.auto_run_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    if let Some(control) = self.control.lock().unwrap().as_ref() {
-      control.cancel();
-      true
-    } else {
-      false
-    }
+  /// The session as the index keeps it: the provider it actually uses, which a restart may still
+  /// need to translate an encrypted compaction item before a pending selection applies, and the
+  /// status as the API shows it.
+  fn index_record(&self, descriptor: &Descriptor) -> Value {
+    json!({"session":descriptor,"status":self.view_status(descriptor)})
   }
-  pub fn observe(&self, event: &SessionEvent) {
-    if let SessionEvent::InputsConsumed { queue_end, .. } = event {
-      self.status.lock().unwrap()["queue_head"] = json!(queue_end);
-    }
-    if let SessionEvent::StateChanged { to, .. } = event {
-      self.status.lock().unwrap()["phase"] = json!(to);
-      if let Err(error) = self.persist_index() {
-        eprintln!("session index: {error}");
-      }
-    }
-    if let SessionEvent::CompactionSummaryStarted { .. } = event {
-      self.status.lock().unwrap()["standby_preparing"] = json!(true);
-    }
-    if matches!(
-      event,
-      SessionEvent::CompactionSummary { .. } | SessionEvent::CompactionSummaryFailed { .. }
-    ) {
-      self.status.lock().unwrap()["standby_preparing"] = json!(false);
-    }
-    if let SessionEvent::ContextCompacted { .. } = event {
-      self.status.lock().unwrap()["standby_preparing"] = json!(false);
-    }
-    let mut live = self.live.lock().unwrap();
-    live.observe(event);
-    if let Some(event) = web_event(event) {
-      let _ = self.events.send(json!({"type":"session_event","event":event,"revision":live.revision}));
-    }
+  /// Saves the index record, and tells the session list.
+  pub fn persist_index(&self) -> Result<(), ApiError> {
+    self.require_live()?;
+    self.management.save(&self.index_record(&self.get_descriptor()))?;
+    self.announce_change();
+    Ok(())
   }
-  pub fn subscribe_live(&self) -> (broadcast::Receiver<Value>, Value) {
-    // Subscription and snapshot share the publication lock: no gap or duplicate deltas.
-    let live = self.live.lock().unwrap();
-    (self.events.subscribe(), live.snapshot(self.describe()))
+  fn announce_change(&self) {
+    let _ =
+      self.global_events.send(json!({"type":"session_changed","id":self.get_descriptor().id}));
   }
-  pub async fn execute(
-    self: Arc<Self>,
-    provider: Arc<Provider>,
-    provider_id: String,
-    mut session: tokio::sync::OwnedMutexGuard<Session>,
-    control: ExecutionControl,
-    compact: bool,
-  ) {
-    let model = selection::SwitchingModel::new(self.make_model(provider, provider_id));
-    let result = if compact {
-      let prepared = match session.get_history().len() {
-        Ok(mut cursor) => self.apply_selection(
-          &mut session, &model, &control, &mut cursor, &mut |event| self.observe(event),
-        ).await,
-        Err(error) => Err(error.into()),
-      };
-      match prepared {
-        Ok(executor::BoundaryResult::Interrupted) => {
-          session.finish_run(RunOutcome::Interrupted).map(|_| RunOutcome::Interrupted)
-        }
-        Ok(_) => executor::compaction::compact(&model, &mut session, &control, |event| self.observe(event)).await,
-        Err(error) => Err(error),
-      }
-    } else {
-      executor::run_with_boundary(
-        &model,
-        &mut session,
-        &self.tools,
-        &control,
-        |event| self.observe(event),
-        selection::SelectionBoundary { slot: &self, model: &model },
-      )
-      .await
-    };
-    *self.control.lock().unwrap() = None;
-    if result.is_err() && !session.get_state().is_stable() {
-      let _ = session.settle_interrupted();
-    }
-    let event = match result {
-      Ok(outcome) => json!({"type":"operation_finished","outcome":web_outcome(&outcome)}),
-      Err(error) => json!({"type":"operation_failed","error":error.to_string()}),
-    };
-    {
-      let mut status = self.status.lock().unwrap();
-      *status = snapshot(&session);
-      status["last_operation"] = event.clone();
-    }
-    {
-      self.descriptor.write().unwrap().updated_at = crate::session::statistics::Timestamp::now().0;
-    }
-    if let Err(error) = self.index.save_calls(&self.get_descriptor(), &self.calls) {
-      eprintln!("call index: {error}");
-    }
-    if let Err(error) = self.persist_index() {
-      eprintln!("session index: {error}");
-    }
-    let _ = self.events.send(event);
+  /// Takes a change made to the session: refreshes its status and index record, and returns the
+  /// session as the API shows it.
+  pub fn publish(&self, session: &Session) -> Result<Value, ApiError> {
+    self.refresh_status(session);
+    self.persist_index()?;
+    Ok(self.describe())
+  }
+  /// Queues a message for the session's next run.
+  pub async fn enqueue(&self, message: Message) -> Result<EntryId, ApiError> {
+    let sender = self.sender.clone();
+    blocking(move || Ok(sender.enqueue_message(message)?)).await
+  }
+  pub fn require_live(&self) -> Result<(), ApiError> {
+    if self.deleted.load(Ordering::Acquire) { Err(ApiError::not_found()) } else { Ok(()) }
+  }
+  /// Marks the session deleted: from now on it is not found.
+  pub fn mark_deleted(&self) {
+    self.deleted.store(true, Ordering::Release);
   }
 }
-/// The web only needs display deltas and a concise outcome. Opaque replay data stays
-/// in session storage, where it can be inspected without flooding every live client.
-pub(crate) fn web_event(event: &SessionEvent) -> Option<Value> {
-  match event {
-    SessionEvent::ModelStream(
-      StreamEvent::ReasoningCiphertextDelta { .. }
-      | StreamEvent::ReasoningSignatureDelta { .. }
-      | StreamEvent::ReasoningReplayItem { .. }
-      | StreamEvent::UpstreamCompaction { .. },
-    ) => None,
-    SessionEvent::Finished(outcome) => Some(json!({"Finished":web_outcome(outcome)})),
-    SessionEvent::ResponseInterrupted(_) => Some(json!({"ResponseInterrupted":{}})),
-    SessionEvent::ResponseRejected(_) => Some(json!({"ResponseRejected":{}})),
-    SessionEvent::UpstreamCompactionCompleted(_) => Some(json!({"UpstreamCompactionCompleted":{}})),
-    SessionEvent::CompactionSummary { source_start, source_end, .. } =>
-      Some(json!({"CompactionSummary":{"source_start":source_start,"source_end":source_end}})),
-    SessionEvent::CompactionSummaryFailed { outcome } =>
-      Some(json!({"CompactionSummaryFailed":{"outcome":web_outcome(outcome)}})),
-    SessionEvent::CompactionTranslationFailed { .. } =>
-      Some(json!({"CompactionTranslationFailed":{}})),
-    SessionEvent::ToolStarted(call) => Some(json!({"ToolStarted":{"name":call.name}})),
-    SessionEvent::ToolFinished { .. } => Some(json!({"ToolFinished":{}})),
-    SessionEvent::MetadataUpdated(_) => Some(json!({"MetadataUpdated":{}})),
-    _ => Some(json!(event)),
+
+/// Shows a pending model selection in an index record as made: its provider in place of the
+/// session's. The status shows its config already.
+pub fn preview_pending_selection(record: &mut Value) {
+  if let Some(provider) = record.pointer("/session/pending_selection/provider").cloned() {
+    record["session"]["provider"] = provider;
   }
 }
-fn web_outcome(outcome: &RunOutcome) -> Value {
-  match outcome {
-    RunOutcome::StreamFailed(partial) => json!({"StreamFailed":{"reason":partial.reason}}),
-    RunOutcome::ModelStopped(response) =>
-      json!({"ModelStopped":{"stop_reason":response.stop_reason}}),
-    _ => json!(outcome),
-  }
-}
-fn snapshot(session: &Session) -> Value {
-  json!({"phase":session.get_state().get_phase(),"state":session.get_state(),
-    "active_generation":session.get_active_generation().ok().map(|g|g.id),"metadata":session.get_metadata(),"config":session.get_config(),"queue_head":session.get_queue_head(),"running":false,"standby_preparing":false,
-    "context_tokens":context_tokens(session)})
-}
-/// The input size compaction compares with its trigger: the last completed
-/// conversation call of the active generation made with the configured model.
-fn context_tokens(session: &Session) -> Option<u64> {
-  let active = session.get_active_generation().ok()?.id;
-  let model = &session.get_config().model;
-  let calls = session.get_model_calls();
-  for position in (0..calls.len().ok()?).rev() {
-    let Some(call) = calls.get(position).ok()? else { continue };
-    if call.generation != active {
-      break;
+
+fn expect_revision(if_match: Option<&HeaderValue>, revision: u64) -> Result<(), ApiError> {
+  match if_match {
+    Some(value) if value.to_str().ok() != Some(revision.to_string().as_str()) => {
+      Err(ApiError::conflict("session changed; reload before saving"))
     }
-    if &call.model == model
-      && call.purpose == ModelCallPurpose::Conversation
-      && matches!(call.status, ModelCallStatus::Completed)
-    {
-      return call.last_request_input_tokens;
-    }
+    _ => Ok(()),
   }
-  None
 }

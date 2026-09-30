@@ -1,9 +1,9 @@
 //! How many times one call may be attempted, and how long to wait between attempts.
 //!
 //! The policy is pure data plus one arithmetic step, and `retry` is the loop that spends it.
-//! What one attempt *is* stays the caller's business: a buffered call replaces it whole, a streamed
-//! one only while nothing has been handed over yet, which is why the client keeps its own loop for
-//! the second case.
+//! What one attempt *is* stays the caller's business: the client's buffered attempt is the whole
+//! call, its streamed one the opening and the first event, so a stream is replaced only while
+//! nothing has been handed over yet.
 
 use std::future::Future;
 use std::time::Duration;

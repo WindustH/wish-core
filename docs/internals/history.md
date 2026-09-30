@@ -1,13 +1,13 @@
 # History queries
 
-`Session::create_history_reader()` returns a cloneable `HistoryReader`. It can be retained while
-an executor owns the session, across generation switches, and after dropping the owner.
-`HistoryReader::open(storage, session_id)` opens the same read interface without claiming ownership.
+History is read through the session's `SessionReader` (`Session::reader()`, see
+[session](session.md)). It can be retained while an executor owns the session, across generation
+switches, and after dropping the owner.
 
 ```text
 HTTP history routes / history_* tools
           |
-     HistoryReader
+     SessionReader
           |
   SQLite filters + FTS5 -> matching sequences + snippets
           |
@@ -23,13 +23,25 @@ provider-switch handoff (or its placeholder) is the exception: it is recorded as
 ([compaction](compaction.md#provider-switch-handoff)). Queued messages become message history when
 consumed; their enqueue events are available earlier.
 
+## Pruning
+
+History stays until it is pruned. `Session::prune_history(before, apply, references)` releases
+what the context no longer uses: messages outside the active and standby generations that are not
+waiting in the queue, every event but a suspended run's outcome, and the history records and
+search-index rows of both. With `before`, only what was recorded earlier goes. The positions are
+released, not removed (see [storage](storage.md)), so entry IDs and history sequences keep their
+numbers; queries and `read_history_around` simply no longer find what went. `references` names the
+resources a message uses, and the result lists those only released messages named, so the caller
+can delete the files behind them. With `apply` false the work is rehearsed and rolled back. The
+server exposes it as [`POST /api/storage/prune`](../api.md#post-apistorageprune).
+
 ## Filtering and paging
 
 ```rust
 use crate::session::history::query::{HistoryFilter, HistoryPageRequest, MessageType};
-use crate::session::statistics::Timestamp;
+use crate::utils::time::Timestamp;
 
-let reader = session.create_history_reader();
+let reader = session.reader().clone();
 let filter = HistoryFilter {
     message_types: vec![MessageType::User, MessageType::Assistant],
     since: Some(Timestamp(start_ms)),
@@ -87,20 +99,18 @@ additionally index their error text. Metadata is not part of full-text search.
 
 Metadata predicates apply to message metadata: `Exists { path }` and scalar `Equals { path, value }`,
 using SQLite JSON paths such as `$.project_id` (paths must start with `$`). Missing differs from
-explicit null; boolean values are distinct from numbers. Call `Session::index_history_metadata(path)` for frequently used paths;
-it creates a database-wide expression index. Unindexed metadata predicates may scan filtered rows.
-Objects and arrays are retained as metadata but are not scalar equality operands.
+explicit null; boolean values are distinct from numbers. Metadata predicates are not indexed:
+they scan the rows the other filters leave. Objects and arrays are retained as metadata but are
+not scalar equality operands.
 
 Secondary tables hold filter columns and extracted text; FTS5 uses that text as external content.
-The authoritative messages, events and history remain individual existing storage elements.
-Ordinary writes and index updates share one transaction. New `ModelStream` deltas are live-only;
+The session extracts both (`session::history::index`); the SQL is `storage::history_index`'s
+([storage](storage.md#the-history-index)). The authoritative messages, events and history remain
+individual existing storage elements. Ordinary writes and index updates share one transaction. New `ModelStream` deltas are live-only;
 legacy stored stream events remain readable and searchable without renumbering history.
 
 Queries load only matching history references; explicit expansion loads original payloads through
-existing storage/cache APIs. No read-time backfill is performed. Short substring and unindexed
-metadata queries may scan index rows, without loading the full message history.
-
-`Session::rebuild_history_index()` explicitly rebuilds that session's derived rows in one atomic
-transaction, reading current-format history in bounded pages.
+existing storage/cache APIs. No read-time backfill is performed. Short substring and metadata
+queries may scan index rows, without loading the full message history.
 No query-result cache or separate search service is required. Searches cover committed history;
 new live stream deltas are not included. Completed responses and interruption fragments are retained.

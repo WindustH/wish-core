@@ -1,8 +1,11 @@
+//! The shell tools as operations: their arguments read into one enum, and the specifications the
+//! model sees.
 use super::ShellError;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// One shell tool call, read from its arguments.
+#[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ShellOperation {
   Start {
@@ -54,45 +57,21 @@ pub enum ShellOperation {
   },
 }
 impl ShellOperation {
+  /// The operation of the shell tool `name`, read from its arguments.
   pub fn parse_call(name: &str, mut arguments: serde_json::Value) -> Result<Self, ShellError> {
-    match name {
-      "shell_start" => {
-        if let Some(object) = arguments.as_object_mut() {
-          object.insert("operation".into(), "start".into());
-        }
-        serde_json::from_value(arguments)
-          .map_err(|error| ShellError::InvalidArguments(error.to_string()))
-      }
-      "shell_edit" => {
-        if let Some(object) = arguments.as_object_mut() {
-          object.insert("operation".into(), "edit".into());
-        }
-        serde_json::from_value(arguments)
-          .map_err(|error| ShellError::InvalidArguments(error.to_string()))
-      }
-      "shell_poll" => {
-        if let Some(object) = arguments.as_object_mut() {
-          object.insert("operation".into(), "poll".into());
-        }
-        serde_json::from_value(arguments)
-          .map_err(|error| ShellError::InvalidArguments(error.to_string()))
-      }
-      "shell_write" => {
-        if let Some(object) = arguments.as_object_mut() {
-          object.insert("operation".into(), "write".into());
-        }
-        serde_json::from_value(arguments)
-          .map_err(|error| ShellError::InvalidArguments(error.to_string()))
-      }
-      "shell_kill" => {
-        if let Some(object) = arguments.as_object_mut() {
-          object.insert("operation".into(), "kill".into());
-        }
-        serde_json::from_value(arguments)
-          .map_err(|error| ShellError::InvalidArguments(error.to_string()))
-      }
-      _ => Err(ShellError::InvalidArguments(format!("unknown shell tool: {name}"))),
+    let operation = match name {
+      "shell_start" => "start",
+      "shell_edit" => "edit",
+      "shell_poll" => "poll",
+      "shell_write" => "write",
+      "shell_kill" => "kill",
+      _ => return Err(ShellError::InvalidArguments(format!("unknown shell tool: {name}"))),
+    };
+    if let Some(object) = arguments.as_object_mut() {
+      object.insert("operation".into(), operation.into());
     }
+    serde_json::from_value(arguments)
+      .map_err(|error| ShellError::InvalidArguments(error.to_string()))
   }
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -112,7 +91,7 @@ impl DataEncoding {
     }
   }
 }
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KillMode {
   #[default]

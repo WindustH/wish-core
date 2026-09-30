@@ -1,9 +1,8 @@
 //! Public history filters and bounded query results.
 use super::{Entry, EntryOrigin, HistoryRecord, SessionEvent};
-use crate::session::{
-  GenerationId,
-  statistics::{ModelCallId, Timestamp},
-};
+use crate::protocol::Message;
+use crate::session::{GenerationId, statistics::ModelCallId};
+use crate::utils::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -20,6 +19,19 @@ pub enum MessageType {
   UpstreamCompaction,
 }
 impl MessageType {
+  pub(super) fn of(message: &Message) -> Self {
+    match message {
+      Message::System { .. } => Self::System,
+      Message::Developer { .. } => Self::Developer,
+      Message::User { .. } => Self::User,
+      Message::Assistant { .. } => Self::Assistant,
+      Message::Reasoning { .. } => Self::Reasoning,
+      Message::ToolUse { .. } => Self::ToolUse,
+      Message::ToolResult { .. } => Self::ToolResult,
+      Message::UpstreamCompaction { .. } => Self::UpstreamCompaction,
+    }
+  }
+  /// The type as it is indexed, and named in a filter.
   pub(super) fn as_str(self) -> &'static str {
     match self {
       Self::System => "system",
@@ -38,6 +50,15 @@ impl MessageType {
 pub enum HistoryKind {
   Message,
   Event,
+}
+impl HistoryKind {
+  /// The kind as it is indexed.
+  pub(super) fn as_str(self) -> &'static str {
+    match self {
+      Self::Message => "message",
+      Self::Event => "event",
+    }
+  }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
@@ -139,8 +160,9 @@ pub struct HistorySearchResults {
   /// Short substring searches scan the filtered rows because trigram needs three characters.
   pub used_text_index: bool,
 }
+/// A history record with what it records loaded beside it.
 #[derive(Clone, Debug, Serialize)]
-pub struct HistoryEntry {
+pub struct ExpandedHistoryRecord {
   pub record: Arc<HistoryRecord>,
   pub content: HistoryContent,
 }

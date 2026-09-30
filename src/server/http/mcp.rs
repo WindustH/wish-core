@@ -8,23 +8,24 @@ use crate::server::{
   app::App,
   error::ApiError,
   mcp::{Caller, store_binary_content},
-  session::SessionSlot,
+  provider::Providers,
 };
 use axum::{
   Json,
   extract::{Path, Query, State},
-  http::{HeaderMap, StatusCode, header::AUTHORIZATION},
+  http::{HeaderMap, header::AUTHORIZATION},
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
-/// The session a bridge request speaks for, when its token is the one that session's shell holds.
+/// The session a bridge request speaks for, when its token is the one that session's shell holds,
+/// and the providers as they stand.
 async fn bridge_session(
   app: &Arc<App>,
   id: &str,
   headers: &HeaderMap,
-) -> Result<Arc<SessionSlot>, ApiError> {
+) -> Result<(Caller, Providers), ApiError> {
   let supplied = headers
     .get(AUTHORIZATION)
     .and_then(|value| value.to_str().ok())
@@ -32,20 +33,17 @@ async fn bridge_session(
   // A shell holding a token belongs to a session that is open, so there is nothing to load.
   let slot = app.sessions.lock().await.get(id).cloned();
   let Some(slot) = slot.filter(|slot| Some(slot.mcp_token.as_str()) == supplied) else {
-    return Err(ApiError {
-      status: StatusCode::UNAUTHORIZED,
-      message: "unauthorized".into(),
-      details: None,
-    });
+    return Err(ApiError::unauthorized());
   };
   slot.require_live()?;
   // Said to the model through the command's output, so it knows why and who can change it.
-  if !slot.get_descriptor().tools.mcp {
+  let descriptor = slot.get_descriptor();
+  if !descriptor.tools.mcp {
     return Err(ApiError::conflict(
       "MCP is disabled for this session. The user can enable it in the session's settings.",
     ));
   }
-  Ok(slot)
+  Ok((Caller { session: descriptor.id, cwd: descriptor.cwd }, app.get_providers()))
 }
 
 #[derive(Deserialize)]
@@ -58,10 +56,7 @@ pub async fn servers(
   Query(query): Query<ServersQuery>,
   headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-  let slot = bridge_session(&app, &id, &headers).await?;
-  let cwd = slot.get_descriptor().cwd;
-  let providers = app.providers.read().unwrap().clone();
-  let caller = Caller { session: &id, cwd: &cwd };
+  let (caller, providers) = bridge_session(&app, &id, &headers).await?;
   Ok(Json(json!(app.mcp.list(&caller, &providers, query.server.as_deref()).await?)))
 }
 
@@ -76,10 +71,7 @@ pub async fn tool(
   Query(query): Query<ToolQuery>,
   headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-  let slot = bridge_session(&app, &id, &headers).await?;
-  let cwd = slot.get_descriptor().cwd;
-  let providers = app.providers.read().unwrap().clone();
-  let caller = Caller { session: &id, cwd: &cwd };
+  let (caller, providers) = bridge_session(&app, &id, &headers).await?;
   Ok(Json(app.mcp.describe_tool(&query.server, &query.name, &caller, &providers).await?))
 }
 
@@ -100,17 +92,11 @@ pub async fn call(
   headers: HeaderMap,
   Json(input): Json<CallInput>,
 ) -> Result<Json<Value>, ApiError> {
-  app.require_open()?;
-  let slot = bridge_session(&app, &id, &headers).await?;
-  let cwd = slot.get_descriptor().cwd;
-  let providers = app.providers.read().unwrap().clone();
-  let caller = Caller { session: &id, cwd: &cwd };
-  let mut result = tokio::select! {
-    _ = app.stop.cancelled() => return Err(ApiError::conflict("server is shutting down")),
-    result = app.mcp.call(&input.server, &input.tool, input.arguments, &caller, &providers) => result?,
-  };
-  let directory = std::path::absolute(app.data_dir.join("shell").join(&id).join("mcp"))
-    .map_err(ApiError::internal)?;
+  app.lifecycle.require_open()?;
+  let (caller, providers) = bridge_session(&app, &id, &headers).await?;
+  let call = app.mcp.call(&input.server, &input.tool, input.arguments, &caller, &providers);
+  let mut result = app.lifecycle.until_shutdown(call).await??;
+  let directory = std::path::absolute(app.data_dir.mcp_files(&id)).map_err(ApiError::internal)?;
   store_binary_content(&mut result, &directory);
   Ok(Json(result))
 }
@@ -125,10 +111,7 @@ pub async fn check(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-  app.require_open()?;
-  let providers = app.providers.read().unwrap().clone();
-  tokio::select! {
-    _ = app.stop.cancelled() => Err(ApiError::conflict("server is shutting down")),
-    result = app.mcp.check(&id, &providers) => Ok(Json(result?)),
-  }
+  app.lifecycle.require_open()?;
+  let providers = app.get_providers();
+  Ok(Json(app.lifecycle.until_shutdown(app.mcp.check(&id, &providers)).await??))
 }

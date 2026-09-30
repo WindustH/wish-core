@@ -1,12 +1,12 @@
 //! Gemini's model list: `{models: [{name, displayName, inputTokenLimit, ...}], nextPageToken}`.
 //!
 //! Conversions:
-//! - `name` is a resource get_name (`models/gemini-2.5-flash`) and loses the `models/` prefix, because a
-//!   call passes the bare id back.
+//! - `name` is a resource name (`models/gemini-2.5-flash`) and loses the `models/` prefix, because
+//!   a call passes the bare id back.
 //! - `displayName` becomes `name`, `inputTokenLimit` `context_window` and `outputTokenLimit`
 //!   `max_output_tokens`.
-//! - `nextPageToken` becomes `next_cursor` while it is non-empty, and `page_query` sends it back as
-//!   `pageToken` beside the `pageSize` the wire wants spelled out.
+//! - `nextPageToken` becomes `next_cursor` while it is non-empty, and `build_page_query` sends it
+//!   back as `pageToken` beside the `pageSize` the wire wants spelled out.
 //!
 //! Constraints:
 //! - The body is only a list when `models` is an array, and an entry without a `name` is dropped.
@@ -19,7 +19,7 @@
 use serde_json::Value;
 
 use crate::Error;
-use crate::protocol::model_list::{Model, ModelCatalog, ModelListProtocol};
+use crate::protocol::model_list::{Model, ModelListPage, ModelListProtocol, read_entries};
 
 /// The prefix a resource name carries, which is not part of the id.
 const RESOURCE_PREFIX: &str = "models/";
@@ -29,36 +29,19 @@ const RESOURCE_PREFIX: &str = "models/";
 /// # Errors
 ///
 /// Returns [`Error::Malformed`] when `models` is missing or is not an array.
-pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
-  let entries = body
-    .get("models")
-    .and_then(Value::as_array)
-    .ok_or_else(|| Error::Malformed("google model list missing `models` array".to_owned()))?;
-  let mut models = Vec::new();
-  let mut warnings = Vec::new();
+pub fn parse(body: &Value) -> Result<ModelListPage, Error> {
+  let (entries, mut warnings) = read_entries(body, "models", "name", "google")?;
   let mut tuning = false;
-  for entry in entries {
-    let Some(name) = entry.get("name").and_then(Value::as_str).filter(|name| !name.is_empty())
-    else {
-      warnings.push("an entry without a `name` was dropped".to_owned());
-      continue;
-    };
+  let mut models = Vec::new();
+  for (name, entry) in entries {
     for field in ["temperature", "topP", "topK"] {
       tuning |= entry.get(field).is_some();
     }
     models.push(Model {
-      // A resource name may carry `models/` (Gemini API) or `publishers/{publisher}/models/`
-      // (Vertex): strip whichever prefix it has, since a call passes the bare id back.
-      id: {
-        let rest = name.strip_prefix("publishers/").unwrap_or(name);
-        let rest = rest.split_once("/models/").map(|(_, id)| id).unwrap_or(rest);
-        rest.strip_prefix(RESOURCE_PREFIX).unwrap_or(rest).to_owned()
-      },
       name: entry.get("displayName").and_then(Value::as_str).map(str::to_owned),
-      owner: None,
-      created_at: None,
       context_window: entry.get("inputTokenLimit").and_then(Value::as_u64),
       max_output_tokens: entry.get("outputTokenLimit").and_then(Value::as_u64),
+      ..Model::new(strip_resource_prefix(name))
     });
   }
   if tuning {
@@ -70,7 +53,15 @@ pub fn parse(body: &Value) -> Result<ModelCatalog, Error> {
     .and_then(Value::as_str)
     .filter(|token| !token.is_empty())
     .map(str::to_owned);
-  Ok(ModelCatalog { protocol: ModelListProtocol::GoogleModels, models, next_cursor, warnings })
+  Ok(ModelListPage { protocol: ModelListProtocol::GoogleModels, models, next_cursor, warnings })
+}
+
+/// The bare id of a resource name, which may carry `models/` (Gemini API) or
+/// `publishers/{publisher}/models/` (Vertex): a call passes the bare id back.
+fn strip_resource_prefix(name: &str) -> &str {
+  let rest = name.strip_prefix("publishers/").unwrap_or(name);
+  let rest = rest.split_once("/models/").map(|(_, id)| id).unwrap_or(rest);
+  rest.strip_prefix(RESOURCE_PREFIX).unwrap_or(rest)
 }
 
 /// The query of a page: an opaque token, and the page size the wire wants spelled out.

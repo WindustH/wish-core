@@ -1,9 +1,6 @@
 //! One-second observations of received output, separate from provider-reported billing usage.
 use crate::server::{management::ManagementStore, provider::ModelClient};
-use crate::{
-  executor::model::StreamObserver, protocol::StreamEvent, session::statistics::Timestamp,
-};
-use serde::Serialize;
+use crate::{client::AttemptObserver, protocol::StreamEvent, utils::time::Timestamp};
 use std::sync::{
   Arc,
   atomic::{AtomicU64, Ordering},
@@ -14,7 +11,18 @@ use tokio::{
 };
 use tokio_util::task::TaskTracker;
 
-#[derive(Clone, Serialize)]
+/// How often a stream is sampled.
+pub const INTERVAL: Duration = Duration::from_secs(1);
+/// Received bytes counted as one token: the ratio of core's default `TokenEstimator`, without its
+/// chunk rounding.
+pub const BYTES_PER_TOKEN: u64 = 4;
+/// What the samples measure, as the usage series names it.
+pub const SOURCE: &str = "estimated_visible_output";
+/// The most samples a usage series lists.
+pub const LIST_LIMIT: usize = 10_000;
+
+/// One interval of one model call's received output, as the index stores it.
+#[derive(Clone)]
 pub struct Sample {
   pub attempt_id: String,
   pub session: Option<String>,
@@ -23,15 +31,12 @@ pub struct Sample {
   pub at_ms: u64,
   pub duration_ms: u64,
   pub output_bytes: u64,
-  pub output_tokens: f64,
-  pub tps: f64,
-  pub source: &'static str,
 }
 struct Sampler {
   bytes: Arc<AtomicU64>,
   finish: Option<oneshot::Sender<Instant>>,
 }
-impl StreamObserver for Sampler {
+impl AttemptObserver for Sampler {
   fn observe(&self, event: &StreamEvent) {
     let text = match event {
       StreamEvent::TextDelta { delta, .. } | StreamEvent::ReasoningDelta { delta, .. } => delta,
@@ -48,14 +53,16 @@ impl Drop for Sampler {
     }
   }
 }
-pub fn observe_client(
+/// The client with every stream it opens sampled into the index, each interval's received bytes
+/// as one sample.
+pub fn with_stream_sampling(
   client: &ModelClient,
-  index: Arc<ManagementStore>,
+  management: Arc<ManagementStore>,
   tasks: TaskTracker,
   provider: String,
   session: Option<String>,
 ) -> ModelClient {
-  client.clone().with_stream_observer(Arc::new(move |model| {
+  client.clone().with_attempt_observer(Arc::new(move |model| {
     let bytes = Arc::new(AtomicU64::new(0));
     let (finish, mut finished) = oneshot::channel();
     let start = Instant::now();
@@ -68,14 +75,10 @@ pub fn observe_client(
       at_ms,
       duration_ms: 0,
       output_bytes: 0,
-      output_tokens: 0.0,
-      tps: 0.0,
-      source: "estimated_visible_output",
     };
-    let (counter, index) = (bytes.clone(), index.clone());
+    let (counter, management) = (bytes.clone(), management.clone());
     tasks.spawn(async move {
-      let mut timer =
-        tokio::time::interval_at(start + Duration::from_secs(1), Duration::from_secs(1));
+      let mut timer = tokio::time::interval_at(start + INTERVAL, INTERVAL);
       timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
       let (mut previous_time, mut previous_bytes) = (start, 0);
       loop {
@@ -90,11 +93,8 @@ pub fn observe_client(
           sample.at_ms = at_ms + now.duration_since(start).as_millis() as u64;
           sample.duration_ms = duration_ms;
           sample.output_bytes = total - previous_bytes;
-          // Same byte-ratio estimate as core's default TokenEstimator, without chunk rounding.
-          sample.output_tokens = sample.output_bytes as f64 / 4.0;
-          sample.tps = sample.output_tokens * 1000.0 / duration_ms as f64;
-          let (index, sample) = (index.clone(), sample.clone());
-          match tokio::task::spawn_blocking(move || index.save_stream_sample(&sample)).await {
+          let (management, sample) = (management.clone(), sample.clone());
+          match tokio::task::spawn_blocking(move || management.save_stream_sample(&sample)).await {
             Ok(Ok(())) => {}
             result => {
               eprintln!("stream sample persistence failed: {result:?}");

@@ -12,7 +12,8 @@
 //! - Consecutive assistant messages are the segments of one response resumed by automatic output
 //!   continuation: their texts join into one text block, and thinking stored after the turn's
 //!   content is dropped, or moved to the front when the turn did not open with thinking.
-//! - Tool results stay a plain string when text-only, otherwise an image/text block array.
+//! - A tool result's `content` is a plain string: a string payload passes through, anything else
+//!   is stringified.
 //! - `ReasoningConfig` renders the control this endpoint documents: Claude's own `thinking` object
 //!   in the default mode, where a depth tier becomes the preset budget, and a vendor's
 //!   `thinking.type` switch or `output_config.effort` tier in the vendor modes [`MessagesApiCompatMode`]
@@ -55,39 +56,20 @@
 //!   array instead of the plain joined string.
 
 use crate::protocol::error::Error;
-use crate::protocol::ReasoningOpaqueKind;
-use crate::protocol::model_use::request::{ANSWER_HEADROOM, TierBudget, resolve_tier_budget};
-use crate::protocol::{ContentBlock, Message, ReasoningConfig, Request, Tool, ToolChoice};
+use crate::protocol::model_use::request::{
+  AlternatingTurns, lift_cap_above_budget, render_claude_thinking, render_thinking_switch,
+  split_leading_instructions,
+};
+use crate::protocol::model_use::tool::tool_result_text;
+use crate::protocol::{
+  ContentBlock, Message, ReasoningConfig, ReasoningOpaqueKind, Request, Tool, ToolChoice,
+};
 use serde_json::{Map, Value, json};
+
+pub use crate::protocol::model_use::mode::MessagesApiCompatMode;
 
 /// Headers every call carries, besides auth and `content-type`.
 pub const HEADERS: &[(&str, &str)] = &[("anthropic-version", "2023-06-01")];
-
-/// Which reasoning extension this Messages endpoint speaks on top of the official wire.
-///
-/// The official wire steers thinking with `adaptive` or with a budget that follows the shared tier
-/// preset; every vendor that reimplements it patches in its own control, so each patch is its own
-/// mode however small the difference between two of them is. `Official` is Claude's own shape.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum MessagesApiCompatMode {
-  /// Claude's own shape: the tier preset (`adaptive`, or `enabled` with a budget).
-  #[default]
-  Official,
-  /// `thinking{type: enabled|disabled}` plus `output_config.effort`.
-  DeepSeek,
-  /// `thinking{type: enabled|disabled}`; nothing else.
-  Zai,
-  /// `output_config.effort` only: the k3 wire is always on and takes no `thinking` object.
-  Kimi,
-  /// `output_config.effort` alone: it is the native replacement for the legacy thinking budget.
-  Qwen,
-  /// `thinking{type: adaptive|disabled}`; nothing else.
-  MiniMax,
-  /// `thinking{type: enabled|disabled}`; nothing else.
-  Mimo,
-  /// No documented controls: thinking blocks are read, nothing is sent.
-  TokenHub,
-}
 
 pub fn render(request: &Request, mode: MessagesApiCompatMode) -> Result<Value, Error> {
   let max_tokens = request.max_output_tokens.ok_or_else(|| {
@@ -112,7 +94,10 @@ fn render_body(
     ));
   }
 
-  let (system, rest) = split_leading_instructions(&request.conversation)?;
+  let (system, rest) = split_leading_instructions(
+    &request.conversation,
+    "a system instruction can only carry text blocks on the anthropic messages wire",
+  )?;
   let messages = render_messages(rest)?;
   if messages.is_empty() {
     return Err(Error::Build("request has no messages".to_owned()));
@@ -125,6 +110,7 @@ fn render_body(
     body.insert("max_tokens".into(), json!(max_tokens));
   }
   if !system.is_empty() {
+    let system: Vec<String> = system.iter().map(|text| text.join("\n")).collect();
     let system = system.join("\n");
     if breakpoints {
       body.insert("system".into(), json!([{"type": "text", "text": system}]));
@@ -145,12 +131,7 @@ fn render_body(
       .and_then(|thinking| thinking.get("budget_tokens"))
       .and_then(Value::as_u64)
   {
-    // The model refuses to answer at or below the tokens it thinks with: a cap that tight is raised
-    // instead of failing the call.
-    body.insert(
-      "max_tokens".into(),
-      json!(if max_tokens > budget_tokens { max_tokens } else { budget_tokens + ANSWER_HEADROOM }),
-    );
+    body.insert("max_tokens".into(), json!(lift_cap_above_budget(max_tokens, budget_tokens)));
   }
   if !request.tools.is_empty() {
     let tools: Vec<Value> = request.tools.iter().map(render_tool).collect();
@@ -190,34 +171,22 @@ fn render_reasoning(
   }
   match mode {
     MessagesApiCompatMode::Official => {
-      let thinking = match (config.enabled, config.effort.as_deref()) {
-        (Some(false) | None, None) => return Ok(()),
-        (_, Some(effort)) => match resolve_tier_budget(effort)? {
-          TierBudget::Tokens(budget_tokens) => {
-            json!({"type": "enabled", "budget_tokens": budget_tokens})
-          }
-          TierBudget::Adaptive => json!({"type": "adaptive"}),
-        },
-        (Some(true), None) => json!({"type": "adaptive"}),
-      };
-      body.insert("thinking".into(), thinking);
+      if let Some(thinking) = render_claude_thinking(config)? {
+        body.insert("thinking".into(), thinking);
+      }
     }
     MessagesApiCompatMode::DeepSeek => {
       if let Some(enabled) = config.enabled {
-        body
-          .insert("thinking".into(), json!({"type": if enabled { "enabled" } else { "disabled" }}));
+        body.insert("thinking".into(), render_thinking_switch(enabled));
       }
-      if let Some(effort) = &config.effort {
-        body.insert("output_config".into(), json!({"effort": effort.to_lowercase()}));
-      }
+      insert_output_effort(config, body);
     }
     MessagesApiCompatMode::Zai | MessagesApiCompatMode::Mimo => {
       if config.effort.is_some() {
         return Err(Error::Build("a `thinking.type` messages wire has no effort axis".to_owned()));
       }
       if let Some(enabled) = config.enabled {
-        body
-          .insert("thinking".into(), json!({"type": if enabled { "enabled" } else { "disabled" }}));
+        body.insert("thinking".into(), render_thinking_switch(enabled));
       }
     }
     MessagesApiCompatMode::MiniMax => {
@@ -240,9 +209,7 @@ fn render_reasoning(
           "the kimi messages wire keeps thinking on at all times".to_owned(),
         ));
       }
-      if let Some(effort) = &config.effort {
-        body.insert("output_config".into(), json!({"effort": effort.to_lowercase()}));
-      }
+      insert_output_effort(config, body);
     }
     MessagesApiCompatMode::Qwen => {
       if config.enabled.is_some() {
@@ -250,9 +217,7 @@ fn render_reasoning(
           "the bailian messages wire steers thinking with `output_config.effort` alone".to_owned(),
         ));
       }
-      if let Some(effort) = &config.effort {
-        body.insert("output_config".into(), json!({"effort": effort.to_lowercase()}));
-      }
+      insert_output_effort(config, body);
     }
     MessagesApiCompatMode::TokenHub => {
       if config.enabled.is_some() || config.effort.is_some() {
@@ -265,40 +230,21 @@ fn render_reasoning(
   Ok(())
 }
 
-fn split_leading_instructions(
-  conversation: &[Message],
-) -> Result<(Vec<String>, &[Message]), Error> {
-  let mut system: Vec<String> = Vec::new();
-  let mut index = 0;
-  while let Some(message) = conversation.get(index) {
-    let content = match message {
-      Message::System { content, .. } | Message::Developer { content, .. } => content,
-      _ => break,
-    };
-    let mut text: Vec<&str> = Vec::new();
-    for block in content {
-      match block {
-        ContentBlock::Text { text: block_text } => text.push(block_text),
-        _ => {
-          return Err(Error::Build(
-            "a system instruction can only carry text blocks on the anthropic messages wire"
-              .to_owned(),
-          ));
-        }
-      }
-    }
-    system.push(text.join("\n"));
-    index += 1;
+/// The caller's tier word as `output_config.effort`, the vendors' own effort field, when it gave
+/// one.
+fn insert_output_effort(config: &ReasoningConfig, body: &mut Map<String, Value>) {
+  if let Some(effort) = &config.effort {
+    body.insert("output_config".into(), json!({"effort": effort.to_lowercase()}));
   }
-  Ok((system, &conversation[index..]))
 }
 
 fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
-  let mut turns: Vec<(String, Vec<Value>)> = Vec::new();
+  let mut turns = AlternatingTurns::default();
+  // The calls of the last assistant turn that still wait for their results.
   let mut pending: Vec<String> = Vec::new();
-  let mut index = 0;
-  while index < conversation.len() {
-    match &conversation[index] {
+  let mut rest = conversation;
+  while let [message, ..] = rest {
+    let used = match message {
       Message::UpstreamCompaction { .. } => {
         return Err(Error::Build(
           "the anthropic messages wire cannot carry a compacted conversation".to_owned(),
@@ -311,144 +257,134 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
         if let Some(call_id) = pending.first() {
           return Err(build_missing_result_error(call_id));
         }
-        push_turn(&mut turns, "user", render_user_blocks(content)?);
-        index += 1;
+        turns.push("user", render_user_blocks(content)?);
+        1
       }
       Message::Reasoning { .. } | Message::Assistant { .. } | Message::ToolUse { .. } => {
         if let Some(call_id) = pending.first() {
           return Err(build_missing_result_error(call_id));
         }
-        let mut blocks: Vec<Value> = Vec::new();
-        let mut used = 0;
-        let mut seen_content = false;
-        let mut opens_with_thinking = false;
-        while let Some(message) = conversation.get(index + used) {
-          match message {
-            Message::Reasoning { plaintext, signature: proof, ciphertext, opaque_kind, .. } => {
-              let unsigned_plaintext = opaque_kind.is_none() && proof.is_empty() && ciphertext.is_empty();
-              let signature = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::AnthropicSignature, proof);
-              let ciphertext = ReasoningOpaqueKind::matching(*opaque_kind, ReasoningOpaqueKind::AnthropicRedacted, ciphertext);
-              // Only same-format proofs are valid. A foreign signed block cannot be rewritten
-              // as unsigned native thinking without risking an upstream signature mismatch.
-              let plaintext = if unsigned_plaintext
-                || *opaque_kind == Some(ReasoningOpaqueKind::AnthropicSignature)
-              {
-                plaintext.as_str()
-              } else {
-                ""
-              };
-              if let Some(block) = render_reasoning_block(plaintext, signature, ciphertext) {
-                // Thinking after content is where output continuation resumed a capped response.
-                // The turn keeps the thinking it opened with and drops the resumed one; a turn
-                // that opened without any takes it at the front, since a turn that calls tools
-                // has to open with thinking.
-                if !seen_content {
-                  blocks.push(block);
-                  opens_with_thinking = true;
-                } else if !opens_with_thinking {
-                  blocks.insert(0, block);
-                  opens_with_thinking = true;
-                }
-              }
-            }
-            Message::Assistant { content, .. } => {
-              seen_content = true;
-              let mut rendered = render_assistant_blocks(content)?;
-              // Consecutive assistant messages are the segments of one continued response: the
-              // resumed text joins the text it continues.
-              if let (Some(last), Some(first)) = (blocks.last_mut(), rendered.first())
-                && last["type"] == "text"
-                && first["type"] == "text"
-              {
-                let joined = format!(
-                  "{}{}",
-                  last["text"].as_str().unwrap_or_default(),
-                  first["text"].as_str().unwrap_or_default()
-                );
-                last["text"] = json!(joined);
-                rendered.remove(0);
-              }
-              blocks.extend(rendered);
-            }
-            Message::ToolUse { call_id, name, arguments, .. } => {
-              seen_content = true;
-              pending.push(call_id.clone());
-              blocks
-                .push(json!({"type": "tool_use", "id": call_id, "name": name, "input": arguments}));
-            }
-            _ => break,
-          }
-          used += 1;
-        }
-        push_turn(&mut turns, "assistant", blocks);
-        index += used;
+        let (blocks, used) = render_assistant_turn(rest, &mut pending)?;
+        turns.push("assistant", blocks);
+        used
       }
       Message::ToolResult { .. } => {
-        if pending.is_empty() {
-          return Err(Error::Build(
-            "a tool result has no matching tool call on the anthropic messages wire".to_owned(),
-          ));
-        }
-        let mut blocks: Vec<Value> = Vec::new();
-        let mut used = 0;
-        while let Some(Message::ToolResult { call_id, content, .. }) =
-          conversation.get(index + used)
-        {
-          match pending.get(used) {
-            Some(expected) if expected == call_id => {}
-            Some(expected) => {
-              return Err(Error::Build(format!(
-                "tool result for `{call_id}` does not match the expected tool call `{expected}` on the anthropic messages wire"
-              )));
-            }
-            None => {
-              return Err(Error::Build(format!(
-                "tool result for `{call_id}` has no matching tool call on the anthropic messages wire"
-              )));
-            }
-          }
-          blocks.push(render_tool_result(call_id, content));
-          used += 1;
-        }
-        if used != pending.len() {
-          return Err(build_missing_result_error(&pending[used]));
-        }
+        let blocks = render_tool_results(rest, &pending)?;
+        let used = blocks.len();
         pending.clear();
-        push_turn(&mut turns, "user", blocks);
-        index += used;
+        turns.push("user", blocks);
+        used
       }
-    }
+    };
+    rest = &rest[used..];
   }
   if let Some(call_id) = pending.first() {
     return Err(build_missing_result_error(call_id));
   }
-  match turns.first() {
-    Some((role, _)) if role != "user" => Err(Error::Build(
-      "the first turn must be a user message on the anthropic messages wire".to_owned(),
-    )),
-    _ => {
-      Ok(turns.into_iter().map(|(role, blocks)| json!({"role": role, "content": blocks})).collect())
+  turns.finish_from_user(
+    "content",
+    "the first turn must be a user message on the anthropic messages wire",
+  )
+}
+
+/// The assistant turn the run of reasoning, text and calls at the head of `messages` makes, and how
+/// many messages it spans; each call joins `pending` until its result arrives.
+fn render_assistant_turn(
+  messages: &[Message],
+  pending: &mut Vec<String>,
+) -> Result<(Vec<Value>, usize), Error> {
+  let mut blocks: Vec<Value> = Vec::new();
+  let mut used = 0;
+  let mut seen_content = false;
+  let mut opens_with_thinking = false;
+  for message in messages {
+    match message {
+      Message::Reasoning { plaintext, signature, ciphertext, opaque_kind, .. } => {
+        if let Some(block) =
+          render_replayed_reasoning(plaintext, signature, ciphertext, *opaque_kind)
+        {
+          // Thinking after content is where output continuation resumed a capped response. The
+          // turn keeps the thinking it opened with and drops the resumed one; a turn that opened
+          // without any takes it at the front, since a turn that calls tools has to open with
+          // thinking.
+          if !seen_content {
+            blocks.push(block);
+            opens_with_thinking = true;
+          } else if !opens_with_thinking {
+            blocks.insert(0, block);
+            opens_with_thinking = true;
+          }
+        }
+      }
+      Message::Assistant { content, .. } => {
+        seen_content = true;
+        append_continued_text(&mut blocks, render_assistant_blocks(content)?);
+      }
+      Message::ToolUse { call_id, name, arguments, .. } => {
+        seen_content = true;
+        pending.push(call_id.clone());
+        blocks.push(json!({"type": "tool_use", "id": call_id, "name": name, "input": arguments}));
+      }
+      _ => break,
     }
+    used += 1;
   }
+  Ok((blocks, used))
+}
+
+/// Appends one assistant message's blocks to its turn. Consecutive assistant messages are the
+/// segments of one continued response: the resumed text joins the text it continues.
+fn append_continued_text(blocks: &mut Vec<Value>, mut rendered: Vec<Value>) {
+  if let (Some(last), Some(first)) = (blocks.last_mut(), rendered.first())
+    && last["type"] == "text"
+    && first["type"] == "text"
+  {
+    let joined = format!(
+      "{}{}",
+      last["text"].as_str().unwrap_or_default(),
+      first["text"].as_str().unwrap_or_default()
+    );
+    last["text"] = json!(joined);
+    rendered.remove(0);
+  }
+  blocks.extend(rendered);
+}
+
+/// The results at the head of `results`, which must answer the `pending` calls one by one and in
+/// order, as the blocks of the user turn that follows the calls.
+fn render_tool_results(results: &[Message], pending: &[String]) -> Result<Vec<Value>, Error> {
+  if pending.is_empty() {
+    return Err(Error::Build(
+      "a tool result has no matching tool call on the anthropic messages wire".to_owned(),
+    ));
+  }
+  let mut blocks: Vec<Value> = Vec::new();
+  while let Some(Message::ToolResult { call_id, content, .. }) = results.get(blocks.len()) {
+    match pending.get(blocks.len()) {
+      Some(expected) if expected == call_id => {}
+      Some(expected) => {
+        return Err(Error::Build(format!(
+          "tool result for `{call_id}` does not match the expected tool call `{expected}` on the anthropic messages wire"
+        )));
+      }
+      None => {
+        return Err(Error::Build(format!(
+          "tool result for `{call_id}` has no matching tool call on the anthropic messages wire"
+        )));
+      }
+    }
+    blocks.push(render_tool_result(call_id, content));
+  }
+  if blocks.len() != pending.len() {
+    return Err(build_missing_result_error(&pending[blocks.len()]));
+  }
+  Ok(blocks)
 }
 
 fn build_missing_result_error(call_id: &str) -> Error {
   Error::Build(format!(
     "tool call `{call_id}` is not followed by its tool result on the anthropic messages wire"
   ))
-}
-
-fn push_turn(turns: &mut Vec<(String, Vec<Value>)>, role: &str, mut blocks: Vec<Value>) {
-  if blocks.is_empty() {
-    return;
-  }
-  if let Some((last_role, last_blocks)) = turns.last_mut()
-    && last_role == role
-  {
-    last_blocks.append(&mut blocks);
-    return;
-  }
-  turns.push((role.to_owned(), blocks));
 }
 
 fn render_user_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
@@ -486,6 +422,38 @@ fn render_assistant_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error
   Ok(blocks)
 }
 
+/// One stored reasoning message as the thinking block it replays as, or nothing when it carries
+/// nothing this wire takes back.
+///
+/// Only same-format proofs are valid. A foreign signed block cannot be rewritten as unsigned native
+/// thinking without risking an upstream signature mismatch, so it is omitted, while unsigned
+/// plaintext thinking stays available to the compatible endpoints.
+fn render_replayed_reasoning(
+  plaintext: &str,
+  signature: &str,
+  ciphertext: &str,
+  opaque_kind: Option<ReasoningOpaqueKind>,
+) -> Option<Value> {
+  let unsigned_plaintext = opaque_kind.is_none() && signature.is_empty() && ciphertext.is_empty();
+  let signature = ReasoningOpaqueKind::material_if_kind(
+    opaque_kind,
+    ReasoningOpaqueKind::AnthropicSignature,
+    signature,
+  );
+  let ciphertext = ReasoningOpaqueKind::material_if_kind(
+    opaque_kind,
+    ReasoningOpaqueKind::AnthropicRedacted,
+    ciphertext,
+  );
+  let plaintext =
+    if unsigned_plaintext || opaque_kind == Some(ReasoningOpaqueKind::AnthropicSignature) {
+      plaintext
+    } else {
+      ""
+    };
+  render_reasoning_block(plaintext, signature, ciphertext)
+}
+
 fn render_reasoning_block(plaintext: &str, signature: &str, ciphertext: &str) -> Option<Value> {
   if !ciphertext.is_empty() {
     return Some(json!({"type": "redacted_thinking", "data": ciphertext}));
@@ -501,14 +469,10 @@ fn render_reasoning_block(plaintext: &str, signature: &str, ciphertext: &str) ->
 }
 
 fn render_tool_result(call_id: &str, content: &Value) -> Value {
-  let content = match content {
-    Value::String(text) => text.clone(),
-    other => other.to_string(),
-  };
   json!({
     "type": "tool_result",
     "tool_use_id": call_id,
-    "content": content,
+    "content": tool_result_text(content),
   })
 }
 

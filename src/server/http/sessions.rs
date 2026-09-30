@@ -1,16 +1,17 @@
+//! Sessions over HTTP: the list, creating and reading one, its settings, running it, its live
+//! events, and pages of its stored lists - entries, queue, generations and model calls.
 use crate::server::{
   app::App,
+  config::ShellSettings,
   error::{ApiError, blocking},
-  session::{CreateSession, SessionSlot},
+  management::SessionQuery,
+  session::{CreateSession, Operation, ToolChanges},
 };
 use crate::{
-  executor::ExecutionControl,
   protocol::Message,
-  session::{
-    EntryId, SessionConfig,
-    history::query::{HistoryFilter, HistoryPageRequest, HistorySearch},
-  },
+  session::SessionConfig,
   storage::{ReadList, StoredValue},
+  tool::ask_user::{Delivery, late_answer_message},
 };
 use axum::{
   Json,
@@ -24,6 +25,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{convert::Infallible, sync::Arc};
+use tokio::sync::broadcast::error::RecvError;
 
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -36,7 +38,7 @@ impl Default for Page {
     Self { start: 0, limit: 50 }
   }
 }
-pub async fn read_page<T: StoredValue + Serialize>(
+async fn read_page<T: StoredValue + Serialize>(
   list: ReadList<T>,
   page: Page,
 ) -> Result<Json<Value>, ApiError> {
@@ -48,10 +50,10 @@ pub async fn read_page<T: StoredValue + Serialize>(
 }
 pub async fn list(
   State(app): State<Arc<App>>,
-  Query(query): Query<crate::server::management::SessionQuery>,
+  Query(query): Query<SessionQuery>,
 ) -> Result<Json<Value>, ApiError> {
-  let index = app.index.clone();
-  blocking(move || Ok(Json(index.list(query)?))).await
+  let management = app.management.clone();
+  blocking(move || Ok(Json(management.list(query)?))).await
 }
 pub async fn create(
   State(app): State<Arc<App>>,
@@ -70,11 +72,10 @@ pub async fn enqueue(
   Path(id): Path<String>,
   Json(mut message): Json<Message>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-  app.require_open()?;
+  app.lifecycle.require_open()?;
   message.normalize_new_input();
   let slot = app.get_session(&id).await?;
-  let owner = slot.clone();
-  let entry = blocking(move || Ok(owner.handle.enqueue_message(message)?)).await?;
+  let entry = slot.enqueue(message).await?;
   slot.touch()?;
   Ok((StatusCode::CREATED, Json(json!({"entry":entry}))))
 }
@@ -83,30 +84,27 @@ pub async fn set_config(
   Path(id): Path<String>,
   Json(config): Json<SessionConfig>,
 ) -> Result<Json<Value>, ApiError> {
-  app.require_open()?;
+  app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
   let config = slot.configure_tools(config)?;
-  let mut session =
-    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
+  let mut session = slot.lock_idle_or_conflict().await?;
   blocking(move || {
     slot.require_live()?;
     session.set_config(config)?;
-    slot.update_snapshot(&session);
-    slot.persist_index()?;
-    Ok(Json(slot.describe()))
+    Ok(Json(slot.publish(&session)?))
   })
   .await
 }
-/// Body: `{"shell", "ask_user", "mcp"}`, each optional. Turns the session's optional tools on or off.
+/// Body: `{"shell", "ask_user", "mcp", "web_search"}`, each optional. Turns the session's optional
+/// tools on or off.
 pub async fn set_tools(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
-  Json(changes): Json<crate::server::config::ToolChanges>,
+  Json(changes): Json<ToolChanges>,
 ) -> Result<Json<Value>, ApiError> {
-  app.require_open()?;
+  app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
-  let mut session =
-    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
+  let mut session = slot.lock_idle_or_conflict().await?;
   slot.require_live()?;
   slot.switch_tools(changes).await?;
   // The tool list is rebuilt from the switches, so a tool just switched off is not kept.
@@ -115,9 +113,7 @@ pub async fn set_tools(
   let config = slot.configure_tools(config)?;
   blocking(move || {
     session.set_config(config)?;
-    slot.update_snapshot(&session);
-    slot.persist_index()?;
-    Ok(Json(slot.describe()))
+    Ok(Json(slot.publish(&session)?))
   })
   .await
 }
@@ -136,10 +132,8 @@ pub async fn answer(
   Path(id): Path<String>,
   Json(input): Json<Answer>,
 ) -> Result<Json<Value>, ApiError> {
-  use crate::tool::ask_user::{Delivery, late_answer_message};
-  app.require_open()?;
+  app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
-  slot.require_live()?;
   let delivered =
     match slot.tools.ask_user.answer(&input.call_id, input.answers.as_deref(), input.skip)? {
       Delivery::Now => "now",
@@ -147,10 +141,8 @@ pub async fn answer(
       // The call timed out and the agent moved on: the answers follow as a message, like a
       // background command's report, and wake the session.
       Delivery::Later { questions, answers } => {
-        let message = late_answer_message(&input.call_id, &questions, &answers);
-        let owner = slot.clone();
-        blocking(move || Ok(owner.handle.enqueue_message(message)?)).await?;
-        crate::server::http::content::schedule(app.clone(), slot.clone());
+        slot.enqueue(late_answer_message(&input.call_id, &questions, &answers)).await?;
+        slot.schedule(&app);
         "later"
       }
     };
@@ -161,11 +153,11 @@ pub async fn answer(
 pub async fn set_shell(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
-  Json(settings): Json<Option<crate::server::config::ShellSettings>>,
+  Json(settings): Json<Option<ShellSettings>>,
 ) -> Result<Json<Value>, ApiError> {
-  app.require_open()?;
+  app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
-  let global = app.shell.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+  let global = app.shell.read().unwrap().clone();
   blocking(move || {
     slot.require_live()?;
     slot.set_shell(settings, &global)?;
@@ -178,16 +170,13 @@ pub async fn set_metadata(
   Path(id): Path<String>,
   Json(metadata): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-  app.require_open()?;
+  app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
-  let mut session =
-    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
+  let mut session = slot.lock_idle_or_conflict().await?;
   blocking(move || {
     slot.require_live()?;
     session.set_metadata(metadata)?;
-    slot.update_snapshot(&session);
-    slot.persist_index()?;
-    Ok(Json(slot.describe()))
+    Ok(Json(slot.publish(&session)?))
   })
   .await
 }
@@ -195,52 +184,20 @@ pub async fn run(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-  start(app, id, false).await
+  start(app, id, Operation::Run).await
 }
 pub async fn compact(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-  start(app, id, true).await
+  start(app, id, Operation::Compact).await
 }
 async fn start(
   app: Arc<App>,
   id: String,
-  compact: bool,
+  operation: Operation,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-  let slot = app.get_session(&id).await?;
-  let (provider, provider_id) = slot.execution_provider(&app)?;
-  let mut session =
-    slot.lock_idle().await.ok_or_else(|| ApiError::conflict("session is running"))?;
-  slot.require_live()?;
-  if !session.get_state().is_stable() {
-    if slot.control.lock().unwrap().is_none() {
-      session.settle_interrupted().map_err(ApiError::internal)?;
-      slot.update_snapshot(&session);
-    } else {
-      return Err(ApiError::conflict("session has unfinished execution; inspect persisted state"));
-    }
-  }
-  if compact && session.get_config().compaction.is_none() {
-    return Err(ApiError::bad_request("session has no compaction config"));
-  }
-  let closing = app.closing.lock().unwrap();
-  if *closing {
-    return Err(ApiError::conflict("server is shutting down"));
-  }
-  if !compact {
-    session.resume()?;
-  }
-  slot.update_snapshot(&session);
-  slot.persist_index()?;
-  let control = ExecutionControl::new();
-  *slot.control.lock().unwrap() = Some(control.clone());
-  {
-    let mut status = slot.status.lock().unwrap();
-    status["running"] = json!(true);
-    status.as_object_mut().unwrap().remove("state");
-  }
-  app.tasks.spawn(slot.execute(provider, provider_id, session, control, compact));
+  app.get_session(&id).await?.start(&app, operation).await?;
   Ok((StatusCode::ACCEPTED, Json(json!({"accepted":true}))))
 }
 pub async fn interrupt(
@@ -248,20 +205,10 @@ pub async fn interrupt(
   Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
   let slot = app.get_session(&id).await?;
-  let mut requested = slot.interrupt();
-  if !requested {
-    if let Ok(mut session) = slot.session.try_lock() {
-      if !session.get_state().is_stable() {
-        session.settle_interrupted().map_err(ApiError::internal)?;
-        slot.update_snapshot(&session);
-        let _ = slot.persist_index();
-        requested = true;
-      }
-    }
-  }
-  // The scheduler waits for the cancelled run to release the session, then consumes
-  // pending inputs. interrupt() invalidates older schedulers; only this fresh one resumes.
-  super::content::schedule(app, slot);
+  let requested = slot.interrupt_or_settle()?;
+  // The scheduler waits for the cancelled run to release the session, then consumes pending
+  // inputs. The interrupt invalidated older schedulers; only this fresh one resumes.
+  slot.schedule(&app);
   Ok(Json(json!({"requested": requested})))
 }
 pub async fn entries(
@@ -269,34 +216,31 @@ pub async fn entries(
   Path(id): Path<String>,
   Query(page): Query<Page>,
 ) -> Result<Json<Value>, ApiError> {
-  read_page(app.get_session(&id).await?.entries.clone(), page).await
+  read_page(app.get_session(&id).await?.reader.get_entries(), page).await
 }
 pub async fn queue(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Query(page): Query<Page>,
 ) -> Result<Json<Value>, ApiError> {
-  let slot = app.get_session(&id).await?;
-  let list = slot.queue.lock().unwrap().clone();
-  read_page(list, page).await
+  read_page(app.get_session(&id).await?.reader.get_message_queue(), page).await
 }
 pub async fn generations(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Query(page): Query<Page>,
 ) -> Result<Json<Value>, ApiError> {
-  read_page(app.get_session(&id).await?.generations.clone(), page).await
+  read_page(app.get_session(&id).await?.reader.get_generations(), page).await
 }
 pub async fn generation_entries(
   State(app): State<Arc<App>>,
   Path((id, generation)): Path<(String, u64)>,
   Query(page): Query<Page>,
 ) -> Result<Json<Value>, ApiError> {
-  let slot = app.get_session(&id).await?;
-  let storage = app.storage.clone();
+  let reader = app.get_session(&id).await?.reader.clone();
   let list = blocking(move || {
-    let generation = slot.generations.get(generation)?.ok_or_else(ApiError::not_found)?;
-    Ok(storage.open_list::<EntryId>(&generation.entries).read_only())
+    let generation = reader.get_generations().get(generation)?.ok_or_else(ApiError::not_found)?;
+    Ok(reader.get_generation_entry_ids(generation.id)?)
   })
   .await?;
   read_page(list, page).await
@@ -306,68 +250,20 @@ pub async fn calls(
   Path(id): Path<String>,
   Query(page): Query<Page>,
 ) -> Result<Json<Value>, ApiError> {
-  read_page(app.get_session(&id).await?.calls.clone(), page).await
+  read_page(app.get_session(&id).await?.reader.get_model_calls(), page).await
 }
-#[derive(Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
-pub struct HistoryQuery {
-  filter: HistoryFilter,
-  page: HistoryPageRequest,
-}
-pub async fn query_history(
-  State(app): State<Arc<App>>,
-  Path(id): Path<String>,
-  Json(query): Json<HistoryQuery>,
-) -> Result<Json<Value>, ApiError> {
-  let reader = app.get_session(&id).await?.history.clone();
-  blocking(move || Ok(Json(json!(reader.query_history(query.filter, query.page)?)))).await
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Search {
-  #[serde(default)]
-  filter: HistoryFilter,
-  query: HistorySearch,
-}
-pub async fn search_history(
-  State(app): State<Arc<App>>,
-  Path(id): Path<String>,
-  Json(query): Json<Search>,
-) -> Result<Json<Value>, ApiError> {
-  let reader = app.get_session(&id).await?.history.clone();
-  blocking(move || Ok(Json(json!(reader.search_history(query.query, query.filter)?)))).await
-}
-#[derive(Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
-pub struct Around {
-  before: usize,
-  after: usize,
-}
-pub async fn read_history(
-  State(app): State<Arc<App>>,
-  Path((id, sequence)): Path<(String, u64)>,
-  Query(around): Query<Around>,
-) -> Result<Json<Value>, ApiError> {
-  let reader = app.get_session(&id).await?.history.clone();
-  blocking(move || {
-    if reader.read_history_item(sequence)?.is_none() {
-      return Err(ApiError::not_found());
-    }
-    Ok(Json(json!(reader.read_history_around(sequence, around.before, around.after)?)))
-  })
-  .await
-}
+/// A `snapshot` of the session and its live preview first, then each change. A client that fell
+/// behind gets a fresh snapshot; the stream ends after reporting the session's deletion.
 pub async fn events(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-  let slot: Arc<SessionSlot> = app.get_session(&id).await?;
+  let slot = app.get_session(&id).await?;
   let (receiver, snapshot) = slot.subscribe_live();
   let snapshot = Some(snapshot);
-  // The stream ends after reporting the session's deletion: it holds the slot, and nothing else
-  // would ever be sent on it.
+  // It ends there because it holds the slot, and nothing else would ever be sent on it.
   let stream = futures_util::stream::unfold(
-    (receiver, app.stop.clone(), snapshot, slot, false),
+    (receiver, app.lifecycle.stop.clone(), snapshot, slot, false),
     |(mut receiver, stop, mut snapshot, slot, deleted)| async move {
       if deleted {
         return None;
@@ -376,15 +272,15 @@ pub async fn events(
         value
       } else {
         tokio::select! {
-          _=stop.cancelled()=>return None,
-          result=receiver.recv()=>match result {
-            Ok(value)=>value,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>{
+          _ = stop.cancelled() => return None,
+          result = receiver.recv() => match result {
+            Ok(value) => value,
+            Err(RecvError::Lagged(_)) => {
               let (fresh, snapshot) = slot.subscribe_live();
               receiver = fresh;
               snapshot
-            },
-            Err(tokio::sync::broadcast::error::RecvError::Closed)=>return None,
+            }
+            Err(RecvError::Closed) => return None,
           }
         }
       };

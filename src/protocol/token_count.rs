@@ -1,5 +1,12 @@
-//! Provider-side input token counting for the same Request used to call a model.
-//! Availability is explicitly configured; a compatible generation API need not support counting.
+//! A provider's count of the input tokens of the same [`Request`](crate::protocol::Request) a model
+//! call would send, made without generating anything.
+//!
+//! Counting is its own endpoint beside the generation one, and not every service that generates
+//! can count: availability is configured explicitly, and a pairing of a count protocol with a
+//! model-use protocol this crate does not know is refused before any request. The count body reuses
+//! the model-use renderer of the same wire - tools, reasoning replay and all - so what is counted is
+//! what would be sent; [`request`] renders it and [`response`] reads the count back.
+
 pub mod request;
 pub mod response;
 
@@ -7,24 +14,30 @@ use crate::protocol::{
   error::Error,
   model_use::{
     ModelUseProtocol,
-    request::{anthropic_messages::MessagesApiCompatMode, openai_responses::ResponsesDeployment},
+    mode::{MessagesApiCompatMode, ResponsesDeployment},
   },
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TokenCountProtocol {
-  OpenAiResponses,
-  AnthropicMessages,
-  GoogleGenerateContent,
-}
-impl TokenCountProtocol {
-  pub const fn get_id(self) -> &'static str {
-    match self {
-      Self::OpenAiResponses => "openai_responses",
-      Self::AnthropicMessages => "anthropic_messages",
-      Self::GoogleGenerateContent => "google_generate_content",
-    }
+text_id_enum! {
+  /// The count endpoints this crate can ask, each beside the generation wire it counts for.
+  #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+  pub enum TokenCountProtocol (unknown: "unknown token-count protocol `{}`") {
+    /// OpenAI Responses' `input_tokens` endpoint, on the platform deployment.
+    OpenAiResponses => "openai_responses",
+    /// Anthropic Messages' `count_tokens` endpoint, on Anthropic's own service.
+    AnthropicMessages => "anthropic_messages",
+    /// Gemini's `countTokens` verb, beside `generateContent`.
+    GoogleGenerateContent => "google_generate_content",
   }
+}
+
+impl TokenCountProtocol {
+  /// Refuses a pairing with a model-use protocol or deployment this count endpoint does not
+  /// serve, before anything is sent.
+  ///
+  /// # Errors
+  ///
+  /// [`Error::Unsupported`] for such a pairing.
   pub fn validate_model_use(self, model_use: ModelUseProtocol) -> Result<(), Error> {
     let supported = match (self, model_use) {
       (Self::OpenAiResponses, ModelUseProtocol::OpenAiResponses(mode)) => {
@@ -47,7 +60,11 @@ impl TokenCountProtocol {
       ))
     }
   }
-  /// Derive a count endpoint from the configured, model-resolved generation endpoint.
+  /// The count endpoint's path, derived from the configured, model-resolved generation path.
+  ///
+  /// # Errors
+  ///
+  /// [`Error::Build`] when a Gemini path is not a `generateContent` one.
   pub fn resolve_path(self, model_path: &str) -> Result<String, Error> {
     let path = model_path.trim_end_matches('/');
     match self {

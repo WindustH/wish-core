@@ -1,6 +1,14 @@
 //! Interrupted output and its conservative projection into replayable protocol messages.
-use super::{BlockKind, ContentBlock, Message, StopReason, StreamAccumulator, Usage};
-use crate::protocol::{account_state::AccountState, model_use::ModelUseProtocol};
+//!
+//! A stream that did not end normally leaves blocks behind in every state: complete, cut short, or
+//! never closed. Each keeps its raw content for inspection beside a [`ReplayDisposition`], and only
+//! the replayable ones become the context fragment a caller can append - tool calls paired with the
+//! results their execution state allows, and reasoning only where the producing protocol's rules
+//! ([`ModelUseProtocol::get_reasoning_replay`]) say it can go back.
+use super::{Block, BlockKind, ContentBlock, Message, StopReason, StreamAccumulator, Usage};
+use crate::protocol::account_state::AccountState;
+use crate::protocol::model_use::tool::parse_tool_arguments;
+use crate::protocol::model_use::{ModelUseProtocol, ReasoningReplay};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
@@ -80,7 +88,7 @@ pub struct PartialResponse {
 }
 
 impl PartialResponse {
-  /// Buffered replies carry no per-block completion certificates. Conservatively discard tool
+  /// Buffered replies carry no per-block completions. Conservatively discard tool
   /// calls and opaque reasoning at an output limit, while preserving text and transparent thought.
   pub fn from_output_limit(
     response: super::Response,
@@ -89,6 +97,7 @@ impl PartialResponse {
     if response.stop_reason != StopReason::MaxOutputLengthExceeded {
       return Err(crate::Error::Build("expected an output-limited response".into()));
     }
+    let rules = protocol.map(ModelUseProtocol::get_reasoning_replay).unwrap_or_default();
     let blocks: Vec<_> = response
       .messages
       .into_iter()
@@ -97,7 +106,7 @@ impl PartialResponse {
         let replay = match &message {
           Message::Assistant { .. } => ReplayDisposition::Replayable,
           Message::Reasoning { plaintext, signature, ciphertext, .. } => {
-            classify_reasoning_replay(protocol, false, plaintext, signature, ciphertext)
+            rules.classify(false, plaintext, signature, ciphertext)
           }
           _ => ReplayDisposition::Incomplete,
         };
@@ -154,11 +163,6 @@ impl PartialResponse {
   pub fn get_replay_messages(&self) -> &[Message] {
     &self.messages
   }
-
-  /// Transfer the context fragment while keeping the original partial data for inspection.
-  pub fn take_replay_messages(&mut self) -> Vec<Message> {
-    std::mem::take(&mut self.messages)
-  }
 }
 
 fn build_context_fragment(blocks: &[PartialBlock], tools: ToolExecutionState) -> Vec<Message> {
@@ -200,13 +204,10 @@ fn build_context_fragment(blocks: &[PartialBlock], tools: ToolExecutionState) ->
   messages
 }
 
+/// A retained call's arguments, when they are a JSON object. Valid JSON is not completion: the
+/// block's explicit completion is still required by the caller of this helper.
 fn parse_arguments(arguments: &str) -> Option<Value> {
-  // An explicit block completion is still required by the caller of this helper.
-  if arguments.trim().is_empty() {
-    Some(serde_json::json!({}))
-  } else {
-    serde_json::from_str::<Value>(arguments).ok().filter(Value::is_object)
-  }
+  parse_tool_arguments(arguments).ok().filter(Value::is_object)
 }
 
 impl StreamAccumulator {
@@ -243,63 +244,13 @@ impl StreamAccumulator {
   }
 
   fn build_partial_response(self, reason: IncompleteReason) -> PartialResponse {
+    let rules = self.replay;
     let mut blocks = BTreeMap::new();
-    let mut ids = HashSet::new();
+    let mut call_ids = HashSet::new();
     for (index, block) in self.blocks {
-      let (content, replay) = match block.kind {
-        BlockKind::Text => (
-          PartialContent::Message(Message::Assistant {
-            metadata: Default::default(),
-            content: vec![ContentBlock::Text { text: block.text }],
-          }),
-          ReplayDisposition::Replayable,
-        ),
-        BlockKind::Reasoning => {
-          let replay = classify_reasoning_replay(
-            self.protocol,
-            block.complete,
-            &block.plaintext,
-            &block.signature,
-            &block.ciphertext,
-          );
-          (
-            PartialContent::Message(Message::Reasoning {
-              metadata: Default::default(),
-              opaque_kind: self.protocol.and_then(|protocol| super::reasoning_opaque_kind(
-                protocol, &block.signature, &block.ciphertext, block.replay_item.as_ref(),
-              )),
-              replay_item: block.replay_item,
-              display: block.display.unwrap_or_else(|| block.plaintext.clone()),
-              plaintext: block.plaintext,
-              signature: block.signature,
-              ciphertext: block.ciphertext,
-            }),
-            replay,
-          )
-        }
-        BlockKind::ToolUse => {
-          let valid =
-            block.call_id.as_ref().is_some_and(|id| !id.is_empty() && ids.insert(id.clone()))
-              && block.name.as_ref().is_some_and(|name| !name.is_empty())
-              && parse_arguments(&block.arguments).is_some();
-          let replay = if !block.complete {
-            ReplayDisposition::Incomplete
-          } else if valid {
-            ReplayDisposition::Replayable
-          } else {
-            ReplayDisposition::InvalidToolCall
-          };
-          (
-            PartialContent::ToolCall {
-              call_id: block.call_id,
-              name: block.name,
-              arguments: block.arguments,
-            },
-            replay,
-          )
-        }
-      };
-      blocks.insert(index, PartialBlock { index, closed: block.closed, content, replay });
+      let closed = block.closed;
+      let (content, replay) = classify_block(block, &rules, &mut call_ids);
+      blocks.insert(index, PartialBlock { index, closed, content, replay });
     }
     for (index, message) in self.items {
       blocks.insert(
@@ -313,29 +264,8 @@ impl StreamAccumulator {
       );
     }
     let mut blocks: Vec<_> = blocks.into_values().collect();
-    if matches!(
-      self.protocol,
-      Some(ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent)
-    ) {
-      // Signature-only parts seal the immediately following replayable model part. Never let a
-      // dropped part cause the signature to migrate to some later text or tool call.
-      for index in 0..blocks.len() {
-        if matches!(&blocks[index].content, PartialContent::Message(Message::Reasoning { plaintext, signature, .. })
-          if plaintext.is_empty() && !signature.is_empty())
-        {
-          let paired = blocks.get(index + 1).is_some_and(|next| {
-            next.replay == ReplayDisposition::Replayable
-              && matches!(
-                next.content,
-                PartialContent::ToolCall { .. }
-                  | PartialContent::Message(Message::Assistant { .. })
-              )
-          });
-          if !paired {
-            blocks[index].replay = ReplayDisposition::MissingSignedPart;
-          }
-        }
-      }
+    if rules.seals_next_part {
+      mark_unsealed_signatures(&mut blocks);
     }
     let messages = match reason {
       IncompleteReason::Interrupted { tools } => build_context_fragment(&blocks, tools),
@@ -355,52 +285,69 @@ impl StreamAccumulator {
   }
 }
 
-fn classify_reasoning_replay(
-  protocol: Option<ModelUseProtocol>,
-  complete: bool,
-  plaintext: &str,
-  signature: &str,
-  ciphertext: &str,
-) -> ReplayDisposition {
-  use crate::protocol::model_use::request::{
-    anthropic_messages::MessagesApiCompatMode, openai_responses::ReasoningForm,
-  };
-  // Transparency is determined by the wire's replay representation, not by visible text or
-  // by a signature/ciphertext that has not arrived yet. Display summaries are separate data.
-  let transparent = match protocol {
-    Some(ModelUseProtocol::OpenAiResponses(mode)) => {
-      mode.reasoning_form == ReasoningForm::Plaintext
+/// One streamed block as partial content, and whether it can be replayed: text always, reasoning by
+/// the protocol's `rules`, and a tool call only once complete, with a fresh non-empty call id (one
+/// the `call_ids` seen so far do not have), a name and object arguments.
+fn classify_block(
+  block: Block,
+  rules: &ReasoningReplay,
+  call_ids: &mut HashSet<String>,
+) -> (PartialContent, ReplayDisposition) {
+  match block.kind {
+    BlockKind::Text => (
+      PartialContent::Message(Message::Assistant {
+        metadata: Default::default(),
+        content: vec![ContentBlock::Text { text: block.text }],
+      }),
+      ReplayDisposition::Replayable,
+    ),
+    BlockKind::Reasoning => {
+      let replay =
+        rules.classify(block.complete, &block.plaintext, &block.signature, &block.ciphertext);
+      (PartialContent::Message(block.into_reasoning(rules)), replay)
     }
-    Some(ModelUseProtocol::OpenAiChat(mode)) => !mode.is_plain(),
-    Some(ModelUseProtocol::AnthropicMessages(mode)) => mode != MessagesApiCompatMode::Official,
-    Some(ModelUseProtocol::MistralConversations) => true,
-    _ => false,
-  };
-  if transparent && signature.is_empty() && ciphertext.is_empty() && !plaintext.is_empty() {
-    return ReplayDisposition::Replayable;
+    BlockKind::ToolUse => {
+      let valid =
+        block.call_id.as_ref().is_some_and(|id| !id.is_empty() && call_ids.insert(id.clone()))
+          && block.name.as_ref().is_some_and(|name| !name.is_empty())
+          && parse_arguments(&block.arguments).is_some();
+      let replay = if !block.complete {
+        ReplayDisposition::Incomplete
+      } else if valid {
+        ReplayDisposition::Replayable
+      } else {
+        ReplayDisposition::InvalidToolCall
+      };
+      (
+        PartialContent::ToolCall {
+          call_id: block.call_id,
+          name: block.name,
+          arguments: block.arguments,
+        },
+        replay,
+      )
+    }
   }
-  if !complete {
-    return ReplayDisposition::Incomplete;
+}
+
+/// Signature-only parts seal the immediately following replayable model part. Never let a dropped
+/// part cause the signature to migrate to some later text or tool call: a signature whose part is
+/// not right behind it is marked as missing it.
+fn mark_unsealed_signatures(blocks: &mut [PartialBlock]) {
+  for index in 0..blocks.len() {
+    if matches!(&blocks[index].content, PartialContent::Message(Message::Reasoning { plaintext, signature, .. })
+      if plaintext.is_empty() && !signature.is_empty())
+    {
+      let paired = blocks.get(index + 1).is_some_and(|next| {
+        next.replay == ReplayDisposition::Replayable
+          && matches!(
+            next.content,
+            PartialContent::ToolCall { .. } | PartialContent::Message(Message::Assistant { .. })
+          )
+      });
+      if !paired {
+        blocks[index].replay = ReplayDisposition::MissingSignedPart;
+      }
+    }
   }
-  let replayable = match protocol {
-    Some(ModelUseProtocol::OpenAiResponses(mode)) => match mode.reasoning_form {
-      ReasoningForm::Plaintext => !plaintext.is_empty(),
-      ReasoningForm::Ciphertext => !ciphertext.is_empty(),
-      ReasoningForm::NoSendBack => false,
-    },
-    // An opaque state can arrive without visible text; the text is not completeness evidence.
-    Some(ModelUseProtocol::AnthropicMessages(_) | ModelUseProtocol::BedrockConverse) => {
-      !ciphertext.is_empty() || !signature.is_empty()
-    }
-    Some(
-      ModelUseProtocol::GoogleGenerateContent
-      | ModelUseProtocol::GoogleVertexGenerateContent
-      | ModelUseProtocol::GoogleInteractions,
-    ) => !signature.is_empty(),
-    Some(ModelUseProtocol::OpenAiChat(_) | ModelUseProtocol::MistralConversations) => {
-      transparent && !plaintext.is_empty()
-    }
-    None => false,
-  };
-  if replayable { ReplayDisposition::Replayable } else { ReplayDisposition::NotReplayable }
 }

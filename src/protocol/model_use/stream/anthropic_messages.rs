@@ -4,9 +4,10 @@
 //! - The event contract is `message_start`, then `content_block_start` / `content_block_delta` /
 //!   `content_block_stop` per content block, then `message_delta` and `message_stop`, with `ping`
 //!   heartbeats and a terminal `error` event.
-//! - The wire's block index becomes the block index. `signature_delta` and `redacted_thinking` data
-//!   land in `ReasoningOpaque`; usage merges into a running total and is re-emitted whole, because
-//!   the accumulator replaces rather than merges; the stop reason mapping is the buffered one.
+//! - The wire's block index becomes the block index. A `signature_delta` streams into the reasoning
+//!   block's signature and a `redacted_thinking` block's data into its ciphertext; usage merges into
+//!   a running total the way the buffered decoder reads it, and is re-emitted whole, because the
+//!   accumulator replaces rather than merges; the stop reason mapping is the buffered one.
 //!
 //! Trade-offs:
 //! - The `input` object of a `tool_use` block start is ignored: the real arguments arrive as
@@ -16,7 +17,9 @@
 
 use serde_json::Value;
 
+use super::WireDecoder;
 use crate::protocol::error::Error;
+use crate::protocol::http_error::decode_in_band;
 use crate::protocol::model_use::response::anthropic_messages as buffered;
 use crate::protocol::{BlockKind, StopReason, StreamEvent, Usage};
 
@@ -31,9 +34,11 @@ impl Decoder {
   pub fn new() -> Self {
     Self::default()
   }
+}
 
+impl WireDecoder for Decoder {
   /// Feeds one SSE record.
-  pub fn feed(&mut self, event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
+  fn feed(&mut self, event: Option<&str>, data: &str) -> Result<Vec<StreamEvent>, Error> {
     let payload: Value = serde_json::from_str(data)
       .map_err(|error| Error::Malformed(format!("anthropic event is not JSON: {error}")))?;
     // The payload's own `type` is authoritative; the `event:` line is a courtesy.
@@ -41,9 +46,8 @@ impl Decoder {
     let mut out = Vec::new();
     match kind {
       "message_start" => {
-        let usage = payload.pointer("/message/usage");
-        if usage.is_some() {
-          self.merge_usage(usage);
+        if let Some(usage) = payload.pointer("/message/usage") {
+          buffered::merge_usage(&mut self.usage, usage);
           out.push(StreamEvent::Usage(self.usage));
         }
       }
@@ -116,9 +120,8 @@ impl Decoder {
         if let Some(reason) = payload.pointer("/delta/stop_reason").and_then(Value::as_str) {
           self.stop_reason = Some(buffered::map_stop_reason(Some(reason)));
         }
-        let usage = payload.get("usage");
-        if usage.is_some() {
-          self.merge_usage(usage);
+        if let Some(usage) = payload.get("usage") {
+          buffered::merge_usage(&mut self.usage, usage);
           out.push(StreamEvent::Usage(self.usage));
         }
       }
@@ -127,49 +130,15 @@ impl Decoder {
         out.push(StreamEvent::Stop(reason));
       }
       "error" => {
-        let error = payload.get("error");
-        return Err(Error::from_in_band(
-          error.and_then(|error| error.get("type")).and_then(Value::as_str).map(str::to_owned),
-          error
-            .and_then(|error| error.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or("upstream reported an error without a message")
-            .to_owned(),
+        return Err(decode_in_band(
+          payload.get("error"),
+          &["type"],
+          "upstream reported an error without a message",
         ));
       }
       _ => {}
     }
     Ok(out)
-  }
-
-  /// Merges one wire usage object into the running total, folding input exactly like the buffered
-  /// decoder: `input_tokens` plus both cache counters, total derived once both sides are known.
-  fn merge_usage(&mut self, usage: Option<&Value>) {
-    let Some(usage) = usage else { return };
-    let field = |name: &str| usage.get(name).and_then(Value::as_u64);
-    let cached = field("cache_read_input_tokens");
-    let cache_write = field("cache_creation_input_tokens");
-    if let Some(cached) = cached {
-      self.usage.cached_input_tokens = Some(cached);
-    }
-    if let Some(cache_write) = cache_write {
-      self.usage.cache_write_input_tokens = Some(cache_write);
-    }
-    if let Some(input) = field("input_tokens") {
-      self.usage.input_tokens =
-        Some(input.saturating_add(cached.unwrap_or(0)).saturating_add(cache_write.unwrap_or(0)));
-    }
-    if let Some(output) = field("output_tokens") {
-      self.usage.output_tokens = Some(output);
-    }
-    if let Some(thinking) =
-      usage.pointer("/output_tokens_details/thinking_tokens").and_then(Value::as_u64)
-    {
-      self.usage.reasoning_tokens = Some(thinking);
-    }
-    if let (Some(input), Some(output)) = (self.usage.input_tokens, self.usage.output_tokens) {
-      self.usage.total_tokens = Some(input.saturating_add(output));
-    }
   }
 }
 

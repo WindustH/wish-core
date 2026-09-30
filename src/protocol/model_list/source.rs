@@ -1,72 +1,45 @@
-//! Where each catalog protocol is read from: this tree's slice of the read-side table.
+//! How each model-list protocol is asked: this tree's slice of the read-side table.
 //!
-//! The catalog protocols are implemented by many providers, so most entries leave the host and the
-//! path to the caller's own configuration and only state what the wire requires - where the
-//! credential goes, which headers the wire insists on. Bedrock is the exception: its host is the
-//! region's, and its call is signed with the account's own AWS material.
+//! The list protocols are implemented by many providers, so the host and the path always come from
+//! the caller's query, and an entry only states what the wire requires - where the credential goes,
+//! which headers the wire insists on. Bedrock signs its call with the account's own AWS
+//! credentials instead of placing a key.
 //!
-//! The call an entry describes is built by [`Source`](crate::protocol::outbound::Source), with the
-//! caller's credentials.
+//! The call an entry describes is built through [`Source`], with the caller's credentials.
 
 use super::ModelListProtocol;
-use crate::protocol::outbound::{AuthProtocol, CredentialField};
-use crate::protocol::outbound::{Source, SourceHeader};
+use crate::protocol::endpoint::{AuthScheme, CredentialField, Source, SourceHeader};
 
-/// The source that answers for a catalog protocol, when there is one.
-pub(crate) fn find_source(protocol: ModelListProtocol) -> Option<&'static Source> {
-  SOURCES.iter().find(|source| source.protocol == protocol.get_id())
+/// The source that answers for a model-list protocol. Every protocol has one.
+pub(crate) fn find_source(protocol: ModelListProtocol) -> Source {
+  let asked_with = |auth: AuthScheme, headers: &'static [SourceHeader]| Source {
+    protocol: protocol.get_id(),
+    base_url: None,
+    path: None,
+    auth,
+    headers,
+  };
+  match protocol {
+    // The list of a subscription sits beside its account endpoint and is read the same way.
+    ModelListProtocol::OpenAiCodexModels => asked_with(
+      AuthScheme::Bearer(None),
+      &[SourceHeader::Credential("chatgpt-account-id", CredentialField::AccountId)],
+    ),
+    // DeepSeek mounts the OpenAI list at `/models`, almost everyone else at `/v1/models`, which is
+    // why the host and the path belong to the caller's own configuration.
+    ModelListProtocol::OpenAiModels | ModelListProtocol::QwenModels => {
+      asked_with(AuthScheme::Bearer(None), &[])
+    }
+    // Anthropic reads its credential from a header of its own, and dates the API in another.
+    ModelListProtocol::AnthropicModels => asked_with(
+      AuthScheme::Header("x-api-key"),
+      &[SourceHeader::Literal("anthropic-version", "2023-06-01")],
+    ),
+    // Google takes the key in `x-goog-api-key` (the `?key=` form is the other spelling of the same
+    // thing, and a credential in a URL is a credential in every log line that ever touches it).
+    ModelListProtocol::GoogleModels => asked_with(AuthScheme::Header("x-goog-api-key"), &[]),
+    // Bedrock's list answers the account its signature names, on a host the region decides, and
+    // the account's AWS credentials sign the call.
+    ModelListProtocol::BedrockModels => asked_with(AuthScheme::SigV4, &[]),
+  }
 }
-
-/// Every model-list read this crate knows: one entry per readable protocol id.
-const SOURCES: &[Source] = &[
-  // The catalog of a subscription sits beside its account endpoint and is read the same way.
-  Source {
-    protocol: ModelListProtocol::OpenAiCodexModels.get_id(),
-    base_url: Some("https://chatgpt.com"),
-    path: Some("/backend-api/codex/models"),
-    auth: AuthProtocol::Bearer(None),
-    headers: &[SourceHeader::Credential("chatgpt-account-id", CredentialField::AccountId)],
-  },
-  // DeepSeek mounts the OpenAI list at `/models`, almost everyone else at `/v1/models`, so the host
-  // and the path belong to the caller's own configuration.
-  Source {
-    protocol: ModelListProtocol::OpenAiModels.get_id(),
-    base_url: None,
-    path: None,
-    auth: AuthProtocol::Bearer(None),
-    headers: &[],
-  },
-  Source {
-    protocol: ModelListProtocol::QwenModels.get_id(),
-    base_url: None,
-    path: None,
-    auth: AuthProtocol::Bearer(None),
-    headers: &[],
-  },
-  // Anthropic reads its credential from a header of its own, and dates the API in another.
-  Source {
-    protocol: ModelListProtocol::AnthropicModels.get_id(),
-    base_url: None,
-    path: None,
-    auth: AuthProtocol::Header("x-api-key"),
-    headers: &[SourceHeader::Literal("anthropic-version", "2023-06-01")],
-  },
-  // Google takes the key in `x-goog-api-key` (the `?key=` form is the other spelling of the same
-  // thing, and a credential in a URL is a credential in every log line that ever touches it).
-  Source {
-    protocol: ModelListProtocol::GoogleModels.get_id(),
-    base_url: None,
-    path: None,
-    auth: AuthProtocol::Header("x-goog-api-key"),
-    headers: &[],
-  },
-  // Bedrock's catalog answers the account its signature names, on a host the region decides: the
-  // base URL and the path are the caller's facts, and the account's AWS material signs the call.
-  Source {
-    protocol: ModelListProtocol::BedrockModels.get_id(),
-    base_url: None,
-    path: None,
-    auth: AuthProtocol::SigV4,
-    headers: &[],
-  },
-];

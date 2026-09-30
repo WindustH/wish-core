@@ -1,3 +1,4 @@
+//! Browsing the server's directories, for choosing a session's working directory.
 use crate::server::error::{ApiError, blocking};
 use axum::{Json, extract::Query};
 use serde::{Deserialize, Serialize};
@@ -36,10 +37,10 @@ pub async fn list(Query(query): Query<DirectoryQuery>) -> Result<Json<DirectoryL
     for entry in entries {
       let entry =
         entry.map_err(|error| ApiError::bad_request(format!("Cannot read directory: {error}")))?;
-      if entry.path().is_dir() {
-        if let Some(name) = entry.file_name().to_str() {
-          directories.push(name.to_owned());
-        }
+      if entry.path().is_dir()
+        && let Some(name) = entry.file_name().to_str()
+      {
+        directories.push(name.to_owned());
       }
     }
     directories.sort_unstable();

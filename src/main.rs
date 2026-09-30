@@ -1,18 +1,18 @@
 //! Wish's protocol, session engine and HTTP application in one executable.
 
-pub mod executor;
-pub mod mcp;
+mod client;
+mod executor;
+mod mcp;
 mod migration;
-pub mod protocol;
+mod protocol;
 mod server;
-pub mod session;
-pub mod storage;
-pub mod tool;
-pub mod transport;
-pub mod utils;
+mod session;
+mod storage;
+mod tool;
+mod transport;
+mod utils;
 
-pub use protocol::error::Error;
-pub use utils::retry::RetryPolicy;
+use protocol::error::Error;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

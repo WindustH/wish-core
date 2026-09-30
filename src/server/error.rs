@@ -1,3 +1,5 @@
+//! The error every handler answers with, how the engine's errors map onto it, and the rule for
+//! running storage work from async code.
 use crate::{session::SessionError, storage::StorageError};
 use axum::{
   Json,
@@ -22,8 +24,15 @@ impl ApiError {
   pub fn not_found() -> Self {
     Self { status: StatusCode::NOT_FOUND, message: "not found".into(), details: None }
   }
+  pub fn unauthorized() -> Self {
+    Self { status: StatusCode::UNAUTHORIZED, message: "unauthorized".into(), details: None }
+  }
   pub fn internal(error: impl std::fmt::Display) -> Self {
     Self { status: StatusCode::INTERNAL_SERVER_ERROR, message: error.to_string(), details: None }
+  }
+  /// Shutdown has begun: nothing new starts, and waits in progress end.
+  pub fn shutting_down() -> Self {
+    Self::conflict("server is shutting down")
   }
 }
 impl std::fmt::Display for ApiError {
@@ -42,7 +51,9 @@ impl From<SessionError> for ApiError {
   fn from(error: SessionError) -> Self {
     match error {
       SessionError::Storage(e) => e.into(),
-      SessionError::Busy | SessionError::Suspended => Self::conflict(error.to_string()),
+      SessionError::Busy | SessionError::UnexpectedPhase | SessionError::Suspended => {
+        Self::conflict(error.to_string())
+      }
       _ => Self::bad_request(error.to_string()),
     }
   }
@@ -57,6 +68,11 @@ impl From<StorageError> for ApiError {
       StorageError::InvalidRange => Self::bad_request(error.to_string()),
       _ => Self::internal(error),
     }
+  }
+}
+impl From<rusqlite::Error> for ApiError {
+  fn from(error: rusqlite::Error) -> Self {
+    Self::internal(error)
   }
 }
 impl From<crate::tool::ask_user::AnswerError> for ApiError {
@@ -79,6 +95,14 @@ impl From<crate::Error> for ApiError {
     Self { status, message: error.to_string(), details: Some(json!(error)) }
   }
 }
+
+/// Runs storage work on a thread of its own, off the async workers.
+///
+/// The rule: request handlers read and write the databases - `wish.sqlite` through a session or the
+/// storage, `management.sqlite` through the index - inside `blocking`. The one exception is saving
+/// a session's index record where the session changes (`SessionSlot::persist_index`, and the model
+/// calls saved beside it when an operation ends): a single small write, which the engine's event
+/// callbacks make too, and they cannot await.
 pub async fn blocking<T: Send + 'static>(
   f: impl FnOnce() -> Result<T, ApiError> + Send + 'static,
 ) -> Result<T, ApiError> {

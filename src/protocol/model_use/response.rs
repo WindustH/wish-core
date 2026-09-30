@@ -6,6 +6,10 @@
 //! account reading is the one part that comes from the reply's head rather than from its body: a
 //! service reports what a call left in the account only on a call it really served, so it is read
 //! by the layer that holds the whole reply and filled in beside the decoded body.
+//!
+//! Each reader's usage reading, and its stop-reason mapping where the wire names a reason, is
+//! shared with its protocol's stream decoder, so a streamed reply is counted and ended the way a
+//! buffered one is.
 
 pub mod anthropic_messages;
 pub mod bedrock_converse;
@@ -77,4 +81,17 @@ pub struct Usage {
   pub reasoning_tokens: Option<u64>,
   /// The service's own total, where it reports one.
   pub total_tokens: Option<u64>,
+}
+
+/// The output count of a wire that reports thinking beside the answer rather than inside it (the
+/// Google wires), with the thinking folded in the way it is billed: the number is what the model
+/// was charged, matching the dialects whose completion count already includes reasoning.
+pub(crate) fn fold_thoughts_into_output(
+  candidates: Option<u64>,
+  thoughts: Option<u64>,
+) -> Option<u64> {
+  match (candidates, thoughts) {
+    (Some(candidates), Some(thoughts)) => Some(candidates + thoughts),
+    (candidates, thoughts) => candidates.or(thoughts),
+  }
 }

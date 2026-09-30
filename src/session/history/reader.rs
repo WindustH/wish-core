@@ -1,70 +1,18 @@
-use super::{Entry, HistoryItem, HistoryRecord, SessionEvent, index, query::*};
+//! History queries: filtered pages, full-text search, and reading records with what they record.
+use super::{HistoryItem, HistoryRecord, query::*};
 use crate::{
-  session::{Session, SessionError, persistence::SessionRecord},
+  session::{
+    SessionError, SessionReader,
+    persistence::{load_entry, load_event},
+  },
   storage::{
-    ListId, PAGE_SIZE, Storage, StorageError, Transaction,
-    search::{IndexFilter, IndexHit, IndexPage, MetadataCondition, SearchText},
+    StorageError, Transaction,
+    history_index::{IndexFilter, IndexHit, IndexPage, MetadataCondition, SearchText},
   },
 };
+use std::sync::Arc;
 
-/// Cloneable session-scoped reader. It never claims the running owner or changes session facts.
-#[derive(Clone)]
-pub struct HistoryReader {
-  storage: Storage,
-  history: ListId,
-  entries: ListId,
-  events: ListId,
-}
-impl Session {
-  pub fn create_history_reader(&self) -> HistoryReader {
-    HistoryReader::from_record(self.storage.clone(), &self.record)
-  }
-  /// Add an expression index for a frequently filtered SQLite JSON path, e.g. $.project_id.
-  pub fn index_history_metadata(&self, path: String) -> Result<(), SessionError> {
-    validate_path(&path)?;
-    self.storage.transaction(move |tx| tx.index_history_metadata(&path).map_err(SessionError::from))
-  }
-  pub fn rebuild_history_index(&self) -> Result<(), SessionError> {
-    self.create_history_reader().rebuild_index()
-  }
-}
-impl HistoryReader {
-  /// Open without claiming session ownership, including while an executor owns the session.
-  pub fn open(storage: Storage, id: &str) -> Result<Self, SessionError> {
-    let key = Session::build_key(id);
-    let record = storage.transaction(move |tx| -> Result<_, SessionError> {
-      Ok(tx.load_object::<SessionRecord>(&key)?)
-    })?;
-    Ok(Self::from_record(storage, &record))
-  }
-  fn from_record(storage: Storage, record: &SessionRecord) -> Self {
-    Self {
-      storage,
-      history: record.history.clone(),
-      entries: record.entries.clone(),
-      events: record.events.clone(),
-    }
-  }
-  fn rebuild_index(&self) -> Result<(), SessionError> {
-    let reader = self.clone();
-    self.storage.transaction(move |tx| {
-      tx.reset_history_index(&reader.history.0)?;
-      let end = tx.list_len::<HistoryRecord>(&reader.history)?;
-      let mut start = 0;
-      while start < end {
-        let page = tx.read_page::<HistoryRecord>(
-          &reader.history,
-          start,
-          (end - start).min(PAGE_SIZE) as usize,
-        )?;
-        for record in &page.items {
-          index::index_record(tx, &reader.history, &reader.entries, &reader.events, record)?;
-        }
-        start += page.items.len() as u64;
-      }
-      Ok(())
-    })
-  }
+impl SessionReader {
   pub fn query_history(
     &self,
     filter: HistoryFilter,
@@ -82,7 +30,7 @@ impl HistoryReader {
         None => tx.list_len::<HistoryRecord>(&reader.history)?,
       };
       let hits = tx.query_history_index(
-        &reader.history.0,
+        &reader.history,
         filter,
         IndexPage {
           end,
@@ -126,7 +74,7 @@ impl HistoryReader {
     self.storage.transaction(move |tx| {
       let end = tx.list_len::<HistoryRecord>(&reader.history)?;
       let hits = tx.query_history_index(
-        &reader.history.0,
+        &reader.history,
         filter,
         IndexPage { end, after: None, newest_first: true, limit: query.limit + 1 },
         Some(search),
@@ -136,11 +84,14 @@ impl HistoryReader {
       Ok(HistorySearchResults { items, end_sequence: end, has_more, used_text_index })
     })
   }
-  pub fn read_history_item(&self, sequence: u64) -> Result<Option<HistoryEntry>, SessionError> {
+  pub fn read_history_item(
+    &self,
+    sequence: u64,
+  ) -> Result<Option<ExpandedHistoryRecord>, SessionError> {
     let reader = self.clone();
     self.storage.transaction(move |tx| {
       tx.get_item::<HistoryRecord>(&reader.history, sequence)?
-        .map(|record| reader.load_entry(tx, record))
+        .map(|record| reader.expand(tx, record))
         .transpose()
     })
   }
@@ -150,35 +101,33 @@ impl HistoryReader {
     sequence: u64,
     before: usize,
     after: usize,
-  ) -> Result<Vec<HistoryEntry>, SessionError> {
-    let count =
-      before.checked_add(after).and_then(|n| n.checked_add(1)).ok_or(StorageError::InvalidRange)?;
+  ) -> Result<Vec<ExpandedHistoryRecord>, SessionError> {
+    if before.checked_add(after).and_then(|count| count.checked_add(1)).is_none() {
+      return Err(StorageError::InvalidRange.into());
+    }
     let reader = self.clone();
     self.storage.transaction(move |tx| {
       if sequence >= tx.list_len::<HistoryRecord>(&reader.history)? {
         return Ok(vec![]);
       }
       let start = sequence.saturating_sub(before as u64);
-      let count = count - (before as u64 - (sequence - start)) as usize;
+      // At most `before` records precede the sequence, so this cannot overflow.
+      let count = (sequence - start) as usize + after + 1;
       let page = tx.read_page::<HistoryRecord>(&reader.history, start, count)?;
-      page.items.into_iter().map(|record| reader.load_entry(tx, record)).collect()
+      page.items.into_iter().map(|record| reader.expand(tx, record)).collect()
     })
   }
-  fn load_entry(
+  /// `record` with what it records.
+  fn expand(
     &self,
     tx: &mut Transaction<'_>,
-    record: std::sync::Arc<HistoryRecord>,
-  ) -> Result<HistoryEntry, SessionError> {
+    record: Arc<HistoryRecord>,
+  ) -> Result<ExpandedHistoryRecord, SessionError> {
     let content = match record.item {
-      HistoryItem::Message(id) => HistoryContent::Message(
-        tx.get_item::<Entry>(&self.entries, id.0 as u64)?.ok_or(SessionError::InvalidEntry(id))?,
-      ),
-      HistoryItem::Event(id) => HistoryContent::Event(
-        tx.get_item::<SessionEvent>(&self.events, id.0)?
-          .ok_or_else(|| StorageError::Corrupt("missing history event".into()))?,
-      ),
+      HistoryItem::Message(id) => HistoryContent::Message(load_entry(tx, &self.entries, id)?),
+      HistoryItem::Event(id) => HistoryContent::Event(load_event(tx, &self.events, id)?),
     };
-    Ok(HistoryEntry { record, content })
+    Ok(ExpandedHistoryRecord { record, content })
   }
   fn load_matches(
     &self,
@@ -243,18 +192,10 @@ fn convert_filter(filter: HistoryFilter) -> Result<IndexFilter, SessionError> {
     });
   }
   Ok(IndexFilter {
-    item_kind: filter.kind.map(|kind| match kind {
-      HistoryKind::Message => "message".into(),
-      HistoryKind::Event => "event".into(),
-    }),
+    item_kind: filter.kind.map(|kind| kind.as_str().into()),
     message_types: filter.message_types.into_iter().map(|kind| kind.as_str().into()).collect(),
     event_types: filter.event_types,
-    origins: filter
-      .origins
-      .into_iter()
-      .map(|origin| serde_json::to_value(origin).map(|value| value.as_str().unwrap().to_owned()))
-      .collect::<Result<_, _>>()
-      .map_err(StorageError::from)?,
+    origins: filter.origins.into_iter().map(|origin| origin.as_str().into()).collect(),
     since: filter.since.map(|time| time.0),
     until: filter.until.map(|time| time.0),
     generation: filter.generation.map(|id| id.0 as u64),

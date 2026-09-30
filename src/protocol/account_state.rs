@@ -5,7 +5,7 @@
 //! bodies are read into, so a caller can show or act on usage without knowing which service
 //! produced it.
 //!
-//! Two rules run through every field:
+//! Three rules run through every field:
 //!
 //! - Numbers keep the exact form the service reported, as decimal strings. A balance re-encoded
 //!   through a float can lose the cent that matters, and a zero that was invented is worse than a
@@ -19,13 +19,14 @@
 //!
 //! Each service's own reading of its body lives in a module below this one, and
 //! [`parse_account_body`] picks the one a protocol id names. Where each protocol is read from is
-//! the same knowledge: `source.rs` is this tree's slice of the read-side table. A rate limit a
-//! service reports only on a call it really served has no body of its own: [`parse_headers`]
-//! reads those off the reply's headers instead.
+//! the same knowledge: `source.rs` is this tree's slice of the read-side table. A reading a service
+//! reports only on a call it really served has no body of its own: [`parse_reply`] reads it off
+//! that call's reply instead.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::Error;
+use crate::protocol::attempt::find_header;
 
 pub mod codex;
 pub mod deepseek;
@@ -157,142 +158,135 @@ pub struct AccountState {
   pub plan_type: Option<String>,
 }
 
-/// Which account reading a body or a reply is read by.
-///
-/// One variant per service and shape: the vocabulary this crate knows. A caller names one to read an
-/// account, and a reading names the one that produced it. [`AccountStateProtocol::get_id`] is the same name in
-/// text, so the source tables and any configuration boundary can carry it and
-/// [`FromStr`](std::str::FromStr) brings it back.
-#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AccountStateProtocol {
-  /// The numbers a served reply carries, where a caller asks for nothing else.
-  ResponseUsage,
-  /// What a Codex reply says about the account: its `x-codex-*` headers, or the payload of the
-  /// rate-limit frame it sends.
-  OpenAiCodexQuotaHeaders,
-  /// The meters a Codex subscription's own account endpoint reports.
-  OpenAiCodexUsage,
-  /// Anthropic's rate-limit headers.
-  AnthropicRatelimitHeaders,
-  /// OpenAI's rate-limit headers.
-  OpenAiRatelimitHeaders,
-  /// Groq's rate-limit headers.
-  GroqRatelimitHeaders,
-  /// Cerebras' rate-limit headers.
-  CerebrasRatelimitHeaders,
-  /// Mistral's rate-limit headers.
-  MistralRatelimitHeaders,
-  /// The balance of a DeepSeek platform account.
-  DeepseekUserBalance,
-  /// The balance of a Moonshot open-platform account.
-  KimiOpenBalance,
-  /// The plan windows of a Kimi coding subscription.
-  KimiCodeCompanionUsage,
-  /// The plan a Z.ai coding subscription runs on.
-  ZaiCodingPlanMonitor,
-  /// The windows of a MiniMax token plan.
-  MinimaxTokenPlanRemains,
-  /// The balance of a MiniMax platform account.
-  MinimaxAccountBalance,
-  /// The balance of a SiliconFlow account.
-  SiliconflowBalance,
-  /// What one OpenRouter key has left.
-  OpenrouterKeyQuota,
-  /// What the OpenRouter account has left.
-  OpenrouterCredits,
-  /// The plan a Hugging Face account is on.
-  HuggingfaceWhoamiBilling,
-  /// The quota of one Qwen workspace.
-  QwenWorkspaceQuota,
-  /// The ledger this crate keeps itself, for a caller with no endpoint to read.
-  LocalUsageLedger,
+text_id_enum! {
+  /// Which account reading a body or a reply is read by.
+  ///
+  /// One variant per service and shape: the vocabulary this crate knows. A caller names one to
+  /// read an account, and a reading names the one that produced it. The text id is what the source
+  /// table, the documentation and any configuration boundary carry.
+  #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+  pub enum AccountStateProtocol (unknown: "unknown account protocol `{}`") {
+    /// What a Codex reply says about the account: its `x-codex-*` headers, or the payload of the
+    /// rate-limit frame it sends.
+    OpenAiCodexQuotaHeaders => "openai_codex_quota_headers",
+    /// The meters a Codex subscription's own account endpoint reports.
+    OpenAiCodexUsage => "openai_codex_usage",
+    /// Anthropic's rate-limit headers.
+    AnthropicRatelimitHeaders => "anthropic_ratelimit_headers",
+    /// OpenAI's rate-limit headers.
+    OpenAiRatelimitHeaders => "openai_ratelimit_headers",
+    /// Groq's rate-limit headers.
+    GroqRatelimitHeaders => "groq_ratelimit_headers",
+    /// Cerebras' rate-limit headers.
+    CerebrasRatelimitHeaders => "cerebras_ratelimit_headers",
+    /// Mistral's rate-limit headers.
+    MistralRatelimitHeaders => "mistral_ratelimit_headers",
+    /// The balance of a DeepSeek platform account.
+    DeepseekUserBalance => "deepseek_user_balance",
+    /// The balance of a Moonshot open-platform account.
+    KimiOpenBalance => "kimi_open_balance",
+    /// The plan windows of a Kimi coding subscription.
+    KimiCodeCompanionUsage => "kimi_code_companion_usage",
+    /// The plan a Z.ai coding subscription runs on.
+    ZaiCodingPlanMonitor => "zai_coding_plan_monitor",
+    /// The windows of a MiniMax token plan.
+    MinimaxTokenPlanRemains => "minimax_token_plan_remains",
+    /// The balance of a MiniMax platform account.
+    MinimaxAccountBalance => "minimax_account_balance",
+    /// The balance of a SiliconFlow account.
+    SiliconflowBalance => "siliconflow_balance",
+    /// What one OpenRouter key has left.
+    OpenrouterKeyQuota => "openrouter_key_quota",
+    /// What the OpenRouter account has left.
+    OpenrouterCredits => "openrouter_credits",
+    /// The plan a Hugging Face account is on.
+    HuggingfaceWhoamiBilling => "hf_whoami_billing",
+    /// The quota of one Qwen workspace.
+    QwenWorkspaceQuota => "qwen_workspace_quota",
+  }
 }
 
 impl AccountStateProtocol {
-  /// Every protocol this crate knows.
-  pub const ALL: &[AccountStateProtocol] = &[
-    AccountStateProtocol::ResponseUsage,
-    AccountStateProtocol::OpenAiCodexQuotaHeaders,
-    AccountStateProtocol::OpenAiCodexUsage,
-    AccountStateProtocol::AnthropicRatelimitHeaders,
-    AccountStateProtocol::OpenAiRatelimitHeaders,
-    AccountStateProtocol::GroqRatelimitHeaders,
-    AccountStateProtocol::CerebrasRatelimitHeaders,
-    AccountStateProtocol::MistralRatelimitHeaders,
-    AccountStateProtocol::DeepseekUserBalance,
-    AccountStateProtocol::KimiOpenBalance,
-    AccountStateProtocol::KimiCodeCompanionUsage,
-    AccountStateProtocol::ZaiCodingPlanMonitor,
-    AccountStateProtocol::MinimaxTokenPlanRemains,
-    AccountStateProtocol::MinimaxAccountBalance,
-    AccountStateProtocol::SiliconflowBalance,
-    AccountStateProtocol::OpenrouterKeyQuota,
-    AccountStateProtocol::OpenrouterCredits,
-    AccountStateProtocol::HuggingfaceWhoamiBilling,
-    AccountStateProtocol::QwenWorkspaceQuota,
-    AccountStateProtocol::LocalUsageLedger,
-  ];
-
-  /// The name this protocol is known by in text: what the source tables, the documentation and a
-  /// reading's own [`AccountState::protocol`] say.
-  pub const fn get_id(self) -> &'static str {
-    match self {
-      AccountStateProtocol::ResponseUsage => "response_usage",
-      AccountStateProtocol::OpenAiCodexQuotaHeaders => "openai_codex_quota_headers",
-      AccountStateProtocol::OpenAiCodexUsage => "openai_codex_usage",
-      AccountStateProtocol::AnthropicRatelimitHeaders => "anthropic_ratelimit_headers",
-      AccountStateProtocol::OpenAiRatelimitHeaders => "openai_ratelimit_headers",
-      AccountStateProtocol::GroqRatelimitHeaders => "groq_ratelimit_headers",
-      AccountStateProtocol::CerebrasRatelimitHeaders => "cerebras_ratelimit_headers",
-      AccountStateProtocol::MistralRatelimitHeaders => "mistral_ratelimit_headers",
-      AccountStateProtocol::DeepseekUserBalance => "deepseek_user_balance",
-      AccountStateProtocol::KimiOpenBalance => "kimi_open_balance",
-      AccountStateProtocol::KimiCodeCompanionUsage => "kimi_code_companion_usage",
-      AccountStateProtocol::ZaiCodingPlanMonitor => "zai_coding_plan_monitor",
-      AccountStateProtocol::MinimaxTokenPlanRemains => "minimax_token_plan_remains",
-      AccountStateProtocol::MinimaxAccountBalance => "minimax_account_balance",
-      AccountStateProtocol::SiliconflowBalance => "siliconflow_balance",
-      AccountStateProtocol::OpenrouterKeyQuota => "openrouter_key_quota",
-      AccountStateProtocol::OpenrouterCredits => "openrouter_credits",
-      AccountStateProtocol::HuggingfaceWhoamiBilling => "hf_whoami_billing",
-      AccountStateProtocol::QwenWorkspaceQuota => "qwen_workspace_quota",
-      AccountStateProtocol::LocalUsageLedger => "local_usage_ledger",
-    }
-  }
-
   /// Whether this protocol is only ever observed on a real model call, so asking for it on its own
   /// is a configuration mistake rather than a request.
   pub fn is_passive(self) -> bool {
-    matches!(
-      self,
-      AccountStateProtocol::ResponseUsage
-        | AccountStateProtocol::OpenAiCodexQuotaHeaders
-        | AccountStateProtocol::LocalUsageLedger
-    ) || headers::is_header_dialect(self)
+    self == AccountStateProtocol::OpenAiCodexQuotaHeaders || headers::is_header_dialect(self)
   }
 }
 
-impl std::fmt::Display for AccountStateProtocol {
-  fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    formatter.write_str(self.get_id())
+impl QuotaWindow {
+  /// A window counting `unit`, known by `id`, before the service's amounts are read into it.
+  pub(crate) fn new(id: impl Into<String>, unit: impl Into<String>) -> Self {
+    Self {
+      id: id.into(),
+      name: None,
+      unit: unit.into(),
+      used: None,
+      limit: None,
+      remaining: None,
+      used_percent: None,
+      window: None,
+      resets_at: None,
+      reached: None,
+      unlimited: None,
+      parts: Vec::new(),
+    }
   }
 }
 
-impl std::str::FromStr for AccountStateProtocol {
-  type Err = Error;
-
-  /// Reads back what [`AccountStateProtocol::get_id`] wrote, for a boundary that carries text.
-  ///
-  /// # Errors
-  ///
-  /// [`Error::Build`] for a name this crate does not know.
-  fn from_str(id: &str) -> Result<Self, Self::Err> {
-    Self::ALL
-      .iter()
-      .copied()
-      .find(|protocol| protocol.get_id() == id)
-      .ok_or_else(|| Error::Build(format!("unknown account protocol `{id}`")))
+impl Balance {
+  /// A balance in `currency`, before the service's amounts are read into it.
+  pub(crate) fn new(currency: impl Into<String>) -> Self {
+    Self {
+      currency: currency.into(),
+      available: None,
+      total: None,
+      cash: None,
+      granted: None,
+      topped_up: None,
+      voucher: None,
+      credit: None,
+      owed: None,
+      minor_unit: None,
+    }
   }
+}
+
+impl Failure {
+  /// The service refusing the read itself, in its own code and message - `fallback` when it gave
+  /// none worth reading - and of no kind this shape can name.
+  pub(crate) fn rejected(code: Option<String>, message: Option<&str>, fallback: &str) -> Self {
+    Self {
+      kind: FailureKind::Unknown,
+      code,
+      message: message.filter(|message| !message.is_empty()).unwrap_or(fallback).to_owned(),
+    }
+  }
+}
+
+impl AccountState {
+  /// A reading by `protocol` before anything is read into it.
+  pub(crate) fn new(protocol: AccountStateProtocol) -> Self {
+    Self {
+      protocol,
+      quotas: Vec::new(),
+      balances: Vec::new(),
+      failure: None,
+      warnings: Vec::new(),
+      availability: None,
+      plan_type: None,
+    }
+  }
+}
+
+/// A window's length in minutes, in the shape [`QuotaWindow::window`] keeps a fixed one.
+pub(crate) fn minutes_window(duration: impl Into<Value>) -> Value {
+  json!({ "duration": duration.into(), "unit": "minutes" })
+}
+
+/// A header's value, trimmed: an empty header is a header the service did not send.
+pub(crate) fn read_header(headers: &[(String, String)], name: &str) -> Option<String> {
+  find_header(headers, name).map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
 }
 
 /// Why an account state cannot be read where it was asked for.
@@ -301,8 +295,8 @@ pub enum Unsupported {
   /// The reading rides the headers of a served reply: there is no body of its own to parse, and
   /// no endpoint to ask.
   RidesTheHeaders,
-  /// The reading rides a served reply's payload, or is kept by this crate's own ledger: it has
-  /// no ask of its own anywhere.
+  /// The reading rides a served reply, its payload or its head: it has no ask of its own
+  /// anywhere.
   RidesAReply,
   /// The reading is served by a request of its own: a reply will not carry it.
   HasItsOwnRequest,
@@ -328,10 +322,8 @@ impl Unsupported {
 /// # Errors
 ///
 /// Returns [`Error::Unsupported`] for a protocol that is read from a reply's headers instead of a
-/// body of its own, and for the two whose numbers belong to a served reply or this crate's own
-/// ledger; [`Error::Malformed`] when the body
-/// is missing a container the protocol cannot work without, while a merely absent field stays absent,
-/// with a warning.
+/// body of its own; [`Error::Malformed`] when the body is missing a container the protocol cannot
+/// work without, while a merely absent field stays absent, with a warning.
 pub fn parse_account_body(
   protocol: AccountStateProtocol,
   body: &Value,
@@ -348,7 +340,7 @@ pub fn parse_account_body(
     AccountStateProtocol::OpenrouterCredits => openrouter::parse_credits(body),
     AccountStateProtocol::HuggingfaceWhoamiBilling => huggingface::parse(body),
     AccountStateProtocol::QwenWorkspaceQuota => qwen::parse_workspace_quota(body),
-    AccountStateProtocol::OpenAiCodexQuotaHeaders => codex::parse(body),
+    AccountStateProtocol::OpenAiCodexQuotaHeaders => codex::parse_rate_limit_payload(body),
     AccountStateProtocol::OpenAiCodexUsage => Ok(codex::parse_usage(body)),
     AccountStateProtocol::AnthropicRatelimitHeaders
     | AccountStateProtocol::OpenAiRatelimitHeaders
@@ -359,47 +351,28 @@ pub fn parse_account_body(
       protocol,
       Unsupported::RidesTheHeaders.get_text(),
     )),
-    // Named, but nothing reads them on their own: the numbers they stand for belong to a served
-    // reply, and a caller holding one reads it through the call it came from.
-    AccountStateProtocol::ResponseUsage | AccountStateProtocol::LocalUsageLedger => {
-      Err(Error::build_unsupported("account state", protocol, Unsupported::RidesAReply.get_text()))
-    }
   }
-}
-
-/// Reads a reply's headers for a known protocol.
-///
-/// The passive dialects - the rate limits a service only reports on a call it really served - are
-/// read from the reply's headers rather than from a body, and none of them has an endpoint to ask
-/// on its own.
-///
-/// # Errors
-///
-/// Returns [`Error::Malformed`] for a protocol that is not read from headers.
-pub fn parse_headers(
-  protocol: AccountStateProtocol,
-  headers: &[(String, String)],
-) -> Result<AccountState, Error> {
-  headers::parse(protocol, headers)
 }
 
 /// Reads the account reading a real call carries, when the protocol is one of those.
 ///
 /// These readings have no request of their own: a service reports what a call left in the account
-/// only on a call it really served, either in the reply's headers or, for
-/// `openai_codex_quota_headers`, in the payload of a rate-limit frame the reply carried.
+/// only on a call it really served, either in the reply's headers - the rate limits of the header
+/// dialects - or, for `openai_codex_quota_headers`, in the payload of a rate-limit frame the reply
+/// carried.
 ///
 /// # Errors
 ///
 /// [`Error::Unsupported`] when the protocol is read over a request of its own - this call site has
-/// nothing to read it from - or when the reply carried none of what the protocol is read from.
+/// nothing to read it from - and [`Error::Build`] when a Codex reply carried none of what its
+/// reading is read from.
 pub fn parse_reply(
   protocol: AccountStateProtocol,
   headers: &[(String, String)],
   body: Option<&Value>,
 ) -> Result<AccountState, Error> {
   if headers::is_header_dialect(protocol) {
-    return parse_headers(protocol, headers);
+    return headers::parse(protocol, headers);
   }
   match protocol {
     // A codex reply carries its reading twice over: the `x-codex-*` headers ride every call, and
@@ -407,8 +380,8 @@ pub fn parse_reply(
     // payload is preferred where there is one, and the head is what a stream has instead.
     AccountStateProtocol::OpenAiCodexQuotaHeaders => {
       match body.filter(|body| body.get("rate_limits").is_some()) {
-        Some(body) => codex::parse(body),
-        None => codex::from_headers(headers).ok_or_else(|| {
+        Some(body) => codex::parse_rate_limit_payload(body),
+        None => codex::parse_headers(headers).ok_or_else(|| {
           Error::Build(
             "`openai_codex_quota_headers` is read from the `x-codex-*` headers of a reply or from the payload of its own rate-limit frame, and this reply carried neither"
               .to_owned(),

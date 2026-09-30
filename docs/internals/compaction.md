@@ -16,7 +16,7 @@ automatic trigger reads `last_request_input_tokens` from the most recent `Comple
 `Conversation` call of the active generation made with the configured model. It fires when that
 value is at least `trigger_tokens`. After a model switch or a cutover nothing triggers until such
 a call completes. Missing usage is not zero. The server reports the same number as a session's
-`context_tokens` status (`src/server/session.rs`).
+`context_tokens` status (`src/server/session/status.rs`).
 
 Other reasons: `ContextRejected` after an explicit context-length rejection
 ([executor](executor.md#run)), and `Manual` from `executor::compaction::compact`, which the server
@@ -56,7 +56,7 @@ remains queued and is consumed normally by the executor. A later compaction send
 opaque body as part of the full active context.
 
 This path neither promotes nor seeds a standby generation. The standby handle stays empty; any
-previously prepared local context is cleared on successful cutover. Old generations and history
+previously prepared local context is cleared, its list deleted, on successful cutover. Old generations and history
 remain available. The compaction cursor points after the opaque body, before the retained user
 message.
 
@@ -69,9 +69,11 @@ response, account reading and warnings.
 
 ## Provider-switch handoff
 
-Server-owned: [`src/server/session/selection.rs`](../../src/server/session/selection.rs) applies a
-pending provider selection at a [run boundary](executor.md#run-boundaries), and
-`executor::compaction::translation` makes the call.
+[`src/server/session/selection.rs`](../../src/server/session/selection.rs) (server-owned) applies a
+pending provider selection at a [run boundary](executor.md#run-boundaries).
+`executor::compaction::handoff` finds the items that need a handoff, makes the call and builds the
+new context; the server says which items need one and whether the provider switched from can read
+them, both from the item metadata below, and commits the switch.
 
 An encrypted compaction item can be read only by the provider that made it: upstream compaction
 records that provider's id in the item's metadata (`provider`). Every other provider reads the item through
