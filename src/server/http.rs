@@ -55,6 +55,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/search/providers", get(search::list))
     .route("/search/providers/{id}/check", post(search::check))
     .route("/providers", get(providers::list))
+    .route("/provider-draft/models", post(providers::draft_models))
     .route("/providers/{id}", get(providers::get))
     .route("/providers/{id}/models", get(providers::models))
     .route("/providers/{id}/account", get(providers::account))

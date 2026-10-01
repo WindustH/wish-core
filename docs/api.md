@@ -119,6 +119,7 @@ engine error, for example
 | GET | `/api/providers` | Configured providers |
 | GET | `/api/providers/{id}` | One enabled provider |
 | GET | `/api/providers/{id}/models` | Upstream model catalog page |
+| POST | `/api/provider-draft/models` | Catalog page of a provider not saved yet |
 | GET | `/api/providers/{id}/account` | Upstream account reading |
 | POST, GET | `/api/providers/{id}/chatgpt-login` | Start or poll a ChatGPT sign-in |
 | POST | `/api/providers/{id}/chatgpt-login/complete` | Finish a sign-in from a pasted redirect URL |
@@ -335,6 +336,20 @@ Pages are cached for five minutes. When a refresh fails, the expired page is
 served with a warning naming its age. Returns `501` without `model_list`, `400`
 without `model_list_path`, `502` when the upstream fails. Saving the
 configuration empties the cache.
+
+### `POST /api/provider-draft/models`
+
+The same page for a provider that is not saved yet, read with the settings the
+body carries, so a setup can list models to choose from and learn that a key is
+refused before saving anything. Nothing is saved or cached.
+
+```json
+{"id": "deepseek", "provider": {"protocol": "deepseek_chat", "...": "..."}, "cursor": null, "limit": 100}
+```
+
+`provider` is one entry of the configuration's `providers`. Secrets sent back as
+`<redacted>` are taken from the configured provider named `id`, as a save takes
+them. Answers and errors as above.
 
 ### `GET /api/providers/{id}/account`
 

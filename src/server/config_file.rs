@@ -3,7 +3,7 @@
 //!
 //! Secrets never leave the server. The settings page reads each as `<redacted>` and sends that back
 //! for the ones it leaves alone; a save puts the stored value in its place.
-use crate::server::{config::Config, error::ApiError};
+use crate::server::{config::Config, error::ApiError, provider::ProviderConfig};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -36,6 +36,14 @@ impl ConfigFile {
     }
     restore(&mut value, &serde_json::to_value(&self.config).unwrap())?;
     serde_json::from_value(value).map_err(|e| ApiError::bad_request(e.to_string()))
+  }
+  /// A provider a page holds before saving it, with the secrets it sends back redacted put back
+  /// from the provider of that id here.
+  pub fn read_draft_provider(&self, id: &str, provider: Value) -> Result<ProviderConfig, ApiError> {
+    let mut value = json!({ "providers": { id: provider } });
+    restore(&mut value, &serde_json::to_value(&self.config).unwrap())?;
+    serde_json::from_value(value["providers"][id].take())
+      .map_err(|e| ApiError::bad_request(e.to_string()))
   }
   /// Writes a configuration over the file and takes it as the current one.
   pub async fn write(&mut self, config: Config) -> Result<(), ApiError> {

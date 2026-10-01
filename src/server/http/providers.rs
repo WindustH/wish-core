@@ -2,7 +2,11 @@
 //! calls to a provider's client outside any session.
 use super::sse;
 use crate::protocol::{Request, UpstreamCompactionRequest, model_list::ModelListQuery};
-use crate::server::{app::App, error::ApiError, provider::Auth};
+use crate::server::{
+  app::App,
+  error::ApiError,
+  provider::{Auth, Provider},
+};
 use axum::{
   Json,
   extract::{Path, Query, State},
@@ -75,7 +79,37 @@ pub async fn models(
   Path(id): Path<String>,
   Query(query): Query<CatalogQuery>,
 ) -> Result<Json<Value>, ApiError> {
-  let provider = app.get_provider(&id)?;
+  catalog_page(&app, &*app.get_provider(&id)?, query).await
+}
+/// A provider not saved yet, as the first-run setup holds it.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftCatalog {
+  /// The id it would be saved under. A configured provider of this id lends the secrets the page
+  /// sends back redacted.
+  id: String,
+  provider: Value,
+  cursor: Option<String>,
+  limit: Option<u32>,
+}
+/// The models a provider that is not saved yet offers, read with what the page entered: the setup
+/// lists them to choose from, and a refused key shows before anything is saved.
+pub async fn draft_models(
+  State(app): State<Arc<App>>,
+  Json(draft): Json<DraftCatalog>,
+) -> Result<Json<Value>, ApiError> {
+  let (config, proxy) = {
+    let file = app.config_file.lock().await;
+    (file.read_draft_provider(&draft.id, draft.provider)?, file.config.proxy.clone())
+  };
+  let provider = Provider::build(draft.id, config, &proxy)?;
+  catalog_page(&app, &provider, CatalogQuery { cursor: draft.cursor, limit: draft.limit }).await
+}
+async fn catalog_page(
+  app: &App,
+  provider: &Provider,
+  query: CatalogQuery,
+) -> Result<Json<Value>, ApiError> {
   let path = provider
     .config
     .model_list_path
