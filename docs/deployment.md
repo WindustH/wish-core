@@ -14,33 +14,59 @@ directory.
 
 ## Install
 
+Wish's packages install the program as `wish-agent`, with the web app beside
+it:
+
 ```sh
+npm install -g wish-agent               # Linux, macOS and Windows
+yay -S wish-agent-bin                   # Arch Linux; wish-agent or wish-agent-git build from source
+brew install windusth/tap/wish-agent    # macOS and Linux
+```
+
+Each [release](https://github.com/WindustH/wish-core/releases) also has an
+archive per platform holding the program, `wish`, and the web app in `web/`.
+Keep the two together: Wish looks for `web` beside its program.
+
+To build from source you need a Rust toolchain and Node.js 22.19 or newer:
+
+```sh
+git clone https://github.com/WindustH/wish-web.git
+(cd wish-web && ./pnpmw install --frozen-lockfile && ./pnpmw build)
 git clone https://github.com/WindustH/wish-core.git
 cd wish-core
 cargo build --release
-install -Dm755 target/release/wish ~/.local/bin/wish
+mkdir -p ~/.local/lib/wish-agent ~/.local/bin
+cp target/release/wish ~/.local/lib/wish-agent/wish
+cp -r ../wish-web/dist ~/.local/lib/wish-agent/web
+ln -sf ~/.local/lib/wish-agent/wish ~/.local/bin/wish-agent
 ```
 
-The binary is self-contained: SQLite is built in and TLS uses bundled root
+The program is self-contained: SQLite is built in and TLS uses bundled root
 certificates, so it can be copied to another machine with the same OS and
 architecture.
 
-A layout that works well:
+Started without `--config`, Wish uses its user's
+[configuration file](configuration.md), writing one on the first start. On
+Linux:
 
 | Path | Purpose |
 | --- | --- |
-| `~/.config/wish/config.json` | [Configuration](configuration.md), writable by Wish |
-| `~/.config/wish/wish.env` | API keys and the access token, mode `600` |
-| `~/.local/share/wish/` | `data_dir` |
-
-Set `data_dir` to an absolute path so it does not depend on where Wish is
-started.
+| `~/.config/wish-agent/config.json` | [Configuration](configuration.md), writable by Wish |
+| `~/.config/wish-agent/wish.env` | API keys and the access token, mode `600`, for the service below |
+| `~/.local/share/wish-agent/` | `data_dir` |
 
 ## Run as a service
 
 Wish's shell runs commands as the user Wish runs as, with that user's files and
-tools, so a user service is usually what you want.
-`~/.config/systemd/user/wish.service`:
+tools, so a user service is usually what you want. The Arch Linux packages
+include one, and Homebrew has its own:
+
+```sh
+systemctl --user enable --now wish-agent   # Arch Linux
+brew services start wish-agent             # Homebrew
+```
+
+Elsewhere, write `~/.config/systemd/user/wish-agent.service`:
 
 ```ini
 [Unit]
@@ -48,8 +74,8 @@ Description=Wish agent server
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/wish --config %h/.config/wish/config.json
-EnvironmentFile=%h/.config/wish/wish.env
+ExecStart=%h/.local/bin/wish-agent
+EnvironmentFile=-%h/.config/wish-agent/wish.env
 WorkingDirectory=%h
 Restart=on-failure
 TimeoutStopSec=60
@@ -58,7 +84,7 @@ TimeoutStopSec=60
 WantedBy=default.target
 ```
 
-`~/.config/wish/wish.env`:
+`~/.config/wish-agent/wish.env`:
 
 ```sh
 WISH_HTTP_TOKEN=a-long-random-string
@@ -67,9 +93,9 @@ OPENAI_API_KEY=sk-...
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user enable --now wish
-loginctl enable-linger "$USER"   # keep it running after you log out
-journalctl --user -u wish -f     # logs
+systemctl --user enable --now wish-agent
+loginctl enable-linger "$USER"         # keep it running after you log out
+journalctl --user -u wish-agent -f     # logs
 ```
 
 Commands inherit the service's environment, including `PATH`. If the agent
@@ -80,35 +106,41 @@ zsh or bash (its default arguments `-lc` load your profile). See
 ## Access control
 
 By default Wish listens on `127.0.0.1` without authentication, which is fine
-for a single-user machine. Anyone who can reach the API can run commands as
-you, so before anything else can connect:
+for a single-user machine. Without a token it answers only requests addressed
+to it by its own name and refuses changes from other origins, so a web page
+cannot drive it through your browser. Anyone who can reach the API can still
+run commands as you, so before anything else can connect:
 
 1. Set `"bearer_token_env": "WISH_HTTP_TOKEN"` and define that variable (as
    above). Every `/api` request then needs
    `Authorization: Bearer <token>`.
-2. Give the same token to the web app's server (`WISH_HTTP_TOKEN` for
-   `serve.ts`). It adds the header on the browser's behalf, so the token
-   never reaches the browser.
+2. Open the web app: it asks for the token once, on its sign-in page, and
+   keeps it in that browser. If you serve the web app apart from Wish with its
+   own server (`serve.ts`), give the token to that server instead
+   (`WISH_HTTP_TOKEN`); it adds the header itself, so the token never reaches
+   the browser.
 
 Wish has no user accounts or per-user permissions. It is designed for one
 trusted person.
 
 ## Reaching Wish from other devices
 
-Keep Wish itself on loopback and publish the web app instead. Its server
-forwards `/api` to Wish, checks the `Host` header and blocks cross-site
-requests. For access beyond your local network, put it behind a reverse proxy
-with HTTPS. Installing the web app on a phone also needs HTTPS. The
+Wish serves its web app itself, so reaching the app from another device means
+reaching Wish. Set an access token first. On your local network, set `listen`
+to the machine's address (or `0.0.0.0:8790`) and open
+`http://<address>:8790`. For access beyond your network, and to install the
+app on a phone, which needs HTTPS, put Wish behind a reverse proxy with HTTPS
+and disable response buffering, since streaming responses use Server-Sent
+Events. A trusted network can go without a token by listing the names it uses
+in `allowed_hosts`. The web app can also be served apart from Wish; the
 [web app deployment guide](https://github.com/WindustH/wish-web/blob/master/docs/en/deployment.md)
-covers both.
+covers that.
 
-The web app can also connect to a Wish server directly: sign out, then enter
-the server's address and access token on the sign-in page. This is how one
+The web app can also connect to another Wish server: sign out, then enter the
+server's address and access token on the sign-in page. This is how one
 installed copy of the app switches between several servers. Wish accepts such
-cross-origin connections only when it requires a token. Set `listen` to a
-reachable address and serve it over HTTPS through a reverse proxy, since a page
-opened over HTTPS cannot connect to a plain HTTP address. Streaming responses
-use Server-Sent Events, so disable response buffering for `/api` in the proxy.
+cross-origin connections only when it requires a token, and a page opened over
+HTTPS cannot connect to a plain HTTP address.
 
 ## Restarts and shutdown
 
@@ -134,7 +166,7 @@ opened, and Wish never repeats a command whose effects are unknown.
 To avoid interrupting anything, check that nothing is running first:
 
 ```sh
-curl -s -H "Authorization: Bearer $WISH_HTTP_TOKEN" http://127.0.0.1:9780/api/status
+curl -s -H "Authorization: Bearer $WISH_HTTP_TOKEN" http://127.0.0.1:8790/api/status
 # "queue": {"active_sessions": 0, "compacting_sessions": 0, ...}
 ```
 
@@ -145,21 +177,25 @@ copying the directory is enough. While it runs, copy the databases through
 SQLite and the rest as files:
 
 ```sh
-cd ~/.local/share/wish
+cd ~/.local/share/wish-agent
 sqlite3 wish.sqlite ".backup /backup/wish.sqlite"
 sqlite3 management.sqlite ".backup /backup/management.sqlite"
 rsync -a blobs shell /backup/
 ```
 
-**Upgrade** by building the new version and swapping the binary. Keep the old
-one for a quick rollback:
+**Upgrade** through the package manager you installed with (`npm update -g
+wish-agent`, `yay -Syu`, `brew upgrade wish-agent`), then restart the
+service. A build from source swaps the program and the web app; keep the old
+ones for a quick rollback:
 
 ```sh
 cargo build --release
-cp ~/.local/bin/wish ~/.local/bin/wish.previous
-cp target/release/wish ~/.local/bin/wish.new
-mv ~/.local/bin/wish.new ~/.local/bin/wish   # replacing in place fails while it runs
-systemctl --user restart wish
+(cd ../wish-web && git pull && ./pnpmw install --frozen-lockfile && ./pnpmw build)
+cp -r ~/.local/lib/wish-agent ~/.local/lib/wish-agent.previous
+cp target/release/wish ~/.local/lib/wish-agent/wish.new
+mv ~/.local/lib/wish-agent/wish.new ~/.local/lib/wish-agent/wish   # replacing in place fails while it runs
+rm -rf ~/.local/lib/wish-agent/web && cp -r ../wish-web/dist ~/.local/lib/wish-agent/web
+systemctl --user restart wish-agent
 ```
 
 When a release changes how data or the configuration is stored, it migrates

@@ -295,9 +295,12 @@ impl App {
     if next.listen != current.listen
       || next.data_dir != current.data_dir
       || next.bearer_token_env != current.bearer_token_env
+      || next.web_dir != current.web_dir
+      || next.allowed_hosts != current.allowed_hosts
     {
       return Err(ApiError::bad_request(
-        "listen, data_dir and bearer_token_env are startup settings; edit the file and restart",
+        "listen, data_dir, bearer_token_env, web_dir and allowed_hosts are startup settings; edit \
+         the file and restart",
       ));
     }
     let providers =

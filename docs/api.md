@@ -20,7 +20,9 @@ goes through this API, so any other client can do the same.
 ## Conventions
 
 **Base path.** Application routes live under `/api`. Only `/health` and
-`/version` are outside it.
+`/version` are outside it; every other path is the web app's when one is
+installed (see `web_dir` in the [configuration](configuration.md)), and an
+unmatched `/api` path is always the API's `404`.
 
 **Authentication.** When `bearer_token_env` is set in the
 [configuration](configuration.md), every matched `/api` route requires
@@ -35,8 +37,13 @@ as `wish-web`'s `serve.ts` does.
 pages on other origins: it replies to CORS preflights without authentication
 and adds `Access-Control-Allow-Origin: *` to every response, including `401`.
 Such a page still needs the token for anything else. A server without a token
-sends no CORS headers, so browsers only let pages from its own origin call it;
-an arbitrary website cannot use a visitor's browser to reach a local Wish.
+sends no CORS headers, so browsers only let pages from its own origin call it.
+It also answers only requests whose `Host` is `localhost`, `127.0.0.1` or
+`[::1]` on its port, its `listen` address or one of `allowed_hosts`, refusing
+others with `421`, and refuses a `POST`, `PUT`, `PATCH` or `DELETE` whose
+`Origin` is another origin or whose `Sec-Fetch-Site` is not `same-origin` with
+`403`. So an arbitrary website cannot use a visitor's browser to reach a local
+Wish, not even by pointing its own domain at it.
 
 **Bodies.** Request and response bodies are JSON. Most request bodies reject
 unknown fields. Every `/api` request body is limited to 32 MiB; a larger one

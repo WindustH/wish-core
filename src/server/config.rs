@@ -16,6 +16,12 @@ pub struct Config {
   pub listen: SocketAddr,
   pub data_dir: PathBuf,
   pub bearer_token_env: Option<String>,
+  /// The built web app to hand out beside the API; `web` beside the program when absent.
+  /// Read at startup.
+  pub web_dir: Option<PathBuf>,
+  /// `host[:port]` names, besides loopback and the listen address, that browsers may reach a
+  /// server without a token by: a LAN address or a domain. Read at startup.
+  pub allowed_hosts: Vec<String>,
   pub providers: BTreeMap<String, ProviderConfig>,
   pub proxy: ProxyConfig,
   pub shell: ShellSettings,
@@ -185,6 +191,8 @@ impl Default for Config {
       listen: "127.0.0.1:9780".parse().unwrap(),
       data_dir: PathBuf::from("data"),
       bearer_token_env: None,
+      web_dir: None,
+      allowed_hosts: Vec::new(),
       providers: BTreeMap::new(),
       proxy: ProxyConfig::default(),
       shell: ShellSettings::default(),

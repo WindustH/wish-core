@@ -56,35 +56,43 @@ Wish 在你掌控的电脑上运行长期存在的 AI 智能体会话。为会�
 
 ## 快速开始
 
-构建 Wish 需要 [Rust 工具链](https://rustup.rs)（stable），运行 Web 应用需要
-[Node.js](https://nodejs.org) 22.19 或更高版本。
-
-**1. 构建并启动服务。**
+**1. 安装 Wish**，用你习惯的包管理器即可：
 
 ```sh
-git clone https://github.com/WindustH/wish-core.git
-cd wish-core
-cargo build --release
-echo '{"listen": "127.0.0.1:9780", "data_dir": "data"}' > config.json
-./target/release/wish --config config.json
+npm install -g wish-agent               # Linux、macOS 和 Windows
+yay -S wish-agent-bin                   # Arch Linux
+brew install windusth/tap/wish-agent    # macOS 和 Linux
 ```
 
-**2. 在另一个终端启动 Web 应用。**
+**2. 启动。**
 
 ```sh
-git clone https://github.com/WindustH/wish-web.git
-cd wish-web
-./pnpmw install --frozen-lockfile
-./pnpmw build
-node serve.ts
+wish-agent
 ```
 
 **3. 打开 <http://127.0.0.1:8790>。** 首次使用会有一个简短的引导，帮你添加模型提供商。
 然后在首页选好工作目录，发送第一条消息即可。
 
-你添加的提供商会保存在 `config.json` 中。如果不想把 API 密钥写进文件，可以在启动 Wish 前把它导出为环境变量，
-然后在 Web 应用中填写 `${变量名}`。全部选项见[配置说明](docs/configuration.md)；
-以服务方式运行、设置访问令牌、从其他设备访问，见[部署指南](docs/deployment.md)。
+首次启动会为当前用户写一份配置文件（Linux 上是 `~/.config/wish-agent/config.json`，
+macOS 上在 `~/Library/Application Support/wish-agent/`，Windows 上在 `%APPDATA%\wish-agent\`），
+数据也保存在它旁边。你添加的提供商会保存在这份配置里。如果不想把 API 密钥写进文件，
+可以在启动 Wish 前把它导出为环境变量，然后在 Web 应用中填写 `${变量名}`。
+全部选项见[配置说明](docs/configuration.md)；以服务方式运行、设置访问令牌、
+从其他设备访问，见[部署指南](docs/deployment.md)。
+
+### 从源码构建
+
+需要 [Rust 工具链](https://rustup.rs)（stable）和 [Node.js](https://nodejs.org) 22.19 或更高版本。
+
+```sh
+git clone https://github.com/WindustH/wish-web.git
+(cd wish-web && ./pnpmw install --frozen-lockfile && ./pnpmw build)
+git clone https://github.com/WindustH/wish-core.git
+cd wish-core
+cargo build --release
+cp -r ../wish-web/dist target/release/web
+./target/release/wish
+```
 
 ### 不使用 Web 应用
 
@@ -92,16 +100,16 @@ Web 应用能做的一切都可以通过 [HTTP API](docs/api.md) 完成：
 
 ```sh
 # 在 /tmp 中创建一个带 Shell 的会话
-curl -s http://127.0.0.1:9780/api/sessions -H 'Content-Type: application/json' -d '{
+curl -s http://127.0.0.1:8790/api/sessions -H 'Content-Type: application/json' -d '{
   "provider": "openai", "cwd": "/tmp", "tools": {"shell": true},
   "config": {"model": "gpt-5", "stream": true, "tools": [], "run": {"tools": "Serial"}}}'
 
 # 发送一条消息，它会立即开始工作
-curl -s http://127.0.0.1:9780/api/sessions/SESSION_ID/input \
+curl -s http://127.0.0.1:8790/api/sessions/SESSION_ID/input \
   -H 'Content-Type: application/json' -d '{"text": "这个目录里有什么？"}'
 
 # 实时查看进展
-curl -N http://127.0.0.1:9780/api/sessions/SESSION_ID/events
+curl -N http://127.0.0.1:8790/api/sessions/SESSION_ID/events
 ```
 
 ## 文档
@@ -118,7 +126,8 @@ curl -N http://127.0.0.1:9780/api/sessions/SESSION_ID/events
 ## 安全
 
 Wish 是为单个受信任的使用者设计的。任何能访问它 API 的人，都能以 Wish 运行账户的权限执行命令。
-默认只监听 `127.0.0.1`。在对外开放之前，请设置访问令牌并通过 HTTPS 提供服务，
+默认只监听 `127.0.0.1`；没有设置令牌时，它只回应用它自己的地址发来的请求，
+网页无法借你的浏览器操纵它。在对外开放之前，请设置访问令牌并通过 HTTPS 提供服务，
 具体做法见[部署指南](docs/deployment.md)。
 
 ## 参与贡献

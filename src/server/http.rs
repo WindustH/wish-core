@@ -1,5 +1,6 @@
-//! The HTTP API: the routes, and the two layers every request passes - cross-origin rules and the
-//! bearer token. Everything lives under `/api` except the unauthenticated `/health` and `/version`.
+//! The HTTP API: the routes, and the layers every request passes - the checks a server without a
+//! token makes (see [`web`]), cross-origin rules and the bearer token. Everything lives under
+//! `/api` except the unauthenticated `/health` and `/version`; other paths are the web app's.
 mod ask;
 mod config;
 mod content;
@@ -14,7 +15,11 @@ mod sse;
 mod status;
 mod storage;
 mod usage;
-use crate::server::{app::App, codex_login, error::ApiError, presets};
+use crate::server::{
+  app::App,
+  codex_login, presets,
+  web::{self, WebFront},
+};
 use axum::{
   Json, Router,
   extract::{Request, State},
@@ -26,7 +31,7 @@ use axum::{
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub fn build_router(app: Arc<App>) -> Router {
+pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
   let api = Router::new()
     .route("/status", get(status::status))
     .route("/events", get(status::events))
@@ -103,8 +108,12 @@ pub fn build_router(app: Arc<App>) -> Router {
     .nest("/api", api)
     .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
     .route("/version", get(version))
-    .fallback(|| async { ApiError::not_found() })
+    .fallback({
+      let front = front.clone();
+      move |request: Request| async move { web::serve(&front, request).await }
+    })
     .layer(middleware::from_fn_with_state(app.clone(), cross_origin))
+    .layer(middleware::from_fn_with_state(front, web::guard))
     .with_state(app)
 }
 async fn version() -> Json<Value> {

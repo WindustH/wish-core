@@ -70,38 +70,47 @@ from anything that speaks HTTP.
 
 ## Quick start
 
-You need a [Rust toolchain](https://rustup.rs) (stable) to build Wish, and
-[Node.js](https://nodejs.org) 22.19 or newer for the web app.
-
-**1. Build and start the server.**
+**1. Install Wish** with whichever package manager you use:
 
 ```sh
-git clone https://github.com/WindustH/wish-core.git
-cd wish-core
-cargo build --release
-echo '{"listen": "127.0.0.1:9780", "data_dir": "data"}' > config.json
-./target/release/wish --config config.json
+npm install -g wish-agent               # Linux, macOS and Windows
+yay -S wish-agent-bin                   # Arch Linux
+brew install windusth/tap/wish-agent    # macOS and Linux
 ```
 
-**2. Start the web app** in another terminal.
+**2. Start it.**
 
 ```sh
-git clone https://github.com/WindustH/wish-web.git
-cd wish-web
-./pnpmw install --frozen-lockfile
-./pnpmw build
-node serve.ts
+wish-agent
 ```
 
 **3. Open <http://127.0.0.1:8790>.** A short first-run setup helps you add a
 model provider. Pick your working directory on the start page and send your
 first message.
 
-Wish saves the providers you add to `config.json`. To keep an API key out of
-the file, export it before starting Wish and enter it in the web app as
+The first start writes a configuration file for your user
+(`~/.config/wish-agent/config.json` on Linux, `~/Library/Application
+Support/wish-agent/` on macOS, `%APPDATA%\wish-agent\` on Windows) and keeps
+its data beside it. The providers you add are saved there. To keep an API key
+out of the file, export it before starting Wish and enter it in the web app as
 `${NAME}`. See [configuration](docs/configuration.md) for every option, and
 [deployment](docs/deployment.md) for running Wish as a service, protecting it
 with a token and reaching it from other devices.
+
+### From source
+
+You need a [Rust toolchain](https://rustup.rs) (stable) and
+[Node.js](https://nodejs.org) 22.19 or newer.
+
+```sh
+git clone https://github.com/WindustH/wish-web.git
+(cd wish-web && ./pnpmw install --frozen-lockfile && ./pnpmw build)
+git clone https://github.com/WindustH/wish-core.git
+cd wish-core
+cargo build --release
+cp -r ../wish-web/dist target/release/web
+./target/release/wish
+```
 
 ### Without the web app
 
@@ -109,16 +118,16 @@ Everything the web app does is available over the [HTTP API](docs/api.md):
 
 ```sh
 # Create a session with shell access in /tmp
-curl -s http://127.0.0.1:9780/api/sessions -H 'Content-Type: application/json' -d '{
+curl -s http://127.0.0.1:8790/api/sessions -H 'Content-Type: application/json' -d '{
   "provider": "openai", "cwd": "/tmp", "tools": {"shell": true},
   "config": {"model": "gpt-5", "stream": true, "tools": [], "run": {"tools": "Serial"}}}'
 
 # Send it a message; it starts working right away
-curl -s http://127.0.0.1:9780/api/sessions/SESSION_ID/input \
+curl -s http://127.0.0.1:8790/api/sessions/SESSION_ID/input \
   -H 'Content-Type: application/json' -d '{"text": "What is in this directory?"}'
 
 # Follow along live
-curl -N http://127.0.0.1:9780/api/sessions/SESSION_ID/events
+curl -N http://127.0.0.1:8790/api/sessions/SESSION_ID/events
 ```
 
 ## Documentation
@@ -134,8 +143,10 @@ curl -N http://127.0.0.1:9780/api/sessions/SESSION_ID/events
 
 Wish is built for one trusted person. Anyone who can reach its API can run
 commands with the permissions of the account Wish runs under. By default it
-listens only on `127.0.0.1`. Before exposing it, set an access token and put
-it behind HTTPS; [deployment](docs/deployment.md) explains how.
+listens only on `127.0.0.1`, and without a token it answers only requests
+addressed to it by its own name, so a web page cannot reach it through your
+browser. Before exposing it, set an access token and put it behind HTTPS;
+[deployment](docs/deployment.md) explains how.
 
 ## Contributing
 
