@@ -1,0 +1,152 @@
+name: Release
+
+# Publishing a release builds Wish for each platform and attaches an archive per platform: the
+# program, `wish`, with the web app from wish-web at the same tag in `web/` beside it. The packages
+# (npm, the AUR, Homebrew) are made from these archives.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, for example v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  web:
+    name: Build the web app
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Resolve tag
+        id: release
+        shell: bash
+        run: |
+          tag="${{ inputs.tag || github.event.release.tag_name }}"
+          if [[ -z "$tag" ]]; then
+            echo "release tag is required" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout wish-web at the tag
+        uses: actions/checkout@v4
+        with:
+          repository: WindustH/wish-web
+          ref: ${{ steps.release.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the font tools
+        run: |
+          python -m pip install fonttools brotli numpy
+          sudo apt-get install -y p7zip-full
+
+      - name: Build
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: dist
+          if-no-files-found: error
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: web
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15
+            target: x86_64-apple-darwin
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Resolve tag
+        id: release
+        shell: bash
+        run: |
+          tag="${{ inputs.tag || github.event.release.tag_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: web
+          path: web
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ steps.release.outputs.version }}"
+          target="${{ matrix.target }}"
+          package="wish-agent-${version}-${target}"
+          staging="dist/${package}"
+          exe=""
+          if [[ "$target" == *windows* ]]; then
+            exe=".exe"
+          fi
+
+          mkdir -p "$staging"
+          cp "target/${target}/release/wish${exe}" "$staging/"
+          cp -R web "$staging/web"
+          cp LICENSE README.md "$staging/"
+
+          if [[ "$target" == *windows* ]]; then
+            powershell -NoProfile -Command "Compress-Archive -Path 'dist/${package}' -DestinationPath 'dist/${package}.zip' -Force"
+            archive="dist/${package}.zip"
+          else
+            tar -czf "dist/${package}.tar.gz" -C dist "$package"
+            archive="dist/${package}.tar.gz"
+          fi
+
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "$archive" > "${archive}.sha256"
+          else
+            sha256sum "$archive" > "${archive}.sha256"
+          fi
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          shopt -s nullglob
+          assets=(dist/*.tar.gz dist/*.zip dist/*.sha256)
+          gh release upload "$TAG" "${assets[@]}" --clobber
