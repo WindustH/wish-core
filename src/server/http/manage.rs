@@ -293,12 +293,7 @@ pub async fn fork(
     name: format!("{} (copy)", descriptor.name),
     provider: descriptor.provider,
     cwd: descriptor.cwd,
-    tools: ToolChanges {
-      shell: Some(descriptor.tools.shell),
-      ask_user: Some(descriptor.tools.ask_user),
-      mcp: Some(descriptor.tools.mcp),
-      web_search: Some(descriptor.tools.web_search),
-    },
+    tools: ToolChanges::from(descriptor.tools),
     config,
     metadata: session.get_metadata().clone(),
     initial_messages: request.conversation,

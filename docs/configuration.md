@@ -33,6 +33,7 @@ a temporary file and renamed into place). Most changes apply immediately; see
 - [Proxy](#proxy)
 - [Shell](#shell)
 - [MCP servers](#mcp-servers)
+- [Skills](#skills)
 - [Secrets](#secrets)
 - [Applying changes](#applying-changes)
 - [Data directory](#data-directory)
@@ -104,6 +105,7 @@ fields are rejected everywhere, so typos fail loudly.
 | `shell` | platform shell | The shell commands run in; see [Shell](#shell) |
 | `mcp` | `{"servers": {}}` | MCP servers sessions can call; see [MCP servers](#mcp-servers) |
 | `search` | `{"order": [], "providers": {}}` | The services the `web_search` tool asks; see [Web search](#web-search) |
+| `skills` | `{"dirs": [], "disabled": []}` | Where sessions find skills besides Wish's own directory, and which are off; see [Skills](#skills) |
 
 ## Providers
 
@@ -212,7 +214,7 @@ sessions keep their own settings.
 | `provider` | `""` | Default provider ID; must exist in `providers` |
 | `model` | `""` | Default model ID |
 | `cwd` | Wish's start directory | Default working directory, an absolute path |
-| `tools` | `{"shell": true, "ask_user": true, "mcp": true, "web_search": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell, `web_search` lets it search the web through the [search providers](#web-search). Each session can switch them later. A new session gets `web_search` only while some search provider can answer |
+| `tools` | `{"shell": true, "ask_user": true, "mcp": true, "web_search": true, "skills": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell, `web_search` lets it search the web through the [search providers](#web-search), `skills` lets it read [skills](#skills) from the shell. Each session can switch them later. A new session gets `web_search` only while some search provider can answer |
 | `stream` | `true` | Stream model output |
 | `instructions` | `""` | Extra instructions the web app adds to each new session |
 | `reasoning` | `null` | `{"enabled": bool, "effort": "low", "summary": "Auto"}`. Accepted effort values depend on the provider |
@@ -320,6 +322,39 @@ Server names may use letters, digits, `-` and `_`. For an `http` server, the
 transport sets `Accept`, `Content-Type`, `Mcp-Session-Id`,
 `MCP-Protocol-Version` and `Last-Event-ID` itself, and `auth_provider` excludes
 an `Authorization` header.
+
+## Skills
+
+A skill is a directory holding a `SKILL.md`: instructions for a particular kind
+of task, and any scripts or reference files they point to. Its YAML front
+matter gives its `name` and a `description` of what it is for, the format other
+agents use too, so the same skills can serve them all:
+
+```markdown
+---
+name: deploy
+description: Ship the service to production with the release script.
+---
+
+Run `scripts/release.sh` from the repository root, then ...
+```
+
+Sessions find skills, in this order, in `.agents/skills` under their working
+directory, in Wish's own directory (`skills` beside the configuration file,
+made at startup) and in each of `skills.dirs`; `~` stands for the home
+directory. Skills can sit in folders by kind, a few levels deep. The first of a
+name wins, and a name in `skills.disabled` is off wherever it is.
+
+```json
+"skills": {"dirs": ["~/.config/agents/skills"], "disabled": ["old-deploy"]}
+```
+
+The model is told how to find skills and none of the skills themselves, so
+adding, removing or switching one off never changes its request or resets its
+prompt cache. It runs `wish skill find <words>` or `wish skill list` in the
+shell when a task may have one, and `wish skill show <name>` to read it.
+Changes apply to the next command; a session's `skills` switch decides whether
+it may read them at all.
 
 ## Web search
 

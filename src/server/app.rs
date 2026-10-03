@@ -2,13 +2,14 @@
 //! index, the configuration and what is built from it (providers, the shell, MCP servers, search
 //! providers), the open sessions - and its lifecycle from startup to shutdown.
 use crate::server::{
+  bridge::Bridge,
   codex_login::LoginManager,
   config::Config,
   config_file::ConfigFile,
   data_dir::DataDir,
   error::{ApiError, blocking},
   management::ManagementStore,
-  mcp::{McpHub, bridge::Bridge},
+  mcp::McpHub,
   provider::{self, Provider, Providers, read_secret},
   search::{PreparedSearch, SearchHub},
   session::{CreateSession, Descriptor, SessionSlot, ToolSwitches},
@@ -47,7 +48,11 @@ pub struct App {
   pub data_dir: DataDir,
   pub bearer_token: Option<String>,
   pub lifecycle: Lifecycle,
-  /// MCP servers, their live connections, and the bridge sessions' shells reach them through.
+  /// How sessions' shells reach this server: `wish mcp` and `wish skill` go through it.
+  pub bridge: Bridge,
+  /// Wish's own skills: `skills` beside the configuration file.
+  pub skills_dir: PathBuf,
+  /// MCP servers and their live connections.
   pub mcp: McpHub,
   /// The search providers `web_search` asks.
   pub search: SearchHub,
@@ -114,6 +119,10 @@ impl App {
     let lifecycle = Lifecycle::new();
     let providers =
       provider::build_all(&config.providers, &config.proxy, &management, &lifecycle.tasks)?;
+    let skills_dir =
+      std::path::absolute(&config_path).map_err(ApiError::internal)?.with_file_name("skills");
+    // Made at once, so there is a place to put skills in.
+    let _ = std::fs::create_dir_all(&skills_dir);
     let config_file = ConfigFile::open(config_path, config.clone())?;
     let (events, _) = tokio::sync::broadcast::channel(256);
     let bearer_token = config
@@ -121,12 +130,8 @@ impl App {
       .as_ref()
       .map(|key| read_secret(key).map_err(ApiError::bad_request))
       .transpose()?;
-    let mcp = McpHub::new(
-      config.mcp.clone(),
-      config.proxy.clone(),
-      config.defaults.cwd.clone(),
-      Bridge::new(&data_dir),
-    );
+    let mcp = McpHub::new(config.mcp.clone(), config.proxy.clone(), config.defaults.cwd.clone());
+    let bridge = Bridge::new(&data_dir);
     let app = Arc::new(Self {
       storage,
       management,
@@ -140,6 +145,8 @@ impl App {
       data_dir,
       bearer_token,
       lifecycle,
+      bridge,
+      skills_dir,
       mcp,
       search,
     });
@@ -193,8 +200,9 @@ impl App {
     }
     // Without a word from the request: no shell and no web search, and questions to the user and
     // MCP allowed. Web search stays off while no search provider could answer it.
-    let mut tools = ToolSwitches { shell: false, ask_user: true, mcp: true, web_search: false }
-      .apply_changes(input.tools);
+    let mut tools =
+      ToolSwitches { shell: false, ask_user: true, mcp: true, web_search: false, skills: true }
+        .apply_changes(input.tools);
     tools.web_search &= self.search.is_available(&self.providers.read().unwrap());
     let descriptor = Descriptor {
       pending_selection: None,

@@ -2,6 +2,7 @@
 //! token makes (see [`web`]), cross-origin rules and the bearer token. Everything lives under
 //! `/api` except the unauthenticated `/health` and `/version`; other paths are the web app's.
 mod ask;
+mod bridge;
 mod config;
 mod content;
 mod directories;
@@ -11,6 +12,7 @@ mod mcp;
 mod providers;
 mod search;
 mod sessions;
+mod skills;
 mod sse;
 mod status;
 mod storage;
@@ -97,6 +99,8 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/history/search", post(history::search))
     .route("/sessions/{id}/history/{sequence}", get(history::read))
     .route("/mcp/servers", get(mcp::list))
+    .route("/skills", get(skills::list))
+    .route("/skills/{name}", get(skills::show))
     .route("/mcp/servers/{id}/check", post(mcp::check))
     .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
     .route_layer(middleware::from_fn_with_state(app.clone(), authorize))
@@ -104,7 +108,9 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     // instead of the application's.
     .route("/sessions/{id}/mcp/servers", get(mcp::servers))
     .route("/sessions/{id}/mcp/tool", get(mcp::tool))
-    .route("/sessions/{id}/mcp/call", post(mcp::call));
+    .route("/sessions/{id}/mcp/call", post(mcp::call))
+    .route("/sessions/{id}/skills", get(skills::session_list))
+    .route("/sessions/{id}/skills/{name}", get(skills::session_show));
   Router::new()
     .nest("/api", api)
     .route("/health", get(|| async { Json(json!({"status":"ok"})) }))

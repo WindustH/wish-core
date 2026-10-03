@@ -28,6 +28,8 @@ pub struct Config {
   pub mcp: McpConfig,
   /// The services `web_search` asks, and in what order.
   pub search: SearchConfig,
+  /// Where `wish skill` finds skills besides Wish's own directory, and which are off.
+  pub skills: SkillsConfig,
   pub defaults: Defaults,
 }
 impl Config {
@@ -41,6 +43,17 @@ impl Config {
 /// The default of a switch that is on unless the file says otherwise.
 pub(super) fn yes() -> bool {
   true
+}
+
+/// Skills a session's model finds with `wish skill`: Wish's own directory, `skills` beside the
+/// configuration file, then these directories in order, after the session's `.agents/skills`.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SkillsConfig {
+  /// More directories to find skills in; a leading `~` is the home directory.
+  pub dirs: Vec<String>,
+  /// Skills switched off, by name, wherever they are found.
+  pub disabled: Vec<String>,
 }
 
 /// The shell every session's commands run under. Applied to the next command after a save.
@@ -166,7 +179,13 @@ impl Default for Defaults {
       provider: String::new(),
       model: String::new(),
       cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp")),
-      tools: ToolSwitches { shell: true, ask_user: true, mcp: true, web_search: true },
+      tools: ToolSwitches {
+        shell: true,
+        ask_user: true,
+        mcp: true,
+        web_search: true,
+        skills: true,
+      },
       stream: true,
       instructions: String::new(),
       reasoning: None,
@@ -198,6 +217,7 @@ impl Default for Config {
       shell: ShellSettings::default(),
       mcp: Default::default(),
       search: Default::default(),
+      skills: SkillsConfig::default(),
       defaults: Defaults::default(),
     }
   }

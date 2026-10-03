@@ -54,6 +54,9 @@ from anything that speaks HTTP.
 - **MCP servers without the cost.** Add local or remote MCP servers and the
   agent calls them from its shell, one instance per session. Their tools never
   crowd the model's context or reset its prompt cache, however many you add.
+- **Skills, loaded only when needed.** Drop in skills, the same `SKILL.md`
+  folders other agents use, and the agent looks for the one a task needs and
+  reads it then. Until it does, none of them take up its context.
 - **Asks when your call is needed.** The agent can put choices and short
   questions to you in a single form. If it stops waiting and carries on, an
   answer you give later still reaches it.

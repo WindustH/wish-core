@@ -13,7 +13,7 @@ bridge, which answers a session with MCP off by saying so, and the model reads t
 output.
 
 ```text
-model --shell_start("wish mcp call s/t '{...}'")--> session shell (WISH_URL, WISH_SESSION, WISH_MCP_TOKEN)
+model --shell_start("wish mcp call s/t '{...}'")--> session shell (WISH_URL, WISH_SESSION, WISH_SESSION_TOKEN)
                                                         |
                                     wish mcp  (server::mcp::cli, no server started)
                                                         | HTTP on loopback, session token
@@ -78,9 +78,9 @@ type, before the result crosses the bridge.
 
 ## The bridge and `wish mcp`
 
-`SessionSlot::open` makes the session's `mcp_token` (two random UUIDs) and adds `WISH_URL`,
-`WISH_SESSION`, `WISH_MCP_TOKEN` and a `PATH` led by `data_dir/bin` to the shell's environment
-(`server::mcp::bridge`),
+`SessionSlot::open` makes the session's `bridge_token` (two random UUIDs) and adds `WISH_URL`,
+`WISH_SESSION`, `WISH_SESSION_TOKEN` and a `PATH` led by `data_dir/bin` to the shell's environment
+(`server::bridge`, which [skills](skills.md) share; the commands' half is `server::bridge::client`),
 whether or not MCP is on; the bridge checks the switch on every request and refuses with `409` and
 a sentence meant for the model: MCP is disabled here, and the user can enable it in the session's
 settings. `data_dir/bin/wish` is a

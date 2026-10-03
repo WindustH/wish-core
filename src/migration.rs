@@ -25,6 +25,7 @@ mod m0003_tool_batches;
 mod m0004_compact_storage;
 mod m0005_short_outcomes;
 mod m0006_standby_lists;
+mod m0007_skills_switch;
 
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -53,6 +54,7 @@ const STEPS: &[Step] = &[
   Step { summary: m0004_compact_storage::SUMMARY, apply: m0004_compact_storage::apply },
   Step { summary: m0005_short_outcomes::SUMMARY, apply: m0005_short_outcomes::apply },
   Step { summary: m0006_standby_lists::SUMMARY, apply: m0006_standby_lists::apply },
+  Step { summary: m0007_skills_switch::SUMMARY, apply: m0007_skills_switch::apply },
 ];
 
 /// The format this build reads.

@@ -1,9 +1,9 @@
 //! MCP over HTTP: the bridge a session's shell reaches its servers through, and the settings page's
 //! view of them.
 //!
-//! The bridge answers a session's own token, which only that session's shell holds, and never the
-//! application's: a command a session runs can reach that session's servers and nothing else. A
-//! session's MCP switch is enforced here and nowhere else.
+//! A session's MCP switch is enforced here and nowhere else; the token the bridge answers is
+//! checked in `bridge`.
+use super::bridge;
 use crate::server::{
   app::App,
   error::ApiError,
@@ -13,29 +13,20 @@ use crate::server::{
 use axum::{
   Json,
   extract::{Path, Query, State},
-  http::{HeaderMap, header::AUTHORIZATION},
+  http::HeaderMap,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
-/// The session a bridge request speaks for, when its token is the one that session's shell holds,
-/// and the providers as they stand.
+/// The session a bridge request speaks for, when its MCP switch is on, and the providers as they
+/// stand.
 async fn bridge_session(
   app: &Arc<App>,
   id: &str,
   headers: &HeaderMap,
 ) -> Result<(Caller, Providers), ApiError> {
-  let supplied = headers
-    .get(AUTHORIZATION)
-    .and_then(|value| value.to_str().ok())
-    .and_then(|value| value.strip_prefix("Bearer "));
-  // A shell holding a token belongs to a session that is open, so there is nothing to load.
-  let slot = app.sessions.lock().await.get(id).cloned();
-  let Some(slot) = slot.filter(|slot| Some(slot.mcp_token.as_str()) == supplied) else {
-    return Err(ApiError::unauthorized());
-  };
-  slot.require_live()?;
+  let slot = bridge::session(app, id, headers).await?;
   // Said to the model through the command's output, so it knows why and who can change it.
   let descriptor = slot.get_descriptor();
   if !descriptor.tools.mcp {

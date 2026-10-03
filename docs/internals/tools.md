@@ -23,8 +23,8 @@ model.
 The server's dispatcher is `SessionTools`
 ([`src/server/session/tools.rs`](../../src/server/session/tools.rs)). Every session gets
 `history_search`, `history_read`, `history_query` and `view_image`. The session's switches
-(`descriptor.tools`) add the five shell tools, `ask_user` and `web_search`; the `mcp` switch adds no
-tool (see [MCP](mcp.md)). The `ShellTool` starts the first time the shell is switched on and stays
+(`descriptor.tools`) add the five shell tools, `ask_user` and `web_search`; the `mcp` and `skills`
+switches add no tool (see [MCP](mcp.md) and [skills](skills.md)). The `ShellTool` starts the first time the shell is switched on and stays
 alive while it is off, so background commands still report. The server rewrites `config.tools` to
 exactly that set and rejects a config naming any other tool (`no executor for tool X`), in the same
 file.

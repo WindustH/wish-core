@@ -34,8 +34,10 @@ const AGENT_INSTRUCTIONS: &str =
 pub fn agent_instructions(tools: &[Tool]) -> String {
   let mut text = AGENT_INSTRUCTIONS.to_owned();
   if tools.iter().any(|tool| tool.name == "shell_start") {
-    text.push_str("\n\n");
-    text.push_str(crate::server::mcp::INSTRUCTIONS);
+    for section in [crate::server::mcp::INSTRUCTIONS, crate::server::skills::INSTRUCTIONS] {
+      text.push_str("\n\n");
+      text.push_str(section);
+    }
   }
   text
 }

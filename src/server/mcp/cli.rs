@@ -3,6 +3,7 @@
 //! A client of the bridge the server offers each session. The address, the session and its token
 //! come from the environment the session's shell runs in, so the command works only there.
 
+use crate::server::bridge::client::{BridgeClient, Failure};
 use serde_json::{Map, Value, json};
 use std::io::{IsTerminal, Read};
 
@@ -16,8 +17,6 @@ const USAGE: &str = "usage:
 
 exit status: 0 done, 1 the tool reported an error, 2 nothing was called, 3 the call's outcome is
 unknown (it may have taken effect)";
-
-type Failure = (i32, String);
 
 /// Runs the command and returns its exit status.
 pub async fn run(args: Vec<String>) -> i32 {
@@ -55,64 +54,10 @@ fn parse_target(target: &str) -> Result<(&str, &str), Failure> {
     .ok_or_else(|| (2, format!("expected <server>/<tool>, got `{target}`")))
 }
 
-struct Bridge {
-  client: reqwest::Client,
-  base: String,
-  token: String,
-}
-
-impl Bridge {
-  fn from_environment() -> Result<Self, Failure> {
-    let read = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-    let (Some(url), Some(session), Some(token)) =
-      (read("WISH_URL"), read("WISH_SESSION"), read("WISH_MCP_TOKEN"))
-    else {
-      return Err((
-        2,
-        "this command runs in the shell of a wish session with MCP switched on".into(),
-      ));
-    };
-    // The bridge is on this machine: a proxy from the environment must not stand in between.
-    let client = reqwest::Client::builder()
-      .no_proxy()
-      .build()
-      .map_err(|error| (2, format!("could not set up a client: {error}")))?;
-    Ok(Self { client, base: format!("{url}/sessions/{session}/mcp"), token })
-  }
-
-  fn url(&self, path: &str, query: &[(&str, &str)]) -> Result<reqwest::Url, Failure> {
-    let mut url = reqwest::Url::parse(&format!("{}/{path}", self.base))
-      .map_err(|error| (2, format!("WISH_URL is not a valid address: {error}")))?;
-    if !query.is_empty() {
-      url.query_pairs_mut().extend_pairs(query);
-    }
-    Ok(url)
-  }
-
-  async fn send(&self, request: reqwest::RequestBuilder) -> Result<Value, Failure> {
-    let response = request
-      .bearer_auth(&self.token)
-      .send()
-      .await
-      .map_err(|error| (2, format!("could not reach wish: {error}")))?;
-    let status = response.status();
-    let body =
-      response.bytes().await.map_err(|error| (3, format!("the answer broke off: {error}")))?;
-    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-    if status.is_success() {
-      return Ok(body);
-    }
-    let message =
-      body["error"]["message"].as_str().map_or_else(|| format!("HTTP {status}"), str::to_owned);
-    let code = if body["error"]["details"]["kind"] == "unknown" { 3 } else { 2 };
-    Err((code, message))
-  }
-}
-
 async fn list(server: Option<&str>) -> Result<i32, Failure> {
-  let bridge = Bridge::from_environment()?;
+  let bridge = BridgeClient::from_environment("mcp")?;
   let query: Vec<(&str, &str)> = server.map(|server| ("server", server)).into_iter().collect();
-  let servers = bridge.send(bridge.client.get(bridge.url("servers", &query)?)).await?;
+  let servers = bridge.send(bridge.client.get(bridge.url("mcp/servers", &query)?)).await?;
   let servers = servers.as_array().cloned().unwrap_or_default();
   if servers.is_empty() {
     println!("No MCP servers are configured.");
@@ -142,9 +87,9 @@ async fn list(server: Option<&str>) -> Result<i32, Failure> {
 
 async fn describe(target: &str) -> Result<i32, Failure> {
   let (server, tool) = parse_target(target)?;
-  let bridge = Bridge::from_environment()?;
+  let bridge = BridgeClient::from_environment("mcp")?;
   let definition = bridge
-    .send(bridge.client.get(bridge.url("tool", &[("server", server), ("name", tool)])?))
+    .send(bridge.client.get(bridge.url("mcp/tool", &[("server", server), ("name", tool)])?))
     .await?;
   println!("{server}/{tool}");
   if let Some(title) = definition["title"].as_str() {
@@ -193,12 +138,12 @@ async fn call(args: Vec<String>) -> Result<i32, Failure> {
       Err(error) => return Err((2, format!("the arguments are not valid JSON: {error}"))),
     }
   };
-  let bridge = Bridge::from_environment()?;
+  let bridge = BridgeClient::from_environment("mcp")?;
   let result = bridge
     .send(
       bridge
         .client
-        .post(bridge.url("call", &[])?)
+        .post(bridge.url("mcp/call", &[])?)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(json!({"server": server, "tool": tool, "arguments": arguments}).to_string()),
     )

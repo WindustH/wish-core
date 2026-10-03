@@ -142,6 +142,8 @@ engine error, for example
 | PATCH, DELETE | `/api/sessions/{id}/queue/{entry}` | Reorder or cancel queued input |
 | POST | `/api/sessions/{id}/answer` | Answer or skip an `ask_user` form |
 | GET | `/api/mcp/servers` | Configured MCP servers and what is known of them |
+| GET | `/api/skills` | Skills in Wish's own and the configured directories |
+| GET | `/api/skills/{name}` | One skill's instructions and files |
 | POST | `/api/mcp/servers/{id}/check` | Connect to an MCP server and list its tools |
 | GET | `/api/search-presets` | The search services Wish knows |
 | GET | `/api/search/providers` | Configured search providers and whether each can search now |
@@ -149,6 +151,8 @@ engine error, for example
 | GET | `/api/sessions/{id}/mcp/servers` | MCP bridge: servers and tools (session token) |
 | GET | `/api/sessions/{id}/mcp/tool` | MCP bridge: one tool's definition (session token) |
 | POST | `/api/sessions/{id}/mcp/call` | MCP bridge: call a tool (session token) |
+| GET | `/api/sessions/{id}/skills` | Skills bridge: list or find skills (session token) |
+| GET | `/api/sessions/{id}/skills/{name}` | Skills bridge: one skill's instructions and files (session token) |
 | GET | `/api/sessions/{id}/events` | Session event stream (SSE) |
 | GET | `/api/sessions/{id}/history` | Conversation timeline |
 | POST | `/api/sessions/{id}/history/query` | Filtered chronological history |
@@ -451,7 +455,7 @@ Descriptor fields:
 
 | Field | Meaning |
 | --- | --- |
-| `tools` | The session's optional built-in tools: `{"shell", "ask_user", "mcp", "web_search"}`, each a boolean |
+| `tools` | The session's optional built-in tools: `{"shell", "ask_user", "mcp", "web_search", "skills"}`, each a boolean |
 | `shell_command` | The session's own `{program, args}`. Absent when it follows the global `shell` setting |
 | `pending_selection` | A provider/model change made while running, not yet in effect |
 
@@ -517,7 +521,7 @@ loading any conversation.
 
 `provider`, `cwd` (an existing absolute directory) and `config` are required.
 `tools` switches optional tools; each switch left out keeps its default: no
-shell, no web search, `ask_user` on and MCP on. `web_search` stays off, even when
+shell, no web search, `ask_user`, MCP and skills on. `web_search` stays off, even when
 asked for, while no search provider can answer. `initial_messages` optionally seeds the context with
 messages. Returns `201`
 with the session. `404` if the provider is unknown or disabled.
@@ -572,7 +576,7 @@ Returns `400` while the session's shell is switched off.
 
 ### `PUT /api/sessions/{id}/tools`
 
-`{"shell": false}`, `{"ask_user": true}`, `{"mcp": true}` or any of them together
+`{"shell": false}`, `{"ask_user": true}`, `{"mcp": true}`, `{"skills": false}` or any of them together
 switch the session's optional tools; a switch left out stays as it is. The
 session's tool list is rebuilt to match. Switching the shell off keeps
 background commands running, and they still report when they finish.
@@ -710,9 +714,9 @@ so it may have taken effect.
 
 ### The bridge
 
-`wish mcp` is a client of three routes. Each session's shell runs with
+`wish mcp` and `wish skill` are clients of the bridge. Each session's shell runs with
 `WISH_URL` (this server's `/api` on the loopback address), `WISH_SESSION` and
-`WISH_MCP_TOKEN`, a token made when the session opens and known only to its
+`WISH_SESSION_TOKEN`, a token made when the session opens and known only to its
 shell, and with a directory linking to the Wish program first on `PATH`. The
 routes take `Authorization: Bearer <that token>` and answer that session only;
 the application's token is refused. While the session has `tools.mcp` off they
@@ -732,6 +736,45 @@ standard error), `rejected` (`422`, the server answered with an error) and
 `unknown` (`504`, no answer; a call may have taken effect). A call ends when its
 request does: interrupting the command drops the request, and the server is
 sent `notifications/cancelled`.
+
+### `wish skill`
+
+Skills (see [configuration](configuration.md#skills)) are read from the session's
+shell the same way, so the model is never told of them until it looks:
+
+```text
+wish skill find <words>    the skills that fit a task, best first
+wish skill list            every skill, by folder
+wish skill show <name>     a skill's instructions, and the files beside them
+```
+
+`show` prints the skill's directory and its other files before the
+instructions, whose paths are relative to it. The exit status is `0` when done,
+`1` when no skill matched or has that name, and `2` when nothing was asked: a
+usage error, a shell outside a session, or skills switched off. The routes take
+the session's token as above, and answer `409` with a message for the model
+while the session has `tools.skills` off.
+
+| Route | Query | Returns |
+| --- | --- | --- |
+| `GET /api/sessions/{id}/skills` | `?query=` to rank by words | `{"skills": [{"name", "description", "category"}]}`: those the session can use, best first with a query |
+| `GET /api/sessions/{id}/skills/{name}` | | `{"name", "description", "dir", "body", "files", "more_files"}`; `404` for no usable skill of that name |
+
+### `GET /api/skills`
+
+Every skill in Wish's own directory and `skills.dirs`, for the settings page,
+with those switched off and those a skill of the same name found earlier hides:
+
+```json
+{"dir": "/home/me/.config/wish-agent/skills",
+ "roots": [{"source": "wish", "dir": "...", "exists": true}],
+ "skills": [{"name": "deploy", "description": "...", "category": null, "dir": "...",
+             "source": "~/.config/agents/skills", "disabled": false, "shadowed": false}],
+ "problems": [{"path": ".../SKILL.md", "message": "..."}]}
+```
+
+`GET /api/skills/{name}` gives the first skill of that name as `wish skill
+show` reads it, switched off or not.
 
 ### `GET /api/mcp/servers`
 

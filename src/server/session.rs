@@ -108,7 +108,7 @@ pub struct SessionSlot {
   image_dir: PathBuf,
   /// What this session's shell shows the MCP bridge; made anew each time the session opens, since
   /// its shells do not outlive the process.
-  pub mcp_token: String,
+  pub bridge_token: String,
   tasks: tokio_util::task::TaskTracker,
   app: Weak<App>,
   /// This session's live events, for `GET /sessions/{id}/events`.
@@ -135,9 +135,10 @@ impl SessionSlot {
       Arc::new(RwLock::new(own.unwrap_or_else(|| app.shell.read().unwrap().clone())));
     let mut shell_config = ShellConfig::new(&descriptor.cwd, app.data_dir.shell(&descriptor.id));
     shell_config.command = Arc::clone(&effective_shell);
-    let mcp_token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
-    // Set whether or not MCP is on: the bridge checks the switch, and the environment stays as it is.
-    shell_config.env.extend(app.mcp.bridge.shell_environment(&descriptor.id, &mcp_token));
+    let bridge_token =
+      format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    // Set whatever the switches say: the bridge checks them, and the environment stays as it is.
+    shell_config.env.extend(app.bridge.shell_environment(&descriptor.id, &bridge_token));
     let image_dir =
       std::path::absolute(app.data_dir.blobs(&descriptor.id)).map_err(ApiError::internal)?;
     let switches = descriptor.tools;
@@ -156,7 +157,7 @@ impl SessionSlot {
       update_lock: Arc::new(AsyncMutex::new(())),
       effective_shell,
       image_dir,
-      mcp_token,
+      bridge_token,
       tasks: app.lifecycle.tasks.clone(),
       app: Arc::downgrade(app),
       events,

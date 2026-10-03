@@ -43,6 +43,7 @@ transaction. A step is frozen once released:
 | `m0004_compact_storage` | Deleting a session gives its room back: `wish.sqlite` is set to incremental auto-vacuum and its FTS tables are merged, dropping the text of history deleted earlier |
 | `m0005_short_outcomes` | A session record's `status.last_operation.outcome` keeps only its short form (`StreamFailed: {reason}`, `ModelStopped: {stop_reason}`); records saved before the server trimmed it held the partial or whole response |
 | `m0006_standby_lists` | A standby generation's entry list is deleted when the standby gets a new one without being activated; in each session, the entry lists earlier builds left behind that way - every entry list neither its queue nor one of its generations names - are deleted |
+| `m0007_skills_switch` | Sessions gain a `skills` switch, which like `mcp` changes neither the tools nor the instructions: it is added, on, to every session record and to `defaults.tools`, leaving one already there as it is |
 
 ## Running them
 

@@ -1,6 +1,9 @@
-//! How a session's shell finds the MCP bridge (`server::http::mcp`): the server's address, known
-//! once it listens, the session's own token, and a directory that puts this build's `wish` first on
-//! the shell's `PATH`.
+//! The bridge a session's shell reaches its server by: `wish mcp` calls the session's MCP servers
+//! through it, and `wish skill` reads its skills. The shell gets the server's address, known once it
+//! listens, the session's own token, and a directory that puts this build's `wish` first on its
+//! `PATH`; `client` is the half those commands run.
+pub mod client;
+
 use crate::server::data_dir::DataDir;
 use std::{
   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -12,7 +15,7 @@ pub struct Bridge {
   /// The API's address, known once the listener is bound.
   url: OnceLock<String>,
   /// A directory holding only a link to this program, put first on a session shell's `PATH` so
-  /// `wish mcp` runs this build.
+  /// `wish mcp` and `wish skill` run this build.
   bin_dir: Option<PathBuf>,
 }
 
@@ -30,13 +33,13 @@ impl Bridge {
     }
     let _ = self.url.set(format!("http://{address}/api"));
   }
-  /// The variables a session's shell gets for reaching its MCP servers through `wish mcp`.
+  /// The variables a session's shell gets for reaching the bridge.
   pub fn shell_environment(&self, session: &str, token: &str) -> Vec<(String, String)> {
     let Some(url) = self.url.get() else { return Vec::new() };
     let mut variables = vec![
       ("WISH_URL".to_owned(), url.clone()),
       ("WISH_SESSION".to_owned(), session.to_owned()),
-      ("WISH_MCP_TOKEN".to_owned(), token.to_owned()),
+      ("WISH_SESSION_TOKEN".to_owned(), token.to_owned()),
     ];
     if let Some(bin) = &self.bin_dir {
       let inherited = std::env::var_os("PATH").unwrap_or_default();
@@ -49,7 +52,7 @@ impl Bridge {
   }
 }
 
-/// The directory sessions' shells find `wish mcp` in: on Unix `bin` (`data_dir/bin`), holding a
+/// The directory sessions' shells find `wish` in: on Unix `bin` (`data_dir/bin`), holding a
 /// `wish` link to this program; on Windows, where creating a link takes a privilege ordinary users
 /// lack, the program's own directory. Without one, a shell finds `wish` only if it is on `PATH`
 /// already.

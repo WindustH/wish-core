@@ -83,3 +83,4 @@ these pages.
 
 - [mcp](mcp.md): MCP servers reached from a session's shell through `wish mcp`: the client, the
   instances, the bridge.
+- [skills](skills.md): skills found and read from a session's shell through `wish skill`.

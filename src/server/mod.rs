@@ -14,6 +14,7 @@
 
 mod app;
 mod blobs;
+mod bridge;
 mod codex_login;
 mod compaction_item;
 mod config;
@@ -32,13 +33,16 @@ mod sampling;
 mod search;
 mod session;
 mod session_model;
+mod skills;
 mod user_dirs;
 mod web;
 
 pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut args = std::env::args().skip(1);
-  if std::env::args().nth(1).as_deref() == Some("mcp") {
-    std::process::exit(mcp::cli::run(args.skip(1).collect()).await);
+  match std::env::args().nth(1).as_deref() {
+    Some("mcp") => std::process::exit(mcp::cli::run(args.skip(1).collect()).await),
+    Some("skill") => std::process::exit(skills::cli::run(args.skip(1).collect()).await),
+    _ => {}
   }
   // Named as it was started: `wish-agent` where a package installs it so.
   let name = std::env::args()
@@ -74,7 +78,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|error| format!("listen on {}: {error}", config.listen))?;
   let address = listener.local_addr()?;
   eprintln!("wish listening on {address}");
-  app.mcp.bridge.set_address(address);
+  app.bridge.set_address(address);
   let front = std::sync::Arc::new(web::WebFront::new(
     web_app,
     address,
