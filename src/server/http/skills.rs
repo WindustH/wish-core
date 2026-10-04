@@ -14,7 +14,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 /// Where the session a bridge request speaks for finds skills, when its skills switch is on.
 async fn session_roots(
@@ -82,24 +82,23 @@ pub async fn session_show(
   .await
 }
 
-/// For settings: every skill in Wish's own and the configured directories - those a later one of
-/// the same name hides and those switched off included - and what could not be read.
+/// For settings: every skill in Wish's own and the configured directories - those another of the
+/// same name keeps out and those switched off included - and what could not be read.
 pub async fn list(State(app): State<Arc<App>>) -> Result<Json<Value>, ApiError> {
   let config = app.config_file.lock().await.config.skills.clone();
   let roots = skills::roots(None, &app.skills_dir, &config);
   let own = app.skills_dir.clone();
   blocking(move || {
     let found = skills::discover(&roots);
-    let mut names = HashSet::new();
     let skills: Vec<Value> = found
       .skills
       .iter()
-      .map(|skill| {
-        let shadowed = !names.insert(skill.name.as_str());
+      .zip(found.standings())
+      .map(|(skill, standing)| {
         json!({
           "name": skill.name, "description": skill.description, "category": skill.category,
-          "dir": skill.dir, "source": skill.source,
-          "disabled": config.disabled.contains(&skill.name), "shadowed": shadowed,
+          "path": skill.path, "dir": skill.dir, "source": skill.source,
+          "disabled": config.disabled.contains(&skill.name), "standing": standing,
         })
       })
       .collect();
@@ -116,17 +115,27 @@ pub async fn list(State(app): State<Arc<App>>) -> Result<Json<Value>, ApiError> 
   })
   .await
 }
-/// For settings: a skill's instructions and files, switched off or not.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShowQuery {
+  /// Which of the skills of the name, by its directory; the first when not given.
+  dir: Option<std::path::PathBuf>,
+}
+/// For settings: a skill's instructions and files, whether sessions see it or not.
 pub async fn show(
   State(app): State<Arc<App>>,
   Path(name): Path<String>,
+  Query(query): Query<ShowQuery>,
 ) -> Result<Json<Value>, ApiError> {
   let config = app.config_file.lock().await.config.skills.clone();
   let roots = skills::roots(None, &app.skills_dir, &config);
   blocking(move || {
     let found = skills::discover(&roots);
-    let skill =
-      found.skills.iter().find(|skill| skill.name == name).ok_or_else(ApiError::not_found)?;
+    let skill = found
+      .skills
+      .iter()
+      .find(|skill| skill.name == name && query.dir.as_ref().is_none_or(|dir| skill.dir == *dir))
+      .ok_or_else(ApiError::not_found)?;
     Ok(Json(json!(skills::show(skill).map_err(ApiError::internal)?)))
   })
   .await

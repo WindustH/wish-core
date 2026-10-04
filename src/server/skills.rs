@@ -5,14 +5,16 @@
 //! what the model is sent.
 //!
 //! Skills are found, in order, in the session's `.agents/skills`, in Wish's own directory and in the
-//! configured ones, each searched a few levels deep so they can sit in folders by kind. The first of
-//! a name wins; one switched off is left out wherever it is.
+//! configured ones, each searched a few levels deep so they can sit in folders by kind. A name is
+//! the first directory's that has it; when that directory has it twice, in different folders,
+//! neither is used, since which one was meant can't be told. One switched off is left out wherever
+//! it is.
 pub mod cli;
 
 use crate::server::config::SkillsConfig;
 use serde::Serialize;
 use std::{
-  collections::HashSet,
+  collections::{HashMap, HashSet},
   path::{Path, PathBuf},
 };
 
@@ -74,6 +76,8 @@ pub struct Skill {
   pub description: String,
   /// The folders it sits in under its root, if any: `configuration` for `configuration/nvim`.
   pub category: Option<String>,
+  /// Its directory under its root: `configuration/nvim`.
+  pub path: String,
   /// The directory holding its `SKILL.md`.
   pub dir: PathBuf,
   pub source: String,
@@ -86,16 +90,51 @@ pub struct Found {
   pub problems: Vec<(PathBuf, String)>,
 }
 impl Found {
-  /// The skills a session sees: the first of each name, without those switched off.
-  pub fn usable(&self, config: &SkillsConfig) -> Vec<&Skill> {
-    let mut names = HashSet::new();
+  /// How each skill stands among those of its name, in the order of `skills`.
+  pub fn standings(&self) -> Vec<Standing> {
+    // The directory that first has a name, and how many skills of the name it has.
+    let mut owners: HashMap<&str, (&str, usize)> = HashMap::new();
+    for skill in &self.skills {
+      let owner = owners.entry(&skill.name).or_insert((&skill.source, 0));
+      if owner.0 == skill.source {
+        owner.1 += 1;
+      }
+    }
     self
       .skills
       .iter()
-      .filter(|skill| names.insert(skill.name.as_str()))
-      .filter(|skill| !config.disabled.contains(&skill.name))
+      .map(|skill| match owners[skill.name.as_str()] {
+        (source, _) if source != skill.source => Standing::Shadowed,
+        (_, 1) => Standing::Used,
+        _ => Standing::Conflict,
+      })
       .collect()
   }
+
+  /// The skills a session sees: each name's, without those switched off.
+  pub fn usable(&self, config: &SkillsConfig) -> Vec<&Skill> {
+    self
+      .skills
+      .iter()
+      .zip(self.standings())
+      .filter(|(skill, standing)| {
+        *standing == Standing::Used && !config.disabled.contains(&skill.name)
+      })
+      .map(|(skill, _)| skill)
+      .collect()
+  }
+}
+
+/// How a skill stands among those of its name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Standing {
+  /// Sessions see it by its name.
+  Used,
+  /// An earlier directory has a skill of its name.
+  Shadowed,
+  /// Its directory has another skill of its name, so neither is used.
+  Conflict,
 }
 
 /// Every skill under the roots, in their order.
@@ -158,15 +197,15 @@ fn read_skill(root: &Root, dir: &Path, text: &str) -> Skill {
       .unwrap_or_default()
       .to_owned()
   });
-  let category = dir
-    .parent()
-    .and_then(|parent| parent.strip_prefix(&root.dir).ok())
-    .map(|path| path.to_string_lossy().replace('\\', "/"))
-    .filter(|path| !path.is_empty());
+  let relative = |path: &Path| {
+    path.strip_prefix(&root.dir).ok().map(|path| path.to_string_lossy().replace('\\', "/"))
+  };
+  let category = dir.parent().and_then(relative).filter(|path| !path.is_empty());
   Skill {
     name: field("name").unwrap_or_else(folder),
     description,
     category,
+    path: relative(dir).unwrap_or_default(),
     dir: dir.to_owned(),
     source: root.source.clone(),
   }

@@ -7,7 +7,7 @@ use serde_json::Value;
 
 const USAGE: &str = "usage:
   wish skill find <words>    the skills that fit a task, best first
-  wish skill list            every skill, by folder
+  wish skill list            every skill, in its folders
   wish skill show <name>     a skill's instructions, and the files beside them
 
 exit status: 0 done, 1 no skill matched or has that name, 2 nothing was asked";
@@ -75,19 +75,30 @@ async fn list() -> Result<i32, Failure> {
     println!("No skills are installed.");
     return Ok(0);
   }
-  // Skills at the top of their folders first, then each folder's under its name.
-  let folder = |skill: &Value| skill["category"].as_str().unwrap_or_default().to_owned();
-  let mut folders: Vec<String> = all.iter().map(folder).collect();
-  folders.sort();
-  folders.dedup();
-  for name in folders {
-    let indent = if name.is_empty() { "" } else { "  " };
-    if !name.is_empty() {
-      println!("{name}/");
+  // A tree: in each folder the folders in it first, then its skills, each in name order. The same
+  // folder in different directories is one.
+  let mut rows: Vec<(Vec<&str>, &Value)> = all
+    .iter()
+    .map(|skill| {
+      let folders = skill["category"].as_str().map(|path| path.split('/').collect());
+      (folders.unwrap_or_default(), skill)
+    })
+    .collect();
+  fn order<'a>((folders, skill): &(Vec<&'a str>, &'a Value)) -> Vec<(bool, &'a str)> {
+    let mut key: Vec<(bool, &str)> = folders.iter().map(|folder| (false, *folder)).collect();
+    key.push((true, skill["name"].as_str().unwrap_or_default()));
+    key
+  }
+  rows.sort_by(|a, b| order(a).cmp(&order(b)));
+  let mut open: Vec<&str> = Vec::new();
+  for (folders, skill) in &rows {
+    let same = open.iter().zip(folders).take_while(|(open, folder)| open == folder).count();
+    open.truncate(same);
+    for folder in &folders[same..] {
+      println!("{}{folder}/", "  ".repeat(open.len()));
+      open.push(folder);
     }
-    for skill in all.iter().filter(|skill| folder(skill) == name) {
-      println!("{indent}{}", line(skill));
-    }
+    println!("{}{}", "  ".repeat(open.len()), line(skill));
   }
   println!(
     "\n{} skill{}. `wish skill show <name>` reads one.",
