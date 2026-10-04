@@ -14,8 +14,9 @@ directory.
 
 ## Install
 
-Wish's packages install the program as `wish-agent`, with the web app beside
-it:
+Wish's packages, named `wish-agent`, install the program as `wish`, with the
+web app beside it. Tk's `wish` has the same name, so on Arch Linux and Homebrew
+the two can't be installed together:
 
 ```sh
 npm install -g wish-agent               # Linux, macOS and Windows
@@ -38,7 +39,7 @@ cargo build --release
 mkdir -p ~/.local/lib/wish-agent ~/.local/bin
 cp target/release/wish ~/.local/lib/wish-agent/wish
 cp -r ../wish-web/dist ~/.local/lib/wish-agent/web
-ln -sf ~/.local/lib/wish-agent/wish ~/.local/bin/wish-agent
+ln -sf ~/.local/lib/wish-agent/wish ~/.local/bin/wish
 ```
 
 The program is self-contained: SQLite is built in and TLS uses bundled root
@@ -74,7 +75,7 @@ Description=Wish agent server
 After=network-online.target
 
 [Service]
-ExecStart=%h/.local/bin/wish-agent
+ExecStart=%h/.local/bin/wish
 EnvironmentFile=-%h/.config/wish-agent/wish.env
 WorkingDirectory=%h
 Restart=on-failure

@@ -44,7 +44,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Some("skill") => std::process::exit(skills::cli::run(args.skip(1).collect()).await),
     _ => {}
   }
-  // Named as it was started: `wish-agent` where a package installs it so.
+  // Named as it was started, for a link under another name.
   let name = std::env::args()
     .next()
     .and_then(|program| {

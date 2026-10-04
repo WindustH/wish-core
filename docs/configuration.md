@@ -3,11 +3,11 @@
 Wish reads one JSON file: the one `--config` names, or else its user's.
 
 ```sh
-wish-agent                                # the user's configuration
-wish-agent --config /path/to/config.json
+wish                                # the user's configuration
+wish --config /path/to/config.json
 ```
 
-Packages install the program as `wish-agent`; a build from source is
+Packages install the program as `wish`; a build from source is
 `target/release/wish`. The user's configuration is
 `$XDG_CONFIG_HOME/wish-agent/config.json` (`~/.config/wish-agent/config.json`)
 on Linux, `~/Library/Application Support/wish-agent/config.json` on macOS and
@@ -97,7 +97,7 @@ fields are rejected everywhere, so typos fail loudly.
 | `listen` | `"127.0.0.1:9780"` | Address and port to listen on, as `IP:port` (`[::1]:9780` for IPv6). Host names are not accepted |
 | `data_dir` | `"data"` | Where sessions and attachments are stored. A relative path is resolved against the directory Wish is started from, so prefer an absolute path |
 | `bearer_token_env` | `null` | Name of an environment variable holding the API access token. When set, every `/api` request needs `Authorization: Bearer <token>`, and web pages on other origins may call the API (they still need the token). The variable must be set and non-empty at startup |
-| `web_dir` | `null` | The built web app, served at `/`. When unset, Wish uses the `web` directory beside its program, where its packages and release archives put the app (a link to the program, such as `wish-agent` on the `PATH`, is followed first); finding none, it serves the API alone. A directory set here must hold `index.html` |
+| `web_dir` | `null` | The built web app, served at `/`. When unset, Wish uses the `web` directory beside its program, where its packages and release archives put the app (a link to the program, such as `wish` on the `PATH`, is followed first); finding none, it serves the API alone. A directory set here must hold `index.html` |
 | `allowed_hosts` | `[]` | `host:port` names browsers may reach Wish by besides `localhost`, `127.0.0.1`, `[::1]` and `listen`, such as `192.168.1.20:8790` or `wish.example.com`. Matters only without an access token: Wish then refuses requests addressed to another name (`421`) and changes sent from another origin (`403`), so a web page cannot drive it through a visitor's browser |
 | `providers` | `{}` | Model providers by ID; see [Providers](#providers) |
 | `defaults` | | Defaults for new sessions; see [Session defaults](#session-defaults) |

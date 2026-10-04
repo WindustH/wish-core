@@ -48,7 +48,7 @@ impl WebFront {
 pub fn find_app_dir(configured: Option<&Path>) -> Result<Option<PathBuf>, String> {
   let dir = match configured {
     Some(dir) => dir.to_owned(),
-    // Canonical, so a link to the program, such as `wish-agent` on the PATH, finds the real one.
+    // Canonical, so a link to the program, such as `wish` on the PATH, finds the real one.
     None => match std::env::current_exe().and_then(|program| program.canonicalize()) {
       Ok(program) => program.with_file_name("web"),
       Err(_) => return Ok(None),
