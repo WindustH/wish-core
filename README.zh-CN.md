@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <strong>一个极简但开箱即用的 AI Agent Harness。</strong>
+  <strong>一个极简但开箱即用的 AI Agent Harness，采用贴合前沿模型的优秀实践。</strong>
 </p>
 
 <p align="center">

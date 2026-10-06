@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <strong>A minimal yet ready-to-use AI agent harness.</strong>
+  <strong>A minimal yet ready-to-use AI agent harness, built on best practices for frontier models.</strong>
 </p>
 
 <p align="center">
