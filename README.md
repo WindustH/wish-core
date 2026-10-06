@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <strong>A self-hosted AI agent that works on your own machine and remembers everything.</strong>
+  <strong>A minimal yet ready-to-use AI agent harness.</strong>
 </p>
 
 <p align="center">
@@ -18,12 +18,9 @@
 
 ---
 
-Wish runs long-lived AI agent sessions on a computer you control. Give a
-session a working directory and a model, and it will talk with you, run
-commands, look at images and keep going through long tasks, while every word
-it exchanges is kept and searchable. Use it from the
-[Wish web app](https://github.com/WindustH/wish-web) on desktop or phone, or
-from anything that speaks HTTP.
+Wish is a minimal, fast AI agent that runs on your own machine. Use it from
+the [web app](https://github.com/WindustH/wish-web) on desktop or phone, or over
+the [HTTP API](docs/api.md).
 
 <p align="center">
   <img src="docs/assets/screenshot-desktop.png" alt="Wish on the desktop" width="74%">
@@ -33,43 +30,17 @@ from anything that speaks HTTP.
 
 ## Why Wish
 
-- **One small program.** A single `wish` executable with its own embedded
-  database. No database server, container or runtime to install.
-- **Works with the models you already use.** 48 ready-made presets cover
-  OpenAI, Anthropic, Google Gemini, AWS Bedrock, DeepSeek, Qwen, Kimi,
-  Zhipu / Z.ai, MiniMax, Mistral, xAI, OpenRouter and more, plus local models
-  through Ollama, LM Studio or vLLM. Each provider is spoken in its own native
-  protocol, reasoning included. You can also sign in with a ChatGPT account.
-- **Change your mind mid-task.** Switch provider or model at any point, even
-  while the agent is working; the change applies from its next step.
-- **Nothing is ever lost.** Every message and event is stored permanently.
-  Search a session's entire history by keyword, in any language, and let the
-  agent search its own past as well.
-- **Long conversations stay usable.** When the context grows large, Wish
-  compacts it automatically, with rolling summaries or the provider's own
-  compaction. The full original history stays intact.
-- **A capable shell.** The agent runs commands in the session's directory,
-  moves long jobs to the background and hears back when they finish, types
-  into interactive programs, and reports exactly what each file edit changed.
-- **MCP servers without the cost.** Add local or remote MCP servers and the
-  agent calls them from its shell, one instance per session. Their tools never
-  crowd the model's context or reset its prompt cache, however many you add.
-- **Skills, loaded only when needed.** Drop in skills, the same `SKILL.md`
-  folders other agents use, and the agent looks for the one a task needs and
-  reads it then. Until it does, none of them take up its context.
-- **Asks when your call is needed.** The agent can put choices and short
-  questions to you in a single form. If it stops waiting and carries on, an
-  answer you give later still reaches it.
-- **Keep talking while it works.** Queue follow-up messages, reorder or cancel
-  them, interrupt at any time, or ask a quick side question without disturbing
-  the running task.
-- **Dependable.** Tasks keep running when you close the browser. Shutting down
-  keeps partial answers, and after a crash Wish never repeats a command on its
-  own.
-- **See what you spend.** Token usage per model, cache hits, estimated
-  streaming speed and a daily activity calendar.
-- **Configure without restarting.** Add providers, change models, proxy or
-  shell from the web app; changes apply immediately.
+- **Minimal and fast.** One Rust program with its own embedded database;
+  nothing else to install or run.
+- **Tools and skills load on demand.** MCP servers and skills (the `SKILL.md`
+  folders other agents use too) are looked up and called from the shell only
+  when a task needs them, so adding more never grows the model's context or
+  resets its prompt cache.
+- **Lean tool design.** A few general tools: a shell with background jobs and
+  exact file edits, image viewing, web search, questions to you and a search of
+  its own history. Everything else goes through the shell.
+- **Ready to use.** Install it, run `wish` and open the browser. Presets cover
+  the major model providers and local models.
 
 ## Quick start
 
@@ -81,8 +52,8 @@ yay -S wish-agent-bin                   # Arch Linux
 brew install windusth/tap/wish-agent    # macOS and Linux
 ```
 
-The packages install the `wish` command. Tk's `wish` has the same name, so on
-Arch Linux and Homebrew the two can't be installed together.
+The packages install the `wish` command, which can't sit beside Tk's `wish` on
+Arch Linux or Homebrew.
 
 **2. Start it.**
 
@@ -94,14 +65,11 @@ wish
 model provider. Pick your working directory on the start page and send your
 first message.
 
-The first start writes a configuration file for your user
-(`~/.config/wish-agent/config.json` on Linux, `~/Library/Application
-Support/wish-agent/` on macOS, `%APPDATA%\wish-agent\` on Windows) and keeps
-its data beside it. The providers you add are saved there. To keep an API key
-out of the file, export it before starting Wish and enter it in the web app as
-`${NAME}`. See [configuration](docs/configuration.md) for every option, and
-[deployment](docs/deployment.md) for running Wish as a service, protecting it
-with a token and reaching it from other devices.
+The first start writes a configuration for your user
+(`~/.config/wish-agent/config.json` on Linux) and keeps its data beside it. See
+[configuration](docs/configuration.md) for every option, and
+[deployment](docs/deployment.md) for running Wish as a service and reaching it
+from other devices.
 
 ### From source
 
