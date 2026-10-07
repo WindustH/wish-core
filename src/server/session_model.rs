@@ -29,12 +29,17 @@ use std::{
 const AGENT_INSTRUCTIONS: &str =
   "You are the agent operating this session. Use the provided tools to complete the user's task.";
 /// The agent instructions a request with `tools` carries: the fixed text, then how to reach MCP
-/// servers when there is a shell to reach them from. Neither depends on the servers or on the
-/// session's MCP switch, so only switching the shell - which changes the tools anyway - changes it.
+/// servers, skills and other sessions when there is a shell to reach them from. None depends on
+/// what there is or on the session's switches, so only switching the shell - which changes the
+/// tools anyway - changes it.
 pub fn agent_instructions(tools: &[Tool]) -> String {
   let mut text = AGENT_INSTRUCTIONS.to_owned();
   if tools.iter().any(|tool| tool.name == "shell_start") {
-    for section in [crate::server::mcp::INSTRUCTIONS, crate::server::skills::INSTRUCTIONS] {
+    for section in [
+      crate::server::mcp::INSTRUCTIONS,
+      crate::server::skills::INSTRUCTIONS,
+      crate::server::peers::INSTRUCTIONS,
+    ] {
       text.push_str("\n\n");
       text.push_str(section);
     }

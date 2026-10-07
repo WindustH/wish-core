@@ -108,6 +108,11 @@ pub fn with_stream_sampling(
           break;
         }
       }
+      // A call's samples may take the index past its limit.
+      let merged = tokio::task::spawn_blocking(move || management.merge_stream_samples()).await;
+      if !matches!(merged, Ok(Ok(_))) {
+        eprintln!("merging stream samples failed: {merged:?}");
+      }
     });
     Box::new(Sampler { bytes, finish: Some(finish) })
   }))

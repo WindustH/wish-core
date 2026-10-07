@@ -117,6 +117,9 @@ pub enum SessionEvent {
     previous: GenerationId,
     active: GenerationId,
   },
+  /// A note of the application's, recorded for its own account - a message it delivered elsewhere,
+  /// say - which the engine neither reads nor acts on.
+  Application(Value),
 }
 impl SessionEvent {
   /// Whether the event belongs to the model call running as it is recorded. Settings, input and
@@ -133,6 +136,7 @@ impl SessionEvent {
         | Self::InputsConsumed { .. }
         | Self::GenerationPrepared { .. }
         | Self::GenerationActivated { .. }
+        | Self::Application(_)
     )
   }
   /// The variant's name, which history filters select events by.
@@ -167,6 +171,7 @@ impl SessionEvent {
       Self::Finished(..) => "Finished",
       Self::GenerationPrepared { .. } => "GenerationPrepared",
       Self::GenerationActivated { .. } => "GenerationActivated",
+      Self::Application(..) => "Application",
     }
   }
 }

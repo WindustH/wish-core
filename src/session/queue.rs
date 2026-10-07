@@ -3,8 +3,9 @@
 use super::context::is_input;
 use super::history::Fact;
 use super::persistence::SessionTransaction;
-use super::{EntryId, EntryOrigin, Session, SessionError, SessionEvent, SessionState};
+use super::{EntryId, EntryOrigin, EventId, Session, SessionError, SessionEvent, SessionState};
 use crate::{protocol::Message, storage::Storage};
+use serde_json::Value;
 use tokio::sync::watch;
 
 /// A durable input handle usable while the runner owns the session, and after it is gone. Sending
@@ -25,6 +26,10 @@ impl SessionSender {
     let entry = self.transact(move |transaction| transaction.append_input(message))?;
     self.arrivals.announce();
     Ok(entry)
+  }
+  /// Records a note of the application's in the session's history, beside whatever runs.
+  pub fn record_application_event(&self, value: Value) -> Result<EventId, SessionError> {
+    self.transact(move |transaction| transaction.record_event(SessionEvent::Application(value)))
   }
   /// Move a pending input before another pending input, or to the end.
   /// Validation and writes share one transaction with enqueue/consume/cancel.

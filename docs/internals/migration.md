@@ -44,6 +44,11 @@ transaction. A step is frozen once released:
 | `m0005_short_outcomes` | A session record's `status.last_operation.outcome` keeps only its short form (`StreamFailed: {reason}`, `ModelStopped: {stop_reason}`); records saved before the server trimmed it held the partial or whole response |
 | `m0006_standby_lists` | A standby generation's entry list is deleted when the standby gets a new one without being activated; in each session, the entry lists earlier builds left behind that way - every entry list neither its queue nor one of its generations names - are deleted |
 | `m0007_skills_switch` | Sessions gain a `skills` switch, which like `mcp` changes neither the tools nor the instructions: it is added, on, to every session record and to `defaults.tools`, leaving one already there as it is |
+| `m0008_compact_management` | Clearing usage records and merging speed samples give their room back: `management.sqlite` is set to incremental auto-vacuum |
+| `m0009_sessions_switch` | Sessions gain a `sessions` switch for `wish session`, which changes nothing a model is sent: it is added, on, to every session record and to `defaults.tools` |
+| `m0010_group_tables` | Groups get tables of their own in `management.sqlite` (`groups`, `group_members`, `group_messages`); each group kept as a session that never ran moves there - its record, members and the messages of its engine session, but for Wish's notes - and that session is deleted; session records lose `kind` and `members` |
+| `m0011_free_groups` | Sessions in a group wake one another without a limit: `groups` leaves the configuration, and the group tables lose `groups.relays`, `group_messages.note` and Wish's notes, where a build of format 10 made them |
+| `m0012_folders` | The list gets folders: `sessions` and `groups` gain `folder` and `pinned`, everything so far in the root, unpinned; the `folders` table and the listing indexes come as a new file gets them |
 
 ## Running them
 

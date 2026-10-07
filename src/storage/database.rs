@@ -242,6 +242,32 @@ impl Storage {
       Ok(usage)
     })?
   }
+  /// How the database file is used: its pages by table and index, what is free, and the bytes of
+  /// the lists' items by what the lists hold.
+  pub fn measure_shape(&self) -> Result<DatabaseShape, StorageError> {
+    self.dispatch(move |database| -> Result<_, StorageError> {
+      let sql = &database.connection;
+      let mut shape = database_shape(sql)?;
+      let mut statement = sql.prepare(
+        "SELECT list.name, sum(length(item.value)) FROM wish_items item JOIN wish_list_keys list \
+         ON list.id = item.list GROUP BY item.list",
+      )?;
+      let rows =
+        statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+      for row in rows {
+        let (name, bytes) = row?;
+        // A list's name ends in what it holds - `entries`, `events`, `history`, `generations`,
+        // `model_calls`, `queue` - except a generation's entry ids, `lists/<n>`.
+        let kind = if name.contains("/lists/") {
+          "lists"
+        } else {
+          name.rsplit('/').next().unwrap_or_default()
+        };
+        *shape.items_by_kind.entry(kind.to_owned()).or_default() += bytes.max(0) as u64;
+      }
+      Ok(shape)
+    })?
+  }
   /// Checkpoint the WAL in full and close this storage worker for every cloned handle. Await all
   /// runs/producers first. Commands queued before shutdown finish; later commands fail with Closed.
   /// Errors, `CheckpointBusy` among them, are reported even though the worker still closes.
@@ -333,4 +359,32 @@ impl Database {
     tx.commit()?;
     Ok(Self { connection, cache: Cache::new(options.cache_capacity_bytes), owners: HashSet::new() })
   }
+}
+
+/// How a database file is used: its page size and count, the free pages, each table's and
+/// index's bytes by name (`dbstat`), and, for the engine's store, the lists' items by kind.
+#[derive(Clone, Debug, Default)]
+pub struct DatabaseShape {
+  pub page_size: u64,
+  pub pages: u64,
+  pub free_pages: u64,
+  pub tables: BTreeMap<String, u64>,
+  pub items_by_kind: BTreeMap<String, u64>,
+}
+/// The shape of the database `sql` is open on, without the items by kind.
+pub fn database_shape(sql: &rusqlite::Connection) -> rusqlite::Result<DatabaseShape> {
+  let mut shape = DatabaseShape {
+    page_size: sql.query_row("PRAGMA page_size", [], |row| row.get::<_, i64>(0))? as u64,
+    pages: sql.query_row("PRAGMA page_count", [], |row| row.get::<_, i64>(0))? as u64,
+    free_pages: sql.query_row("PRAGMA freelist_count", [], |row| row.get::<_, i64>(0))? as u64,
+    ..Default::default()
+  };
+  let mut statement = sql.prepare("SELECT name, sum(pgsize) FROM dbstat GROUP BY name")?;
+  let rows =
+    statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+  for row in rows {
+    let (name, bytes) = row?;
+    shape.tables.insert(name, bytes.max(0) as u64);
+  }
+  Ok(shape)
 }

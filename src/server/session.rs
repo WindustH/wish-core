@@ -50,6 +50,10 @@ pub struct Descriptor {
   /// A provider and config chosen while an operation ran, applied at its next boundary.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub pending_selection: Option<selection::PendingSelection>,
+  /// The session that made this one with `wish session create`, which may configure and delete
+  /// it; absent for one the user made.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub created_by: Option<String>,
   pub name: String,
   pub updated_at: u64,
   /// Advanced by every edit through `edit_descriptor`, which an `If-Match` header names.
@@ -67,6 +71,9 @@ pub struct Descriptor {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSession {
+  /// The session making this one through `wish session`, which may then configure and delete it.
+  #[serde(skip)]
+  pub created_by: Option<String>,
   #[serde(default)]
   pub initial_messages: Vec<Message>,
   /// Where each initial message came from, when it came from another session (a fork); missing
@@ -84,6 +91,9 @@ pub struct CreateSession {
   pub tools: ToolChanges,
   #[serde(default)]
   pub metadata: Value,
+  /// The folder the session goes in; none for the root of the list.
+  #[serde(default)]
+  pub folder: Option<String>,
 }
 
 pub struct SessionSlot {

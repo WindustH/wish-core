@@ -28,8 +28,16 @@ pub async fn update_session(
 ) -> Result<Json<Value>, ApiError> {
   app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
+  update(app, slot, headers.get(IF_MATCH).cloned(), input).await
+}
+/// Changes a session as `PATCH /sessions/{id}` does, for the user or through the bridge.
+pub(super) async fn update(
+  app: Arc<App>,
+  slot: Arc<SessionSlot>,
+  if_match: Option<HeaderValue>,
+  input: Value,
+) -> Result<Json<Value>, ApiError> {
   let _update = slot.update_lock.clone().lock_owned().await;
-  let if_match = headers.get(IF_MATCH).cloned();
   // Names belong to the descriptor, not the executing session. Do not wait
   // for the execution mutex or disturb a pending model selection.
   if input.as_object().is_some_and(|object| object.len() == 1 && object.contains_key("name")) {
@@ -164,8 +172,14 @@ pub async fn delete_session(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+  delete(&app, &id).await?;
+  Ok(StatusCode::NO_CONTENT)
+}
+/// Deletes a session or group: its storage, files and record, and a session's place in its
+/// groups.
+pub(super) async fn delete(app: &Arc<App>, id: &str) -> Result<(), ApiError> {
   app.lifecycle.require_open()?;
-  let slot = app.get_session(&id).await?;
+  let slot = app.get_session(id).await?;
   let mut session = slot
     .lock_idle()
     .await
@@ -174,8 +188,8 @@ pub async fn delete_session(
   if let Some(shell) = slot.tools.shell() {
     shell.shutdown().await.map_err(ApiError::internal)?;
   }
-  app.mcp.close_session(&id);
-  let (management, target, deleted) = (app.management.clone(), id.clone(), slot.clone());
+  app.mcp.close_session(id);
+  let (management, target, deleted) = (app.management.clone(), id.to_owned(), slot.clone());
   blocking(move || {
     session.delete()?;
     deleted.mark_deleted();
@@ -183,8 +197,9 @@ pub async fn delete_session(
     Ok(())
   })
   .await?;
-  app.sessions.lock().await.remove(&id);
-  for directory in [app.data_dir.shell(&id), app.data_dir.blobs(&id)] {
+  app.sessions.lock().await.remove(id);
+  app.leave_groups(id)?;
+  for directory in [app.data_dir.shell(id), app.data_dir.blobs(id)] {
     match tokio::fs::remove_dir_all(directory).await {
       Ok(()) => {}
       Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -198,7 +213,7 @@ pub async fn delete_session(
   if let Err(error) = blocking(move || storage.shrink().map_err(ApiError::internal)).await {
     eprintln!("shrink storage after deleting {id}: {}", error.message);
   }
-  Ok(StatusCode::NO_CONTENT)
+  Ok(())
 }
 pub async fn cancel_input(
   State(app): State<Arc<App>>,
@@ -290,6 +305,8 @@ pub async fn fork(
     initial_origins.push(entry.origin);
   }
   let input = CreateSession {
+    created_by: None,
+    folder: app.management.folder_of(&descriptor.id)?,
     name: format!("{} (copy)", descriptor.name),
     provider: descriptor.provider,
     cwd: descriptor.cwd,

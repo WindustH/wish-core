@@ -30,14 +30,17 @@ pub struct Config {
   pub search: SearchConfig,
   /// Where `wish skill` finds skills besides Wish's own directory, and which are off.
   pub skills: SkillsConfig,
+  /// How much of the usage records is kept.
+  pub usage: UsageConfig,
   pub defaults: Defaults,
 }
 impl Config {
-  /// Refuses a proxy, MCP server or search provider that could never work.
+  /// Refuses a proxy, MCP server, search provider or usage limit that could never work.
   pub fn validate(&self) -> Result<(), ApiError> {
     self.proxy.validate()?;
     self.mcp.validate(&self.providers)?;
-    self.search.validate(&self.providers)
+    self.search.validate(&self.providers)?;
+    self.usage.validate()
   }
 }
 /// The default of a switch that is on unless the file says otherwise.
@@ -54,6 +57,34 @@ pub struct SkillsConfig {
   pub dirs: Vec<String>,
   /// Skills switched off, by name, wherever they are found.
   pub disabled: Vec<String>,
+}
+
+/// The usage records' size. Applied at once on a save.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UsageConfig {
+  /// The most one-second stream samples kept. Past it neighbouring samples are merged, those
+  /// that would span the least time first, each session's and model's output and streaming time
+  /// staying as they were, until it is met; `null` keeps every sample.
+  pub stream_sample_limit: Option<u64>,
+}
+impl Default for UsageConfig {
+  fn default() -> Self {
+    Self { stream_sample_limit: Some(20_000) }
+  }
+}
+impl UsageConfig {
+  /// The fewest samples a limit may keep.
+  const LEAST_SAMPLES: u64 = 100;
+  fn validate(&self) -> Result<(), ApiError> {
+    match self.stream_sample_limit {
+      Some(limit) if limit < Self::LEAST_SAMPLES => Err(ApiError::bad_request(format!(
+        "usage.stream_sample_limit must be at least {}",
+        Self::LEAST_SAMPLES
+      ))),
+      _ => Ok(()),
+    }
+  }
 }
 
 /// The shell every session's commands run under. Applied to the next command after a save.
@@ -185,6 +216,7 @@ impl Default for Defaults {
         mcp: true,
         web_search: true,
         skills: true,
+        sessions: true,
       },
       stream: true,
       instructions: String::new(),
@@ -218,6 +250,7 @@ impl Default for Config {
       mcp: Default::default(),
       search: Default::default(),
       skills: SkillsConfig::default(),
+      usage: UsageConfig::default(),
       defaults: Defaults::default(),
     }
   }

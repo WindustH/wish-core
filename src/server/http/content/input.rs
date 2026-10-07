@@ -12,18 +12,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::HashSet, path::Path};
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Attachment {
-  id: String,
-  kind: String,
-  name: Option<String>,
+  pub id: String,
+  pub kind: String,
+  pub name: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   byte_count: Option<usize>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
-  placeholder: Option<String>,
+  pub placeholder: Option<String>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Input {
   pub text: String,

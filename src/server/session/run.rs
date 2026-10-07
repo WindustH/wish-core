@@ -218,8 +218,8 @@ impl SessionSlot {
     };
     *self.status.lock().unwrap() = SessionStatus::after_operation(session, ending.clone());
     self.descriptor.write().unwrap().updated_at = Timestamp::now().0;
-    let calls = self.reader.get_model_calls();
-    if let Err(error) = self.management.save_calls(&self.get_descriptor(), &calls) {
+    let (descriptor, calls) = (self.get_descriptor(), self.reader.get_model_calls());
+    if let Err(error) = self.management.save_calls(&descriptor.id, &descriptor.provider, &calls) {
       eprintln!("call index: {error}");
     }
     if let Err(error) = self.persist_index() {

@@ -292,7 +292,10 @@ impl SessionSlot {
     }
     // Keep the handoff call attributed to its old provider before changing the descriptor.
     let calls = self.reader.get_model_calls();
-    self.management.save_calls(&descriptor, &calls).map_err(boundary_error)?;
+    self
+      .management
+      .save_calls(&descriptor.id, &descriptor.provider, &calls)
+      .map_err(boundary_error)?;
     let translated = translation.is_some();
     let Switch { pending, model: next_model, .. } = switch;
     match translation.map(|translation| *translation) {

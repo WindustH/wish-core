@@ -15,7 +15,7 @@ mod list;
 mod transaction;
 
 pub(crate) use database::OwnerGuard;
-pub use database::{NamespaceUsage, Storage, StorageOptions};
+pub use database::{DatabaseShape, NamespaceUsage, Storage, StorageOptions, database_shape};
 pub use list::{ListId, Page, ReadList};
 pub use transaction::Transaction;
 

@@ -65,17 +65,19 @@ pub async fn timeline(
     )?;
     let mut matches = page.items;
     let mut has_more = page.next.is_some();
+    // Notes of the application's - a message sent to a group - belong in the conversation; each
+    // run's outcome only when asked for.
+    let mut event_types = vec!["Application".to_owned()];
     if query.include_outcomes {
-      let outcomes = reader.query_history(
-        HistoryFilter {
-          kind: Some(HistoryKind::Event),
-          event_types: vec!["Finished".into()],
-          ..Default::default()
-        },
-        HistoryPageRequest { limit: query.limit, order, cursor },
-      )?;
-      has_more |= outcomes.next.is_some();
-      matches.extend(outcomes.items);
+      event_types.push("Finished".into());
+    }
+    let events = reader.query_history(
+      HistoryFilter { kind: Some(HistoryKind::Event), event_types, ..Default::default() },
+      HistoryPageRequest { limit: query.limit, order, cursor },
+    )?;
+    if !events.items.is_empty() {
+      has_more |= events.next.is_some();
+      matches.extend(events.items);
       matches.sort_by_key(|item| item.record.sequence);
       if order == HistoryOrder::NewestFirst {
         matches.reverse();

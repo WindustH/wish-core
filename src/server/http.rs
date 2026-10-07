@@ -4,11 +4,14 @@
 mod ask;
 mod bridge;
 mod config;
-mod content;
+pub(crate) mod content;
 mod directories;
+mod folders;
+mod groups;
 mod history;
 mod manage;
 mod mcp;
+mod peers;
 mod providers;
 mod search;
 mod sessions;
@@ -28,7 +31,7 @@ use axum::{
   http::{HeaderValue, Method, StatusCode, header},
   middleware::{self, Next},
   response::{IntoResponse, Response},
-  routing::{delete, get, post, put},
+  routing::{delete, get, patch, post, put},
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -41,6 +44,8 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/storage", get(storage::storage))
     .route("/storage/sessions", get(storage::session_storage))
     .route("/storage/prune", post(storage::prune))
+    .route("/storage/detail", get(storage::detail))
+    .route("/storage/prune-usage", post(storage::prune_usage))
     .route("/usage", get(usage::global_usage))
     .route("/usage/series", get(usage::global_series))
     .route("/usage/daily", get(usage::global_daily))
@@ -71,6 +76,18 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
       "/sessions/{id}",
       get(sessions::get).patch(manage::update_session).delete(manage::delete_session),
     )
+    .route("/conversations", get(sessions::conversations))
+    .route("/conversations/move", post(folders::move_entries))
+    .route("/conversations/pin", post(folders::pin))
+    .route("/folders", get(folders::list).post(folders::create))
+    .route("/folders/{id}", patch(folders::rename).delete(folders::delete))
+    .route("/groups", post(groups::create))
+    .route("/groups/{id}", get(groups::get).patch(groups::update).delete(groups::delete))
+    .route("/groups/{id}/messages", get(groups::messages).post(groups::post))
+    .route("/groups/{id}/blobs", post(content::upload))
+    .route("/groups/{id}/blobs/{blob}", get(content::download))
+    .route("/groups/{id}/blobs/{blob}/meta", get(content::metadata))
+    .route("/sessions/{id}/groups", get(groups::of_session))
     .route("/sessions/{id}/fork", post(manage::fork))
     .route("/sessions/{id}/context/clear", post(manage::clear_context))
     .route("/sessions/{id}/messages", post(sessions::enqueue))
@@ -110,7 +127,16 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/mcp/tool", get(mcp::tool))
     .route("/sessions/{id}/mcp/call", post(mcp::call))
     .route("/sessions/{id}/skills", get(skills::session_list))
-    .route("/sessions/{id}/skills/{name}", get(skills::session_show));
+    .route("/sessions/{id}/skills/{name}", get(skills::session_show))
+    .route("/sessions/{id}/peers", get(peers::list).post(peers::create))
+    .route("/sessions/{id}/peers/groups", post(peers::create_group))
+    .route(
+      "/sessions/{id}/peers/{target}",
+      get(peers::show).patch(peers::configure).delete(peers::delete),
+    )
+    .route("/sessions/{id}/peers/{target}/send", post(peers::send))
+    .route("/sessions/{id}/peers/{target}/members", post(peers::add_members))
+    .route("/sessions/{id}/peers/{target}/leave", post(peers::leave));
   Router::new()
     .nest("/api", api)
     .route("/health", get(|| async { Json(json!({"status":"ok"})) }))

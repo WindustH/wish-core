@@ -109,11 +109,15 @@ impl App {
     let data_dir = DataDir::new(config.data_dir.clone());
     tokio::fs::create_dir_all(data_dir.root()).await.map_err(ApiError::internal)?;
     let (database, management_database) = (data_dir.database(), data_dir.management_database());
+    let sample_limit = config.usage.stream_sample_limit;
     let (storage, management) = blocking(move || {
-      Ok((
-        Storage::open(database, StorageOptions::default())?,
-        Arc::new(ManagementStore::open(&management_database)?),
-      ))
+      let management = ManagementStore::open(&management_database)?;
+      management.set_stream_sample_limit(sample_limit);
+      // A limit lowered while the server was stopped applies now.
+      if let Err(error) = management.merge_stream_samples() {
+        eprintln!("merging stream samples failed: {error:?}");
+      }
+      Ok((Storage::open(database, StorageOptions::default())?, Arc::new(management)))
     })
     .await?;
     let lifecycle = Lifecycle::new();
@@ -200,12 +204,25 @@ impl App {
     }
     // Without a word from the request: no shell and no web search, and questions to the user and
     // MCP allowed. Web search stays off while no search provider could answer it.
-    let mut tools =
-      ToolSwitches { shell: false, ask_user: true, mcp: true, web_search: false, skills: true }
-        .apply_changes(input.tools);
+    let mut tools = ToolSwitches {
+      shell: false,
+      ask_user: true,
+      mcp: true,
+      web_search: false,
+      skills: true,
+      sessions: true,
+    }
+    .apply_changes(input.tools);
     tools.web_search &= self.search.is_available(&self.providers.read().unwrap());
+    let folder = input.folder.take();
+    if let Some(folder) = &folder
+      && self.management.folder(folder)?.is_none()
+    {
+      return Err(ApiError::bad_request(format!("no folder `{folder}`")));
+    }
     let descriptor = Descriptor {
       pending_selection: None,
+      created_by: input.created_by,
       id: uuid::Uuid::new_v4().to_string(),
       provider: input.provider,
       cwd: input.cwd,
@@ -234,6 +251,9 @@ impl App {
     })
     .await?;
     let slot = self.open_slot(descriptor, session).await?;
+    if let Some(folder) = folder {
+      self.management.place(&[slot.get_descriptor().id], Some(&folder))?;
+    }
     self.sessions.lock().await.insert(slot.get_descriptor().id.clone(), slot.clone());
     Ok(slot)
   }
@@ -332,6 +352,13 @@ impl App {
       &providers,
     );
     self.search.apply(search);
+    self.management.set_stream_sample_limit(config.usage.stream_sample_limit);
+    let management = self.management.clone();
+    self.lifecycle.tasks.spawn_blocking(move || {
+      if let Err(error) = management.merge_stream_samples() {
+        eprintln!("merging stream samples failed: {error:?}");
+      }
+    });
     *self.providers.write().unwrap() = providers;
     *self.shell.write().unwrap() = shell.clone();
     for slot in self.sessions.lock().await.values() {

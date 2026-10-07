@@ -107,8 +107,10 @@ engine error, for example
 | GET | `/version`, `/api/version` | Build name and version |
 | GET | `/api/status` | Session count and scheduler activity |
 | GET | `/api/storage` | Bytes on disk |
-| GET | `/api/storage/sessions` | What each session keeps |
+| GET | `/api/storage/detail` | Each database by what it holds |
+| GET | `/api/storage/sessions` | What each session and group keeps |
 | POST | `/api/storage/prune` | Clear history the context no longer uses |
+| POST | `/api/storage/prune-usage` | Clear the usage records deleted sessions left |
 | GET | `/api/events` | Application event stream (SSE) |
 | GET, PUT | `/api/config` | Read or replace the configuration |
 | GET | `/api/defaults` | Defaults for new sessions |
@@ -126,8 +128,17 @@ engine error, for example
 | POST | `/api/providers/{id}/call` | Stateless model call |
 | POST | `/api/providers/{id}/count-tokens` | Provider token count |
 | POST | `/api/providers/{id}/compact` | Stateless upstream compaction |
+| GET | `/api/conversations` | A folder's listing, or every session and group that matches |
+| POST | `/api/conversations/move`, `/api/conversations/pin` | Move or pin sessions, groups and folders |
+| GET, POST | `/api/folders` | The folders; make one |
+| PATCH, DELETE | `/api/folders/{id}` | Rename or delete a folder |
 | GET, POST | `/api/sessions` | List or create sessions |
 | GET, PATCH, DELETE | `/api/sessions/{id}` | Read, update or delete a session |
+| POST | `/api/groups` | Create a group of sessions |
+| GET, PATCH, DELETE | `/api/groups/{id}` | Read, rename, re-member or delete a group |
+| GET, POST | `/api/groups/{id}/messages` | A group's transcript; post to it |
+| POST, GET | `/api/groups/{id}/blobs`, `.../{blob}`, `.../{blob}/meta` | Files posted to a group |
+| GET | `/api/sessions/{id}/groups` | The groups a session is in |
 | POST | `/api/sessions/{id}/fork` | Copy a session's context into a new session |
 | PUT | `/api/sessions/{id}/config` | Replace the session configuration |
 | PUT | `/api/sessions/{id}/metadata` | Replace the session metadata |
@@ -153,6 +164,11 @@ engine error, for example
 | POST | `/api/sessions/{id}/mcp/call` | MCP bridge: call a tool (session token) |
 | GET | `/api/sessions/{id}/skills` | Skills bridge: list or find skills (session token) |
 | GET | `/api/sessions/{id}/skills/{name}` | Skills bridge: one skill's instructions and files (session token) |
+| GET, POST | `/api/sessions/{id}/peers` | Sessions bridge: the sessions and groups; make a session (session token) |
+| GET, PATCH, DELETE | `/api/sessions/{id}/peers/{target}` | Sessions bridge: one session or group; configure or delete one (session token) |
+| POST | `/api/sessions/{id}/peers/{target}/send` | Sessions bridge: message a session or group (session token) |
+| POST | `/api/sessions/{id}/peers/groups` | Sessions bridge: make a group (session token) |
+| POST | `/api/sessions/{id}/peers/{target}/members`, `.../leave` | Sessions bridge: join sessions to a group, or leave it (session token) |
 | GET | `/api/sessions/{id}/events` | Session event stream (SSE) |
 | GET | `/api/sessions/{id}/history` | Conversation timeline |
 | POST | `/api/sessions/{id}/history/query` | Filtered chronological history |
@@ -194,16 +210,57 @@ memory. Check `active_sessions` before restarting the server.
 
 ### `GET /api/storage`
 
-`{"bytes": {"total", "blobs", "executions", "session_data", "service_data"}, "counts": {...}}`.
+```json
+{"bytes": {"total": 26521296, "blobs": 0, "executions": 0, "session_data": 688128, "service_data": 25833168},
+ "counts": {...},
+ "stream_samples": {"count": 18000, "limit": 20000},
+ "leftover_usage": {"calls": 2820, "stream_samples": 17983}}
+```
+
 `session_data` is the engine database, `service_data` the management index
 (each with its WAL), `blobs` the attachments and `executions` the captured
 shell output; `total` is their sum, and nothing else in the data directory is
-counted. The `counts` fields are reserved and currently `null`. Neither status
-endpoint loads any conversation.
+counted. The `counts` fields are reserved and currently `null`.
+`stream_samples` counts the streaming-speed samples kept
+against `usage.stream_sample_limit` (`null` for none; see
+[configuration](configuration.md#usage-records)), and `leftover_usage` the
+records deleted sessions left. Neither status endpoint loads any conversation.
+
+### `GET /api/storage/detail`
+
+```json
+{"session_data": [{"kind": "messages", "bytes": 294912}, ...],
+ "service_data": [{"kind": "stream_samples", "bytes": 17825792}, ...]}
+```
+
+Each database by what it holds, in order, each kind's bytes on disk: for
+`session_data` the sessions' records (`sessions`), the history index's filter
+columns (`history_index`), the full-text search index (`search_index`), then
+the stored items by kind - `messages`, `events`, `history` records, `context`
+(generations and their entry lists), `model_calls` and the `queue` - whose
+shared table is divided by the bytes each kind's items take; for
+`service_data` the session index (`sessions`), the groups and their members
+(`groups`), their transcripts (`group_messages`), the usage records (`calls`)
+and the speed samples (`stream_samples`), each with its indexes. Every list
+ends with `other` (the schema and small tables), `free` (pages freed but not
+yet given back) and `journal` (what the files take beyond the database's
+pages: the write-ahead log and shared memory), so the kinds add up to the
+database's bytes. It reads every page of both databases, so it is asked for
+apart from `GET /api/storage`.
+
+### `POST /api/storage/prune-usage`
+
+Deletes the usage records of sessions that no longer exist - their model calls
+and streaming-speed samples, which the usage statistics count until then - and
+shrinks the management index. No body.
+
+```json
+{"calls": 2820, "stream_samples": 17983, "database": {"before": 8982528, "after": 122880}}
+```
 
 ### `GET /api/storage/sessions`
 
-Every session with what it keeps, newest first:
+Every session and group with what it keeps, newest first:
 
 ```json
 {"sessions": [{"id": "8c1f...", "name": "Refactor parser", "provider": "openai", "model": "gpt-5",
@@ -211,7 +268,10 @@ Every session with what it keeps, newest first:
   "phase": "Idle", "running": false, "tags": ["work"], "context_tokens": 48210,
   "messages": {"user": 12, "assistant": 12, "tool_calls": 31},
   "bytes": {"history": 812345, "attachments": 20480, "shell": 3072, "total": 835897}}],
- "bytes": {"history": 812345, "attachments": 20480, "shell": 3072, "total": 835897}}
+ "groups": [{"id": "5d0e...", "name": "Review", "members": 3, "created_at": 1758790000000,
+  "updated_at": 1758790600000, "messages": 42,
+  "bytes": {"history": 18230, "attachments": 0, "shell": 0, "total": 18230}}],
+ "bytes": {"history": 830575, "attachments": 20480, "shell": 3072, "total": 854127}}
 ```
 
 `history` is the session's records in the engine database, counted as stored
@@ -219,7 +279,10 @@ values: the search index built over them and SQLite's own overhead are not
 included, so the sessions' totals stay below the database file's size.
 `attachments` and `shell` are the session's files under `blobs/` and `shell/`.
 `messages` counts the user and assistant messages and the tool calls in the
-session's history. No conversation is loaded.
+session's history. A group's `history` is its transcript's stored values, and
+`attachments` the files posted to it; `members` counts its sessions and
+`messages` its transcript. The top-level `bytes` adds up both lists. No
+conversation is loaded.
 
 ### `POST /api/storage/prune`
 
@@ -506,6 +569,39 @@ Query: `start`, `limit` (default 50), `query` (substring of name or ID),
 `{"items": [{"session", "status"}], "next"}` from the session index without
 loading any conversation.
 
+### `GET /api/conversations`
+
+What a user browses, arranged in [folders](#folders). Without `query`, `phase`
+or `tag`, it is one folder's listing - `folder` names it, the root without one -
+its folders by name first, then its sessions and [groups](#groups) by
+`updated_at`, pinned ones first in each. With them, or `flat=true`, it is every
+session and group that matches, wherever it is, by the same query as
+`GET /api/sessions`; a `phase` or `tag` selects sessions only. Returns
+`{"items", "next"}`; each item has `kind`, `parent` (the folder it is in, `null`
+for the root) and `pinned`, and is a session as `GET /api/sessions` lists it,
+`{"group": {...}}` or `{"folder": {...}}` with `items`, how many entries the
+folder holds directly.
+
+### Folders
+
+Folders arrange the list as a file system arranges files. Every session, group
+and folder is in one folder or the root, and moving one changes only where it
+is. A folder is `{"id", "name", "parent", "pinned", "created_at"}`.
+
+| Route | Body | Does |
+| --- | --- | --- |
+| `GET /api/folders` | | Every folder, by name |
+| `POST /api/folders` | `{"name", "parent"}`, `parent` optional | Makes one; `201` with it |
+| `PATCH /api/folders/{id}` | `{"name"}` | Renames it |
+| `DELETE /api/folders/{id}` | | Deletes it; what it held goes to the folder it was in. `204` |
+| `POST /api/conversations/move` | `{"ids", "folder"}`, `folder` `null` for the root | Moves sessions, groups and folders together, or none; `400` for a folder into itself or one inside it. `204` |
+| `POST /api/conversations/pin` | `{"ids", "pinned"}` | Pins them to the top of their folders, or unpins them. `204` |
+
+A session made with `folder` in [`POST /api/sessions`](#post-apisessions), or a
+group with `folder` in [`POST /api/groups`](#post-apigroups), goes there; a
+fork goes beside the session it copies, and what a session makes with
+[`wish session`](#wish-session) beside that session.
+
 ### `POST /api/sessions`
 
 ```json
@@ -523,12 +619,15 @@ loading any conversation.
 `tools` switches optional tools; each switch left out keeps its default: no
 shell, no web search, `ask_user`, MCP and skills on. `web_search` stays off, even when
 asked for, while no search provider can answer. `initial_messages` optionally seeds the context with
-messages. Returns `201`
+messages. `folder` puts it in that [folder](#folders) instead of the root. Returns `201`
 with the session. `404` if the provider is unknown or disabled.
 
 ### `GET /api/sessions/{id}`
 
-Loads the session if needed and returns it.
+Loads the session if needed and returns it as `{"session", "status"}`.
+`session` is the descriptor: `id`, `name`, `provider`, `cwd`, `tools` (the
+switches), `created_at`, `updated_at` and `revision`; `created_by` names the
+session that made it with `wish session`, when one did.
 
 ### `PATCH /api/sessions/{id}`
 
@@ -547,8 +646,8 @@ Returns the updated session.
 
 ### `DELETE /api/sessions/{id}`
 
-Deletes the session, its attachments and its shell output, and stops its
-background commands and its own MCP server instances. Returns `204`, or `409` while it runs. Usage statistics
+Deletes the session, its attachments and its shell output, takes it out of
+every group, and stops its background commands and its own MCP server instances. Returns `204`, or `409` while it runs. Usage statistics
 are kept. The room its history took in the database, search index included,
 goes back to the file system before the response.
 
@@ -641,6 +740,60 @@ searchable. Returns the session, or `409` while running.
 another; `{"before": null}` moves it to the end. `DELETE` cancels it. Both
 return `204`, work during a run, and return `409` if either entry was already
 consumed or cancelled.
+
+## Groups
+
+A group (see [configuration](configuration.md#groups)) is a chat among the user
+and several sessions. It runs nothing: its members are sessions, each with its
+own history, and the group keeps its own transcript in the management index.
+
+A post joins the transcript and every other member's queue as a `User` message:
+a first text block `[Group "name" · from <author>]` and then the post, with
+`metadata` `{"source": "group", "group": {"id", "name"}, "from": <author>}`, and
+wakes it: every post wakes every other member, the user's and a session's alike.
+A session takes part as a person would. What it answers stays in its own
+conversation; it speaks in the group only by sending, with
+[`wish session send`](#wish-session) in its shell, so a session without a shell
+reads a group but never speaks there. Its own history notes every message it
+sent with an `Application` event
+`{"type": "group_message_sent", "group": {"id", "name"}, "text", "woken"}`.
+
+A group is `{"id", "name", "members", "created_by", "created_at", "updated_at"}`:
+`members` are session ids in the order they joined, and `created_by` the session
+that made it with `wish session` or `null`. A deleted session leaves every group
+by itself.
+
+### `POST /api/groups`
+
+`{"name": "Review", "members": ["8c1f...", "5d0e..."]}` makes a group of those
+sessions and the user, in the [folder](#folders) `folder` names when it is
+given. Returns `201` with the group; `400` names a member that is not a session.
+
+### `GET, PATCH, DELETE /api/groups/{id}`
+
+`PATCH` takes `{"name"}`, `{"members"}` (the whole list) or both, and returns
+the group. `DELETE` deletes its transcript and the files posted to it, not its
+members, and returns `204`.
+
+### `GET /api/groups/{id}/messages`
+
+Query: `before` (a `seq`; the newest when absent), `limit` (default 50) and
+`query` (words a message's text holds). Returns `{"items", "next"}`, newest
+first; `next` is the `before` that continues. A message is
+`{"seq", "at", "author", "text", "attachments"}`: `author` is
+`{"kind": "user"}` or `{"kind": "session", "id", "name"}`, and `attachments`
+`[{"id", "kind", "name"}]` for the user's images and files.
+
+### `POST /api/groups/{id}/messages`
+
+The user's post, as [`input`](#post-apisessionsidinput) takes it, its
+attachments [uploaded](#attachments) to `/api/groups/{id}/blobs`. The members
+are told it with the images in the message and each file by its path in the
+group's files. Returns `201 {"message", "woken"}`.
+
+### `GET /api/sessions/{id}/groups`
+
+The groups a session is in.
 
 ## Questions to the user
 
@@ -760,6 +913,47 @@ while the session has `tools.skills` off.
 | `GET /api/sessions/{id}/skills` | `?query=` to rank by words | `{"skills": [{"name", "description", "category"}]}`: those the session can use, best first with a query |
 | `GET /api/sessions/{id}/skills/{name}` | | `{"name", "description", "dir", "body", "files", "more_files"}`; `404` for no usable skill of that name |
 
+### `wish session`
+
+Other sessions and groups (see [configuration](configuration.md#groups)) are
+reached from the session's shell the same way:
+
+```text
+wish session list                              the sessions and groups
+wish session show <session|group>              one in detail; a group with its recent messages
+wish session create <name> [--instructions <text>] [--model] [--provider] [--cwd] [--no-shell]
+wish session config <session> [--name] [--model] [--provider] [--instructions]
+wish session delete <session>
+wish session send <session|group> <text> [--to <name>...]
+wish session group create <name> <session>...
+wish session group add <group> <session>...
+wish session group rename <group> <name>
+wish session group leave <group>
+```
+
+Targets are named by name or id. The exit status is `0` when done, `1` when
+refused or nothing has that name, and `2` when nothing was asked. The routes
+take the session's token as above, and answer `409` with a message for the
+model while the session has `tools.sessions` off. A session sees every session
+and group and may message any session, which posts in the group of the two
+and the user, made when there is none; it may configure and delete only itself and the
+sessions it made (`created_by`), never a session the user made (`403`), and
+rename a group it is in. A session's changes follow
+[`PATCH /api/sessions/{id}`](#patch-apisessionsid): a name at any time, a model at
+the next boundary while it runs, and instructions only while it is idle (`409`).
+
+| Route | Body | Returns |
+| --- | --- | --- |
+| `GET /api/sessions/{id}/peers` | | `{"me", "sessions": [{"id", "name", "provider", "model", "cwd", "phase", "running", "queue", "created_by", "groups"}], "groups": [{"id", "name", "members": [{"id", "name"}]}]}` |
+| `GET /api/sessions/{id}/peers/{target}` | | A session as above with its `instructions`, or a group with its last 20 `messages` as [the transcript](#get-apigroupsidmessages) shows them |
+| `POST /api/sessions/{id}/peers` | `{"name", "instructions", "model", "provider", "cwd", "shell"}`, all but `name` optional | `201`, the session; the defaults fill what is left out, and the asking session's directory |
+| `PATCH /api/sessions/{id}/peers/{target}` | `{"name", "model", "provider", "instructions"}`; a group takes only `name` | The session as `GET /api/sessions/{id}` shows it, new instructions also queued to it as a `System` message; or the group |
+| `DELETE /api/sessions/{id}/peers/{target}` | | `204` |
+| `POST /api/sessions/{id}/peers/{target}/send` | `{"text"}` | `{"group": {"id", "name"}, "seq", "woken": [{"id", "name"}]}` |
+| `POST /api/sessions/{id}/peers/groups` | `{"name", "members": [names]}` | `201`, the group |
+| `POST /api/sessions/{id}/peers/{target}/members` | `{"add": [names]}` | The group |
+| `POST /api/sessions/{id}/peers/{target}/leave` | | `204` |
+
 ### `GET /api/skills`
 
 Every skill in Wish's own directory and `skills.dirs`, for the settings page,
@@ -768,8 +962,8 @@ with those switched off and those a skill of the same name found earlier hides:
 ```json
 {"dir": "/home/me/.config/wish-agent/skills",
  "roots": [{"source": "wish", "dir": "...", "exists": true}],
- "skills": [{"name": "deploy", "description": "...", "category": null, "dir": "...",
-             "source": "~/.config/agents/skills", "disabled": false, "shadowed": false}],
+ "skills": [{"name": "deploy", "description": "...", "category": null, "path": "deploy", "dir": "...",
+             "source": "~/.config/agents/skills", "disabled": false, "standing": "used"}],
  "problems": [{"path": ".../SKILL.md", "message": "..."}]}
 ```
 
@@ -804,7 +998,8 @@ and context clearing. Active context is a separate, smaller projection.
 
 ### `GET /api/sessions/{id}/history`
 
-The conversation timeline, messages only.
+The conversation timeline: messages, and the notes Wish writes beside them
+(`Application` events, such as a message sent to a group).
 
 | Query | Default | Meaning |
 | --- | --- | --- |
@@ -840,7 +1035,7 @@ Chronological, filtered history:
 | --- | --- |
 | `kind` | `message` or `event` |
 | `message_types` | `system`, `developer`, `user`, `assistant`, `reasoning`, `tool_use`, `tool_result`, `upstream_compaction` |
-| `event_types` | Event names such as `Finished`, `StateChanged`, `CompactionSummary` |
+| `event_types` | Event names such as `Finished`, `StateChanged`, `CompactionSummary`, `Application` (a note of Wish's, such as a message sent to a group) |
 | `origins` | `Imported`, `Input`, `Model`, `Tool`, `Interrupted`, `Context`, `Summary` |
 | `generation`, `model_call_id`, `tool_name` | Exact match |
 | `since`, `until` | Milliseconds; `since` inclusive, `until` exclusive |
@@ -917,8 +1112,10 @@ stored. The response has the same form as [`/call`](#post-apiprovidersidcall).
 
 Usage is counted per logical model call. Retries and output continuations
 belong to the call that caused them; compaction summaries are counted as calls
-of their own. Session variants live under `/api/sessions/{id}/...` and return
-`404` for a session that does not exist.
+of their own. A deleted session's usage stays counted until
+[`POST /api/storage/prune-usage`](#post-apistorageprune-usage) clears it.
+Session variants live under `/api/sessions/{id}/...` and return `404` for a
+session that does not exist.
 
 ### `GET /api/usage?from_ms=&to_ms=`
 
@@ -945,9 +1142,11 @@ Totals over an optional time range (all recorded usage without one):
 Returns `groups`, one per provider and model, each with time `buckets` (tokens,
 attempts, average streaming speed) and streaming speed `samples`. Speed is
 sampled once per second on every streamed request, including retries and
-compaction, and estimated from output bytes at four bytes per token. At most
-the latest 10,000 samples are returned (`sampling.truncated`); bucket totals
-always cover the whole range.
+compaction, and estimated from output bytes at four bytes per token. Past
+`usage.stream_sample_limit` the closest samples merge into longer ones, so a
+sample's `duration_ms` can exceed a second. At most the latest 10,000 samples
+are returned (`sampling.truncated`); bucket totals always cover the whole
+range.
 
 ### `GET /api/usage/daily?days=365&end_date=2026-09-25&tz_offset_minutes=480`
 
@@ -971,6 +1170,9 @@ IDs, and anything missed is recovered by reading state again.
 | `snapshot` | | First record. Read state now |
 | `session_changed` | `id` | A session was created, updated, started or stopped, or received input through `/input` or `/messages` |
 | `session_deleted` | `id` | A session was deleted |
+| `group_changed` | `id` | A group was created, renamed or re-membered, or its transcript grew |
+| `group_deleted` | `id` | A group was deleted |
+| `list_changed` | | Folders changed, or something was moved or pinned. Read the list again |
 | `configuration_changed` | | The configuration was saved or credentials were refreshed |
 | `gap` | | The subscriber fell behind and missed events. Read state again |
 
@@ -982,6 +1184,7 @@ IDs, and anything missed is recovered by reading state again.
 | --- | --- | --- |
 | `snapshot` | `data: {session, status}`, `live_events`, `revision` | Sent first, and again whenever the subscriber falls behind. `live_events` rebuilds the output of the current turn so far; replace any preview with it |
 | `session_event` | `event`, `revision` | One engine event: state changes, streamed text, reasoning and tool-call deltas, tool starts, accepted responses, compaction progress |
+| `history_changed` | | History was written beside any run: the session noted a message it sent to a group. Read the timeline again |
 | `operation_finished` | `outcome` | A run or compaction ended: `"Completed"`, `"Interrupted"`, `"ToolOutcomeUnknown"`, `{"Failed": error}`, `{"ModelStopped": {"stop_reason"}}` or `{"StreamFailed": {"reason"}}` |
 | `operation_failed` | `error` | The operation could not complete because of a server-side error |
 | `deleted` | | The session was deleted. The stream ends after this record |

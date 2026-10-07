@@ -55,6 +55,14 @@ pub async fn list(
   let management = app.management.clone();
   blocking(move || Ok(Json(management.list(query)?))).await
 }
+/// What a user browses: sessions and groups, newest first.
+pub async fn conversations(
+  State(app): State<Arc<App>>,
+  Query(query): Query<SessionQuery>,
+) -> Result<Json<Value>, ApiError> {
+  let management = app.management.clone();
+  blocking(move || Ok(Json(management.conversations(query)?))).await
+}
 pub async fn create(
   State(app): State<Arc<App>>,
   Json(input): Json<CreateSession>,
@@ -197,7 +205,8 @@ async fn start(
   id: String,
   operation: Operation,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-  app.get_session(&id).await?.start(&app, operation).await?;
+  let slot = app.get_session(&id).await?;
+  slot.start(&app, operation).await?;
   Ok((StatusCode::ACCEPTED, Json(json!({"accepted":true}))))
 }
 pub async fn interrupt(

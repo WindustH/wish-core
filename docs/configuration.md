@@ -106,6 +106,7 @@ fields are rejected everywhere, so typos fail loudly.
 | `mcp` | `{"servers": {}}` | MCP servers sessions can call; see [MCP servers](#mcp-servers) |
 | `search` | `{"order": [], "providers": {}}` | The services the `web_search` tool asks; see [Web search](#web-search) |
 | `skills` | `{"dirs": [], "disabled": []}` | Where sessions find skills besides Wish's own directory, and which are off; see [Skills](#skills) |
+| `usage` | `{"stream_sample_limit": 20000}` | How much of the usage records is kept; see [Usage records](#usage-records) |
 
 ## Providers
 
@@ -214,7 +215,7 @@ sessions keep their own settings.
 | `provider` | `""` | Default provider ID; must exist in `providers` |
 | `model` | `""` | Default model ID |
 | `cwd` | Wish's start directory | Default working directory, an absolute path |
-| `tools` | `{"shell": true, "ask_user": true, "mcp": true, "web_search": true, "skills": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell, `web_search` lets it search the web through the [search providers](#web-search), `skills` lets it read [skills](#skills) from the shell. Each session can switch them later. A new session gets `web_search` only while some search provider can answer |
+| `tools` | `{"shell": true, "ask_user": true, "mcp": true, "web_search": true, "skills": true, "sessions": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell, `web_search` lets it search the web through the [search providers](#web-search), `skills` lets it read [skills](#skills) from the shell, `sessions` lets it see, make and message other sessions and [groups](#groups) from the shell. Each session can switch them later. A new session gets `web_search` only while some search provider can answer |
 | `stream` | `true` | Stream model output |
 | `instructions` | `""` | Extra instructions the web app adds to each new session |
 | `reasoning` | `null` | `{"enabled": bool, "effort": "low", "summary": "Auto"}`. Accepted effort values depend on the provider |
@@ -356,6 +357,49 @@ shell when a task may have one, and `wish skill show <name>` to read it.
 Changes apply to the next command; a session's `skills` switch decides whether
 it may read them at all.
 
+## Groups
+
+A group is a chat among you and several sessions, like a chat app's group
+chat. Each post goes to the group's own transcript and to every other member,
+which reads it as a message headed by the group and the author. The user is
+in every group and sees every message. Deleting a group deletes its messages
+and the files posted to it; its sessions stay.
+
+Every post wakes every other member, yours and a session's alike. A session
+takes part as a person would: it reads what was said, and speaks in the group
+only when it has something to say, by sending with `wish session send` from
+its shell - what it answers otherwise stays in its own conversation. A session
+without a shell reads its groups but never speaks there.
+
+Sessions reach one another and the groups with `wish session` in the shell
+(list, show, create, config, delete, send, group create/add/rename/leave). The model
+is told how, and none of them, so it never changes a byte of its request. A
+session sees every session and group and may message any session - which
+makes a group of the two of them and you - but configures and deletes only
+itself and the sessions it made. A session's `sessions` switch decides whether
+the command works at all.
+
+## Usage records
+
+`management.sqlite` keeps every model call's token usage and a one-second
+sample of each streamed response's speed, for the usage statistics. Deleting a
+session keeps its records, so the statistics still count what it spent; the
+storage card on the statistics page, or
+[`POST /api/storage/prune-usage`](api.md#post-apistorageprune-usage), clears
+them.
+
+`usage.stream_sample_limit` caps the speed samples kept (at least 100;
+`null` keeps every one). Past it, neighbouring samples of the same session and
+model are merged, the pairs that would span the least time first, until
+nine-tenths of the limit remain. A merged sample adds up the output and
+streaming time of both, so totals and average speeds stay as they were and only
+the detail coarsens, dense stretches evenly and first. A lowered limit applies
+at once.
+
+```json
+"usage": {"stream_sample_limit": 50000}
+```
+
 ## Web search
 
 `search.providers` lists the services the `web_search` tool asks, by ID, and
@@ -454,6 +498,7 @@ values, so protect it accordingly (for example `chmod 600`).
 | Shell | On the next command |
 | MCP servers | On the next call. An instance whose server changed, or would now be reached with another key or proxy, is closed and started again |
 | Defaults | For the next new session |
+| `usage.stream_sample_limit` | At once |
 | `listen`, `data_dir`, `bearer_token_env`, `web_dir`, `allowed_hosts` | After a restart. The API refuses to change them |
 | Values of environment variables | After a restart |
 

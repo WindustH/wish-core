@@ -20,7 +20,7 @@ pub struct SessionStatus {
   #[serde(skip_serializing_if = "Option::is_none")]
   state: Option<SessionState>,
   active_generation: Option<GenerationId>,
-  metadata: Value,
+  pub metadata: Value,
   pub config: SessionConfig,
   queue_head: u64,
   pub running: bool,

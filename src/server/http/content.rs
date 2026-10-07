@@ -1,6 +1,6 @@
-//! A session's content from the page: uploaded blobs, and user input - text with attachments -
-//! which is queued and wakes the session.
-mod input;
+//! Content from the page: blobs uploaded to a session or a group, and a session's user input - text
+//! with attachments - which is queued and wakes it.
+pub(crate) mod input;
 use crate::server::{app::App, blobs, error::ApiError};
 use axum::{
   Json,
@@ -13,20 +13,27 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+/// Refuses an id that names neither a session nor a group: the owners of `blobs/<id>`.
+async fn require_owner(app: &Arc<App>, id: &str) -> Result<(), ApiError> {
+  if app.management.group(id)?.is_none() {
+    app.get_session(id).await?;
+  }
+  Ok(())
+}
 pub async fn upload(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   body: Bytes,
 ) -> Result<Json<blobs::Blob>, ApiError> {
   app.lifecycle.require_open()?;
-  app.get_session(&id).await?;
+  require_owner(&app, &id).await?;
   Ok(Json(blobs::save_upload(&app.data_dir.blobs(&id), &body).await?))
 }
 pub async fn download(
   State(app): State<Arc<App>>,
   Path((id, blob)): Path<(String, String)>,
 ) -> Result<(HeaderMap, Vec<u8>), ApiError> {
-  app.get_session(&id).await?;
+  require_owner(&app, &id).await?;
   if !blobs::is_blob_id(&blob) {
     return Err(ApiError::not_found());
   }
@@ -47,7 +54,7 @@ pub async fn metadata(
   State(app): State<Arc<App>>,
   Path((id, blob)): Path<(String, String)>,
 ) -> Result<Json<BlobMetadata>, ApiError> {
-  app.get_session(&id).await?;
+  require_owner(&app, &id).await?;
   if !blobs::is_blob_id(&blob) {
     return Err(ApiError::not_found());
   }

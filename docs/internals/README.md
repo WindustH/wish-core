@@ -84,3 +84,6 @@ these pages.
 - [mcp](mcp.md): MCP servers reached from a session's shell through `wish mcp`: the client, the
   instances, the bridge.
 - [skills](skills.md): skills found and read from a session's shell through `wish skill`.
+- [groups](groups.md): groups of sessions and the user, and what a session sees of other sessions
+- [folders](folders.md): how the list is arranged in folders, as a file system arranges files
+  through `wish session`.
