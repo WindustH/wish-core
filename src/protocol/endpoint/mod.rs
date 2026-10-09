@@ -20,14 +20,16 @@
 //! Deliberately absent: credentials inside a URL, because a credential in a URL is a credential in
 //! every log line that ever touches it. Credentials may be closer to their end than the call they
 //! are asked for: [`Endpoint::build_call`] refuses expired ones before anything is sent, and
-//! [`codex_oauth`] beside it is the exchange the auth scheme's renewal option names - deciding when
-//! to refresh, and storing what the exchange rotated, stays with the caller, because this crate
-//! holds no account state. The read-side trees state their endpoints as static rows instead of
-//! configuration; `source.rs` is the shape of one row, and what turns it into an [`Endpoint`].
+//! [`codex_oauth`] and [`copilot_oauth`] beside it are the exchanges the auth scheme's renewal
+//! option names - deciding when to refresh, and storing what the exchange rotated, stays with the
+//! caller, because this crate holds no account state. The read-side trees state their endpoints as
+//! static rows instead of configuration; `source.rs` is the shape of one row, and what turns it
+//! into an [`Endpoint`].
 
 mod credentials;
 
 pub mod codex_oauth;
+pub mod copilot_oauth;
 pub use credentials::{CredentialField, Credentials, Tokens};
 pub(crate) mod sigv4;
 mod source;
@@ -65,6 +67,11 @@ pub enum AuthScheme {
   /// computed at the moment the call is built, over the request exactly as it stands. A
   /// signature is derived per call and never renews, so there is no option to carry.
   SigV4,
+  /// `Authorization: token <token>`, GitHub's own form, with the account's GitHub token: the
+  /// credential a Copilot session is exchanged from, which the credentials carry as their refresh
+  /// token. It is the account's long-lived credential rather than the session, so the session's
+  /// expiry does not refuse it.
+  GitHubToken,
 }
 
 /// How a renewing credential renews, as the option its [`AuthScheme::Bearer`] placement carries.
@@ -76,6 +83,9 @@ pub enum CredentialRenewal {
   /// A Codex subscription's refresh token, exchanged at its issuer's token endpoint
   /// ([`codex_oauth`]): everything the exchange needs is in the credentials themselves.
   CodexOAuth,
+  /// A GitHub token, exchanged for a Copilot session ([`copilot_oauth`]); the GitHub token itself
+  /// is never rotated.
+  CopilotToken,
 }
 
 impl AuthScheme {
@@ -86,6 +96,7 @@ impl AuthScheme {
       AuthScheme::Bearer(_) => "bearer",
       AuthScheme::Header(..) => "header",
       AuthScheme::SigV4 => "sigv4",
+      AuthScheme::GitHubToken => "github_token",
     }
   }
 }
@@ -211,6 +222,21 @@ impl Endpoint {
     self.auth
   }
 
+  /// The static headers configuration set on this target, which every call to it carries.
+  pub(crate) fn get_headers(&self) -> &[(String, String)] {
+    &self.headers
+  }
+
+  /// Lays the headers an account's configuration sets beneath this target's own, so a read-side
+  /// call carries what every call to that account does while the wire keeps the last word.
+  pub(crate) fn beneath(mut self, configured: &[(String, String)]) -> Self {
+    let own = std::mem::replace(&mut self.headers, configured.to_vec());
+    for (name, value) in &own {
+      insert_header(&mut self.headers, name, value);
+    }
+    self
+  }
+
   /// The configured path with `{model}` substituted, percent-encoded. A path without the
   /// placeholder comes back unchanged, which is the common case: only protocols that address the
   /// model in the URL (Gemini, Bedrock) need it. Verb changes on top of this (`:generateContent`
@@ -232,8 +258,9 @@ impl Endpoint {
   /// [`Error::Renewal`], because sending them would only learn the same thing from the service,
   /// slower.
   ///
-  /// The renewal exchanges are exempt by construction: they carry no credentials of the account
-  /// they renew, so there is nothing here to refuse.
+  /// The renewal exchanges are exempt by construction: Codex's carries no credentials of the
+  /// account it renews, and a call proven by the GitHub token ([`AuthScheme::GitHubToken`]) is
+  /// proven by the credential that outlives the session, so there is nothing here to refuse.
   pub fn build_call(
     &self,
     draft: Draft,
@@ -242,6 +269,7 @@ impl Endpoint {
   ) -> Result<Call, Error> {
     if let Some(expires_at) = credentials.expires_at
       && now >= expires_at
+      && self.auth != AuthScheme::GitHubToken
     {
       return Err(Error::Renewal { expires_at });
     }
@@ -299,6 +327,14 @@ impl Endpoint {
       // The signed headers are written after everything else, out of the account's own
       // credentials.
       AuthScheme::SigV4 => {}
+      AuthScheme::GitHubToken => {
+        let token = credentials
+          .refresh_token
+          .as_deref()
+          .filter(|token| !token.is_empty())
+          .ok_or_else(|| Error::Build("this call needs the account's GitHub token".to_owned()))?;
+        insert_header(&mut headers, "authorization", &format!("token {token}"));
+      }
     }
     for (name, credential) in &self.credential_headers {
       insert_header(&mut headers, name, require_field(credentials, *credential)?);

@@ -86,7 +86,7 @@ pub fn render(request: &Request) -> Result<Value, Error> {
     body.insert("inferenceConfig".into(), json!({"maxTokens": max_tokens}));
   }
   if let Some(reasoning) = &request.reasoning
-    && let Some(fields) = render_reasoning(reasoning)?
+    && let Some(fields) = render_reasoning(&request.model, reasoning)?
   {
     body.insert("additionalModelRequestFields".into(), fields);
   }
@@ -129,8 +129,8 @@ fn append_cache_point(array: Option<&mut Value>) {
 }
 
 /// The bridge this provider-agnostic wire uses for Anthropic thinking parameters: Claude's own
-/// `thinking` object, whose off state is omission. The wire has no summary knob.
-fn render_reasoning(config: &ReasoningConfig) -> Result<Option<Value>, Error> {
+/// controls, whose off state is omission. The wire has no summary knob.
+fn render_reasoning(model: &str, config: &ReasoningConfig) -> Result<Option<Value>, Error> {
   if config.summary.is_some() {
     return Err(Error::Build("the converse wire has no reasoning summary axis".to_owned()));
   }
@@ -139,7 +139,8 @@ fn render_reasoning(config: &ReasoningConfig) -> Result<Option<Value>, Error> {
       "thinking cannot be both disabled and given a depth tier on the converse wire".to_owned(),
     ));
   }
-  Ok(render_claude_thinking(config)?.map(|thinking| json!({"thinking": thinking})))
+  let fields = render_claude_thinking(model, config)?;
+  Ok((!fields.is_empty()).then_some(Value::Object(fields)))
 }
 
 fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {

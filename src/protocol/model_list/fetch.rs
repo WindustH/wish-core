@@ -1,8 +1,8 @@
 //! Reading a provider's model list over the network.
 //!
-//! The same round trip as an account read: the auth and headers from this tree's own source table,
-//! the host, path and wire query of the page asked for, one `GET`, then the protocol's reading of
-//! the body. It carries no policy of its own: one attempt, and whether a failure is worth another
+//! The same round trip as an account read: the auth and headers from this tree's own source table
+//! over the headers the provider's configuration sets, the host, path and wire query of the page
+//! asked for, one `GET`, then the protocol's reading of the body. It carries no policy of its own: one attempt, and whether a failure is worth another
 //! try is the caller's decision. Paging is the caller's loop too - this reads one page and hands the
 //! next page's cursor back.
 
@@ -46,6 +46,9 @@ impl ModelListQuery {
 
 /// Reads one page of a provider's model list.
 ///
+/// `headers` are the ones the provider's configuration sets on every call to it - a workspace an
+/// organization key is addressed to, say. The list protocol's own headers go on top.
+///
 /// # Errors
 ///
 /// [`Error::Build`] when the credentials are incomplete, [`Error::Transport`] when the network
@@ -55,6 +58,7 @@ pub async fn fetch<T: Transport>(
   transport: &T,
   protocol: ModelListProtocol,
   query: &ModelListQuery,
+  headers: &[(String, String)],
   credentials: &Credentials,
   now: u64,
 ) -> Result<ModelListPage, Error> {
@@ -63,11 +67,10 @@ pub async fn fetch<T: Transport>(
     source.auth = AuthScheme::None;
   }
   let draft = Draft::get(build_page_query(protocol, query.cursor.as_deref(), query.page_size));
-  let call = source.to_endpoint(Some(&query.base_url), Some(&query.path))?.build_call(
-    draft,
-    credentials,
-    now,
-  )?;
+  let call = source
+    .to_endpoint(Some(&query.base_url), Some(&query.path))?
+    .beneath(headers)
+    .build_call(draft, credentials, now)?;
   let reply = transport.execute(&call).await?;
   parse_page(protocol, &http_error::read_provider_json(reply, protocol.get_id())?)
 }

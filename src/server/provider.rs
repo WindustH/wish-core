@@ -9,7 +9,10 @@ use crate::{
   protocol::{
     TokenCountProtocol,
     account_state::AccountStateProtocol,
-    endpoint::{AuthScheme, CredentialField, CredentialRenewal, Credentials, Endpoint},
+    endpoint::{
+      AuthScheme, CredentialField, CredentialRenewal, Credentials, Endpoint, SourceHeader,
+      copilot_oauth,
+    },
     model_list::ModelListProtocol,
     model_use::{
       ModelUseProtocol,
@@ -33,7 +36,6 @@ pub type Providers = BTreeMap<String, Arc<Provider>>;
 // Keep these defaults in step with the official stable CLI releases. Provider headers can
 // override either value without changing the request-body identity fields.
 const CODEX_USER_AGENT: &str = "codex_cli_rs/0.156.1";
-const CLAUDE_USER_AGENT: &str = "claude-cli/2.1.278 (external, cli)";
 /// How Wish names itself to a service that wants a client name.
 pub const WISH_USER_AGENT: &str = concat!("wish/", env!("CARGO_PKG_VERSION"));
 
@@ -80,6 +82,18 @@ impl ProviderConfig {
   pub fn is_codex(&self) -> bool {
     self.preset.as_deref() == Some("openai_codex")
   }
+  /// Whether this is the GitHub Copilot subscription preset, signed in through GitHub.
+  pub fn is_copilot(&self) -> bool {
+    self.preset.as_deref() == Some("github_copilot")
+  }
+  /// How a subscription preset's bearer token renews; `None` for a key that never runs out.
+  pub fn get_renewal(&self) -> Option<CredentialRenewal> {
+    match self.preset.as_deref() {
+      Some("openai_codex") => Some(CredentialRenewal::CodexOAuth),
+      Some("github_copilot") => Some(CredentialRenewal::CopilotToken),
+      _ => None,
+    }
+  }
 }
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,8 +124,7 @@ impl Provider {
     }
     let auth = match config.auth {
       Auth::None => AuthScheme::None,
-      Auth::Bearer if config.is_codex() => AuthScheme::Bearer(Some(CredentialRenewal::CodexOAuth)),
-      Auth::Bearer => AuthScheme::Bearer(None),
+      Auth::Bearer => AuthScheme::Bearer(config.get_renewal()),
       Auth::AnthropicKey => AuthScheme::Header("x-api-key"),
       Auth::GoogleKey => AuthScheme::Header("x-goog-api-key"),
       Auth::SigV4 => AuthScheme::SigV4,
@@ -144,11 +157,21 @@ impl Provider {
             .with_header("x-client-request-id", "{session}");
         }
       }
+      // Not Claude Code's own user agent: the API bills a call that names it as Claude Code
+      // traffic, which an API key's credits do not pay for.
       Some("anthropic") => {
         endpoint = endpoint
-          .with_header("user-agent", CLAUDE_USER_AGENT)
+          .with_header("user-agent", WISH_USER_AGENT)
           .with_header("x-app", "cli")
           .with_header("x-claude-code-session-id", "{session}");
+      }
+      Some("github_copilot") => {
+        for header in copilot_oauth::API_HEADERS {
+          if let SourceHeader::Literal(name, value) = header {
+            endpoint = endpoint.with_header(name, value);
+          }
+        }
+        endpoint = endpoint.with_header("openai-intent", "conversation-panel");
       }
       _ => {}
     }
@@ -191,6 +214,9 @@ impl Provider {
       Some("anthropic") => {
         client = client.with_code_agent_identity(CodeAgentIdentity::Claude);
       }
+      Some("github_copilot") => {
+        client = client.with_code_agent_identity(CodeAgentIdentity::Copilot);
+      }
       _ => {}
     }
     if let Some(value) = &config.token_count {
@@ -227,8 +253,7 @@ impl Provider {
     }
     match self.config.preset.as_deref() {
       Some("openai" | "openai_codex") => Some(CODEX_USER_AGENT.to_owned()),
-      Some("anthropic") => Some(CLAUDE_USER_AGENT.to_owned()),
-      Some("opencode_go") => Some(WISH_USER_AGENT.to_owned()),
+      Some("anthropic" | "opencode_go") => Some(WISH_USER_AGENT.to_owned()),
       _ => None,
     }
   }

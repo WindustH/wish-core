@@ -1434,6 +1434,55 @@
       ]
     },
     {
+      "id": "tencent_token_cn",
+      "provider": "Tencent Hunyuan (TokenHub)",
+      "region": "cn",
+      "billing": "token_plan",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "tokenhub_chat": {
+          "preset": "tencent_token_cn",
+          "enabled": true,
+          "protocol": "tokenhub_chat",
+          "base_url": "https://api.lkeap.cloud.tencent.com/plan/v3",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.lkeap.cloud.tencent.com/plan/v3",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "tencent_token_cn",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://api.lkeap.cloud.tencent.com/plan/anthropic",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.lkeap.cloud.tencent.com/plan/v3",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "tokenhub_chat",
+        "anthropic_messages"
+      ]
+    },
+    {
       "id": "openai",
       "provider": "OpenAI",
       "region": "global",
@@ -1523,6 +1572,75 @@
       ]
     },
     {
+      "id": "github_copilot",
+      "provider": "GitHub Copilot",
+      "region": "global",
+      "billing": "subscription",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "github_copilot",
+          "account_state": "github_copilot_usage",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.githubcopilot.com",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "github_copilot_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.githubcopilot.com",
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "github_copilot",
+          "account_state": "github_copilot_usage",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "https://api.githubcopilot.com",
+          "path": "/responses",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "github_copilot_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.githubcopilot.com",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "github_copilot",
+          "account_state": "github_copilot_usage",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://api.githubcopilot.com",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "github_copilot_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.githubcopilot.com",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "openai_responses",
+        "anthropic_messages"
+      ]
+    },
+    {
       "id": "anthropic",
       "provider": "Anthropic",
       "region": "global",
@@ -1542,7 +1660,6 @@
           "models": {},
           "headers": {
             "anthropic-version": "2023-06-01",
-            "user-agent": "claude-cli/2.1.278 (external, cli)",
             "x-app": "cli",
             "x-claude-code-session-id": "{session}"
           },
@@ -1854,6 +1971,643 @@
       "protocols": [
         "minimax_chat",
         "minimax_messages"
+      ]
+    },
+    {
+      "id": "stepfun_global",
+      "provider": "StepFun",
+      "region": "global",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "stepfun_global",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.stepfun.ai/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.stepfun.ai/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "stepfun_global",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://api.stepfun.ai",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.stepfun.ai/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "anthropic_messages"
+      ]
+    },
+    {
+      "id": "stepfun_plan_global",
+      "provider": "StepFun",
+      "region": "global",
+      "billing": "coding_plan",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "anthropic_messages": {
+          "preset": "stepfun_plan_global",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://api.stepfun.ai/step_plan",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.stepfun.ai/step_plan/v1",
+          "proxy_enabled": true
+        },
+        "compatible_chat": {
+          "preset": "stepfun_plan_global",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.stepfun.ai/step_plan/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.stepfun.ai/step_plan/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "anthropic_messages",
+        "compatible_chat"
+      ]
+    },
+    {
+      "id": "stepfun_cn",
+      "provider": "StepFun",
+      "region": "cn",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "stepfun_cn",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.stepfun.com/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.stepfun.com/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "stepfun_cn",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://api.stepfun.com",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.stepfun.com/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "anthropic_messages"
+      ]
+    },
+    {
+      "id": "stepfun_plan_cn",
+      "provider": "StepFun",
+      "region": "cn",
+      "billing": "coding_plan",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "anthropic_messages": {
+          "preset": "stepfun_plan_cn",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://api.stepfun.com/step_plan",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.stepfun.com/step_plan/v1",
+          "proxy_enabled": true
+        },
+        "compatible_chat": {
+          "preset": "stepfun_plan_cn",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.stepfun.com/step_plan/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.stepfun.com/step_plan/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "anthropic_messages",
+        "compatible_chat"
+      ]
+    },
+    {
+      "id": "baidu_qianfan_cn",
+      "provider": "Baidu Qianfan",
+      "region": "cn",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "baidu_qianfan_cn",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://qianfan.baidubce.com/v2",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://qianfan.baidubce.com/v2",
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "baidu_qianfan_cn",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "https://qianfan.baidubce.com/v2",
+          "path": "/responses",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://qianfan.baidubce.com/v2",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "baidu_qianfan_cn",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://qianfan.baidubce.com/anthropic",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://qianfan.baidubce.com/v2",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "openai_responses",
+        "anthropic_messages"
+      ]
+    },
+    {
+      "id": "baidu_qianfan_token_cn",
+      "provider": "Baidu Qianfan",
+      "region": "cn",
+      "billing": "token_plan",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "anthropic_messages": {
+          "preset": "baidu_qianfan_token_cn",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://qianfan.baidubce.com/anthropic/tokenplan/personal",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        },
+        "compatible_chat": {
+          "preset": "baidu_qianfan_token_cn",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://qianfan.baidubce.com/v2/tokenplan/personal",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "baidu_qianfan_token_cn",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "https://qianfan.baidubce.com/v2/tokenplan/personal",
+          "path": "/responses",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "anthropic_messages",
+        "compatible_chat",
+        "openai_responses"
+      ]
+    },
+    {
+      "id": "baidu_qianfan_token_team_cn",
+      "provider": "Baidu Qianfan",
+      "region": "cn",
+      "billing": "token_plan_team",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "anthropic_messages": {
+          "preset": "baidu_qianfan_token_team_cn",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://qianfan.baidubce.com/anthropic/tokenplan/team",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        },
+        "compatible_chat": {
+          "preset": "baidu_qianfan_token_team_cn",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://qianfan.baidubce.com/v2/tokenplan/team",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "baidu_qianfan_token_team_cn",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "https://qianfan.baidubce.com/v2/tokenplan/team",
+          "path": "/responses",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "anthropic_messages",
+        "compatible_chat",
+        "openai_responses"
+      ]
+    },
+    {
+      "id": "volcengine_cn",
+      "provider": "Volcengine Ark",
+      "region": "cn",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "volcengine_cn",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "volcengine_cn",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+          "path": "/responses",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "openai_responses"
+      ]
+    },
+    {
+      "id": "volcengine_coding_cn",
+      "provider": "Volcengine Ark",
+      "region": "cn",
+      "billing": "coding_plan",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "anthropic_messages": {
+          "preset": "volcengine_coding_cn",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://ark.cn-beijing.volces.com/api/coding",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        },
+        "compatible_chat": {
+          "preset": "volcengine_coding_cn",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "volcengine_coding_cn",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+          "path": "/responses",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "anthropic_messages",
+        "compatible_chat",
+        "openai_responses"
+      ]
+    },
+    {
+      "id": "volcengine_agent_cn",
+      "provider": "Volcengine Ark",
+      "region": "cn",
+      "billing": "agent_plan",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "anthropic_messages": {
+          "preset": "volcengine_agent_cn",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://ark.cn-beijing.volces.com/api/plan",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        },
+        "compatible_chat": {
+          "preset": "volcengine_agent_cn",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "volcengine_agent_cn",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+          "path": "/responses",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "anthropic_messages",
+        "compatible_chat",
+        "openai_responses"
+      ]
+    },
+    {
+      "id": "huawei_cloud_cn",
+      "provider": "Huawei Cloud",
+      "region": "cn",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "huawei_cloud_cn",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.modelarts-maas.com/openai/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.modelarts-maas.com/openai/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "huawei_cloud_cn",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://api.modelarts-maas.com/anthropic",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.modelarts-maas.com/openai/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "anthropic_messages"
+      ]
+    },
+    {
+      "id": "huawei_cloud_token_cn",
+      "provider": "Huawei Cloud",
+      "region": "cn",
+      "billing": "token_plan",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "anthropic_messages": {
+          "preset": "huawei_cloud_token_cn",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://api.modelarts-maas.com/plan/anthropic",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.modelarts-maas.com/plan/v2",
+          "proxy_enabled": true
+        },
+        "compatible_chat": {
+          "preset": "huawei_cloud_token_cn",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.modelarts-maas.com/plan/v2",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.modelarts-maas.com/plan/v2",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "anthropic_messages",
+        "compatible_chat"
       ]
     },
     {
@@ -2218,6 +2972,615 @@
       ]
     },
     {
+      "id": "together",
+      "provider": "Together AI",
+      "region": "global",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "together",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.together.ai/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat"
+      ]
+    },
+    {
+      "id": "fireworks",
+      "provider": "Fireworks",
+      "region": "global",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "fireworks",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.fireworks.ai/inference/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat"
+      ]
+    },
+    {
+      "id": "nvidia_nim",
+      "provider": "NVIDIA NIM",
+      "region": "global",
+      "billing": "free_tier",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "nvidia_nim",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://integrate.api.nvidia.com/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://integrate.api.nvidia.com/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat"
+      ]
+    },
+    {
+      "id": "modelscope_cn",
+      "provider": "ModelScope",
+      "region": "cn",
+      "billing": "free_tier",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "modelscope_cn",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api-inference.modelscope.cn/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api-inference.modelscope.cn/v1",
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "modelscope_cn",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "https://api-inference.modelscope.cn/v1",
+          "path": "/responses",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api-inference.modelscope.cn/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "openai_responses"
+      ]
+    },
+    {
+      "id": "aihubmix",
+      "provider": "AiHubMix",
+      "region": "global",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "aihubmix",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://aihubmix.com/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://aihubmix.com/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "aihubmix",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://aihubmix.com",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://aihubmix.com/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "anthropic_messages"
+      ]
+    },
+    {
+      "id": "ai302",
+      "provider": "302.AI",
+      "region": "global",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "ai302",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.302.ai/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.302.ai/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "ai302",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://api.302.ai",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.302.ai/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "anthropic_messages"
+      ]
+    },
+    {
+      "id": "cherryin",
+      "provider": "CherryIN",
+      "region": "global",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "cherryin",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://open.cherryin.ai/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://open.cherryin.ai/v1",
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "cherryin",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "https://open.cherryin.ai/v1",
+          "path": "/responses",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://open.cherryin.ai/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "cherryin",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://open.cherryin.ai",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://open.cherryin.ai/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "openai_responses",
+        "anthropic_messages"
+      ]
+    },
+    {
+      "id": "pipellm",
+      "provider": "PipeLLM",
+      "region": "global",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "pipellm",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.pipellm.ai/openai/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.pipellm.ai/openai/v1",
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "pipellm",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "https://api.pipellm.ai/v1",
+          "path": "/responses",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.pipellm.ai/openai/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "pipellm",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://api.pipellm.ai",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.pipellm.ai/openai/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "openai_responses",
+        "anthropic_messages"
+      ]
+    },
+    {
+      "id": "yylx",
+      "provider": "鱼鱼连线",
+      "region": "global",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "yylx",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://app.yylx.io/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://app.yylx.io/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "yylx",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://app.yylx.io",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://app.yylx.io/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "anthropic_messages"
+      ]
+    },
+    {
+      "id": "commandcode",
+      "provider": "Command Code",
+      "region": "global",
+      "billing": "payg",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "commandcode",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://api.commandcode.ai/provider/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.commandcode.ai/provider/v1",
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "commandcode",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "https://api.commandcode.ai/provider/v1",
+          "path": "/responses",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.commandcode.ai/provider/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "commandcode",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://api.commandcode.ai/provider",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://api.commandcode.ai/provider/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "openai_responses",
+        "anthropic_messages"
+      ]
+    },
+    {
+      "id": "magpie",
+      "provider": "Magpie",
+      "region": "local",
+      "billing": "gateway",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "openai_responses": {
+          "preset": "magpie",
+          "account_state": "magpie_quotas",
+          "account_state_base_url": "http://127.0.0.1:3425",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "http://127.0.0.1:3425/v1",
+          "path": "/responses",
+          "auth": "bearer",
+          "api_key": "magpie",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "http://127.0.0.1:3425/v1",
+          "proxy_enabled": false
+        },
+        "anthropic_messages": {
+          "preset": "magpie",
+          "account_state": "magpie_quotas",
+          "account_state_base_url": "http://127.0.0.1:3425",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "http://127.0.0.1:3425/v1",
+          "path": "/messages",
+          "auth": "bearer",
+          "api_key": "magpie",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "http://127.0.0.1:3425/v1",
+          "token_count": "anthropic_messages",
+          "proxy_enabled": false
+        },
+        "compatible_chat": {
+          "preset": "magpie",
+          "account_state": "magpie_quotas",
+          "account_state_base_url": "http://127.0.0.1:3425",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "http://127.0.0.1:3425/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "api_key": "magpie",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "http://127.0.0.1:3425/v1",
+          "proxy_enabled": false
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "openai_responses",
+        "anthropic_messages",
+        "compatible_chat"
+      ]
+    },
+    {
+      "id": "ollama_cloud",
+      "provider": "Ollama",
+      "region": "global",
+      "billing": "subscription",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "ollama_cloud",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "https://ollama.com/v1",
+          "path": "/chat/completions",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://ollama.com/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "ollama_cloud",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "https://ollama.com",
+          "path": "/v1/messages",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "https://ollama.com/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "anthropic_messages"
+      ]
+    },
+    {
       "id": "ollama",
       "provider": "Ollama",
       "region": "local",
@@ -2362,6 +3725,138 @@
       "protocols": [
         "compatible_chat",
         "openai_responses"
+      ]
+    },
+    {
+      "id": "omlx",
+      "provider": "oMLX",
+      "region": "local",
+      "billing": "local",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "omlx",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "http://127.0.0.1:8000/v1",
+          "path": "/chat/completions",
+          "auth": "none",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "http://127.0.0.1:8000/v1",
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "omlx",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "http://127.0.0.1:8000/v1",
+          "path": "/responses",
+          "auth": "none",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "http://127.0.0.1:8000/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "omlx",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "http://127.0.0.1:8000",
+          "path": "/v1/messages",
+          "auth": "none",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "http://127.0.0.1:8000/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "openai_responses",
+        "anthropic_messages"
+      ]
+    },
+    {
+      "id": "mlx_serve",
+      "provider": "MLX-Serve",
+      "region": "local",
+      "billing": "local",
+      "required_credentials": [],
+      "optional_credentials": [],
+      "reasoning_efforts": {},
+      "max_output_tokens": null,
+      "variants": {
+        "compatible_chat": {
+          "preset": "mlx_serve",
+          "enabled": true,
+          "protocol": "compatible_chat",
+          "base_url": "http://127.0.0.1:11234/v1",
+          "path": "/chat/completions",
+          "auth": "none",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "http://127.0.0.1:11234/v1",
+          "proxy_enabled": true
+        },
+        "openai_responses": {
+          "preset": "mlx_serve",
+          "enabled": true,
+          "protocol": "openai_responses",
+          "base_url": "http://127.0.0.1:11234/v1",
+          "path": "/responses",
+          "auth": "none",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "http://127.0.0.1:11234/v1",
+          "proxy_enabled": true
+        },
+        "anthropic_messages": {
+          "preset": "mlx_serve",
+          "enabled": true,
+          "protocol": "anthropic_messages",
+          "base_url": "http://127.0.0.1:11234",
+          "path": "/v1/messages",
+          "auth": "none",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "openai_models",
+          "model_list_path": "/models",
+          "model_list_base_url": "http://127.0.0.1:11234/v1",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "compatible_chat",
+        "openai_responses",
+        "anthropic_messages"
       ]
     }
   ]

@@ -19,7 +19,7 @@ pub mod mistral_conversations;
 pub mod openai_chat;
 pub mod openai_responses;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::protocol::error::Error;
 
@@ -46,8 +46,8 @@ pub struct ReasoningConfig {
   /// Explicit on/off switch; a wire that cannot spell "off" says so when it renders the request.
   pub enabled: Option<bool>,
   /// Depth tier, spelled the way the model spells it: every service names its own set of tiers, so
-  /// an effort wire passes the word through. A wire that steers thinking with a token budget has no
-  /// tier word of its own and takes the `resolve_tier_budget` preset instead.
+  /// an effort wire passes the word through. A model that steers thinking with a token budget has
+  /// no tier word of its own and takes the `resolve_tier_budget` preset instead.
   pub effort: Option<String>,
   /// Whether the service should also hand back a readable summary of its thoughts: the part that is
   /// meant to be shown to a reader, as opposed to the raw reasoning the model itself replays.
@@ -81,25 +81,61 @@ fn resolve_tier_budget(effort: &str) -> Result<TierBudget, Error> {
   }
 }
 
-/// Claude's own `thinking` object, shared by the wires that carry Claude's thinking parameters: the
-/// Messages wire itself and the Converse wire's bridge.
+/// Claude's own thinking controls, shared by the wires that carry Claude's parameters: the Messages
+/// wire itself and the Converse wire's bridge. The fields come back to be placed in the body, or
+/// in whatever carries the model's own fields there.
 ///
-/// A depth tier selects the preset (extended thinking with its budget, or adaptive thinking),
-/// `enabled` alone selects adaptive thinking, and the off state is omission - `None` here - since
-/// the object has no `disabled` member. A config that both disables thinking and gives it a tier is
-/// the caller's to refuse first, in its own words.
-pub(crate) fn render_claude_thinking(config: &ReasoningConfig) -> Result<Option<Value>, Error> {
-  let thinking = match (config.enabled, config.effort.as_deref()) {
-    (Some(false) | None, None) => return Ok(None),
-    (_, Some(effort)) => match resolve_tier_budget(effort)? {
-      TierBudget::Tokens(budget_tokens) => {
-        json!({"type": "enabled", "budget_tokens": budget_tokens})
+/// Claude has taken two generations of control. The models before Claude Opus 4.6 and Sonnet 4.6
+/// budget their thinking, so a depth tier selects the preset (extended thinking with its budget, or
+/// adaptive thinking). Every later model thinks adaptively, takes the tier word itself as
+/// `output_config.effort`, and refuses a budget. On both, `enabled` alone selects adaptive thinking
+/// and the off state is omission, since the object has no `disabled` member. A config that both
+/// disables thinking and gives it a tier is the caller's to refuse first, in its own words.
+pub(crate) fn render_claude_thinking(
+  model: &str,
+  config: &ReasoningConfig,
+) -> Result<Map<String, Value>, Error> {
+  let mut fields = Map::new();
+  match (config.enabled, config.effort.as_deref()) {
+    (Some(false) | None, None) => {}
+    (Some(true), None) => {
+      fields.insert("thinking".into(), json!({"type": "adaptive"}));
+    }
+    (_, Some(effort)) if budgets_thinking(model) => {
+      let thinking = match resolve_tier_budget(effort)? {
+        TierBudget::Tokens(budget_tokens) => {
+          json!({"type": "enabled", "budget_tokens": budget_tokens})
+        }
+        TierBudget::Adaptive => json!({"type": "adaptive"}),
+      };
+      fields.insert("thinking".into(), thinking);
+    }
+    (_, Some(effort)) => {
+      fields.insert("thinking".into(), json!({"type": "adaptive"}));
+      if effort != "adaptive" {
+        fields.insert("output_config".into(), json!({"effort": effort.to_lowercase()}));
       }
-      TierBudget::Adaptive => json!({"type": "adaptive"}),
-    },
-    (Some(true), None) => json!({"type": "adaptive"}),
-  };
-  Ok(Some(thinking))
+    }
+  }
+  Ok(fields)
+}
+
+/// Whether a Claude model budgets its thinking: the generations before Claude Opus 4.6 and Sonnet
+/// 4.6. The list is closed, since every later model takes an effort instead, and it is matched
+/// anywhere in the id, so dated snapshots and Bedrock's prefixed ids read the same.
+fn budgets_thinking(model: &str) -> bool {
+  const BUDGETED: &[&str] = &[
+    "claude-3",
+    "claude-opus-4-0",
+    "claude-opus-4-1",
+    "claude-opus-4-2025",
+    "claude-opus-4-5",
+    "claude-sonnet-4-0",
+    "claude-sonnet-4-2025",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+  ];
+  BUDGETED.iter().any(|family| model.contains(family))
 }
 
 /// How much room the answer keeps above the thinking budget.

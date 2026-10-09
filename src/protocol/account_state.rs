@@ -29,11 +29,13 @@ use crate::Error;
 use crate::protocol::attempt::find_header;
 
 pub mod codex;
+pub mod copilot;
 pub mod deepseek;
 pub mod fetch;
 pub mod headers;
 pub mod huggingface;
 pub mod kimi;
+pub mod magpie;
 pub mod minimax;
 pub mod openrouter;
 pub mod qwen;
@@ -203,6 +205,10 @@ text_id_enum! {
     HuggingfaceWhoamiBilling => "hf_whoami_billing",
     /// The quota of one Qwen workspace.
     QwenWorkspaceQuota => "qwen_workspace_quota",
+    /// The allowances of a GitHub Copilot subscription.
+    GitHubCopilotUsage => "github_copilot_usage",
+    /// What a Magpie gateway has left of every account it holds.
+    MagpieQuotas => "magpie_quotas",
   }
 }
 
@@ -342,6 +348,8 @@ pub fn parse_account_body(
     AccountStateProtocol::QwenWorkspaceQuota => qwen::parse_workspace_quota(body),
     AccountStateProtocol::OpenAiCodexQuotaHeaders => codex::parse_rate_limit_payload(body),
     AccountStateProtocol::OpenAiCodexUsage => Ok(codex::parse_usage(body)),
+    AccountStateProtocol::GitHubCopilotUsage => copilot::parse(body),
+    AccountStateProtocol::MagpieQuotas => magpie::parse(body),
     AccountStateProtocol::AnthropicRatelimitHeaders
     | AccountStateProtocol::OpenAiRatelimitHeaders
     | AccountStateProtocol::GroqRatelimitHeaders

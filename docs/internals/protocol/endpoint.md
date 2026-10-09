@@ -12,6 +12,7 @@ an Endpoint ────┼──▶ build_call ──▶ Call ─────�
 Credentials ────┘
 
 a refresh token ──▶ codex_oauth ──▶ Tokens (one attempt, no retry)
+a GitHub token ──▶ copilot_oauth ──▶ Tokens (one attempt, no retry)
 AWS credentials ──▶ sigv4 ──▶ x-amz-date, authorization, and x-amz-security-token
                               with a session token; written last
 ```
@@ -26,9 +27,12 @@ AWS credentials ──▶ sigv4 ──▶ x-amz-date, authorization, and x-amz-s
 | `Bearer(Option<CredentialRenewal>)` | `Authorization: Bearer <api_key>`; the option names how the token renews |
 | `Header(&'static str)` | the key in one named header (`x-api-key`, `x-goog-api-key`) |
 | `SigV4` | an AWS signature over the finished request, service `bedrock` |
+| `GitHubToken` | `Authorization: token <refresh_token>`: the GitHub token a Copilot session is exchanged from |
 
-`CredentialRenewal` has one variant, `CodexOAuth` (the Codex subscription's refresh token). The
-server builds `Bearer(Some(CodexOAuth))` for the `openai_codex` preset (`src/server/provider.rs`).
+`CredentialRenewal` has two variants: `CodexOAuth` (the Codex subscription's refresh token) and
+`CopilotToken` (a GitHub token exchanged for a Copilot session). The server builds
+`Bearer(Some(CodexOAuth))` for the `openai_codex` preset and `Bearer(Some(CopilotToken))` for
+`github_copilot` (`src/server/provider.rs`).
 
 `Endpoint::new(base_url, path, auth)` requires an absolute http(s) URL and a non-empty path.
 `with_header` adds static headers, `with_credential_header` places a credential field in a named
@@ -48,7 +52,8 @@ is `{ access_token, refresh_token, id_token, account_id, expires_at }`.
 
 `Endpoint::build_call(draft, credentials, now)` builds the call and sends nothing:
 
-1. Refuse with `Error::Renewal` if `expires_at` has passed.
+1. Refuse with `Error::Renewal` if `expires_at` has passed, unless the auth is `GitHubToken`:
+   the expiry dates the access token, and the GitHub token outlives it.
 2. Fill `{field}` placeholders in the base URL and the path from the credentials, percent-encoded:
    `api_key`, `workspace_id`, `team_id`, `organization`, `project`, `account_id`, `region`. This
    is how a Bedrock or Qwen workspace host carries its region or workspace. AWS secrets are never
@@ -75,5 +80,11 @@ the method, query and body, so the same row serves an account read's `GET` and a
   client id; `post_authorization_code` POSTs a browser login's code as a form to the same endpoint.
   `account_id` comes from the id-token claim, and `expires_at` from the access-token JWT, falling
   back to `expires_in`. Debug builds honor `WISH_TEST_CODEX_ISSUER`.
+- `copilot_oauth`: `request_device_code` and `poll_device_code` run GitHub's device flow as forms
+  to `https://github.com/login/device/code` and `/login/oauth/access_token` under the OAuth app
+  Copilot's editors use; GitHub answers a pending, slowed or refused poll with `200` and an
+  `error`. `exchange` GETs `https://api.github.com/copilot_internal/v2/token` with the GitHub token
+  and Copilot's editor headers; the session's `token` is the access token and its `expires_at` the
+  expiry. Debug builds honor `WISH_TEST_GITHUB` for both hosts.
 
-Both exchanges are one attempt, and deciding when to refresh stays with the caller.
+Every exchange is one attempt, and deciding when to refresh stays with the caller.

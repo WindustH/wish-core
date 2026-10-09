@@ -29,7 +29,7 @@ use crate::protocol::model_use::ModelUseProtocol;
 use crate::protocol::upstream_compaction::request as upstream_compaction_wire;
 use crate::protocol::upstream_compaction::{NO_COMPACTION_CALL, UpstreamCompactionProtocol};
 use crate::protocol::{
-  Message, Request, Response, StreamAccumulator, TokenCount, TokenCountProtocol,
+  ContentBlock, Message, Request, Response, StreamAccumulator, TokenCount, TokenCountProtocol,
   UpstreamCompaction, UpstreamCompactionRequest, http_error, model_use::mode::ResponsesDeployment,
 };
 use crate::transport::{Framing, RecordStream};
@@ -41,6 +41,7 @@ use crate::utils::time::unix_seconds;
 pub enum CodeAgentIdentity {
   Codex,
   Claude,
+  Copilot,
 }
 
 /// One model-use protocol bound to one configured endpoint, the read protocols named beside it,
@@ -250,6 +251,12 @@ impl<T: Transport> Client<T> {
             .await?;
         Ok(self.credentials.renew(&tokens))
       }
+      AuthScheme::Bearer(Some(CredentialRenewal::CopilotToken)) => {
+        let tokens =
+          crate::protocol::endpoint::copilot_oauth::exchange(&self.transport, &self.credentials)
+            .await?;
+        Ok(self.credentials.renew(&tokens))
+      }
       auth => Err(Error::build_unsupported(
         "credential refresh",
         auth.get_name(),
@@ -308,7 +315,9 @@ impl<T: Transport> Client<T> {
         "was not named when this client was built",
       )
     })?;
-    model_list::fetch(&self.transport, protocol, query, &self.credentials, unix_seconds()).await
+    let headers = self.endpoint.get_headers();
+    model_list::fetch(&self.transport, protocol, query, headers, &self.credentials, unix_seconds())
+      .await
   }
 
   /// Reads the account state this upstream reports, over the protocol named when the client was
@@ -327,8 +336,16 @@ impl<T: Transport> Client<T> {
         "was not named when this client was built",
       )
     })?;
-    account_state::fetch(&self.transport, protocol, &self.credentials, base_url, unix_seconds())
-      .await
+    let headers = self.endpoint.get_headers();
+    account_state::fetch(
+      &self.transport,
+      protocol,
+      &self.credentials,
+      base_url,
+      headers,
+      unix_seconds(),
+    )
+    .await
   }
 
   /// Searches the web as this client's account, for a search service that comes with the
@@ -361,7 +378,29 @@ impl<T: Transport> Client<T> {
     self.apply_code_agent_identity(&mut body, &session_id);
     let path =
       self.model_use.resolve_request_path(request, self.endpoint.resolve_path(&request.model));
-    self.build_json_call(session_id, path, &[], body)
+    self.build_json_call(session_id, path, &self.get_code_agent_headers(request), body)
+  }
+
+  /// Internal: the headers the coding client's identity puts on one model call, which follow what
+  /// the call carries.
+  fn get_code_agent_headers(&self, request: &Request) -> Vec<(&'static str, &'static str)> {
+    let mut headers = Vec::new();
+    if self.code_agent_identity == Some(CodeAgentIdentity::Copilot) {
+      // Copilot bills the turns a person starts; the calls that carry a tool's result back are the
+      // agent's own, as its editor marks them. What a tool hands the model to look at (an image it
+      // read) rides as a user message that names the tool's call.
+      let by_user = matches!(request.conversation.last(),
+        Some(Message::User { metadata, .. }) if metadata.get("tool_call_id").is_none());
+      headers.push(("x-initiator", if by_user { "user" } else { "agent" }));
+      // A call that shows the model an image is asked for one that sees.
+      if request.conversation.iter().any(|message| {
+        matches!(message, Message::User { content, .. }
+          if content.iter().any(|block| matches!(block, ContentBlock::Image { .. })))
+      }) {
+        headers.push(("copilot-vision-request", "true"));
+      }
+    }
+    headers
   }
 
   /// The conversation this client's calls belong to, or a fresh id for a call that belongs to

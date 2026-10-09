@@ -25,7 +25,7 @@ The client calls `parse_reply` on every model call when a reply-borne protocol i
 | --- | --- |
 | reply headers (`headers.rs`) | `AnthropicRatelimitHeaders`, `OpenAiRatelimitHeaders`, `GroqRatelimitHeaders`, `CerebrasRatelimitHeaders`, `MistralRatelimitHeaders` |
 | a reply's body or head | `OpenAiCodexQuotaHeaders`: a buffered body's `rate_limits`, else the `x-codex-*` headers. On a stream, the `response.rate_limits`/`codex.rate_limits` frame also arrives as `StreamEvent::Account` and replaces the reading |
-| a request of its own (`source.rs`) | `OpenAiCodexUsage`, `DeepseekUserBalance`, `KimiOpenBalance`, `KimiCodeCompanionUsage`, `ZaiCodingPlanMonitor`, `MinimaxTokenPlanRemains`, `MinimaxAccountBalance`, `SiliconflowBalance`, `OpenrouterKeyQuota`, `OpenrouterCredits`, `HuggingfaceWhoamiBilling` (`hf_whoami_billing`), `QwenWorkspaceQuota` |
+| a request of its own (`source.rs`) | `OpenAiCodexUsage`, `DeepseekUserBalance`, `KimiOpenBalance`, `KimiCodeCompanionUsage`, `ZaiCodingPlanMonitor`, `MinimaxTokenPlanRemains`, `MinimaxAccountBalance`, `SiliconflowBalance`, `OpenrouterKeyQuota`, `OpenrouterCredits`, `HuggingfaceWhoamiBilling` (`hf_whoami_billing`), `QwenWorkspaceQuota`, `GitHubCopilotUsage`, `MagpieQuotas` |
 
 Asking for a reading on the wrong side is `Error::Unsupported` with reason
 `RidesTheHeaders`, `RidesAReply` (the Codex quota reading) or `HasItsOwnRequest`. On the reply
@@ -37,10 +37,13 @@ with `Error::Build`. A header dialect whose headers are all absent reads as succ
 
 Each `source.rs` entry states a default host, a path, bearer auth and any extra headers: Qwen's
 `{workspace_id}` path plus `x-dashscope-workspace`, Codex's `chatgpt-account-id`, and a Kimi Code
-user agent. The `base_url` argument overrides the host; the server passes the provider's
-`account_state_base_url`, which is only set for a regional twin, and never its conversation
-`base_url` (`src/server/http/providers.rs`). `fetch` makes one GET with no retry. A non-`2xx`
-body is decoded by `http_error::decode_provider_envelope`.
+user agent. Copilot's entry is the exception to bearer auth: GitHub tells its allowances to the
+GitHub token (`AuthScheme::GitHubToken`), with Copilot's editor headers. Magpie's entry pins the
+gateway's default address, `http://127.0.0.1:3425`, and one Magpie reading carries a window per
+account the gateway holds. The `base_url` argument overrides the host; the server passes the
+provider's `account_state_base_url`, which is only set for a regional twin or a gateway on another
+machine, and never its conversation `base_url` (`src/server/http/providers.rs`). `fetch` makes
+one GET with no retry. A non-`2xx` body is decoded by `http_error::decode_provider_envelope`.
 
 ## Shape
 

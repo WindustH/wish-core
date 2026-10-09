@@ -23,6 +23,7 @@ mod config;
 mod config_file;
 #[cfg(windows)]
 mod console;
+mod copilot_login;
 mod data_dir;
 mod error;
 mod groups;

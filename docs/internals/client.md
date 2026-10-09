@@ -32,7 +32,7 @@ The server builds its clients in [`src/server/provider.rs`](../../src/server/pro
 | `AccountStateProtocol` | `with_account_state` | optional |
 | `UpstreamCompactionProtocol` | `with_upstream_compaction` | optional; pairing checked, returns `Result` |
 | `TokenCountProtocol` | `with_token_count` | optional; pairing checked, returns `Result` |
-| `CodeAgentIdentity` | `with_code_agent_identity` | optional: `Codex` or `Claude` body identifiers |
+| `CodeAgentIdentity` | `with_code_agent_identity` | optional: `Codex` or `Claude` body identifiers, `Copilot` call headers |
 
 Asking a client for a feature it was not given, or one its protocol cannot serve, is
 `Error::Unsupported`, which is never retried. Some refusals come from a renderer instead and are
@@ -41,15 +41,19 @@ Asking a client for a feature it was not given, or one its protocol cannot serve
 `with_session_id` binds the ID that fills `{session}` header templates and the code-agent body
 fields. Unbound, each model call gets a fresh UUID. With `CodeAgentIdentity::Codex` on Responses,
 the body gets `prompt_cache_key` (unless set) and `client_metadata{session_id,thread_id}`. With
-`Claude` on Messages it gets `metadata.user_id`. `with_attempt_observer` attaches an
-`AttemptObserver`, made for every physical streaming attempt, retries and streamed compaction
-included. The server uses it for throughput sampling ([statistics](statistics.md)).
+`Claude` on Messages it gets `metadata.user_id`. With `Copilot`, every model call carries
+`x-initiator`: `user` when the conversation ends on a message a person sent, `agent` when it ends
+on a tool's result or what a tool handed the model (a user message whose metadata names the
+tool's call); a conversation with an image adds `copilot-vision-request: true`.
+`with_attempt_observer` attaches an `AttemptObserver`, made for every physical streaming attempt,
+retries and streamed compaction included. The server uses it for throughput sampling ([statistics](statistics.md)).
 
 ## Credentials
 
 For a subscription, the credentials carry tokens instead of a key (`api_key` = access token,
 `refresh_token`, `expires_at`, `account_id`). The auth scheme carries the renewal beside the
-placement: `AuthScheme::Bearer(Some(CredentialRenewal::CodexOAuth))`.
+placement: `AuthScheme::Bearer(Some(CredentialRenewal::CodexOAuth))`, or `CopilotToken` for a
+Copilot session renewed from the GitHub token in `refresh_token`.
 `Client::refresh_credentials` returns renewed credentials and installs them nowhere; the server
 saves them in the provider's configuration, which builds the client again. A `build_call` over spent credentials is refused
 as `Error::Renewal` before anything is sent. Storing what the exchange rotated stays with the
@@ -122,7 +126,7 @@ effects.
 | --- | --- | --- |
 | buffered `call`, `count_tokens`, `compact_upstream` | `utils::retry::retry` | the whole attempt |
 | streamed `call` | `utils::retry::retry` | the attempt: the opening and its first event |
-| `get_model_list`, `get_account_state`, `search`, Codex OAuth exchanges | none | nothing: one attempt |
+| `get_model_list`, `get_account_state`, `search`, Codex and Copilot token exchanges | none | nothing: one attempt |
 
 A streamed attempt reads its first event before the stream is handed over. Until then a retryable
 failure replaces the attempt. After that, failures are terminal, because a replay would splice a

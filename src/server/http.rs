@@ -22,7 +22,7 @@ mod storage;
 mod usage;
 use crate::server::{
   app::App,
-  codex_login, presets,
+  codex_login, copilot_login, presets,
   web::{self, WebFront},
 };
 use axum::{
@@ -68,6 +68,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/providers/{id}/account", get(providers::account))
     .route("/providers/{id}/chatgpt-login", post(codex_login::start).get(codex_login::status))
     .route("/providers/{id}/chatgpt-login/complete", post(codex_login::complete))
+    .route("/providers/{id}/copilot-login", post(copilot_login::start).get(copilot_login::status))
     .route("/providers/{id}/call", post(providers::call))
     .route("/providers/{id}/count-tokens", post(providers::count))
     .route("/providers/{id}/compact", post(providers::compact))

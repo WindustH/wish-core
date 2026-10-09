@@ -27,6 +27,7 @@ use crate::Error;
 pub mod anthropic;
 pub mod bedrock;
 pub mod codex;
+pub mod copilot;
 pub mod fetch;
 pub mod google;
 pub mod openai;
@@ -99,6 +100,8 @@ text_id_enum! {
     GoogleModels => "google_models",
     /// Bedrock's list, which is read with a signed request.
     BedrockModels => "bedrock_models",
+    /// The models a GitHub Copilot subscription may pick.
+    GitHubCopilotModels => "github_copilot_models",
   }
 }
 
@@ -116,6 +119,7 @@ pub fn parse_page(protocol: ModelListProtocol, body: &Value) -> Result<ModelList
     ModelListProtocol::AnthropicModels => anthropic::parse(body),
     ModelListProtocol::GoogleModels => google::parse(body),
     ModelListProtocol::BedrockModels => bedrock::parse(body),
+    ModelListProtocol::GitHubCopilotModels => copilot::parse(body),
   }
 }
 
@@ -129,6 +133,7 @@ pub fn build_page_query(
   match protocol {
     ModelListProtocol::OpenAiModels => openai::build_page_query(cursor),
     ModelListProtocol::OpenAiCodexModels => codex::build_page_query(),
+    ModelListProtocol::GitHubCopilotModels => Vec::new(),
     ModelListProtocol::QwenModels => qwen::build_page_query(cursor, page_size),
     ModelListProtocol::AnthropicModels => anthropic::build_page_query(cursor, page_size),
     ModelListProtocol::GoogleModels => google::build_page_query(cursor, page_size),

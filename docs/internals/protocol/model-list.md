@@ -24,6 +24,7 @@ GET with no retry. A non-`2xx` body is decoded by `http_error::decode_provider_e
 | `AnthropicModels` (`anthropic_models`) | `x-api-key` + `anthropic-version` | `after_id`, `limit` |
 | `GoogleModels` (`google_models`) | `x-goog-api-key` | `pageToken`, `pageSize` |
 | `BedrockModels` (`bedrock_models`) | SigV4 | none |
+| `GitHubCopilotModels` (`github_copilot_models`) | bearer (the Copilot session) + Copilot's editor headers | none |
 
 No entry pins a host or a path: `ModelListQuery { base_url, path, cursor, page_size,
 unauthenticated }` always supplies both (the Codex preset's `model_list_path` is

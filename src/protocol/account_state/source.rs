@@ -8,7 +8,9 @@
 //! The call an entry describes is built through [`Source`], with the caller's credentials.
 
 use super::AccountStateProtocol;
-use crate::protocol::endpoint::{AuthScheme, CredentialField, Source, SourceHeader};
+use crate::protocol::endpoint::{
+  AuthScheme, CredentialField, Source, SourceHeader, copilot_oauth::EDITOR_HEADERS,
+};
 
 /// The source that answers for an account protocol, or `None` for one that rides a served reply.
 pub(crate) fn find_source(protocol: AccountStateProtocol) -> Option<Source> {
@@ -75,5 +77,15 @@ pub(crate) fn find_source(protocol: AccountStateProtocol) -> Option<Source> {
       headers: &[SourceHeader::Credential("chatgpt-account-id", CredentialField::AccountId)],
       ..at("https://chatgpt.com", "/backend-api/wham/usage")
     },
+    // Copilot's allowances are GitHub's to tell: asked of its API with the GitHub token the
+    // session is exchanged from, as the editor asks them.
+    AccountStateProtocol::GitHubCopilotUsage => Source {
+      auth: AuthScheme::GitHubToken,
+      headers: EDITOR_HEADERS,
+      ..at("https://api.github.com", "/copilot_internal/user")
+    },
+    // A gateway answers on the machine it runs on, and to the key of a gateway shared on its
+    // network; one elsewhere arrives as a base URL override.
+    AccountStateProtocol::MagpieQuotas => at("http://127.0.0.1:3425", "/v1/magpie/quotas"),
   })
 }

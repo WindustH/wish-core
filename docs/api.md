@@ -125,6 +125,7 @@ engine error, for example
 | GET | `/api/providers/{id}/account` | Upstream account reading |
 | POST, GET | `/api/providers/{id}/chatgpt-login` | Start or poll a ChatGPT sign-in |
 | POST | `/api/providers/{id}/chatgpt-login/complete` | Finish a sign-in from a pasted redirect URL |
+| POST, GET | `/api/providers/{id}/copilot-login` | Start or poll a GitHub sign-in for Copilot |
 | POST | `/api/providers/{id}/call` | Stateless model call |
 | POST | `/api/providers/{id}/count-tokens` | Provider token count |
 | POST | `/api/providers/{id}/compact` | Stateless upstream compaction |
@@ -463,6 +464,24 @@ For providers made from the `openai_codex` preset:
 On success Wish stores the access token, refresh token, account ID and expiry
 in the configuration, refreshes them in the background before they expire, and
 emits `configuration_changed`.
+
+### GitHub Copilot sign-in
+
+For providers made from the `github_copilot` preset:
+
+- `POST /api/providers/{id}/copilot-login` starts GitHub's device flow and
+  returns `{"verification_uri", "user_code", "expires_in"}`, cancelling any
+  previous attempt. Open `verification_uri` in any browser, on any machine, and
+  type `user_code` there.
+- `GET` on the same path returns `{"status": "idle"}` or `{"status", "error"}`
+  with status `pending`, `complete`, `failed` or `expired`. Wish asks GitHub at
+  the pace GitHub sets until the code is approved, refused or expired.
+
+On approval Wish exchanges the GitHub token for a Copilot session, which also
+refuses an account without Copilot, and stores the session as the access token,
+the GitHub token as the refresh token, and the session's expiry. Sessions last
+about half an hour; Wish renews them in the background from the GitHub token
+and emits `configuration_changed` each time.
 
 ### `POST /api/providers/{id}/call`
 

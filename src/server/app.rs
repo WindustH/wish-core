@@ -6,6 +6,7 @@ use crate::server::{
   codex_login::LoginManager,
   config::Config,
   config_file::ConfigFile,
+  copilot_login::CopilotLoginManager,
   data_dir::DataDir,
   error::{ApiError, blocking},
   management::ManagementStore,
@@ -35,6 +36,7 @@ pub struct App {
   pub management: Arc<ManagementStore>,
   pub config_file: AsyncMutex<ConfigFile>,
   pub codex_login: LoginManager,
+  pub copilot_login: CopilotLoginManager,
   /// Changes to the session list and the configuration, for `GET /events`.
   pub events: tokio::sync::broadcast::Sender<Value>,
   pub started: std::time::Instant,
@@ -141,6 +143,7 @@ impl App {
       management,
       config_file: AsyncMutex::new(config_file),
       codex_login: LoginManager::default(),
+      copilot_login: CopilotLoginManager::default(),
       events,
       started: std::time::Instant::now(),
       providers: RwLock::new(providers),

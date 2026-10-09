@@ -1,6 +1,8 @@
 //! Browser authorization for the Codex subscription preset: the login attempt, the callback the
-//! browser returns to (or the redirect a person pastes back), and the worker that renews the
-//! tokens before they run out. The token exchanges themselves are [`codex_oauth`]'s.
+//! browser returns to (or the redirect a person pastes back), and the worker that renews every
+//! subscription's tokens - Codex's and Copilot's - before they run out. The token exchanges
+//! themselves are [`codex_oauth`]'s and
+//! [`copilot_oauth`](crate::protocol::endpoint::copilot_oauth)'s.
 
 use crate::protocol::endpoint::codex_oauth;
 use crate::protocol::endpoint::{Credentials, Tokens};
@@ -343,17 +345,22 @@ async fn exchange_code(grant: &LoginGrant, code: &str) -> Result<Tokens, ApiErro
   Ok(tokens)
 }
 
-/// Replaces one Codex provider's OAuth material through a configuration save, without it passing
-/// through the configuration API. When another save lands first, it tries again on top of that one.
-async fn save_credentials(app: &App, id: &str, credentials: &Credentials) -> Result<(), ApiError> {
+/// Replaces one subscription provider's OAuth material through a configuration save, without it
+/// passing through the configuration API. When another save lands first, it tries again on top of
+/// that one.
+pub(crate) async fn save_credentials(
+  app: &App,
+  id: &str,
+  credentials: &Credentials,
+) -> Result<(), ApiError> {
   for _ in 0..3 {
     let (revision, mut next) = {
       let current = app.config_file.lock().await;
       (current.revision.clone(), current.config.clone())
     };
     let provider = next.providers.get_mut(id).ok_or_else(ApiError::not_found)?;
-    if !provider.is_codex() {
-      return Err(ApiError::bad_request("provider is not an OpenAI Codex preset"));
+    if provider.get_renewal().is_none() {
+      return Err(ApiError::bad_request("provider is not a subscription preset"));
     }
     provider.api_key = Some(credentials.api_key.clone());
     provider.api_key_env = None;
@@ -372,7 +379,7 @@ async fn save_credentials(app: &App, id: &str, credentials: &Credentials) -> Res
       Err(error) => return Err(error),
     }
   }
-  Err(ApiError::conflict("configuration kept changing during Codex login"))
+  Err(ApiError::conflict("configuration kept changing during sign-in"))
 }
 
 pub fn start_refresh_worker(app: &Arc<App>) {
@@ -394,7 +401,7 @@ async fn refresh_due(app: &Arc<App>) {
     .get_providers()
     .into_values()
     .filter(|provider| {
-      provider.config.is_codex()
+      provider.config.get_renewal().is_some()
         && provider.config.refresh_token.as_deref().is_some_and(|token| !token.is_empty())
         && provider.config.expires_at.is_some_and(|expires| expires <= now + REFRESH_MARGIN)
     })
@@ -404,10 +411,10 @@ async fn refresh_due(app: &Arc<App>) {
     match provider.client.refresh_credentials().await {
       Ok(tokens) => {
         if let Err(error) = save_credentials(app, id, &tokens).await {
-          eprintln!("Codex token refresh for {id} could not be saved: {error}");
+          eprintln!("Token refresh for {id} could not be saved: {error}");
         }
       }
-      Err(error) => eprintln!("Codex token refresh for {id} failed: {error}"),
+      Err(error) => eprintln!("Token refresh for {id} failed: {error}"),
     }
   }
 }

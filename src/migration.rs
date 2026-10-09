@@ -31,6 +31,7 @@ mod m0009_sessions_switch;
 mod m0010_group_tables;
 mod m0011_free_groups;
 mod m0012_folders;
+mod m0013_anthropic_user_agent;
 
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -65,6 +66,7 @@ const STEPS: &[Step] = &[
   Step { summary: m0010_group_tables::SUMMARY, apply: m0010_group_tables::apply },
   Step { summary: m0011_free_groups::SUMMARY, apply: m0011_free_groups::apply },
   Step { summary: m0012_folders::SUMMARY, apply: m0012_folders::apply },
+  Step { summary: m0013_anthropic_user_agent::SUMMARY, apply: m0013_anthropic_user_agent::apply },
 ];
 
 /// The format this build reads.

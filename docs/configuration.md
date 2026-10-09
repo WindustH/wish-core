@@ -124,12 +124,12 @@ entry needs at least `protocol`, `base_url` and `path`.
 | `base_url` | required | `http://` or `https://` origin, optionally with a path prefix. Credential names such as `{region}` or `{workspace_id}` are replaced by their values |
 | `path` | required | Request path appended to `base_url`. `{model}` is replaced by the model ID, and credential names as in `base_url` |
 | `display_name` | `null` | Name shown in the web app |
-| `preset` | `null` | ID of the preset this entry came from. It adds the preset's branding and default request headers, and enables ChatGPT sign-in for `openai_codex` |
+| `preset` | `null` | ID of the preset this entry came from; see [Presets](#presets). It adds the preset's branding and default request headers, and enables ChatGPT sign-in for `openai_codex` and GitHub sign-in for `github_copilot` |
 | `enabled` | `true` | `false` keeps the entry but refuses new calls through it |
 | `auth` | `"bearer"` | How requests are authenticated, see [below](#authentication) |
 | `api_key` / `api_key_env` | `null` | The API key, or the name of an environment variable holding it; see [Secrets](#secrets) |
 | `credentials` / `credentials_env` | `{}` | Extra credentials by name, or the environment variables holding them |
-| `headers` | `{}` | Extra request headers. They override preset headers. `{session}` in a value becomes the Wish session ID, which some services use for caching |
+| `headers` | `{}` | Extra request headers, sent with every call to the provider, model and account reads included. They override preset headers. `{session}` in a value becomes the Wish session ID, which some services use for caching. An Anthropic key not scoped to a workspace needs `anthropic-workspace-id` here |
 | `proxy_enabled` | `true` | `false` always connects directly, ignoring the [proxy](#proxy) |
 | `models` | `{}` | Per-model settings by model ID, see [below](#per-model-settings) |
 | `model_list` | `null` | Catalog protocol, used for the model picker |
@@ -139,7 +139,7 @@ entry needs at least `protocol`, `base_url` and `path`.
 | `compaction` | `null` | Upstream compaction protocol, to let the provider compact the context itself |
 | `account_state` | `null` | Protocol for reading balance or quota |
 | `account_state_base_url` | `null` | Host the account reading is asked on, for a service with regional twins (`https://open.bigmodel.cn` for a Zhipu plan). Without it, the protocol's own host; the provider's `base_url` is never used for it |
-| `refresh_token`, `expires_at` | `null` | Written by ChatGPT sign-in; not meant to be edited by hand |
+| `refresh_token`, `expires_at` | `null` | Written by ChatGPT and GitHub sign-in; not meant to be edited by hand |
 
 ### Protocols
 
@@ -161,8 +161,8 @@ Optional capabilities, each of which must match the protocol:
 | --- | --- |
 | `token_count` | `openai_responses` (with `openai_responses` or `plaintext_responses`), `anthropic_messages` (with `anthropic_messages`), `google_generate_content` (with `google_generate_content`) |
 | `compaction` | `openai_responses` (with `openai_responses` or `plaintext_responses`), `openai_responses_streamed` (with `codex_responses`) |
-| `model_list` | `openai_models`, `openai_codex_models`, `qwen_models`, `anthropic_models`, `google_models`, `bedrock_models` |
-| `account_state` | `deepseek_user_balance`, `kimi_open_balance`, `kimi_code_companion_usage`, `zai_coding_plan_monitor`, `minimax_token_plan_remains`, `minimax_account_balance`, `siliconflow_balance`, `openrouter_key_quota`, `openrouter_credits`, `hf_whoami_billing`, `qwen_workspace_quota`, `openai_codex_usage` |
+| `model_list` | `openai_models`, `openai_codex_models`, `qwen_models`, `anthropic_models`, `google_models`, `bedrock_models`, `github_copilot_models` |
+| `account_state` | `deepseek_user_balance`, `kimi_open_balance`, `kimi_code_companion_usage`, `zai_coding_plan_monitor`, `minimax_token_plan_remains`, `minimax_account_balance`, `siliconflow_balance`, `openrouter_key_quota`, `openrouter_credits`, `hf_whoami_billing`, `qwen_workspace_quota`, `openai_codex_usage`, `github_copilot_usage`, `magpie_quotas` |
 
 A mismatched pairing is refused when the configuration is loaded or saved.
 
@@ -180,6 +180,44 @@ Credential names are `region`, `access_key_id`, `secret_access_key`,
 `session_token`, `account_id`, `workspace_id`, `team_id`, `organization` and
 `project`.
 
+### Presets
+
+Each preset fills in one service's address, protocols, catalog and account
+reading; the web app offers them when you add a provider. The first protocol
+listed is the one a new provider starts with. A preset whose service has no
+model list leaves the models to be added by hand.
+
+| Service | Presets |
+| --- | --- |
+| DeepSeek | `deepseek` |
+| Xiaomi MiMo | `mimo_payg`; Token Plan `mimo_token_cn`, `mimo_token_sgp`, `mimo_token_eu` |
+| Z.AI, Zhipu | `zai_global`, `zhipu_cn`; Coding Plan `zai_coding_global`, `zhipu_coding_cn` |
+| SiliconFlow | `siliconflow_cn`, `siliconflow_global` |
+| Qwen (Model Studio) | `qwen_cn`, `qwen_singapore`, `qwen_hong_kong`, `qwen_us`; workspaces `qwen_workspace_cn`, `qwen_workspace_singapore`, `qwen_workspace_germany`, `qwen_workspace_japan`, `qwen_workspace_us`; Coding Plan `qwen_coding_cn`, `qwen_coding_global`; Token Plan `qwen_token_cn` |
+| Kimi | `kimi_cn`, `kimi_global`; Kimi Code `kimi_code` |
+| Tencent TokenHub | `tencent_hunyuan_cn`, `tencent_hunyuan_global`; Token Plan `tencent_token_cn` |
+| OpenAI | `openai`; ChatGPT subscription `openai_codex` |
+| GitHub Copilot | `github_copilot`, a Copilot subscription; see [GitHub Copilot sign-in](#github-copilot-sign-in) |
+| Anthropic | `anthropic` |
+| Google Gemini | `google_gemini` |
+| AWS Bedrock | `aws_bedrock` |
+| MiniMax | `minimax_cn`, `minimax_global`; Token Plan `minimax_token_cn`, `minimax_token_global` |
+| StepFun | `stepfun_global`, `stepfun_cn`; Step Plan `stepfun_plan_global`, `stepfun_plan_cn` |
+| Baidu Qianfan | `baidu_qianfan_cn`; Token Plan `baidu_qianfan_token_cn` (personal), `baidu_qianfan_token_team_cn` (enterprise) |
+| Volcengine Ark | `volcengine_cn`; Coding Plan `volcengine_coding_cn`; Agent Plan `volcengine_agent_cn` |
+| Huawei Cloud MaaS | `huawei_cloud_cn`; Token Plan `huawei_cloud_token_cn` |
+| Routers and hosts | `openrouter`, `huggingface_router`, `opencode_zen`, `opencode_go`, `together`, `fireworks`, `nvidia_nim`, `modelscope_cn`, `aihubmix`, `ai302`, `cherryin`, `pipellm`, `yylx`, `commandcode` |
+| Mistral, xAI, Groq, Cerebras | `mistral`, `xai`, `groq`, `cerebras` |
+| Ollama | `ollama_cloud` (cloud models, with a key); `ollama` on your machine |
+| Gateways | `magpie`; see [Magpie](#magpie) |
+| Local servers | `lm_studio`, `vllm`, `omlx`, `mlx_serve` |
+
+The plans built for coding agents (Step Plan, Qianfan and Huawei Cloud's
+Token Plans, Volcengine's Coding and Agent Plans) start on Anthropic
+Messages, the wire their vendors set coding agents up with, where the models'
+thinking travels back with each turn. The Qianfan and Volcengine plans serve
+no model list.
+
 ### ChatGPT sign-in
 
 A provider with `"preset": "openai_codex"` uses a ChatGPT subscription instead
@@ -189,6 +227,47 @@ The sign-in opens a temporary callback on `127.0.0.1:1455`, so the browser
 must run on the same machine as Wish; otherwise, paste the final redirect URL
 back into the web app. The flow is described in the
 [API reference](api.md#chatgpt-sign-in).
+
+### GitHub Copilot sign-in
+
+A provider with `"preset": "github_copilot"` uses a GitHub Copilot
+subscription. Add it in the web app and choose **Sign in with GitHub**: Wish
+shows a code to type at `github.com/login/device`, in a browser on any machine.
+It keeps the GitHub token as `refresh_token` and a Copilot session, which lasts
+about half an hour, as the key, and renews the session in the background. An
+account without Copilot is refused at sign-in. The flow is described in the
+[API reference](api.md#github-copilot-sign-in).
+
+Copilot serves most models on Chat Completions; its newest GPT models only on
+Responses (`openai_responses`) and Claude also on Messages
+(`anthropic_messages`). A provider speaks one protocol, so add a second
+Copilot provider, signed in on its own, for models of the other wire. Wish
+asks as Copilot's editor extension does, marking the calls that carry a tool's
+result back as the agent's (`x-initiator: agent`), so only the turns you start
+count as premium requests. A model whose terms wait in the account's Copilot
+settings is listed with a warning and refused until it is enabled there. The
+account reading (`github_copilot_usage`) shows the month's chat, completion
+and premium-request allowances.
+
+### Magpie
+
+[Magpie](https://github.com/yetone/magpie) is a local gateway that serves the
+models of every provider and subscription it holds, named `provider/model`, on
+`http://127.0.0.1:3425` in the OpenAI Chat, OpenAI Responses and Anthropic
+Messages protocols. The `magpie` preset connects to it: pick the protocol the
+models you use speak natively, since Magpie passes those calls straight
+through and translates the rest. Model lists come from its `/v1/models`, and
+its account reading (`magpie_quotas`) shows what is left of every subscription
+and plan it holds, each window named after its account; the balances of its
+API keys are not included.
+
+On its own machine Magpie takes any key; the preset sends `magpie`. A Magpie
+shared on its local network (Settings → Share on local network) takes one of
+its gateway keys: set `base_url` to `http://<address>:3425/v1`,
+`model_list_base_url` likewise, `account_state_base_url` to
+`http://<address>:3425` and `api_key` to the key. The preset connects directly, without the [proxy](#proxy):
+a proxy can add a forwarding header, and Magpie treats a request carrying one
+as another machine's.
 
 ### Per-model settings
 

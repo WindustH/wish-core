@@ -16,7 +16,8 @@ use crate::protocol::http_error;
 ///
 /// `protocol` names the read-side protocol and `credentials` the account to read it for.
 /// `base_url` overrides the source's own host for an account that lives in another region; most
-/// callers pass `None`.
+/// callers pass `None`. `headers` are the ones the account's configuration sets on every call to
+/// it; the protocol's own go on top.
 ///
 /// # Errors
 ///
@@ -30,6 +31,7 @@ pub async fn fetch<T: Transport>(
   protocol: AccountStateProtocol,
   credentials: &Credentials,
   base_url: Option<&str>,
+  headers: &[(String, String)],
   now: u64,
 ) -> Result<AccountState, Error> {
   let Some(source) = find_source(protocol) else {
@@ -40,8 +42,11 @@ pub async fn fetch<T: Transport>(
     };
     return Err(Error::build_unsupported("account state", protocol, reason.get_text()));
   };
-  let call =
-    source.to_endpoint(base_url, None)?.build_call(Draft::get(Vec::new()), credentials, now)?;
+  let call = source.to_endpoint(base_url, None)?.beneath(headers).build_call(
+    Draft::get(Vec::new()),
+    credentials,
+    now,
+  )?;
   let reply = transport.execute(&call).await?;
   parse_account_body(protocol, &http_error::read_provider_json(reply, protocol.get_id())?)
 }

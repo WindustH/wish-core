@@ -40,7 +40,8 @@ the [HTTP API](docs/api.md).
   exact file edits, image viewing, web search, questions to you and a search of
   its own history. Everything else goes through the shell.
 - **Ready to use.** Install it, run `wish` and open the browser. Presets cover
-  the major model providers and local models.
+  the major model providers and coding plans, ChatGPT and GitHub Copilot
+  subscriptions, the Magpie gateway and local models.
 
 ## Quick start
 

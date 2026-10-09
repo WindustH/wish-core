@@ -8,7 +8,9 @@
 //! The call an entry describes is built through [`Source`], with the caller's credentials.
 
 use super::ModelListProtocol;
-use crate::protocol::endpoint::{AuthScheme, CredentialField, Source, SourceHeader};
+use crate::protocol::endpoint::{
+  AuthScheme, CredentialField, Source, SourceHeader, copilot_oauth::API_HEADERS,
+};
 
 /// The source that answers for a model-list protocol. Every protocol has one.
 pub(crate) fn find_source(protocol: ModelListProtocol) -> Source {
@@ -41,5 +43,7 @@ pub(crate) fn find_source(protocol: ModelListProtocol) -> Source {
     // Bedrock's list answers the account its signature names, on a host the region decides, and
     // the account's AWS credentials sign the call.
     ModelListProtocol::BedrockModels => asked_with(AuthScheme::SigV4, &[]),
+    // Copilot answers the session token, asked as its editor asks it.
+    ModelListProtocol::GitHubCopilotModels => asked_with(AuthScheme::Bearer(None), API_HEADERS),
   }
 }

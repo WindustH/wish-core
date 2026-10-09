@@ -14,10 +14,10 @@
 //!   content is dropped, or moved to the front when the turn did not open with thinking.
 //! - A tool result's `content` is a plain string: a string payload passes through, anything else
 //!   is stringified.
-//! - `ReasoningConfig` renders the control this endpoint documents: Claude's own `thinking` object
-//!   in the default mode, where a depth tier becomes the preset budget, and a vendor's
-//!   `thinking.type` switch or `output_config.effort` tier in the vendor modes [`MessagesApiCompatMode`]
-//!   knows.
+//! - `ReasoningConfig` renders the control this endpoint documents: Claude's own controls in the
+//!   default mode, where a depth tier becomes `output_config.effort` beside adaptive thinking, or
+//!   the preset budget for the Claude generations that budget, and a vendor's `thinking.type`
+//!   switch or `output_config.effort` tier in the vendor modes [`MessagesApiCompatMode`] knows.
 //! - `PromptCache::breakpoints` marks the three breakpoints this wire takes: the system block,
 //!   the last tool definition, and the tail of the last wire message.
 //! - Streaming is one body field: `stream: true`, and the reply arrives as SSE.
@@ -123,7 +123,7 @@ fn render_body(
     body.insert("stream".into(), json!(true));
   }
   if let Some(reasoning) = &request.reasoning {
-    render_reasoning(mode, reasoning, &mut body)?;
+    render_reasoning(mode, &request.model, reasoning, &mut body)?;
   }
   if let Some(max_tokens) = max_tokens
     && let Some(budget_tokens) = body
@@ -155,6 +155,7 @@ fn render_body(
 /// and the vendors whose thinking is always on reject it instead.
 fn render_reasoning(
   mode: MessagesApiCompatMode,
+  model: &str,
   config: &ReasoningConfig,
   body: &mut Map<String, Value>,
 ) -> Result<(), Error> {
@@ -170,11 +171,7 @@ fn render_reasoning(
     ));
   }
   match mode {
-    MessagesApiCompatMode::Official => {
-      if let Some(thinking) = render_claude_thinking(config)? {
-        body.insert("thinking".into(), thinking);
-      }
-    }
+    MessagesApiCompatMode::Official => body.extend(render_claude_thinking(model, config)?),
     MessagesApiCompatMode::DeepSeek => {
       if let Some(enabled) = config.enabled {
         body.insert("thinking".into(), render_thinking_switch(enabled));
