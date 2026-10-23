@@ -43,7 +43,8 @@ gateway's default address, `http://127.0.0.1:3425`, and one Magpie reading carri
 account the gateway holds. The `base_url` argument overrides the host; the server passes the
 provider's `account_state_base_url`, which is only set for a regional twin or a gateway on another
 machine, and never its conversation `base_url` (`src/server/http/providers.rs`). `fetch` makes
-one GET with no retry. A non-`2xx` body is decoded by `http_error::decode_provider_envelope`.
+one GET per attempt; `Client::get_account_state` applies the auxiliary retry policy. A non-`2xx`
+body is decoded by `http_error::decode_provider_envelope`.
 
 ## Shape
 

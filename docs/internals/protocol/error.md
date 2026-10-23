@@ -65,6 +65,9 @@ the payload says the service refused (`Upstream` with no status to blame).
 before a stream's first event. `retry-after` is parsed as delta-seconds or an HTTP date and capped
 at one hour.
 
+Read-only auxiliary client operations additionally retry transport failures whose phase would
+prevent a model-call replay; they use a separate, smaller budget ([client](../client.md#retry)).
+
 One more predicate classifies an error for the layers above:
 
 - `is_context_length_exceeded()`: known codes (`context_length_exceeded`,

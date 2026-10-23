@@ -13,50 +13,38 @@ use std::time::Duration;
 pub struct RetryPolicy {
   /// Max attempts per logical operation (including the first). `1` disables retry.
   pub max_attempts: u32,
-  /// Initial backoff delay (ms).
-  pub initial_delay_ms: u64,
-  /// Max backoff delay (ms).
-  pub max_delay_ms: u64,
-  /// Backoff multiplier.
-  pub multiplier: f64,
-  /// Jitter ratio (0..=1).
-  pub jitter_ratio: f64,
+  /// Base wait for the first retry, in milliseconds.
+  pub delay_ms: u64,
+  /// Additive random wait in [0, jitter_ms), never subtracted from the base wait.
+  pub jitter_ms: u64,
+  /// Grow both waits linearly with the retry number; otherwise keep them fixed.
+  pub linear: bool,
 }
 
 impl Default for RetryPolicy {
   fn default() -> Self {
-    Self {
-      max_attempts: 3,
-      initial_delay_ms: 500,
-      max_delay_ms: 30_000,
-      multiplier: 2.0,
-      jitter_ratio: 1.0,
-    }
+    Self::auxiliary()
   }
 }
 
 impl RetryPolicy {
-  /// Full-jitter backoff for the given attempt number (1-based), honoring an upstream `Retry-After`
-  /// when one is present.
-  ///
-  /// The delay grows as `initial * multiplier^(attempt - 1)` and is capped at
-  /// [`max_delay_ms`](Self::max_delay_ms), then spread uniformly over
-  /// `[delay * (1 - jitter), delay]`. A `Retry-After` is a floor rather than a ceiling: when the
-  /// upstream asks for a longer pause, the longer pause wins.
+  /// Five retries after the original call: 5s + up to 1s, 10s + up to 2s, ... 25s + up to 5s.
+  pub const fn model() -> Self {
+    Self { max_attempts: 6, delay_ms: 5_000, jitter_ms: 1_000, linear: true }
+  }
+
+  /// Three retries after the original read/search, each waiting 2s + up to 1s.
+  pub const fn auxiliary() -> Self {
+    Self { max_attempts: 4, delay_ms: 2_000, jitter_ms: 1_000, linear: false }
+  }
+
+  /// Additive jitter, honoring `Retry-After` as a minimum even when it exceeds our own wait.
   #[must_use]
   pub fn calculate_backoff_ms(&self, attempt_no: u32, retry_after_ms: Option<u64>) -> u64 {
-    let exp = f64::from(attempt_no.saturating_sub(1));
-    let base = (self.initial_delay_ms as f64) * self.multiplier.powf(exp);
-    let delay = base.min(self.max_delay_ms as f64) as u64;
-    let retry_floor = retry_after_ms.unwrap_or(0);
-    if self.jitter_ratio <= 0.0 {
-      return delay.max(retry_floor);
-    }
-    // Full jitter: uniform in [delay * (1 - j), delay].
-    let span = (delay as f64) * self.jitter_ratio;
-    let floor = delay as f64 - span;
-    let picked = floor + generate_random_unit() * span;
-    (picked.min(self.max_delay_ms as f64) as u64).max(retry_floor)
+    let step = if self.linear { u64::from(attempt_no.max(1)) } else { 1 };
+    let base = self.delay_ms.saturating_mul(step);
+    let jitter = (self.jitter_ms.saturating_mul(step) as f64 * generate_random_unit()) as u64;
+    base.saturating_add(jitter).max(retry_after_ms.unwrap_or(0))
   }
 }
 
@@ -67,18 +55,40 @@ pub enum RetryDecision {
   Retry { minimum_delay_ms: Option<u64> },
 }
 
+pub enum RetryEvent<'a, E> {
+  Waiting { retry: u32, max_retries: u32, delay_ms: u64, error: &'a E },
+  Attempting { retry: u32 },
+}
+
 /// Retry an operation with caller-owned error classification. Attempt numbers start at one.
 /// Even a zero max_attempts value permits the initial attempt, but no retries.
 /// Dropping this future cancels local waiting; it cannot undo an operation's external effects.
+#[allow(dead_code)] // The policy-only entry point is also used by embedded callers.
 pub async fn retry<T, E, F, Fut, Decide>(
   policy: &RetryPolicy,
-  mut attempt: F,
-  mut decide: Decide,
+  attempt: F,
+  decide: Decide,
 ) -> Result<T, E>
 where
   F: FnMut(u32) -> Fut,
   Fut: Future<Output = Result<T, E>>,
   Decide: FnMut(&E) -> RetryDecision,
+{
+  retry_observed(policy, attempt, decide, |_| {}).await
+}
+
+/// Observes the wait before, and start of, each retry. Dropping the future cancels the wait.
+pub async fn retry_observed<T, E, F, Fut, Decide, Observe>(
+  policy: &RetryPolicy,
+  mut attempt: F,
+  mut decide: Decide,
+  mut observe: Observe,
+) -> Result<T, E>
+where
+  F: FnMut(u32) -> Fut,
+  Fut: Future<Output = Result<T, E>>,
+  Decide: FnMut(&E) -> RetryDecision,
+  Observe: FnMut(RetryEvent<'_, E>),
 {
   let mut number = 1;
   loop {
@@ -92,7 +102,14 @@ where
           return Err(error);
         };
         let delay = policy.calculate_backoff_ms(number, minimum_delay_ms);
+        observe(RetryEvent::Waiting {
+          retry: number,
+          max_retries: policy.max_attempts.saturating_sub(1),
+          delay_ms: delay,
+          error: &error,
+        });
         tokio::time::sleep(Duration::from_millis(delay)).await;
+        observe(RetryEvent::Attempting { retry: number });
         number += 1;
       }
     }

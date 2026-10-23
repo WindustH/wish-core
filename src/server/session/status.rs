@@ -70,6 +70,16 @@ pub struct StatusView {
 }
 
 impl SessionSlot {
+  /// Retry progress is transient and snapshot-backed, never added to model context/history.
+  pub fn retry_observer(&self) -> crate::client::RetryObserver {
+    let (live, events) = (self.live.clone(), self.events.clone());
+    std::sync::Arc::new(move |status| {
+      let mut live = live.lock().unwrap();
+      live.observe_retry(status);
+      let _ =
+        events.send(json!({"type":"upstream_retry", "retry":status, "revision":live.revision}));
+    })
+  }
   /// Reads the status afresh from the session, which no operation holds.
   pub fn refresh_status(&self, session: &Session) {
     *self.status.lock().unwrap() = SessionStatus::read(session);

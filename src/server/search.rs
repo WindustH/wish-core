@@ -7,6 +7,10 @@
 //! when one fails - its quota spent, its key refused, its service down - the next is asked, and a
 //! search fails only when every one has.
 
+use crate::client::{
+  RetryObserver, RetryOperation,
+  retry::{classify_read_retry, retry_upstream},
+};
 use crate::protocol::endpoint::Credentials;
 use crate::protocol::web_search::{SearchProtocol, SearchQuery, SearchResults};
 use crate::server::{
@@ -16,6 +20,7 @@ use crate::server::{
   provider::{ProviderConfig, Providers, WISH_USER_AGENT, read_secret},
 };
 use crate::transport::ReqwestTransport;
+use crate::utils::retry::RetryPolicy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -24,7 +29,7 @@ use std::{
   time::{Duration, Instant},
 };
 
-/// How long one provider has to answer before the next is asked.
+/// How long each physical attempt has to answer; retries have their own waits.
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -229,6 +234,7 @@ impl SearchHub {
     &self,
     providers: &Providers,
     query: &SearchQuery,
+    observer: Option<RetryObserver>,
   ) -> Result<Found, Vec<String>> {
     let state = self.get_state();
     let mut failures = Vec::new();
@@ -237,7 +243,7 @@ impl SearchHub {
       if !built.config.enabled {
         continue;
       }
-      match search_with(built, providers, query).await {
+      match search_with(built, providers, query, observer.clone()).await {
         Ok(results) => {
           return Ok(Found {
             provider: id.clone(),
@@ -260,7 +266,8 @@ impl SearchHub {
     let built = state.providers.get(id).ok_or_else(ApiError::not_found)?;
     let query = SearchQuery { query: "Wish".to_owned(), limit: 5, ..Default::default() };
     let started = Instant::now();
-    let results = search_with(built, providers, &query).await.map_err(ApiError::bad_request)?;
+    let results =
+      search_with(built, providers, &query, None).await.map_err(ApiError::bad_request)?;
     Ok(json!({
       "results": results.results,
       "warnings": results.warnings,
@@ -347,59 +354,64 @@ async fn search_with(
   built: &Built,
   providers: &Providers,
   query: &SearchQuery,
+  observer: Option<RetryObserver>,
 ) -> Result<SearchResults, String> {
   usable(built, providers)?;
   let mut headers: Vec<(String, String)> =
     built.config.headers.iter().map(|(name, value)| (name.clone(), value.clone())).collect();
-  let attempt = async {
-    match &built.account {
-      Account::Borrowed(lender) => {
-        let model = providers.get(lender).ok_or("its model provider is gone")?;
-        // A service beside the model API shares its base URL; one on a regional host follows the
-        // region of the lending provider's preset.
-        let base_url = built.config.base_url.clone().filter(|url| !url.is_empty()).or_else(|| {
-          model
-            .config
-            .preset
-            .as_deref()
-            .and_then(|preset| built.preset["base_url_by_lender"][preset].as_str())
-            .map(str::to_owned)
-            .or_else(|| {
-              (built.preset["base_url_from_provider"] == true)
-                .then(|| model.config.base_url.clone())
-            })
-        });
-        if let Some(agent) = model.get_user_agent() {
-          headers.push(("user-agent".to_owned(), agent));
-        }
+  match &built.account {
+    Account::Borrowed(lender) => {
+      let model = providers.get(lender).ok_or("its model provider is gone")?;
+      // A service beside the model API shares its base URL; one on a regional host follows the
+      // region of the lending provider's preset.
+      let base_url = built.config.base_url.clone().filter(|url| !url.is_empty()).or_else(|| {
         model
-          .client
-          .search(built.protocol, query, base_url.as_deref(), &headers)
-          .await
-          .map_err(|error| error.to_string())
+          .config
+          .preset
+          .as_deref()
+          .and_then(|preset| built.preset["base_url_by_lender"][preset].as_str())
+          .map(str::to_owned)
+          .or_else(|| {
+            (built.preset["base_url_from_provider"] == true).then(|| model.config.base_url.clone())
+          })
+      });
+      if let Some(agent) = model.get_user_agent() {
+        headers.push(("user-agent".to_owned(), agent));
       }
-      Account::Own(own) => {
-        let OwnAccount { transport, credentials } = own.as_ref();
-        let base_url = built.config.base_url.as_deref().filter(|url| !url.is_empty());
-        if crate::protocol::attempt::find_header(&headers, "user-agent").is_none() {
-          headers.push(("user-agent".to_owned(), WISH_USER_AGENT.to_owned()));
-        }
-        let now = crate::utils::time::unix_seconds();
-        crate::protocol::web_search::search(
-          transport,
-          built.protocol,
-          credentials,
-          base_url,
-          &headers,
-          query,
-          now,
-        )
+      let mut client = model.client.clone();
+      if let Some(observer) = observer {
+        client = client.with_retry_observer(observer);
+      }
+      client
+        .search(built.protocol, query, base_url.as_deref(), &headers)
         .await
         .map_err(|error| error.to_string())
-      }
     }
-  };
-  tokio::time::timeout(TIMEOUT, attempt)
-    .await
-    .unwrap_or_else(|_| Err(format!("no answer within {} seconds", TIMEOUT.as_secs())))
+    Account::Own(own) => {
+      let OwnAccount { transport, credentials } = own.as_ref();
+      let base_url = built.config.base_url.as_deref().filter(|url| !url.is_empty());
+      if crate::protocol::attempt::find_header(&headers, "user-agent").is_none() {
+        headers.push(("user-agent".to_owned(), WISH_USER_AGENT.to_owned()));
+      }
+      retry_upstream(
+        &RetryPolicy::auxiliary(),
+        RetryOperation::WebSearch,
+        observer,
+        |_| {
+          crate::protocol::web_search::search(
+            transport,
+            built.protocol,
+            credentials,
+            base_url,
+            &headers,
+            query,
+            crate::utils::time::unix_seconds(),
+          )
+        },
+        classify_read_retry,
+      )
+      .await
+      .map_err(|error| error.to_string())
+    }
+  }
 }

@@ -149,7 +149,8 @@ impl SessionSlot {
       provider.id.clone(),
       Some(session_id.clone()),
     )
-    .with_session_id(session_id);
+    .with_session_id(session_id)
+    .with_retry_observer(self.retry_observer());
     SessionModel::new(provider, self.image_dir.clone(), client)
   }
   /// Stages a selection while an operation runs. Only the model, reasoning and output limit may

@@ -1201,12 +1201,23 @@ IDs, and anything missed is recovered by reading state again.
 
 | `type` | Payload | Meaning |
 | --- | --- | --- |
-| `snapshot` | `data: {session, status}`, `live_events`, `revision` | Sent first, and again whenever the subscriber falls behind. `live_events` rebuilds the output of the current turn so far; replace any preview with it |
+| `snapshot` | `data: {session, status}`, `live_events`, `retries`, `server_time`, `revision` | Sent first, and again whenever the subscriber falls behind. Replace the current output preview and outstanding retries with this snapshot |
+| `upstream_retry` | `retry`, `revision` | A retry is waiting, starting, or finished; replace/remove the progress identified by `retry.request_id` |
 | `session_event` | `event`, `revision` | One engine event: state changes, streamed text, reasoning and tool-call deltas, tool starts, accepted responses, compaction progress |
 | `history_changed` | | History was written beside any run: the session noted a message it sent to a group. Read the timeline again |
 | `operation_finished` | `outcome` | A run or compaction ended: `"Completed"`, `"Interrupted"`, `"ToolOutcomeUnknown"`, `{"Failed": error}`, `{"ModelStopped": {"stop_reason"}}` or `{"StreamFailed": {"reason"}}` |
 | `operation_failed` | `error` | The operation could not complete because of a server-side error |
 | `deleted` | | The session was deleted. The stream ends after this record |
+
+Each retry progress object carries `request_id`, `operation` (`model`, `compaction`,
+`token_count`, `model_list`, `account_state` or `web_search`), `phase` (`waiting`,
+`attempting` or `finished`), `retry`, `max_retries`, `delay_ms`, `observed_at`,
+`retry_at` and the original `error`. `retry` counts retries after the original
+attempt. Remove an object when its phase is `finished`, including cancellation.
+Snapshot `retries` contains all currently waiting/attempting requests. Compute
+remaining wait from `retry_at - server_time` for snapshots, or
+`retry_at - observed_at` for live updates; all timestamps are Unix milliseconds.
+Retry progress is transient and does not appear in permanent history.
 
 Streamed deltas are not stored. After a reconnect, the `snapshot` restores the
 current turn, and [history](#history-and-records) holds everything accepted.

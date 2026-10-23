@@ -1,4 +1,5 @@
 //! Coalesced current-turn preview. No token/chunk log, and no disk persistence.
+use crate::client::{RetryPhase, RetryStatus};
 use crate::{protocol::StreamEvent, session::SessionEvent};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -8,10 +9,20 @@ pub(super) struct LivePreview {
   pub revision: u64,
   events: Vec<Value>,
   positions: HashMap<String, usize>,
+  retries: HashMap<String, RetryStatus>,
 }
 impl LivePreview {
   pub fn snapshot(&self, data: Value) -> Value {
-    json!({"type":"snapshot", "data":data, "revision":self.revision, "live_events":self.events})
+    json!({"type":"snapshot", "data":data, "revision":self.revision, "live_events":self.events,
+      "retries":self.retries.values().collect::<Vec<_>>(), "server_time":crate::utils::time::Timestamp::now().0})
+  }
+  pub fn observe_retry(&mut self, status: &RetryStatus) {
+    self.revision += 1;
+    if status.phase == RetryPhase::Finished {
+      self.retries.remove(&status.request_id);
+    } else {
+      self.retries.insert(status.request_id.clone(), status.clone());
+    }
   }
   fn clear(&mut self) {
     self.events.clear();

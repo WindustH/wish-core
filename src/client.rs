@@ -12,9 +12,11 @@
 //! and its first event, so a streamed call is only replaced until that event is in hand - after
 //! that a replay would splice a second copy of the answer into what the caller has already seen.
 mod observer;
+pub(crate) mod retry;
 mod stream;
 
 pub use observer::{AttemptObserver, AttemptObserverFactory};
+pub use retry::{RetryObserver, RetryOperation, RetryPhase, RetryStatus};
 pub use stream::EventStream;
 
 use serde_json::Value;
@@ -33,8 +35,9 @@ use crate::protocol::{
   UpstreamCompaction, UpstreamCompactionRequest, http_error, model_use::mode::ResponsesDeployment,
 };
 use crate::transport::{Framing, RecordStream};
-use crate::utils::retry::{RetryDecision, RetryPolicy, retry};
+use crate::utils::retry::{RetryDecision, RetryPolicy};
 use crate::utils::time::unix_seconds;
+use retry::{classify_read_retry, retry_upstream};
 
 /// Request identifiers used by the official coding client for this provider preset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +60,9 @@ pub struct Client<T> {
   endpoint: Endpoint,
   credentials: Credentials,
   transport: T,
-  retry: RetryPolicy,
+  model_retry: RetryPolicy,
+  auxiliary_retry: RetryPolicy,
+  retry_observer: Option<RetryObserver>,
   account_state: Option<AccountStateProtocol>,
   upstream_compaction: Option<UpstreamCompactionProtocol>,
   model_list: Option<ModelListProtocol>,
@@ -65,6 +70,18 @@ pub struct Client<T> {
 }
 
 impl<T: Transport> Client<T> {
+  pub fn with_retry_observer(mut self, observer: RetryObserver) -> Self {
+    self.retry_observer = Some(observer);
+    self
+  }
+
+  /// Override policies for an embedded caller; the server uses the model/auxiliary defaults.
+  #[allow(dead_code)] // Embedded callers in wish-test override waits without changing budgets.
+  pub fn with_retry_policies(mut self, model: RetryPolicy, auxiliary: RetryPolicy) -> Self {
+    self.model_retry = model;
+    self.auxiliary_retry = auxiliary;
+    self
+  }
   /// Observe every physical stream attempt, including retries and streamed compaction.
   pub fn with_attempt_observer(mut self, observer: AttemptObserverFactory) -> Self {
     self.attempt_observer = Some(observer);
@@ -76,7 +93,7 @@ impl<T: Transport> Client<T> {
 
   /// Builds a client from its required axes: the protocol to speak, the endpoint it is aimed at,
   /// and the transport to send by. Credentials and the read protocols each have a builder of their
-  /// own; every call is retried by the default [`RetryPolicy`].
+  /// own; generation/compaction and auxiliary reads have separate retry policies.
   pub fn new(model_use: ModelUseProtocol, endpoint: Endpoint, transport: T) -> Self {
     Self {
       attempt_observer: None,
@@ -85,7 +102,9 @@ impl<T: Transport> Client<T> {
       endpoint,
       credentials: Credentials::default(),
       transport,
-      retry: RetryPolicy::default(),
+      model_retry: RetryPolicy::model(),
+      auxiliary_retry: RetryPolicy::auxiliary(),
+      retry_observer: None,
       account_state: None,
       upstream_compaction: None,
       model_list: None,
@@ -199,7 +218,14 @@ impl<T: Transport> Client<T> {
         "no token-count protocol configured",
       )
     })?;
-    retry(&self.retry, |_| self.attempt_token_count(protocol, request), classify_retry).await
+    retry_upstream(
+      &self.auxiliary_retry,
+      RetryOperation::TokenCount,
+      self.retry_observer.clone(),
+      |_| self.attempt_token_count(protocol, request),
+      classify_read_retry,
+    )
+    .await
   }
 
   async fn attempt_token_count(
@@ -272,13 +298,25 @@ impl<T: Transport> Client<T> {
     request: &Request,
   ) -> Result<CallResponse<EventStream<T::Stream>>, Error> {
     if request.stream {
-      retry(&self.retry, |_| self.attempt_streamed_call(request), classify_retry)
-        .await
-        .map(CallResponse::Stream)
+      retry_upstream(
+        &self.model_retry,
+        RetryOperation::Model,
+        self.retry_observer.clone(),
+        |_| self.attempt_streamed_call(request),
+        classify_retry,
+      )
+      .await
+      .map(CallResponse::Stream)
     } else {
-      retry(&self.retry, |_| self.attempt_buffered_call(request), classify_retry)
-        .await
-        .map(|response| CallResponse::Complete(Box::new(response)))
+      retry_upstream(
+        &self.model_retry,
+        RetryOperation::Model,
+        self.retry_observer.clone(),
+        |_| self.attempt_buffered_call(request),
+        classify_retry,
+      )
+      .await
+      .map(|response| CallResponse::Complete(Box::new(response)))
     }
   }
 
@@ -297,7 +335,14 @@ impl<T: Transport> Client<T> {
     &self,
     request: &UpstreamCompactionRequest,
   ) -> Result<UpstreamCompaction, Error> {
-    retry(&self.retry, |_| self.attempt_upstream_compaction(request), classify_retry).await
+    retry_upstream(
+      &self.model_retry,
+      RetryOperation::Compaction,
+      self.retry_observer.clone(),
+      |_| self.attempt_upstream_compaction(request),
+      classify_retry,
+    )
+    .await
   }
 
   /// Reads one page of the model list this upstream serves, over the protocol named when the
@@ -316,8 +361,23 @@ impl<T: Transport> Client<T> {
       )
     })?;
     let headers = self.endpoint.get_headers();
-    model_list::fetch(&self.transport, protocol, query, headers, &self.credentials, unix_seconds())
-      .await
+    retry_upstream(
+      &self.auxiliary_retry,
+      RetryOperation::ModelList,
+      self.retry_observer.clone(),
+      |_| {
+        model_list::fetch(
+          &self.transport,
+          protocol,
+          query,
+          headers,
+          &self.credentials,
+          unix_seconds(),
+        )
+      },
+      classify_read_retry,
+    )
+    .await
   }
 
   /// Reads the account state this upstream reports, over the protocol named when the client was
@@ -337,13 +397,21 @@ impl<T: Transport> Client<T> {
       )
     })?;
     let headers = self.endpoint.get_headers();
-    account_state::fetch(
-      &self.transport,
-      protocol,
-      &self.credentials,
-      base_url,
-      headers,
-      unix_seconds(),
+    retry_upstream(
+      &self.auxiliary_retry,
+      RetryOperation::AccountState,
+      self.retry_observer.clone(),
+      |_| {
+        account_state::fetch(
+          &self.transport,
+          protocol,
+          &self.credentials,
+          base_url,
+          headers,
+          unix_seconds(),
+        )
+      },
+      classify_read_retry,
     )
     .await
   }
@@ -358,14 +426,32 @@ impl<T: Transport> Client<T> {
     base_url: Option<&str>,
     headers: &[(String, String)],
   ) -> Result<crate::protocol::web_search::SearchResults, Error> {
-    crate::protocol::web_search::search(
-      &self.transport,
-      protocol,
-      &self.credentials,
-      base_url,
-      headers,
-      query,
-      unix_seconds(),
+    retry_upstream(
+      &self.auxiliary_retry,
+      RetryOperation::WebSearch,
+      self.retry_observer.clone(),
+      |_| async {
+        tokio::time::timeout(
+          std::time::Duration::from_secs(60),
+          crate::protocol::web_search::search(
+            &self.transport,
+            protocol,
+            &self.credentials,
+            base_url,
+            headers,
+            query,
+            unix_seconds(),
+          ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+          Err(Error::Transport(crate::protocol::error::TransportFailure {
+            retryable: false,
+            message: "web search: no answer within 60 seconds".into(),
+          }))
+        })
+      },
+      classify_read_retry,
     )
     .await
   }

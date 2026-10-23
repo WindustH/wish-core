@@ -101,7 +101,7 @@ impl ReqwestTransport {
     let headers_deadline = (tokio::time::Instant::now() + limits.first_byte).min(total_deadline);
     match tokio::time::timeout_at(headers_deadline, self.build_request(call)?.send()).await {
       Ok(Ok(response)) => Ok((response, total_deadline)),
-      Ok(Err(error)) => Err(decode_request_error(&error)),
+      Ok(Err(error)) => Err(decode_request_error(&error, head_timeout)),
       Err(_) => Err(head_timeout("no response head within the first-byte limit".to_owned()).into()),
     }
   }
@@ -232,14 +232,15 @@ impl ReplyStream for ReqwestReplyStream {
 
 /// Maps a `reqwest` failure onto one attempt phase. The message is capped: an upstream must never
 /// be able to flood a log line with text of its own choosing.
-fn decode_request_error(error: &reqwest::Error) -> Error {
+fn decode_request_error(error: &reqwest::Error, head_error: fn(String) -> TransportError) -> Error {
   let message = cap_message(&error.to_string());
-  if error.is_connect() {
+  if error.is_builder() {
+    Error::Build(message)
+  } else if error.is_connect() {
     TransportError::Connect(message).into()
-  } else if error.is_timeout() {
-    TransportError::AwaitHeaders(message).into()
   } else {
-    TransportError::ReadBody(message).into()
+    // send() has not returned a head yet: preserve that phase for resets/timeouts too.
+    head_error(message).into()
   }
 }
 

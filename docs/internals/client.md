@@ -99,10 +99,10 @@ and returns the compacted conversation
 ([upstream-compaction](protocol/upstream-compaction.md)).
 
 `count_tokens(&request)` needs `with_token_count(TokenCountProtocol)`. It reuses the client's
-endpoint, credentials, transport and retry policy, and always sends a buffered count request
+endpoint, credentials and transport, uses the auxiliary retry policy, and sends a buffered count request
 ([token-count](protocol/token-count.md)).
 
-Two reads, each over its own protocol and each a single attempt without retry:
+Two reads, each over its own protocol and using the auxiliary retry policy:
 
 - `get_model_list(&ModelListQuery)`: one page of the upstream's models. The query names the host
   and path; auth comes from the protocol's source table
@@ -117,16 +117,18 @@ is read by `get_account_state`.
 
 ## Retry
 
-`utils::retry` owns `RetryPolicy` and a generic `retry(policy, attempt, decide)` loop. The client
-supplies the decision: `Error::is_retryable` ([error](protocol/error.md)), mapped by
-`classify_retry`. Nothing in the executor retries, and model retries never repeat tool side
+`utils::retry` owns `RetryPolicy` and generic `retry` / `retry_observed` loops. The client
+supplies the decision: model calls use `Error::is_retryable` ([error](protocol/error.md)), mapped by
+`classify_retry`; read-only auxiliary requests also retry transport failures after sending.
+Nothing in the executor retries, and model retries never repeat tool side
 effects.
 
-| Lane | Loop | What is replaced |
+| Lane | Policy | What is replaced |
 | --- | --- | --- |
-| buffered `call`, `count_tokens`, `compact_upstream` | `utils::retry::retry` | the whole attempt |
-| streamed `call` | `utils::retry::retry` | the attempt: the opening and its first event |
-| `get_model_list`, `get_account_state`, `search`, Codex and Copilot token exchanges | none | nothing: one attempt |
+| buffered `call`, `compact_upstream` | model | the whole attempt |
+| streamed `call` | model | the attempt: the opening and its first event |
+| `count_tokens`, `get_model_list`, `get_account_state`, `search` | auxiliary | the whole read/search attempt |
+| Codex and Copilot token exchanges | none | nothing: one attempt |
 
 A streamed attempt reads its first event before the stream is handed over. Until then a retryable
 failure replaces the attempt. After that, failures are terminal, because a replay would splice a
@@ -134,9 +136,20 @@ second copy of the answer into what the caller has seen. Streamed Codex compacti
 exception: it replaces the whole attempt, since nothing reaches the caller before the compaction
 item does.
 
-Every client retries by `RetryPolicy::default()`: 3 attempts, 500 ms initial delay, ×2 per
-attempt, 30 s cap, full jitter. An upstream `Retry-After` (delta-seconds or HTTP date, capped at
-1 h) is a floor on the delay.
+Model calls use `RetryPolicy::model()`: at most five retries after the original attempt, waiting
+`5n` seconds plus a uniformly sampled additive jitter in `[0, n)` seconds before retry `n`.
+The five wait ranges are 5–6, 10–12, 15–18, 20–24 and 25–30 seconds. Auxiliary calls use
+`RetryPolicy::auxiliary()` (also `default()`): at most three retries after the original,
+each waiting 2 seconds plus jitter in `[0, 1)` seconds. An upstream `Retry-After`
+(delta-seconds or HTTP date, capped at 1 h) remains a floor on the delay.
+
+`with_retry_observer` reports each scheduled wait and each retry's start, with a request id,
+operation, retry number/budget, failure and absolute server timestamps. Its final `finished`
+notification also runs when the request is cancelled. The server forwards this as `upstream_retry`
+and keeps outstanding retries in live snapshots, so a reconnected web client restores its
+countdown. Progress is transient: it never enters the model context or permanent message history.
+Both own-key and borrowed-account web searches use the auxiliary policy, with a 60-second
+limit per attempt rather than one timeout around all retries.
 
 ## Limits and the stream-head retry
 
@@ -156,6 +169,9 @@ to 30 minutes. A stream's total deadline restarts when its head arrives. `Proxy`
 `Disabled` or `Manual{url, basic_auth}`.
 
 Which transport failures retry:
+
+The following table describes model calls. Read-only auxiliary operations can retry all four
+transport phases, since replaying a read does not repeat generation.
 
 | Phase | Retryable | Why |
 | --- | --- | --- |

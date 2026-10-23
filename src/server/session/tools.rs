@@ -228,10 +228,12 @@ impl SessionTools {
 /// Searches with the application's search providers as they stand at the moment of the search.
 fn search_backend(slot: Weak<SessionSlot>) -> SearchBackend {
   Arc::new(move |query| {
-    let app = slot.upgrade().and_then(|slot| slot.app.upgrade());
+    let owner = slot.upgrade();
+    let app = owner.as_ref().and_then(|slot| slot.app.upgrade());
+    let observer = owner.map(|slot| slot.retry_observer());
     Box::pin(async move {
       let app = app.ok_or_else(|| vec!["the server is shutting down".to_owned()])?;
-      let found = app.search.search(&app.get_providers(), &query).await?;
+      let found = app.search.search(&app.get_providers(), &query, observer).await?;
       Ok(Answer { provider: found.provider, name: found.name, results: found.results })
     })
   })

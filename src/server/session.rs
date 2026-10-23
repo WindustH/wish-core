@@ -123,7 +123,7 @@ pub struct SessionSlot {
   app: Weak<App>,
   /// This session's live events, for `GET /sessions/{id}/events`.
   pub events: broadcast::Sender<Value>,
-  live: Mutex<live::LivePreview>,
+  live: Arc<Mutex<live::LivePreview>>,
   status: Mutex<SessionStatus>,
   /// The running operation's, while one runs.
   control: Mutex<Option<ExecutionControl>>,
@@ -171,7 +171,7 @@ impl SessionSlot {
       tasks: app.lifecycle.tasks.clone(),
       app: Arc::downgrade(app),
       events,
-      live: Mutex::new(live::LivePreview::default()),
+      live: Arc::new(Mutex::new(live::LivePreview::default())),
       status,
       control: Mutex::new(None),
     });

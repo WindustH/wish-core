@@ -12,7 +12,8 @@ ModelListPage ◀── parse_page() ◀── model_list/<dialect>.rs ◀──
 ```
 
 `Client::get_model_list(&ModelListQuery)` calls `fetch` ([client](../client.md#calls)). It makes one
-GET with no retry. A non-`2xx` body is decoded by `http_error::decode_provider_envelope`.
+GET per attempt; the client applies its auxiliary retry policy. A non-`2xx` body is decoded by
+`http_error::decode_provider_envelope`.
 
 ## Protocols
 
