@@ -18,6 +18,7 @@
   "defaults": {
     "provider": "openai",
     "model": "YOUR_MODEL_ID",
+    "run": {"tools": "Parallel"},
     "compaction": {"trigger_tokens": 200000, "target_tokens": 80000, "segment_tokens": 20000}
   }
 }

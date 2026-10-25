@@ -4,7 +4,7 @@ use crate::server::{
   error::ApiError, mcp::McpConfig, provider::ProviderConfig, search::SearchConfig,
   session::ToolSwitches,
 };
-use crate::session::{CompactionConfig, SessionConfig};
+use crate::session::{CompactionConfig, RunOptions, SessionConfig};
 use crate::tool::shell::{self, ShellCommand};
 use crate::transport::Proxy;
 use serde::{Deserialize, Serialize};
@@ -199,6 +199,8 @@ pub struct Defaults {
   /// The tools new sessions start with.
   pub tools: ToolSwitches,
   pub stream: bool,
+  /// Execution policy copied into new sessions.
+  pub run: RunOptions,
   pub instructions: String,
   pub reasoning: Option<crate::protocol::ReasoningConfig>,
   pub max_output_tokens: Option<u64>,
@@ -219,6 +221,7 @@ impl Default for Defaults {
         sessions: true,
       },
       stream: true,
+      run: RunOptions::default(),
       instructions: String::new(),
       reasoning: None,
       max_output_tokens: None,
@@ -230,6 +233,7 @@ impl Defaults {
   pub fn session_config(&self) -> SessionConfig {
     let mut config = SessionConfig::new(&self.model);
     config.stream = self.stream;
+    config.run = self.run;
     config.reasoning = self.reasoning.clone();
     config.max_output_tokens = self.max_output_tokens;
     config.compaction = self.compaction.clone();
@@ -253,5 +257,26 @@ impl Default for Config {
       usage: UsageConfig::default(),
       defaults: Defaults::default(),
     }
+  }
+}
+
+#[cfg(test)]
+mod execution_defaults_tests {
+  use super::*;
+  use crate::session::ToolMode;
+
+  #[test]
+  fn old_config_defaults_to_parallel_and_explicit_serial_survives_roundtrip() {
+    let defaults: Defaults = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert!(matches!(defaults.session_config().run.tools, ToolMode::Parallel));
+    let defaults: Defaults =
+      serde_json::from_value(serde_json::json!({"run":{"tools":"Serial"}})).unwrap();
+    let encoded = serde_json::to_value(&defaults).unwrap();
+    let restored: Defaults = serde_json::from_value(encoded).unwrap();
+    assert!(matches!(restored.session_config().run.tools, ToolMode::Serial));
+    let config = restored.session_config();
+    let restored: SessionConfig =
+      serde_json::from_value(serde_json::to_value(config).unwrap()).unwrap();
+    assert!(matches!(restored.run.tools, ToolMode::Serial));
   }
 }

@@ -87,6 +87,10 @@ cp -r ../wish-web/dist target/release/web
 ./target/release/wish
 ```
 
+New sessions run tool calls from the same model response in parallel by default. Set
+`defaults.run.tools` to `"Serial"` for sequential defaults, or change `config.run.tools`
+for an individual session. Existing sessions retain their saved execution mode.
+
 ### Without the web app
 
 Everything the web app does is available over the [HTTP API](docs/api.md):
@@ -95,7 +99,7 @@ Everything the web app does is available over the [HTTP API](docs/api.md):
 # Create a session with shell access in /tmp
 curl -s http://127.0.0.1:8790/api/sessions -H 'Content-Type: application/json' -d '{
   "provider": "openai", "cwd": "/tmp", "tools": {"shell": true},
-  "config": {"model": "gpt-5", "stream": true, "tools": [], "run": {"tools": "Serial"}}}'
+  "config": {"model": "gpt-5", "stream": true, "tools": [], "run": {"tools": "Parallel"}}}'
 
 # Send it a message; it starts working right away
 curl -s http://127.0.0.1:8790/api/sessions/SESSION_ID/input \

@@ -7,8 +7,8 @@ use serde_json::Value;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default)]
 pub enum ToolMode {
-  #[default]
   Serial,
+  #[default]
   Parallel,
 }
 
