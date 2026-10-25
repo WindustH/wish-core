@@ -151,6 +151,7 @@ engine error, for example
 | POST | `/api/sessions/{id}/interrupt` | Request cancellation |
 | POST | `/api/sessions/{id}/compact` | Compact the context now |
 | POST | `/api/sessions/{id}/context/clear` | Start an empty context |
+| GET | `/api/sessions/{id}/context/inspect` | Inspect the projected current context without calling the model |
 | PATCH, DELETE | `/api/sessions/{id}/queue/{entry}` | Reorder or cancel queued input |
 | POST | `/api/sessions/{id}/answer` | Answer or skip an `ask_user` form |
 | GET | `/api/mcp/servers` | Configured MCP servers and what is known of them |
@@ -746,6 +747,21 @@ Compacts the context now instead of waiting for `trigger_tokens`. Returns
 `202 {"accepted": true}`, `400` if the session has no `compaction`
 configuration, `409` while running. See [compaction](internals/compaction.md)
 for what happens.
+
+### `GET /api/sessions/{id}/context/inspect`
+
+Returns `{ provider, captured_at, request }`. `request` uses the normalized model request
+shape: current committed conversation, installed tool definitions and model settings.
+The application applies its complete agent instructions, compaction handoff projection and
+configured image capabilities, as it does before a model call. Image blocks carry
+`image_blob_id` and `byte_count` in place of inline image bytes (the `data_base64` field
+contains a display placeholder); this inspection response must not be replayed as a request.
+
+This endpoint does not call the upstream or modify history. Queued inputs and unfinished
+tool batches are excluded. It is a preview under current settings, not a historical wire
+request: provider serialization, temporary continuation prompts, and a running caller's
+image-rejection fallback are not represented. Use the history query and record endpoints
+to inspect original recorded messages and events, including older context generations.
 
 ### `POST /api/sessions/{id}/context/clear`
 
