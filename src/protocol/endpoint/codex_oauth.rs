@@ -187,3 +187,33 @@ fn decode_base64url(encoded: &str) -> Option<Vec<u8>> {
   }
   Some(bytes)
 }
+
+/// Builds the browser authorization request; the caller owns state and the local callback.
+pub fn authorization_url(
+  issuer: &str,
+  redirect_uri: &str,
+  state: &str,
+  verifier: &str,
+) -> Result<reqwest::Url, Error> {
+  use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+  use sha2::{Digest, Sha256};
+  let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+  let mut url = reqwest::Url::parse(&format!("{issuer}/oauth/authorize"))
+    .map_err(|error| Error::Build(error.to_string()))?;
+  url
+    .query_pairs_mut()
+    .append_pair("response_type", "code")
+    .append_pair("client_id", CLIENT_ID)
+    .append_pair("redirect_uri", redirect_uri)
+    .append_pair(
+      "scope",
+      "openid profile email offline_access api.connectors.read api.connectors.invoke",
+    )
+    .append_pair("code_challenge", &challenge)
+    .append_pair("code_challenge_method", "S256")
+    .append_pair("state", state)
+    .append_pair("id_token_add_organizations", "true")
+    .append_pair("codex_cli_simplified_flow", "true")
+    .append_pair("originator", "codex_cli_rs");
+  Ok(url)
+}

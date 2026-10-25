@@ -103,7 +103,8 @@ DeepSeek, Z.AI, Jina and Codex adapters; `source.rs` owns endpoints and authenti
 `fetch.rs` performs one attempt using the supplied `Transport` and returns a `FetchResult`.
 It has no dependency on server configuration, account registries or snapshot files.
 
-`Client::fetch` supplies credentials and retry policy for shared-account calls.
-`server/fetch.rs` assembles configured services from `resources/fetch-presets.json`, selects
+`AccountClient::fetch` supplies credentials and retry policy for shared-account calls.
+`application/fetch.rs` assembles configured services from `resources/fetch-presets.json`, selects
 accounts and transports, and tries enabled providers in order. `tool/web_fetch.rs` exposes
-this operation to the agent and currently owns continuation snapshots and paging.
+this operation to the agent and owns continuation cursors and paging;
+`storage/snapshots.rs` persists the immutable page snapshots.

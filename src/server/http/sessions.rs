@@ -1,12 +1,12 @@
 //! Sessions over HTTP: the list, creating and reading one, its settings, running it, its live
 //! events, and pages of its stored lists - entries, queue, generations and model calls.
-use crate::server::{
+use crate::application::{
   app::App,
   config::ShellSettings,
-  error::{ApiError, blocking},
-  management::SessionQuery,
   session::{CreateSession, Operation, ToolChanges},
 };
+use crate::server::error::{ApiError, blocking};
+use crate::storage::management::SessionQuery;
 use crate::{
   protocol::Message,
   session::SessionConfig,
@@ -53,7 +53,7 @@ pub async fn list(
   Query(query): Query<SessionQuery>,
 ) -> Result<Json<Value>, ApiError> {
   let management = app.management.clone();
-  blocking(move || Ok(Json(management.list(query)?))).await
+  blocking(move || Ok(Json(project_list(management.list(query)?)))).await
 }
 /// What a user browses: sessions and groups, newest first.
 pub async fn conversations(
@@ -61,7 +61,7 @@ pub async fn conversations(
   Query(query): Query<SessionQuery>,
 ) -> Result<Json<Value>, ApiError> {
   let management = app.management.clone();
-  blocking(move || Ok(Json(management.conversations(query)?))).await
+  blocking(move || Ok(Json(project_list(management.conversations(query)?)))).await
 }
 pub async fn create(
   State(app): State<Arc<App>>,
@@ -98,7 +98,7 @@ pub async fn set_config(
   let mut session = slot.lock_idle_or_conflict().await?;
   blocking(move || {
     slot.require_live()?;
-    crate::server::session_model::persist_agent_instructions(&mut session, config)?;
+    crate::application::instructions::persist_agent_instructions(&mut session, config)?;
     Ok(Json(slot.publish(&session)?))
   })
   .await
@@ -120,7 +120,7 @@ pub async fn set_tools(
   config.tools.clear();
   let config = slot.configure_tools(config)?;
   blocking(move || {
-    crate::server::session_model::persist_agent_instructions(&mut session, config)?;
+    crate::application::instructions::persist_agent_instructions(&mut session, config)?;
     Ok(Json(slot.publish(&session)?))
   })
   .await
@@ -373,10 +373,19 @@ pub async fn generation_structure(
     for entry in entries.items {
       let mut value = json!(entry);
       let mut image_view = json!({"conversation":[value["message"].clone()]});
-      crate::server::session_model::image_references(&mut image_view);
+      crate::application::session_model::image_references(&mut image_view);
       value["message"] = image_view["conversation"][0].take();
       items.push(value);
     }
     Ok(Json(json!({"generation":generation,"count":count,"positions":positions,"start":entries.start,"next":entries.next,"items":items})))
   }).await
+}
+
+fn project_list(mut page: Value) -> Value {
+  if let Some(items) = page["items"].as_array_mut() {
+    for record in items {
+      crate::application::session::preview_pending_selection(record);
+    }
+  }
+  page
 }

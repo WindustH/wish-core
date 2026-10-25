@@ -16,7 +16,7 @@ automatic trigger reads `last_request_input_tokens` from the most recent `Comple
 `Conversation` call of the active generation made with the configured model. It fires when that
 value is at least `trigger_tokens`. After a model switch or a cutover nothing triggers until such
 a call completes. Missing usage is not zero. The server reports the same number as a session's
-`context_tokens` status (`src/server/session/status.rs`).
+`context_tokens` status (`src/application/session/status.rs`).
 
 Other reasons: `ContextRejected` after an explicit context-length rejection
 ([executor](executor.md#run)), and `Manual` from `executor::compaction::compact`, which the server
@@ -69,7 +69,7 @@ response, account reading and warnings.
 
 ## Provider-switch handoff
 
-[`src/server/session/selection.rs`](../../src/server/session/selection.rs) (server-owned) applies a
+[`src/application/session/selection.rs`](../../src/application/session/selection.rs) (application-owned) applies a
 pending provider selection at a [run boundary](executor.md#run-boundaries).
 `executor::compaction::handoff` finds the items that need a handoff, makes the call and builds the
 new context; the server says which items need one and whether the provider switched from can read

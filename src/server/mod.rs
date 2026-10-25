@@ -1,55 +1,23 @@
-//! The Wish server: one process serving the HTTP API and the web app, driving sessions on the
-//! engine and calling providers.
-//!
-//! - `app` holds everything a request reaches, and the lifecycle from startup to shutdown;
-//! - `http` is the API; its handlers parse, check and answer, and leave the work to the rest;
-//! - `session` holds open sessions and runs them; `session_model` is the model a session calls;
-//! - `config` is the configuration file's schema, `config_file` the file as the server holds it;
-//! - `provider`, `search` and `mcp` are what a configuration builds: model providers, search
-//!   providers and MCP servers;
-//! - `groups` are chats among the user and several sessions, and `peers` is what a session sees
-//!   of other sessions and groups through `wish session`;
-//! - `management` is the index of sessions, model calls and stream samples (`sampling`), and
-//!   `data_dir` and `blobs` are the files beside it;
-//! - `web` hands out the web app beside the API and guards a server without a token;
-//!   `user_dirs` is where a start without `--config` finds its configuration.
+//! HTTP serving, authentication callbacks, web assets and process startup.
+//! Application use cases live in `application`; persistence lives in `storage`.
 
-mod accounts;
-mod app;
-mod blobs;
-mod bridge;
+use crate::application::{app, config};
+mod cli;
 mod codex_login;
-mod compaction_item;
-mod config;
-mod config_file;
 #[cfg(windows)]
 mod console;
 mod copilot_login;
-mod data_dir;
 mod error;
-mod fetch;
-mod groups;
 mod http;
-mod management;
-mod mcp;
-mod model_catalog;
-mod peers;
-mod presets;
-mod provider;
-mod sampling;
-mod search;
-mod session;
-mod session_model;
-mod skills;
 mod user_dirs;
 mod web;
 
 pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut args = std::env::args().skip(1);
   match std::env::args().nth(1).as_deref() {
-    Some("mcp") => std::process::exit(mcp::cli::run(args.skip(1).collect()).await),
-    Some("skill") => std::process::exit(skills::cli::run(args.skip(1).collect()).await),
-    Some("session") => std::process::exit(peers::cli::run(args.skip(1).collect()).await),
+    Some("mcp") => std::process::exit(cli::mcp::run(args.skip(1).collect()).await),
+    Some("skill") => std::process::exit(cli::skills::run(args.skip(1).collect()).await),
+    Some("session") => std::process::exit(cli::sessions::run(args.skip(1).collect()).await),
     _ => {}
   }
   // Named as it was started, for a link under another name.

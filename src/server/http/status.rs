@@ -1,9 +1,7 @@
 //! The service as a whole: its status counts, and the event stream that tells a client when the
 //! session list or the configuration changed.
-use crate::server::{
-  app::App,
-  error::{ApiError, blocking},
-};
+use crate::application::app::App;
+use crate::server::error::{ApiError, blocking};
 use crate::session::SessionPhase;
 use axum::{
   Json,
@@ -27,7 +25,7 @@ pub async fn status(State(app): State<Arc<App>>) -> Result<Json<Value>, ApiError
     pending += status.queue_count;
   }
   let management = app.management.clone();
-  let sessions = blocking(move || management.count()).await?;
+  let sessions = blocking(move || Ok(management.count()?)).await?;
   Ok(Json(json!({
     "counts": {"sessions": sessions, "runs": null},
     "queue": {

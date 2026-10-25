@@ -2,15 +2,15 @@
 //! `sessions` switch is enforced here and nowhere else, and so is what a session may do to
 //! another: see every session and group, message any session, and configure or delete only itself
 //! and the sessions it made.
-use super::{bridge, manage};
-use crate::protocol::{ContentBlock, Message};
-use crate::server::{
+use super::bridge;
+use crate::application::{
   app::App,
   config::Defaults,
-  error::ApiError,
   groups::{self, Author, GroupRecord, display_name},
   session::{CreateSession, Descriptor, SessionSlot, ToolChanges},
 };
+use crate::protocol::{ContentBlock, Message};
+use crate::server::error::ApiError;
 use axum::{
   Json,
   extract::{Path, State},
@@ -33,7 +33,11 @@ async fn me(app: &Arc<App>, id: &str, headers: &HeaderMap) -> Result<Arc<Session
   Ok(slot)
 }
 fn forbidden(message: &str) -> ApiError {
-  ApiError { status: StatusCode::FORBIDDEN, message: message.into(), details: None }
+  ApiError {
+    kind: crate::application::error::ErrorKind::Forbidden,
+    message: message.into(),
+    details: None,
+  }
 }
 /// Whether `me` may configure or delete `target`: itself, or a session it made.
 fn may_manage(me: &Descriptor, target: &Descriptor) -> bool {
@@ -325,10 +329,26 @@ pub async fn configure(
   }
   let mut shown = None;
   if !input.is_empty() {
-    shown = Some(manage::update(app.clone(), slot.clone(), None, Value::Object(input)).await?);
+    shown = Some(
+      crate::application::session_edit::update(
+        app.clone(),
+        slot.clone(),
+        None,
+        Value::Object(input),
+      )
+      .await?,
+    );
   }
   if let Some(name) = changes.name {
-    shown = Some(manage::update(app.clone(), slot.clone(), None, json!({"name": name})).await?);
+    shown = Some(
+      crate::application::session_edit::update(
+        app.clone(),
+        slot.clone(),
+        None,
+        json!({"name": name}),
+      )
+      .await?,
+    );
   }
   if let Some(instructions) = changes.instructions.filter(|text| !text.is_empty()) {
     let message = Message::System {
@@ -337,7 +357,7 @@ pub async fn configure(
     };
     slot.enqueue(message).await?;
   }
-  shown.ok_or_else(|| ApiError::bad_request("nothing to change"))
+  shown.map(Json).ok_or_else(|| ApiError::bad_request("nothing to change"))
 }
 /// Renames a group the asking session is in; a group has nothing else to configure.
 fn rename_group(
@@ -371,7 +391,7 @@ pub async fn delete(
   if !may_manage(&me.get_descriptor(), &descriptor) {
     return Err(forbidden("only a session you made can be deleted"));
   }
-  manage::delete(&app, &descriptor.id).await?;
+  crate::application::session_edit::delete(&app, &descriptor.id).await?;
   Ok(StatusCode::NO_CONTENT)
 }
 

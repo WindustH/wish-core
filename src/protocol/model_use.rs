@@ -56,7 +56,18 @@ pub enum ModelUseProtocol {
   MistralConversations,
 }
 
+pub mod catalog;
+pub mod identity;
+
 impl ModelUseProtocol {
+  /// A requested output limit in the form supported by this deployment.
+  pub fn output_token_limit(self, limit: u64) -> Option<u64> {
+    match self {
+      Self::OpenAiResponses(mode) if mode.deployment == mode::ResponsesDeployment::Codex => None,
+      _ => Some(limit),
+    }
+  }
+
   /// Headers this protocol needs besides `content-type` and auth.
   pub(crate) fn get_headers(self) -> &'static [(&'static str, &'static str)] {
     match self {

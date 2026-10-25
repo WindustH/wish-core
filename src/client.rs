@@ -11,6 +11,7 @@
 //! out and the whole attempt replaced while the policy allows it. A streamed attempt is the opening
 //! and its first event, so a streamed call is only replaced until that event is in hand - after
 //! that a replay would splice a second copy of the answer into what the caller has already seen.
+pub mod account;
 mod observer;
 pub(crate) mod retry;
 mod stream;
@@ -24,7 +25,7 @@ use serde_json::Value;
 use crate::executor::model::{CallResponse, ModelCaller};
 use crate::protocol::account_state::{self, AccountState, AccountStateProtocol};
 use crate::protocol::attempt::{Call, Reply, ReplyStream, Transport};
-use crate::protocol::endpoint::{AuthScheme, CredentialRenewal, Credentials, Draft, Endpoint};
+use crate::protocol::endpoint::{Credentials, Draft, Endpoint};
 use crate::protocol::error::Error;
 use crate::protocol::model_list::{self, ModelListPage, ModelListProtocol, ModelListQuery};
 use crate::protocol::model_use::ModelUseProtocol;
@@ -116,11 +117,6 @@ impl<T: Transport> Client<T> {
   #[must_use]
   pub fn with_code_agent_identity(mut self, identity: CodeAgentIdentity) -> Self {
     self.code_agent_identity = Some(identity);
-    self
-  }
-
-  pub fn with_transport(mut self, transport: T) -> Self {
-    self.transport = transport;
     self
   }
 
@@ -252,52 +248,8 @@ impl<T: Transport> Client<T> {
     self
   }
 
-  /// The API key or OAuth token the account is reached with, for a caller that reaches another
-  /// service of the same account by it.
-  #[must_use]
-  pub fn get_credentials(&self) -> &Credentials {
-    &self.credentials
-  }
-
   pub fn get_api_key(&self) -> &str {
     &self.credentials.api_key
-  }
-
-  /// Exchanges the credentials this client holds for fresh ones, over the transport this client
-  /// holds and by the renewal option the endpoint's bearer auth carries - every credential that
-  /// renews is an access token read from `Authorization` - and hands the renewed credentials back,
-  /// installed nowhere.
-  ///
-  /// What comes back is [`Credentials::renew`] over the exchange's answer: a new access token,
-  /// the rotated refresh token (kept, when the endpoint rotated nothing), the account and expiry
-  /// the exchange named, everything else as it was. Installing it - building the client again
-  /// with it - and storing what the exchange rotated stay with whoever holds the account state.
-  ///
-  /// # Errors
-  ///
-  /// [`Error::Unsupported`] when the endpoint's auth carries no renewal - a key or a signature
-  /// neither runs out nor exchanges - [`Error::Build`] when the credentials do not carry what
-  /// their exchange needs, and the rest as that exchange states them.
-  pub async fn refresh_credentials(&self) -> Result<Credentials, Error> {
-    match self.endpoint.get_auth() {
-      AuthScheme::Bearer(Some(CredentialRenewal::CodexOAuth)) => {
-        let tokens =
-          crate::protocol::endpoint::codex_oauth::refresh(&self.transport, &self.credentials)
-            .await?;
-        Ok(self.credentials.renew(&tokens))
-      }
-      AuthScheme::Bearer(Some(CredentialRenewal::CopilotToken)) => {
-        let tokens =
-          crate::protocol::endpoint::copilot_oauth::exchange(&self.transport, &self.credentials)
-            .await?;
-        Ok(self.credentials.renew(&tokens))
-      }
-      auth => Err(Error::build_unsupported(
-        "credential refresh",
-        auth.get_name(),
-        "carries no renewal: a key or a signature neither runs out nor exchanges",
-      )),
-    }
   }
 
   /// Sends a request in the response mode it declares. Buffered calls retry whole attempts;
@@ -428,6 +380,7 @@ impl<T: Transport> Client<T> {
   /// Searches the web as this client's account, for a search service that comes with the
   /// subscription it holds (see [`crate::protocol::web_search`]). The request goes out through
   /// this client's transport, with its current credentials, so a renewed token is used at once.
+  #[allow(dead_code)] // The standalone client retry contract is exercised by wish-test.
   pub async fn search(
     &self,
     protocol: crate::protocol::web_search::SearchProtocol,
@@ -457,45 +410,6 @@ impl<T: Transport> Client<T> {
           Err(Error::Transport(crate::protocol::error::TransportFailure {
             retryable: false,
             message: "web search: no answer within 60 seconds".into(),
-          }))
-        })
-      },
-      classify_read_retry,
-    )
-    .await
-  }
-
-  /// Reads a webpage with this client's account credentials (see [`crate::protocol::web_fetch`]). The request goes out through
-  /// this client's transport, with its current credentials, so a renewed token is used at once.
-  pub async fn fetch(
-    &self,
-    protocol: crate::protocol::web_fetch::FetchProtocol,
-    query: &crate::protocol::web_fetch::FetchRequest,
-    base_url: Option<&str>,
-    headers: &[(String, String)],
-  ) -> Result<crate::protocol::web_fetch::FetchResult, Error> {
-    retry_upstream(
-      &self.auxiliary_retry,
-      RetryOperation::WebFetch,
-      self.retry_observer.clone(),
-      |_| async {
-        tokio::time::timeout(
-          std::time::Duration::from_secs(60),
-          crate::protocol::web_fetch::fetch(
-            &self.transport,
-            protocol,
-            &self.credentials,
-            base_url,
-            headers,
-            query,
-            unix_seconds(),
-          ),
-        )
-        .await
-        .unwrap_or_else(|_| {
-          Err(Error::Transport(crate::protocol::error::TransportFailure {
-            retryable: false,
-            message: "web fetch: no answer within 60 seconds".into(),
           }))
         })
       },

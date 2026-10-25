@@ -1,7 +1,8 @@
 //! The settings page: the configuration file, redacted, and saving it; the defaults new sessions
 //! start from; and what this machine offers to choose from - its shells and the proxy variables
 //! the server runs with.
-use crate::server::{app::App, error::ApiError};
+use crate::application::app::App;
+use crate::server::error::ApiError;
 use crate::tool::shell::ShellCommand;
 use axum::{Json, extract::State};
 use serde::Deserialize;

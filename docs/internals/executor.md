@@ -95,7 +95,7 @@ how much of the history the observer has had, lets a long boundary publish its o
 it awaits I/O.
 
 The server's `SelectionBoundary` applies a pending provider/model selection at this point
-(server-owned: [`src/server/session/selection.rs`](../../src/server/session/selection.rs)),
+(application-owned: [`src/application/session/selection.rs`](../../src/application/session/selection.rs)),
 including the encrypted-compaction handoff that `executor::compaction::handoff` writes (see
 [compaction](compaction.md#provider-switch-handoff)).
 
@@ -106,8 +106,8 @@ runner refuses to repeat that work automatically. SIGKILL and power loss can los
 ([storage](storage.md)).
 
 The binary installs SIGINT/SIGTERM handlers (Ctrl-C only on Windows) and shuts down in this order
-(server-owned: [`src/server/mod.rs`](../../src/server/mod.rs),
-[`src/server/app.rs`](../../src/server/app.rs)):
+(application-owned: [`src/server/mod.rs`](../../src/server/mod.rs),
+[`src/application/app.rs`](../../src/application/app.rs)):
 
 ```text
 SIGINT / SIGTERM

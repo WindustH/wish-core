@@ -114,7 +114,8 @@ pub async fn guard(State(front): State<Arc<WebFront>>, request: Request, next: N
 }
 
 fn refuse(status: StatusCode, message: &str) -> Response {
-  ApiError { status, message: message.to_owned(), details: None }.into_response()
+  (status, axum::Json(serde_json::json!({"error":{"message":message,"details":null}})))
+    .into_response()
 }
 
 /// A file of the web app, or its page for a path that names no file. Anything under `/api` that no

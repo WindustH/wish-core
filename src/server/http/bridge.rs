@@ -2,7 +2,8 @@
 //! session's shell holds, and never the application's: a command a session runs can reach that
 //! session's MCP servers and skills and nothing else. Each feature's switch is checked by its own
 //! handlers.
-use crate::server::{app::App, error::ApiError, session::SessionSlot};
+use crate::application::{app::App, session::SessionSlot};
+use crate::server::error::ApiError;
 use axum::http::{HeaderMap, header::AUTHORIZATION};
 use std::sync::Arc;
 

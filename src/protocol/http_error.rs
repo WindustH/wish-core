@@ -182,3 +182,28 @@ pub(crate) fn read_provider_json(reply: Reply, label: &str) -> Result<Value, Err
   let reply = reply.require_success(decode_provider_envelope)?;
   decode_json_body(label, &reply.body)
 }
+
+/// Recognizes an upstream rejection of image input independently of application fallback policy.
+pub fn rejects_image_input(error: &Error) -> bool {
+  let Error::Upstream { status, code, message, .. } = error else {
+    return false;
+  };
+  if !matches!(status, None | Some(400) | Some(422)) {
+    return false;
+  }
+  let message = message.to_ascii_lowercase();
+  matches!(
+    code.as_deref(),
+    Some("image_input_not_supported" | "image_not_supported" | "vision_not_supported")
+  ) || [
+    "image input is not supported",
+    "image inputs are not supported",
+    "does not support image input",
+    "does not support images",
+    "image_url is only supported by certain models",
+  ]
+  .iter()
+  .any(|phrase| message.contains(phrase))
+    || (message.contains("messages.content.type")
+      && (message.contains("['text']") || message.contains("[\"text\"]")))
+}

@@ -1,5 +1,6 @@
 //! Wish's protocol, session engine and HTTP application in one executable.
 
+mod application;
 mod client;
 mod executor;
 mod mcp;

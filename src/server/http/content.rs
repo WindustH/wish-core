@@ -1,7 +1,9 @@
 //! Content from the page: blobs uploaded to a session or a group, and a session's user input - text
 //! with attachments - which is queued and wakes it.
-pub(crate) mod input;
-use crate::server::{app::App, blobs, error::ApiError};
+use crate::application::app::App;
+pub(crate) use crate::application::input;
+use crate::server::error::ApiError;
+use crate::storage::blobs;
 use axum::{
   Json,
   body::Bytes,

@@ -1,12 +1,12 @@
 //! Skills over HTTP: what `wish skill` asks through the bridge, and the settings page's view of
 //! them. A session's skills switch is enforced here and nowhere else.
 use super::bridge;
-use crate::server::{
+use crate::application::{
   app::App,
   config::SkillsConfig,
-  error::{ApiError, blocking},
   skills::{self, Root, Skill},
 };
+use crate::server::error::{ApiError, blocking};
 use axum::{
   Json,
   extract::{Path, Query, State},

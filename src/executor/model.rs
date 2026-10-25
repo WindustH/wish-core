@@ -3,6 +3,8 @@
 mod caller;
 mod continuation;
 mod execute;
+pub mod images;
+pub mod stateless;
 
 pub use caller::{CallResponse, ModelCaller, ModelStream};
 pub(super) use execute::{ModelResult, execute_model};

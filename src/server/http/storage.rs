@@ -4,11 +4,11 @@
 mod prune;
 pub use prune::prune;
 
-use crate::server::{
+use crate::application::{
   app::App,
   data_dir::{size, with_suffix},
-  error::{ApiError, blocking},
 };
+use crate::server::error::{ApiError, blocking};
 use crate::storage::DatabaseShape;
 use axum::{Json, extract::State};
 use serde_json::{Value, json};

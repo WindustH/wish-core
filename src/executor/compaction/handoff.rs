@@ -15,11 +15,7 @@ use crate::{
   },
   protocol::{
     ContentBlock, Message, Request, Response, StopReason, StreamEvent, Usage,
-    model_use::{
-      ModelUseProtocol,
-      mode::ResponsesDeployment,
-      stream::{StreamEnd, StreamFinalization},
-    },
+    model_use::stream::{StreamEnd, StreamFinalization},
   },
   session::{
     EntryId, GenerationId, RunOutcome, Session, SessionError, SessionEvent,
@@ -178,14 +174,10 @@ pub(crate) async fn write_handoff(
   // Tools, reasoning and cache stay as the conversation calls send them, so the handoff reads the
   // prompt cache of the prefix it repeats; the prompt, not a stripped request, rules out tool calls.
   request.stream = true;
-  request.max_output_tokens = match caller.get_model_use_protocol() {
-    Some(ModelUseProtocol::OpenAiResponses(mode))
-      if mode.deployment == ResponsesDeployment::Codex =>
-    {
-      None
-    }
-    _ => Some(HANDOFF_MAX_OUTPUT_TOKENS),
-  };
+  request.max_output_tokens =
+    caller.get_model_use_protocol().map_or(Some(HANDOFF_MAX_OUTPUT_TOKENS), |protocol| {
+      protocol.output_token_limit(HANDOFF_MAX_OUTPUT_TOKENS)
+    });
 
   session.start_model_call(ModelCallPurpose::CompactionTranslation, end as u64)?;
   let generation = session.get_active_generation()?.id;

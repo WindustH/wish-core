@@ -52,7 +52,7 @@ pub enum Error {
   Transport(TransportFailure),
   /// The credentials had already run out before anything was sent: the endpoint refused them,
   /// because their expiry had passed against the `now` the caller read. The move is a renewal
-  /// ([`Client::refresh_credentials`](crate::client::Client::refresh_credentials))
+  /// ([`AccountClient::refresh_credentials`](crate::client::account::AccountClient::refresh_credentials))
   /// and credentials installed afresh - the same call over the same credentials will be refused
   /// the same way.
   #[error("credential renewal needed: the material expired at {expires_at}")]

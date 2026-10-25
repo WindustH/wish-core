@@ -94,8 +94,8 @@ If a later continuation fails or is interrupted, the previous completed request'
 
 Server-owned. After each run, and before a provider switch, the server copies the session's call
 records into its management database's `calls` table, tagged with the session's provider
-(`src/server/management.rs`). The usage endpoints aggregate that table
+(`src/storage/management.rs`). The usage endpoints aggregate that table
 ([API](../api.md#usage-statistics)). Separately, an `AttemptObserver` on every provider client
 samples visible streamed output once per second per attempt into `stream_samples`
-(`src/server/sampling.rs`). Tokens there are estimated at 4 bytes each; these samples are
+(`src/application/sampling.rs`). Tokens there are estimated at 4 bytes each; these samples are
 throughput observations, not billing usage.

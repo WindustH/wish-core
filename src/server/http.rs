@@ -21,9 +21,9 @@ mod sse;
 mod status;
 mod storage;
 mod usage;
+use crate::application::{app::App, presets};
 use crate::server::{
-  app::App,
-  codex_login, copilot_login, presets,
+  codex_login, copilot_login,
   web::{self, WebFront},
 };
 use axum::{
@@ -60,7 +60,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/directories", get(directories::list))
     .route("/provider-presets", get(|| async { Json(presets::provider_presets()) }))
     .route("/search-presets", get(|| async { Json(presets::search_presets()) }))
-    .route("/fetch-presets", get(|| async { Json(crate::server::fetch::presets()) }))
+    .route("/fetch-presets", get(|| async { Json(crate::application::fetch::presets()) }))
     .route("/fetch/providers", get(search::fetch_list))
     .route("/fetch/providers/{id}/check", post(search::fetch_check))
     .route("/search/providers", get(search::list))

@@ -1,10 +1,7 @@
 //! A session's history: the timeline the chat page pages through - its messages, with run outcomes
 //! if asked - and the history queries, full-text search and reads around one record.
-use crate::server::{
-  app::App,
-  error::{ApiError, blocking},
-  session::web_event,
-};
+use crate::application::{app::App, session::web_event};
+use crate::server::error::{ApiError, blocking};
 use crate::session::history::query::{
   HistoryContent, HistoryCursor, HistoryFilter, HistoryKind, HistoryOrder, HistoryPageRequest,
   HistorySearch,

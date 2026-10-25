@@ -32,7 +32,7 @@ AWS credentials ──▶ sigv4 ──▶ x-amz-date, authorization, and x-amz-s
 `CredentialRenewal` has two variants: `CodexOAuth` (the Codex subscription's refresh token) and
 `CopilotToken` (a GitHub token exchanged for a Copilot session). The server builds
 `Bearer(Some(CodexOAuth))` for the `openai_codex` preset and `Bearer(Some(CopilotToken))` for
-`github_copilot` (`src/server/provider.rs`).
+`github_copilot` (`src/application/provider.rs`).
 
 `Endpoint::new(base_url, path, auth)` requires an absolute http(s) URL and a non-empty path.
 `with_header` adds static headers, `with_credential_header` places a credential field in a named

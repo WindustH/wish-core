@@ -4,12 +4,12 @@
 //! A session's MCP switch is enforced here and nowhere else; the token the bridge answers is
 //! checked in `bridge`.
 use super::bridge;
-use crate::server::{
+use crate::application::{
   app::App,
-  error::ApiError,
   mcp::{Caller, store_binary_content},
   provider::Providers,
 };
+use crate::server::error::ApiError;
 use axum::{
   Json,
   extract::{Path, Query, State},

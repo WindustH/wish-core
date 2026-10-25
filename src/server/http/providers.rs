@@ -1,12 +1,12 @@
 //! Providers over HTTP: what is configured, their model catalogs and account readings, and direct
 //! calls to a provider's client outside any session.
 use super::sse;
-use crate::protocol::{Request, UpstreamCompactionRequest, model_list::ModelListQuery};
-use crate::server::{
+use crate::application::{
   app::App,
-  error::ApiError,
   provider::{Auth, Provider},
 };
+use crate::protocol::{Request, UpstreamCompactionRequest, model_list::ModelListQuery};
+use crate::server::error::ApiError;
 use axum::{
   Json,
   extract::{Path, Query, State},

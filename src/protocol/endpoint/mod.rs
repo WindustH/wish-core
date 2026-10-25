@@ -88,19 +88,6 @@ pub enum CredentialRenewal {
   CopilotToken,
 }
 
-impl AuthScheme {
-  /// The name this scheme is written as in an error, when an ask cannot be served of it.
-  pub(crate) fn get_name(self) -> &'static str {
-    match self {
-      AuthScheme::None => "none",
-      AuthScheme::Bearer(_) => "bearer",
-      AuthScheme::Header(..) => "header",
-      AuthScheme::SigV4 => "sigv4",
-      AuthScheme::GitHubToken => "github_token",
-    }
-  }
-}
-
 /// What one of the payload trees says: a request already rendered, aimed at nothing yet.
 ///
 /// This is the intermediate form between a tree and this module. The path a tree resolved itself -
@@ -214,12 +201,6 @@ impl Endpoint {
   /// The conversation identity bound by the server, when this target has one.
   pub fn session_id(&self) -> Option<&str> {
     self.session_id.as_deref()
-  }
-
-  /// The auth scheme this target proves its calls by, for the asks that read it back - the
-  /// client's credential renewal among them.
-  pub fn get_auth(&self) -> AuthScheme {
-    self.auth
   }
 
   /// The static headers configuration set on this target, which every call to it carries.

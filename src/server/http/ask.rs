@@ -1,9 +1,7 @@
 //! One read-only question against a committed session snapshot; disconnect cancels the call.
 use super::sse;
-use crate::server::{
-  app::App,
-  error::{ApiError, blocking},
-};
+use crate::application::app::App;
+use crate::server::error::{ApiError, blocking};
 use crate::{
   executor::model::ModelCaller,
   protocol::{ContentBlock, Message},

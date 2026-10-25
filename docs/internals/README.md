@@ -14,29 +14,33 @@ until SIGINT/SIGTERM (on Windows until Ctrl-C, Ctrl-Break, console close or syst
 without a token checks every request's `Host` and changes' `Origin` first (`server/web.rs`).
 
 ```text
-                             HTTP / SSE
-                                 |
-  server/       routes, provider clients, session slots, BTW asks, shutdown
-                  |                   |                     |
-                  v                   v                     v
-  executor/     run loop,           tool/                 session/
-                compaction          shell, history,       state machine, queue,
-                  |      |          view_image, ...       generations, history
-                  |      +----------------------------------> |
-                  v (ModelCaller)                             v
-  client/       Client                                     storage/
-                (retry via utils/)                         SQLite + LRU + history index
-                  |
-                  v
-  protocol/     one converter per wire, endpoint auth
-                  |
-                  v
-  transport/    one HTTP attempt: reqwest, SSE, AWS event-stream
+HTTP / SSE / CLI
+       |
+    server/        request decoding, HTTP errors, routes, process bootstrap
+       |
+    application/   configuration, account/service assembly, session use cases
+       |                          |                     |
+    executor/                  session/              storage/
+    agent operations,          durable state,        SQLite, indexes,
+    model execution            queue, history       blobs, snapshots
+       |
+    client/        model clients and independent account clients; retry policy
+       |
+    protocol/      upstream request/response rules, authentication and renewal
+       |
+    transport/     one HTTP attempt and streamed body reading
 ```
 
-Arrows point from caller to callee. `server/` is the only module that knows about providers,
-the config file or the HTTP API. Behavior it adds on top of the engine is marked "server-owned" in
-these pages.
+`server/` adapts external requests to application use cases. `application/` assembles services
+and coordinates sessions, without depending on HTTP types or server modules. `executor/` owns
+agent execution; it does not choose protocol-specific wire behavior. `protocol/` owns those
+rules and does not know about application configuration or persistence. `storage/` accepts
+records to persist and does not reach back into application or session logic.
+
+Account credentials have an independent `AccountRuntime` and `AccountClient`; a search or fetch
+service does not need a synthetic model endpoint to reuse an account. Service configuration
+selects its upstream protocol, transport policy and account. Application errors are mapped to
+HTTP status codes only by `server/error.rs`.
 
 ## Protocol layer
 
@@ -77,7 +81,7 @@ these pages.
 ## Tools
 
 - [tools](tools.md): shell, history tools, `view_image`, `ask_user` and `web_search`, with their
-  server integration.
+  application integration.
 
 ## MCP
 

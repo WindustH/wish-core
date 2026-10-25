@@ -2,7 +2,7 @@
 
 A group is a chat among the user and several sessions, like a chat app's group chat; peers is
 what a session sees of the other sessions and the groups, through `wish session` in its shell.
-Both are server-owned: the engine knows only messages and notes in a session's history. A session
+Both are application-owned: the engine knows only messages and notes in a session's history. A session
 takes part in a group as a person would: a post wakes it, and it speaks only by sending.
 
 ```text

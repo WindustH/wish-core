@@ -142,8 +142,8 @@ automatically. `settle_interrupted()` closes such a run without replaying anythi
 
 A `Running` model call record is closed as `Interrupted` or `Failed` in the same transaction.
 The server calls `settle_interrupted` when it opens a session that is not stable, and after a run
-returns an error (server-owned: [`src/server/session.rs`](../../src/server/session.rs),
-[`src/server/session/run.rs`](../../src/server/session/run.rs)).
+returns an error (application-owned: [`src/application/session.rs`](../../src/application/session.rs),
+[`src/application/session/run.rs`](../../src/application/session/run.rs)).
 Graceful interruption is handled by the [executor](executor.md). `resume()` does not check that
 unknown tool outcomes were reconciled; it only requires a stable state.
 
@@ -166,7 +166,7 @@ work unreconciled; it is not graceful shutdown.
 transaction, including while the executor owns the session. An unfinished tool batch
 and its assistant turn are excluded. The returned request does not include queued input
 and does not mutate session state. The server's BTW endpoint `POST /api/sessions/{id}/ask` is built on
-it (server-owned: [`src/server/http/ask.rs`](../../src/server/http/ask.rs),
+it (application-owned: [`src/server/http/ask.rs`](../../src/server/http/ask.rs),
 [API](../api.md#side-questions)). It keeps the snapshot's tools, tool choice, reasoning and cache
 unchanged so the question reuses the session's prompt cache, appends at most 32 earlier exchanges
 (128 000 bytes) and the question, and persists nothing. The BTW instruction (answer, do not call

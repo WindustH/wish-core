@@ -20,7 +20,7 @@ let client = Client::new(
 .with_account_state(AccountStateProtocol::AnthropicRatelimitHeaders);
 ```
 
-The server builds its clients in [`src/server/provider.rs`](../../src/server/provider.rs).
+The application builds its clients in [`src/application/provider.rs`](../../src/application/provider.rs).
 
 ## Build-time axes
 
@@ -54,8 +54,8 @@ For a subscription, the credentials carry tokens instead of a key (`api_key` = a
 `refresh_token`, `expires_at`, `account_id`). The auth scheme carries the renewal beside the
 placement: `AuthScheme::Bearer(Some(CredentialRenewal::CodexOAuth))`, or `CopilotToken` for a
 Copilot session renewed from the GitHub token in `refresh_token`.
-`Client::refresh_credentials` returns renewed credentials and installs them nowhere; the server
-saves them in the provider's configuration, which builds the client again. A `build_call` over spent credentials is refused
+`AccountClient::refresh_credentials` returns renewed credentials and installs them nowhere; the application
+saves them in the shared account configuration and rebuilds dependent service clients. A `build_call` over spent credentials is refused
 as `Error::Renewal` before anything is sent. Storing what the exchange rotated stays with the
 caller.
 

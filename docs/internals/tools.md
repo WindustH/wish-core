@@ -21,7 +21,7 @@ extra model input after the whole batch's results, preserving call/result pairin
 model.
 
 The server's dispatcher is `SessionTools`
-([`src/server/session/tools.rs`](../../src/server/session/tools.rs)). Every session gets
+([`src/application/session/tools.rs`](../../src/application/session/tools.rs)). Every session gets
 `history_search`, `history_read`, `history_query` and `view_image`. The session's switches
 (`descriptor.tools`) add the five shell tools, `ask_user` and `web_search`; the `mcp` and `skills`
 switches add no tool (see [MCP](mcp.md) and [skills](skills.md)). The `ShellTool` starts the first time the shell is switched on and stays
@@ -67,8 +67,8 @@ capture directory `data_dir/shell/<session id>`. The command is the session's ow
 (`PUT /api/sessions/{id}/shell`), otherwise the configured global shell, which follows later
 config saves. An override that no longer resolves falls back to the global shell when the session
 opens. Deleting a session removes its capture directory
-([`src/server/session.rs`](../../src/server/session.rs),
-[`src/server/session/tools.rs`](../../src/server/session/tools.rs), [API](../api.md#sessions)).
+([`src/application/session.rs`](../../src/application/session.rs),
+[`src/application/session/tools.rs`](../../src/application/session/tools.rs), [API](../api.md#sessions)).
 
 ### Operations
 
@@ -183,7 +183,7 @@ Server-owned: when a `shell_start` result is still `running`, `SessionTools` spa
 awaits `wait_for_completion`. It then enqueues a `Developer { fixed: false }` message with metadata
 `{source: "background_execution_finished", execution_id, completion: {command, result}}` and wakes
 the session unless it was interrupted since the start. The task is dropped on server shutdown
-([`src/server/session/tools.rs`](../../src/server/session/tools.rs)). The notification fires even
+([`src/application/session/tools.rs`](../../src/application/session/tools.rs)). The notification fires even
 if the model later polled the command to completion or killed it.
 
 ## History tools
@@ -221,7 +221,7 @@ preserving call/result pairing for parallel batches.
 
 Server-owned: `SessionTools` saves the bytes to `data_dir/blobs/<session id>/<sha256>`, adds
 `output.session_path`, and keeps only the image block. At request time the server projects stored
-images ([`src/server/session_model.rs`](../../src/server/session_model.rs)). Each image becomes an
+images ([`src/application/session_model.rs`](../../src/application/session_model.rs)). Each image becomes an
 `[Image sha256:…]` notice plus its blob path, and the image itself is sent only when the model's
 declared `input_modalities` allow it. If the upstream rejects images before streaming, the call is
 retried once with notices only. Stored conversation always keeps the original images.
@@ -249,7 +249,7 @@ results, warnings}` kept on the stored result message for the page. A failure of
 `Failed("web search failed: …")`; an interrupt cancels the search.
 
 Server-owned: `SessionTools` supplies a backend that asks the configured search providers in
-order ([`src/server/search.rs`](../../src/server/search.rs),
+order ([`src/application/search.rs`](../../src/application/search.rs),
 [configuration](../configuration.md#web-search)); the session's `web_search` switch adds the tool.
 
 ## `ask_user`

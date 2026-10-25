@@ -1,7 +1,9 @@
 //! How the user arranges the list, over HTTP: folders, and moving and pinning what the list holds,
 //! sessions, groups and folders alike, as `mv` moves files and directories alike. Every change
 //! announces `list_changed`.
-use crate::server::{app::App, error::ApiError, management::FolderRecord};
+use crate::application::app::App;
+use crate::server::error::ApiError;
+use crate::storage::management::FolderRecord;
 use crate::utils::time::Timestamp;
 use axum::{
   Json,

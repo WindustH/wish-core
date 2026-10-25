@@ -1,11 +1,8 @@
 //! Usage statistics: SQL aggregates over the model calls the index holds, all sessions' or one's,
 //! and the stream samples beside them. Conversation payloads are never read.
-use crate::server::{
-  app::App,
-  error::{ApiError, blocking},
-  management::{StreamAggregate, StreamSample, Usage, UsageBucket},
-  sampling,
-};
+use crate::application::{app::App, sampling};
+use crate::server::error::{ApiError, blocking};
+use crate::storage::management::{StreamAggregate, StreamSample, Usage, UsageBucket};
 use axum::{
   Json,
   extract::{Path, Query, State},
@@ -23,7 +20,11 @@ fn now() -> i64 {
 /// Refuses a session the index does not know.
 async fn require_indexed(app: &App, id: &str) -> Result<(), ApiError> {
   let (management, id) = (app.management.clone(), id.to_owned());
-  if blocking(move || management.exists(&id)).await? { Ok(()) } else { Err(ApiError::not_found()) }
+  if blocking(move || Ok(management.exists(&id)?)).await? {
+    Ok(())
+  } else {
+    Err(ApiError::not_found())
+  }
 }
 fn describe_totals(usage: &Usage) -> Value {
   json!({
@@ -66,7 +67,7 @@ async fn usage(
   }
   let management = app.management.clone();
   let rows =
-    blocking(move || management.usage_buckets(session.as_deref(), from, to, i64::MAX)).await?;
+    blocking(move || Ok(management.usage_buckets(session.as_deref(), from, to, i64::MAX)?)).await?;
   let total: Usage = rows.iter().sum();
   let by_provider_model: Vec<_> = rows
     .iter()
@@ -264,21 +265,7 @@ pub struct Daily {
   tz_offset_minutes: i64,
   bucket_ms: Option<i64>,
 }
-/// Dates read and written the way SQLite reads and writes them.
-struct Calendar(rusqlite::Connection);
-impl Calendar {
-  fn open() -> Result<Self, ApiError> {
-    Ok(Self(rusqlite::Connection::open_in_memory()?))
-  }
-  /// Unix milliseconds at the start of a UTC date, or none when it is not one.
-  fn parse_day_start(&self, date: &str) -> Result<Option<i64>, ApiError> {
-    Ok(self.0.query_row("SELECT unixepoch(?1)*1000", [date], |r| r.get(0))?)
-  }
-  /// The UTC date at unix milliseconds.
-  fn format_date(&self, ms: i64) -> Result<String, ApiError> {
-    Ok(self.0.query_row("SELECT date(?1/1000,'unixepoch')", [ms], |r| r.get(0))?)
-  }
-}
+use crate::storage::calendar::Calendar;
 async fn daily(app: Arc<App>, id: Option<String>, query: Daily) -> Result<Json<Value>, ApiError> {
   if !(1..=366).contains(&query.days) || !(-840..=840).contains(&query.tz_offset_minutes) {
     return Err(ApiError::bad_request("invalid days or timezone"));

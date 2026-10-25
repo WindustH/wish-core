@@ -1,13 +1,13 @@
 //! Releasing what sessions keep but no longer use: the history their context has moved past, and
 //! the attachments, images and command output only that history named.
 use crate::{
-  protocol::Message,
-  server::{
+  application::{
     app::App,
     blobs::{blob_id, description_path, is_blob_id},
     data_dir::{DataDir, size, with_suffix},
-    error::{ApiError, blocking},
+    error::{ApplicationError as ApiError, blocking},
   },
+  protocol::Message,
   session::SessionError,
   tool::shell::ShellTool,
   utils::time::Timestamp,
@@ -93,7 +93,9 @@ pub async fn prune(
     let slot = match app.get_session(&id).await {
       Ok(slot) => slot,
       // A session deleted while this ran is simply gone.
-      Err(error) if every && error.status == axum::http::StatusCode::NOT_FOUND => continue,
+      Err(error) if every && error.kind == crate::application::error::ErrorKind::NotFound => {
+        continue;
+      }
       Err(error) => return Err(error),
     };
     let Some(session) = slot.lock_idle().await else {

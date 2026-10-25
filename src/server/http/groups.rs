@@ -2,7 +2,8 @@
 //! transcript, posting to it, and the groups a session is in. Files posted to a group go through
 //! `content`'s blob routes under `/groups/{id}/blobs`.
 use super::content::input::Input;
-use crate::server::{app::App, error::ApiError, groups::Author};
+use crate::application::{app::App, groups::Author};
+use crate::server::error::ApiError;
 use axum::{
   Json,
   extract::{Path, Query, State},

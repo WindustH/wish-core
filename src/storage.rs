@@ -8,10 +8,15 @@ macro_rules! list_key {
   };
 }
 
+pub mod blobs;
 mod cache;
+pub mod calendar;
 mod database;
 pub(crate) mod history_index;
 mod list;
+pub mod management;
+pub mod repository_error;
+pub mod snapshots;
 mod transaction;
 
 pub(crate) use database::OwnerGuard;
