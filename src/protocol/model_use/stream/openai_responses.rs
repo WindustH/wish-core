@@ -12,6 +12,8 @@
 //! - A delta that arrives before its item is announced is buffered (bounded) and flushed when the
 //!   announcement arrives; bytes still orphaned at the terminal fail closed instead of dropping
 //!   content silently.
+//! - Function arguments may arrive only as full snapshots at `added`, arguments `done`, or item
+//!   `done`. These supplement streamed bytes without duplication; conflicting snapshots fail closed.
 //! - The reasoning item's `encrypted_content` (captured at `added` or `done`, whichever carries it
 //!   first) is emitted once, as the block's ciphertext half.
 //! - The item a compacted history travels as (`compaction`) is not streamed in parts: it is handed
@@ -76,6 +78,8 @@ pub struct Decoder {
   /// `item_id` -> (block index, shape).
   blocks: HashMap<String, (u32, ItemShape)>,
   open: Vec<u32>,
+  /// Argument bytes already emitted, used to reconcile full snapshots without duplication.
+  tool_arguments: HashMap<u32, String>,
   /// Deltas that arrived before their item was announced, per item, and their total size.
   orphans: HashMap<String, Vec<(ItemShape, String)>>,
   orphan_bytes: usize,
@@ -111,7 +115,7 @@ impl Decoder {
       "response.created" | "response.in_progress" | "response.queued" => {}
       "response.rate_limits" | "codex.rate_limits" => self.decode_rate_limits(value, &mut out),
       "response.usage" => {}
-      "response.output_item.added" => self.handle_item_added(value, &mut out),
+      "response.output_item.added" => self.handle_item_added(value, &mut out)?,
       "response.content_part.added" => self.handle_part_added(value, &mut out),
       "response.output_text.delta" => self.handle_delta(value, ItemShape::Text, &mut out)?,
       "response.reasoning_text.delta" => {
@@ -122,6 +126,12 @@ impl Decoder {
       }
       "response.function_call_arguments.delta" => {
         self.handle_delta(value, ItemShape::ToolUse, &mut out)?
+      }
+      "response.function_call_arguments.done" => {
+        let item_id = value.get("item_id").and_then(Value::as_str).ok_or_else(|| {
+          Error::Malformed("function arguments done event without an item_id".to_owned())
+        })?;
+        self.reconcile_tool_arguments(item_id, value, &mut out)?;
       }
       "response.output_item.done" => self.handle_item_done(value, &mut out)?,
       "response.completed" | "response.done" | "response.incomplete" | "response.cancelled" => {
@@ -138,24 +148,24 @@ impl Decoder {
     Ok(out)
   }
 
-  fn handle_item_added(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
-    let Some(item) = value.get("item") else { return };
+  fn handle_item_added(&mut self, value: &Value, out: &mut Vec<StreamEvent>) -> Result<(), Error> {
+    let Some(item) = value.get("item") else { return Ok(()) };
     let shape = match item.get("type").and_then(Value::as_str) {
       Some("function_call") => ItemShape::ToolUse,
       Some("reasoning") => ItemShape::Reasoning,
       // A message item gets its block from its first output_text content part.
-      _ => return,
+      _ => return Ok(()),
     };
     let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
     if item_id.is_empty() || self.blocks.contains_key(&item_id) {
-      return;
+      return Ok(());
     }
     let index = self.counter.open(shape.get_kind(), out);
     self.blocks.insert(item_id.clone(), (index, shape));
     self.open.push(index);
     match shape {
       ItemShape::ToolUse => {
-        // The item announces the call id and name; arguments follow as deltas.
+        // Some upstreams send arguments here or only at done, without any deltas.
         let call_id = item
           .get("call_id")
           .and_then(Value::as_str)
@@ -176,6 +186,10 @@ impl Decoder {
       ItemShape::Text | ItemShape::ReasoningSummary => {}
     }
     self.flush_orphans(&item_id, index, out);
+    if shape == ItemShape::ToolUse {
+      self.reconcile_tool_arguments(&item_id, item, out)?;
+    }
+    Ok(())
   }
 
   fn handle_part_added(&mut self, value: &Value, out: &mut Vec<StreamEvent>) {
@@ -231,6 +245,9 @@ impl Decoder {
     }
     let Some(item_id) = item.get("id").and_then(Value::as_str) else { return Ok(()) };
     let Some(&(index, shape)) = self.blocks.get(item_id) else { return Ok(()) };
+    if shape == ItemShape::ToolUse {
+      self.reconcile_tool_arguments(item_id, item, out)?;
+    }
     if shape == ItemShape::Reasoning {
       self.emit_reasoning_ciphertext(index, item, out);
     }
@@ -254,6 +271,19 @@ impl Decoder {
     }
     self.done = true;
     let mut out = Vec::new();
+    // A final response can supply a snapshot for a still-open tool block.
+    if let Some(items) = response.get("output").and_then(Value::as_array) {
+      for item in items {
+        if let Some(id) = item.get("id").and_then(Value::as_str)
+          && self
+            .blocks
+            .get(id)
+            .is_some_and(|(index, shape)| *shape == ItemShape::ToolUse && self.open.contains(index))
+        {
+          self.reconcile_tool_arguments(id, item, &mut out)?;
+        }
+      }
+    }
     end_blocks_in_order(std::mem::take(&mut self.open), &mut out);
     if response.get("usage").is_some() {
       out.push(StreamEvent::Usage(buffered::decode_usage(response)));
@@ -261,6 +291,38 @@ impl Decoder {
     let has_tool_uses = self.blocks.values().any(|(_, shape)| *shape == ItemShape::ToolUse);
     out.push(StreamEvent::Stop(buffered::decode_stop_reason(response, has_tool_uses)));
     Ok(out)
+  }
+
+  /// Full argument snapshots supplement deltas; they must never replay already emitted bytes.
+  fn reconcile_tool_arguments(
+    &mut self,
+    item_id: &str,
+    value: &Value,
+    out: &mut Vec<StreamEvent>,
+  ) -> Result<(), Error> {
+    let Some(arguments) = value.get("arguments").and_then(Value::as_str) else {
+      return Ok(());
+    };
+    let Some(&(index, ItemShape::ToolUse)) = self.blocks.get(item_id) else {
+      return Err(Error::Malformed("function arguments for an unannounced tool item".to_owned()));
+    };
+    // Empty added snapshots are normal, including when early deltas have already been buffered.
+    if arguments.is_empty() {
+      return Ok(());
+    }
+    let emitted = self.tool_arguments.get(&index).map(String::as_str).unwrap_or_default();
+    let suffix = arguments.strip_prefix(emitted).ok_or_else(|| {
+      Error::Malformed("function argument snapshot conflicts with streamed arguments".to_owned())
+    })?;
+    if !suffix.is_empty() {
+      if !self.open.contains(&index) {
+        return Err(Error::Malformed(
+          "function arguments changed after the tool block closed".to_owned(),
+        ));
+      }
+      self.emit_delta(index, ItemShape::ToolUse, suffix, out);
+    }
+    Ok(())
   }
 
   fn emit_reasoning_ciphertext(&mut self, index: u32, item: &Value, out: &mut Vec<StreamEvent>) {
@@ -286,7 +348,7 @@ impl Decoder {
     }
   }
 
-  fn emit_delta(&self, index: u32, shape: ItemShape, delta: &str, out: &mut Vec<StreamEvent>) {
+  fn emit_delta(&mut self, index: u32, shape: ItemShape, delta: &str, out: &mut Vec<StreamEvent>) {
     match shape {
       ItemShape::Text => out.push(StreamEvent::TextDelta { index, delta: delta.to_owned() }),
       ItemShape::Reasoning => {
@@ -295,12 +357,15 @@ impl Decoder {
       ItemShape::ReasoningSummary => {
         out.push(StreamEvent::ReasoningDisplayDelta { index, delta: delta.to_owned() })
       }
-      ItemShape::ToolUse => out.push(StreamEvent::ToolUseDelta {
-        index,
-        call_id: None,
-        name: None,
-        arguments: delta.to_owned(),
-      }),
+      ItemShape::ToolUse => {
+        self.tool_arguments.entry(index).or_default().push_str(delta);
+        out.push(StreamEvent::ToolUseDelta {
+          index,
+          call_id: None,
+          name: None,
+          arguments: delta.to_owned(),
+        });
+      }
     }
   }
 }
