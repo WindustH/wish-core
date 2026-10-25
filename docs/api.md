@@ -180,6 +180,7 @@ engine error, for example
 | GET | `/api/sessions/{id}/queue` | Queued entry IDs |
 | GET | `/api/sessions/{id}/generations` | Context generations |
 | GET | `/api/sessions/{id}/generations/{generation}/entries` | Entries of one generation |
+| GET | `/api/sessions/{id}/generations/{generation}/structure` | Stored generation structure with filtered entries |
 | GET | `/api/sessions/{id}/calls` | Model call records |
 | POST | `/api/sessions/{id}/blobs` | Upload an attachment |
 | GET | `/api/sessions/{id}/blobs/{blob}` | Download an attachment |
@@ -1119,6 +1120,22 @@ These return engine records, paged with `start`/`limit`:
 | `/api/sessions/{id}/generations` | Context generations: `{id, status, entries, config, compaction_cursor}` |
 | `/api/sessions/{id}/generations/{generation}/entries` | Entry IDs in one generation |
 | `/api/sessions/{id}/calls` | One record per logical model call: purpose, model, times, usage, status, `last_request_input_tokens` |
+
+### `GET /api/sessions/{id}/generations/{generation}/structure`
+
+Reads a generation and its entry references in one storage transaction. Returns
+`{ generation, count, start, next, positions, items }`: `count` is the unfiltered
+entry-reference count; `positions` gives each returned entry's zero-based position
+in the generation. `items` are stored entries, with image bytes replaced by blob
+references. This is stored membership, not the application-projected model request.
+
+Query parameters: `start` (default 0), `limit` (default 20, 1–100), optional `kind`
+(`System`, `Developer`, `User`, `Assistant`, `Reasoning`, `ToolUse`, `ToolResult`,
+`UpstreamCompaction`) and `origin` (`Imported`, `Input`, `Model`, `Tool`,
+`Interrupted`, `Context`, `Summary`). Filters are combined and applied before
+pagination. Continue with `start=next`; the cursor is a generation position,
+not a filtered offset. Active and standby generations can change between reads;
+each response includes the generation metadata observed with its entries.
 
 ## Attachments
 

@@ -324,3 +324,59 @@ pub async fn inspect_context(
     json!({"provider":descriptor.provider,"request":projected,"captured_at":crate::utils::time::Timestamp::now().0}),
   ))
 }
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StructurePage {
+  start: u64,
+  limit: usize,
+  kind: Option<String>,
+  origin: Option<String>,
+}
+impl Default for StructurePage {
+  fn default() -> Self {
+    Self { start: 0, limit: 20, kind: None, origin: None }
+  }
+}
+
+/// Stored generation membership, not the separately projected model request.
+pub async fn generation_structure(
+  State(app): State<Arc<App>>,
+  Path((id, generation)): Path<(String, usize)>,
+  Query(page): Query<StructurePage>,
+) -> Result<Json<Value>, ApiError> {
+  if page.limit == 0 || page.limit > 100 {
+    return Err(ApiError::bad_request("limit must be between 1 and 100"));
+  }
+  if page.kind.as_deref().is_some_and(|value| {
+    ![
+      "System",
+      "Developer",
+      "User",
+      "Assistant",
+      "Reasoning",
+      "ToolUse",
+      "ToolResult",
+      "UpstreamCompaction",
+    ]
+    .contains(&value)
+  }) || page.origin.as_deref().is_some_and(|value| {
+    !["Imported", "Input", "Model", "Tool", "Interrupted", "Context", "Summary"].contains(&value)
+  }) {
+    return Err(ApiError::bad_request("unknown message type or origin"));
+  }
+  let reader = app.get_session(&id).await?.reader.clone();
+  blocking(move || {
+    if reader.get_generations().get(generation as u64)?.is_none() { return Err(ApiError::not_found()) }
+    let (generation, count, positions, entries) = reader.generation_structure(crate::session::GenerationId(generation), page.start, page.limit, page.kind, page.origin)?;
+    let mut items = Vec::new();
+    for entry in entries.items {
+      let mut value = json!(entry);
+      let mut image_view = json!({"conversation":[value["message"].clone()]});
+      crate::server::session_model::image_references(&mut image_view);
+      value["message"] = image_view["conversation"][0].take();
+      items.push(value);
+    }
+    Ok(Json(json!({"generation":generation,"count":count,"positions":positions,"start":entries.start,"next":entries.next,"items":items})))
+  }).await
+}

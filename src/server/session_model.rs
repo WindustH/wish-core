@@ -380,7 +380,7 @@ impl ModelCaller for SessionModel {
 }
 
 /// Images remain inspectable by blob reference without duplicating base64 in the JSON response.
-fn image_references(value: &mut Value) {
+pub(crate) fn image_references(value: &mut Value) {
   let Some(messages) = value["conversation"].as_array_mut() else { return };
   for message in messages {
     for role in ["System", "Developer", "User", "Assistant"] {

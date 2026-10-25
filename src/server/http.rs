@@ -112,6 +112,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/queue", get(sessions::queue))
     .route("/sessions/{id}/generations", get(sessions::generations))
     .route("/sessions/{id}/generations/{generation}/entries", get(sessions::generation_entries))
+    .route("/sessions/{id}/generations/{generation}/structure", get(sessions::generation_structure))
     .route("/sessions/{id}/calls", get(sessions::calls))
     .route("/sessions/{id}/history", get(history::timeline))
     .route("/sessions/{id}/history/query", post(history::query))

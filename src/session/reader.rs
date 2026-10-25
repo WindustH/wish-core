@@ -35,6 +35,53 @@ impl SessionReader {
       model_calls: record.model_calls.clone(),
     }
   }
+  /// One generation and its ordered entries from the same committed storage snapshot.
+  pub fn generation_structure(
+    &self,
+    id: GenerationId,
+    start: u64,
+    limit: usize,
+    kind: Option<String>,
+    origin: Option<String>,
+  ) -> Result<(Arc<Generation>, u64, Vec<u64>, crate::storage::Page<Entry>), SessionError> {
+    let reader = self.clone();
+    self.storage.transaction(move |tx| {
+      let generation = tx
+        .get_item::<Generation>(&reader.generations, id.0 as u64)?
+        .ok_or_else(|| StorageError::Corrupt("missing generation".into()))?;
+      let count = tx.list_len::<EntryId>(&generation.entries)?;
+      let mut position = start.min(count);
+      let mut entries = Vec::new();
+      let mut positions = Vec::new();
+      while position < count && entries.len() < limit {
+        if let Some(id) = tx.get_item::<EntryId>(&generation.entries, position)? {
+          let entry = tx
+            .get_item::<Entry>(&reader.entries, id.0 as u64)?
+            .ok_or_else(|| StorageError::Corrupt("missing entry".into()))?;
+          let message_type =
+            format!("{:?}", crate::session::history::query::MessageType::of(&entry.message));
+          if kind.as_ref().is_none_or(|kind| kind == &message_type)
+            && origin.as_ref().is_none_or(|origin| origin == &format!("{:?}", entry.origin))
+          {
+            positions.push(position);
+            entries.push(entry);
+          }
+        }
+        position += 1;
+      }
+      Ok((
+        generation,
+        count,
+        positions,
+        crate::storage::Page {
+          start,
+          items: entries,
+          end: position,
+          next: (position < count).then_some(position),
+        },
+      ))
+    })
+  }
   pub fn get_history(&self) -> ReadList<HistoryRecord> {
     self.storage.open_list(&self.history)
   }

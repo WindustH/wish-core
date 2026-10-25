@@ -19,7 +19,7 @@ pub enum MessageType {
   UpstreamCompaction,
 }
 impl MessageType {
-  pub(super) fn of(message: &Message) -> Self {
+  pub(in crate::session) fn of(message: &Message) -> Self {
     match message {
       Message::System { .. } => Self::System,
       Message::Developer { .. } => Self::Developer,
