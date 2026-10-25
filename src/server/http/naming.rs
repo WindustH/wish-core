@@ -1,6 +1,6 @@
 //! Explicit stateless naming requests. Only clients decide when to call this endpoint.
 use crate::{
-  executor::model::{CallResponse, ModelCaller},
+  executor::model::{CallResponse, ModelCaller, ModelStream},
   protocol::{ContentBlock, Message, model_use::request::ToolChoice},
   server::{
     app::App,
@@ -57,8 +57,15 @@ pub async fn generate(
   let client = provider.client.clone().with_session_id(id.clone());
   let model = SessionModel::new(provider, app.data_dir.blobs(&id), client);
   let response = app.lifecycle.until_shutdown(model.call(&request)).await??;
-  let CallResponse::Complete(response) = response else {
-    return Err(ApiError::internal("expected a buffered naming response"));
+  let response = match response {
+    CallResponse::Complete(response) => *response,
+    CallResponse::Stream(mut stream) => {
+      let mut accumulator = stream.create_accumulator();
+      while let Some(event) = app.lifecycle.until_shutdown(stream.next()).await?? {
+        accumulator.feed(event)?;
+      }
+      accumulator.finish()?
+    }
   };
   let text = response
     .messages
@@ -120,7 +127,7 @@ fn prepare(
       request
     }
   };
-  request.stream = false;
+  request.stream = true;
   // Keep model reasoning settings/budget compatible with the selected provider.
   Ok((request, descriptor))
 }

@@ -736,10 +736,12 @@ Returns `{"name":"Suggested title","revision":<descriptor revision>}`. Neither t
 nor conversation/history is changed by this endpoint. The frontend applies the suggestion
 with `PATCH /sessions/{id}`, body `{"name":"Suggested title"}` and `If-Match` using the
 returned revision, so intervening manual edits are preserved. Requests can run alongside
-normal conversation execution and use the existing provider retry policy.
+normal conversation execution and use the existing provider retry policy. Upstream calls
+always stream; the server assembles and validates the complete response before returning
+the title as JSON. A failed or incomplete stream does not produce a title.
 
 The web client invokes first-message mode once after an accepted first input, without
-waiting for naming before showing the chat. The session list's **Generate title** action
+waiting for naming before showing the chat. The session list's **Auto rename** action
 invokes context mode explicitly. Polling, reloads, and server execution do not initiate naming.
 
 ### `POST /api/sessions/{id}/messages`
