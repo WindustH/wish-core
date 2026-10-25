@@ -11,6 +11,7 @@ mod groups;
 mod history;
 mod manage;
 mod mcp;
+mod naming;
 mod peers;
 mod providers;
 mod search;
@@ -89,6 +90,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/groups/{id}/blobs/{blob}", get(content::download))
     .route("/groups/{id}/blobs/{blob}/meta", get(content::metadata))
     .route("/sessions/{id}/groups", get(groups::of_session))
+    .route("/sessions/{id}/generate-name", post(naming::generate))
     .route("/sessions/{id}/fork", post(manage::fork))
     .route("/sessions/{id}/context/clear", post(manage::clear_context))
     .route("/sessions/{id}/context/inspect", get(sessions::inspect_context))

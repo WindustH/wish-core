@@ -72,5 +72,9 @@ pub async fn input(
   let entry = slot.enqueue(message).await?;
   slot.touch()?;
   slot.schedule(&app);
-  Ok((StatusCode::ACCEPTED, Json(json!({"entry":entry}))))
+  let reader = slot.reader.clone();
+  let first_user_message =
+    crate::server::error::blocking(move || Ok(super::naming::first_user(&reader)? == Some(entry)))
+      .await?;
+  Ok((StatusCode::ACCEPTED, Json(json!({"entry":entry,"first_user_message":first_user_message}))))
 }

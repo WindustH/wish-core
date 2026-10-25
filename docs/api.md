@@ -719,7 +719,28 @@ active; input sent during a run waits in the queue.
 Attachments are [uploaded](#attachments) first. `kind` is `image` (sent to the
 model as an image) or `file` (passed to the shell by its server path). A
 `placeholder` places the attachment at that point in the text; attachments
-without one follow the text. Returns `202 {"entry": <entry id>}`.
+without one follow the text. Returns `202 {"entry": <entry id>, "first_user_message": <bool>}`.
+The flag identifies the first stored user input, including queued and imported messages.
+It is informational: sending input never makes a naming request on the server.
+
+### `POST /api/sessions/{id}/generate-name`
+
+Explicit, stateless naming using the session's selected model. Body:
+- `{"mode":"context"}`: uses committed context (including instructions and completed tool
+  history), appends a naming instruction and disables tool calls.
+- `{"mode":"first_message","entry":<entry id>}`: uses only the naming system prompt and
+  that first user's message with its attachments. No agent instructions, tool definitions,
+  or prior conversation are included. Non-first entries are rejected.
+
+Returns `{"name":"Suggested title","revision":<descriptor revision>}`. Neither the name
+nor conversation/history is changed by this endpoint. The frontend applies the suggestion
+with `PATCH /sessions/{id}`, body `{"name":"Suggested title"}` and `If-Match` using the
+returned revision, so intervening manual edits are preserved. Requests can run alongside
+normal conversation execution and use the existing provider retry policy.
+
+The web client invokes first-message mode once after an accepted first input, without
+waiting for naming before showing the chat. The session list's **Generate title** action
+invokes context mode explicitly. Polling, reloads, and server execution do not initiate naming.
 
 ### `POST /api/sessions/{id}/messages`
 
