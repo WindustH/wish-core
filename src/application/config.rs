@@ -204,7 +204,8 @@ pub struct Defaults {
   pub provider: String,
   pub model: String,
   pub cwd: PathBuf,
-  /// The tools new sessions start with.
+  /// The tools new sessions start with; stored sessions retain their own compatibility defaults.
+  #[serde(deserialize_with = "deserialize_default_tools")]
   pub tools: ToolSwitches,
   pub stream: bool,
   /// Execution policy copied into new sessions.
@@ -214,6 +215,14 @@ pub struct Defaults {
   pub max_output_tokens: Option<u64>,
   pub compaction: Option<CompactionConfig>,
 }
+/// Missing global fields use today's defaults, independently of persisted session decoding.
+fn deserialize_default_tools<'de, D: serde::Deserializer<'de>>(
+  deserializer: D,
+) -> Result<ToolSwitches, D::Error> {
+  let changes = super::session::ToolChanges::deserialize(deserializer)?;
+  Ok(Defaults::default().tools.apply_changes(changes))
+}
+
 impl Default for Defaults {
   fn default() -> Self {
     Self {
@@ -222,9 +231,9 @@ impl Default for Defaults {
       cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp")),
       tools: ToolSwitches {
         task_delivery: super::session::ToolDelivery::Command,
-        web_fetch_delivery: Default::default(),
-        web_search_delivery: Default::default(),
-        ask_user_delivery: Default::default(),
+        web_fetch_delivery: super::session::ToolDelivery::Command,
+        web_search_delivery: super::session::ToolDelivery::Command,
+        ask_user_delivery: super::session::ToolDelivery::Command,
         shell: true,
         ask_user: true,
         mcp: true,

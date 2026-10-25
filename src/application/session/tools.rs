@@ -33,6 +33,7 @@ const SHELL_TOOLS: [&str; 6] =
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolDelivery {
+  // Compatibility for stored sessions without a delivery field; new-session defaults live in config.
   #[default]
   Tool,
   Command,
