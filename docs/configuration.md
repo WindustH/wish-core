@@ -632,8 +632,7 @@ whole directory while Wish is stopped, or copy the databases with
 
 `fetch.providers` and `fetch.order` configure the `web_fetch` tool independently
 of models and search. Available presets are `deepseek_fetch`, `zai_reader`,
-`jina_reader` (optional key) and `codex_fetch` (experimental ChatGPT subscription
-endpoint). `zai_search` separately provides Z.AI search-prime search.
+`jina_reader` (optional key) and `codex_fetch` (ChatGPT subscription). `zai_search` separately provides Z.AI search-prime search.
 
 ```json
 "fetch": {
@@ -659,5 +658,6 @@ at most 20,000 Unicode characters; a snapshot is limited to 4 MiB and stored und
 the session's execution-output directory. Deleting the session removes it.
 `refresh` asks Z.AI/Jina to bypass caches; not every provider supports this.
 No additional model call rewrites the content. Codex may return a processed
-excerpt rather than the full page; it uses an undocumented endpoint and remains
-experimental. Tool outputs and snapshot metadata are retained in normal history.
+excerpt rather than the full page. Its `POST alpha/search` request and
+`commands.open[].ref_id` URL match the [Codex client implementation](https://github.com/openai/codex/blob/970111f6cb62cc02fe36a82ea7d71b37a2889c97/codex-rs/codex-api/src/endpoint/search.rs)
+and [request schema](https://github.com/openai/codex/blob/970111f6cb62cc02fe36a82ea7d71b37a2889c97/codex-rs/codex-api/src/search.rs). Tool outputs and snapshot metadata are retained in normal history.

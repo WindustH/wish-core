@@ -59,7 +59,7 @@ pub fn presets() -> Value {
   {"id":"deepseek_fetch","name":"DeepSeek","key":"required","base_url":"https://api.deepseek.com","path":"/v1/tools/fetch"},
   {"id":"zai_reader","name":"Z.AI","key":"required","base_url":"https://api.z.ai/api/paas/v4","path":"/reader"},
   {"id":"jina_reader","name":"Jina Reader","key":"optional","base_url":"https://r.jina.ai","path":"/"},
-  {"id":"codex_fetch","name":"ChatGPT / Codex (experimental)","key":"required","base_url":"https://chatgpt.com/backend-api/codex","path":"/alpha/search","account_preset":"openai_codex"}
+  {"id":"codex_fetch","name":"ChatGPT / Codex","key":"required","base_url":"https://chatgpt.com/backend-api/codex","path":"/alpha/search","account_preset":"openai_codex"}
   ]})
 }
 fn preset(id: &str) -> Result<Value, ApiError> {
@@ -208,6 +208,9 @@ async fn read(
       json!({"url":url})
     }
     "codex_fetch" => {
+      // Codex SearchClient uses POST alpha/search; SearchCommands.open accepts a URL
+      // in ref_id. Verified against openai/codex 970111f6, codex-api/src/search.rs
+      // and codex-api/src/endpoint/search.rs, plus an authenticated page read.
       endpoint = endpoint
         .with_credential_header(
           "chatgpt-account-id",
