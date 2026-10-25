@@ -1,0 +1,37 @@
+{
+  "presets": [
+    {
+      "id": "deepseek_fetch",
+      "name": "DeepSeek",
+      "key": "required",
+      "base_url": "https://api.deepseek.com",
+      "path": "/v1/tools/fetch",
+      "protocol": "deepseek_fetch"
+    },
+    {
+      "id": "zai_reader",
+      "name": "Z.AI",
+      "key": "required",
+      "base_url": "https://api.z.ai/api/paas/v4",
+      "path": "/reader",
+      "protocol": "zai_reader"
+    },
+    {
+      "id": "jina_reader",
+      "name": "Jina Reader",
+      "key": "optional",
+      "base_url": "https://r.jina.ai",
+      "path": "/",
+      "protocol": "jina_reader"
+    },
+    {
+      "id": "codex_fetch",
+      "name": "ChatGPT / Codex",
+      "key": "required",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "path": "/alpha/search",
+      "account_preset": "openai_codex",
+      "protocol": "codex_fetch"
+    }
+  ]
+}

@@ -465,6 +465,45 @@ impl<T: Transport> Client<T> {
     .await
   }
 
+  /// Reads a webpage with this client's account credentials (see [`crate::protocol::web_fetch`]). The request goes out through
+  /// this client's transport, with its current credentials, so a renewed token is used at once.
+  pub async fn fetch(
+    &self,
+    protocol: crate::protocol::web_fetch::FetchProtocol,
+    query: &crate::protocol::web_fetch::FetchRequest,
+    base_url: Option<&str>,
+    headers: &[(String, String)],
+  ) -> Result<crate::protocol::web_fetch::FetchResult, Error> {
+    retry_upstream(
+      &self.auxiliary_retry,
+      RetryOperation::WebFetch,
+      self.retry_observer.clone(),
+      |_| async {
+        tokio::time::timeout(
+          std::time::Duration::from_secs(60),
+          crate::protocol::web_fetch::fetch(
+            &self.transport,
+            protocol,
+            &self.credentials,
+            base_url,
+            headers,
+            query,
+            unix_seconds(),
+          ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+          Err(Error::Transport(crate::protocol::error::TransportFailure {
+            retryable: false,
+            message: "web fetch: no answer within 60 seconds".into(),
+          }))
+        })
+      },
+      classify_read_retry,
+    )
+    .await
+  }
+
   /// Internal: the call one attempt of [`Client::call`] sends: the rendered body with the coding
   /// client's identity applied, on the path the request resolves to.
   fn build_model_use_call(&self, request: &Request) -> Result<Call, Error> {

@@ -78,6 +78,7 @@ pub mod model_list;
 pub mod model_use;
 pub mod token_count;
 pub mod upstream_compaction;
+pub mod web_fetch;
 pub mod web_search;
 
 pub use model_use::message::{ContentBlock, Message, ReasoningOpaqueKind};

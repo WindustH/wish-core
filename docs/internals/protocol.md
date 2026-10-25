@@ -95,3 +95,15 @@ dialect knows HTTP and no transport knows a body. The binders hold both ends:
   attempt with no retry. The reads and the token refresh take a reply from status to JSON with
   `http_error::read_provider_json`; the browser login (`src/server/codex_login.rs`) words a
   refused code exchange itself.
+
+## Webpage reading
+
+`protocol/web_fetch` owns the reader wire formats. `FetchProtocol` dispatches to the
+DeepSeek, Z.AI, Jina and Codex adapters; `source.rs` owns endpoints and authentication.
+`fetch.rs` performs one attempt using the supplied `Transport` and returns a `FetchResult`.
+It has no dependency on server configuration, account registries or snapshot files.
+
+`Client::fetch` supplies credentials and retry policy for shared-account calls.
+`server/fetch.rs` assembles configured services from `resources/fetch-presets.json`, selects
+accounts and transports, and tries enabled providers in order. `tool/web_fetch.rs` exposes
+this operation to the agent and currently owns continuation snapshots and paging.

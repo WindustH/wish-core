@@ -11,9 +11,9 @@ use crate::{
     retry::{classify_read_retry, retry_upstream},
   },
   protocol::{
-    attempt::{Limits, Transport},
-    endpoint::{AuthScheme, Draft, Endpoint},
-    http_error,
+    attempt::Limits,
+    endpoint::{AuthScheme, Endpoint},
+    web_fetch::{FetchProtocol, FetchRequest},
   },
   transport::ReqwestTransport,
   utils::retry::RetryPolicy,
@@ -55,12 +55,8 @@ pub struct Page {
   pub fetched_at: u64,
 }
 pub fn presets() -> Value {
-  json!({"presets":[
-  {"id":"deepseek_fetch","name":"DeepSeek","key":"required","base_url":"https://api.deepseek.com","path":"/v1/tools/fetch"},
-  {"id":"zai_reader","name":"Z.AI","key":"required","base_url":"https://api.z.ai/api/paas/v4","path":"/reader"},
-  {"id":"jina_reader","name":"Jina Reader","key":"optional","base_url":"https://r.jina.ai","path":"/"},
-  {"id":"codex_fetch","name":"ChatGPT / Codex","key":"required","base_url":"https://chatgpt.com/backend-api/codex","path":"/alpha/search","account_preset":"openai_codex"}
-  ]})
+  serde_json::from_str(include_str!("../../resources/fetch-presets.json"))
+    .expect("embedded fetch presets must be valid JSON")
 }
 fn preset(id: &str) -> Result<Value, ApiError> {
   presets()["presets"]
@@ -182,46 +178,16 @@ async fn read(
   if spec["key"] == "required" && credentials.api_key.is_empty() {
     return Err(crate::Error::Build("fetch account has no API key or active login".into()));
   }
-  let auth =
-    if credentials.api_key.is_empty() { AuthScheme::None } else { AuthScheme::Bearer(None) };
-  let mut endpoint = Endpoint::new(
-    p.base_url.as_deref().unwrap_or(spec["base_url"].as_str().unwrap()),
-    spec["path"].as_str().unwrap(),
-    auth,
-  )?;
-  for (k, v) in &p.headers {
-    endpoint = endpoint.with_header(k, v);
-  }
-  endpoint = endpoint.with_header("accept", "application/json");
-  let user_agent =
-    if p.preset == "codex_fetch" { account.and_then(|a| a.get_user_agent()) } else { None };
-  endpoint = endpoint
-    .with_header("user-agent", user_agent.as_deref().unwrap_or(super::provider::WISH_USER_AGENT));
-  let body = match p.preset.as_str() {
-    "zai_reader" => {
-      json!({"url":url,"return_format":"markdown","no_cache":refresh,"keep_img_data_url":false})
-    }
-    "jina_reader" => {
-      if refresh {
-        endpoint = endpoint.with_header("x-no-cache", "true");
-      }
-      json!({"url":url})
-    }
-    "codex_fetch" => {
-      // Codex SearchClient uses POST alpha/search; SearchCommands.open accepts a URL
-      // in ref_id. Verified against openai/codex 970111f6, codex-api/src/search.rs
-      // and codex-api/src/endpoint/search.rs, plus an authenticated page read.
-      endpoint = endpoint
-        .with_credential_header(
-          "chatgpt-account-id",
-          crate::protocol::endpoint::CredentialField::AccountId,
-        )
-        .with_header("originator", "codex_cli_rs");
-      json!({"id":conversation,"model":"gpt-5.5","commands":{"open":[{"ref_id":url}],"response_length":"long"}})
-    }
-    _ => json!({"url":url}),
-  };
-  let draft = Draft::post_json(&body)?;
+  let protocol: FetchProtocol = spec["protocol"].as_str().unwrap().parse()?;
+  let mut headers: Vec<(String, String)> =
+    p.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+  let user_agent = account.and_then(|a| a.get_user_agent());
+  headers.push((
+    "user-agent".into(),
+    user_agent.as_deref().unwrap_or(super::provider::WISH_USER_AGENT).into(),
+  ));
+  let request =
+    FetchRequest { url: url.into(), refresh, conversation: Some(conversation.into()), model: None };
   let transport = ReqwestTransport::new(
     Limits {
       max_response_bytes: 8 * 1024 * 1024,
@@ -231,27 +197,33 @@ async fn read(
     },
     proxy.policy(p.proxy_enabled),
   )?;
-  let result = retry_upstream(
+  // Shared-account calls use the same client boundary as subscription web search.
+  if let Some(account) = account {
+    let mut client = account.client.clone().with_transport(transport);
+    if let Some(observer) = observer {
+      client = client.with_retry_observer(observer);
+    }
+    let page = client.fetch(protocol, &request, p.base_url.as_deref(), &headers).await?;
+    return Ok((page.title, page.content));
+  }
+  let page = retry_upstream(
     &RetryPolicy::auxiliary(),
     RetryOperation::WebFetch,
     observer,
     |_| async {
-      let call =
-        endpoint.build_call(draft.clone(), &credentials, crate::utils::time::unix_seconds())?;
-      let reply = transport.execute(&call).await?;
-      http_error::read_provider_json(reply, "web fetch")
+      crate::protocol::web_fetch::fetch(
+        &transport,
+        protocol,
+        &credentials,
+        p.base_url.as_deref(),
+        &headers,
+        &request,
+        crate::utils::time::unix_seconds(),
+      )
+      .await
     },
     classify_read_retry,
   )
   .await?;
-  let data = match p.preset.as_str() {
-    "zai_reader" => &result["reader_result"],
-    "jina_reader" => &result["data"],
-    _ => &result,
-  };
-  let content =
-    if p.preset == "codex_fetch" { result["output"].as_str() } else { data["content"].as_str() };
-  let content =
-    content.ok_or_else(|| crate::Error::Build("fetch provider returned no page content".into()))?;
-  Ok((data["title"].as_str().unwrap_or("").into(), content.into()))
+  Ok((page.title, page.content))
 }
