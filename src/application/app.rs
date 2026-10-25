@@ -9,7 +9,7 @@ use crate::application::{
   config_file::ConfigFile,
   copilot_login::CopilotLoginManager,
   error::{ApplicationError, blocking},
-  instructions::apply_agent_instructions_for_shell,
+  instructions::apply_agent_instructions,
   management::ManagementStore,
   mcp::McpHub,
   provider::{self, Provider, Providers, read_secret},
@@ -246,7 +246,13 @@ impl App {
     }
     // Without a word from the request: no shell and no web search, and questions to the user and
     // MCP allowed. Web search stays off while no search provider could answer it.
+    // Delivery defaults are copied once. Existing descriptors never follow global changes.
+    let delivery_defaults = self.config_file.lock().await.config.defaults.tools;
     let mut tools = ToolSwitches {
+      task_delivery: delivery_defaults.task_delivery,
+      web_fetch_delivery: delivery_defaults.web_fetch_delivery,
+      web_search_delivery: delivery_defaults.web_search_delivery,
+      ask_user_delivery: delivery_defaults.ask_user_delivery,
       shell: false,
       ask_user: true,
       mcp: true,
@@ -281,7 +287,19 @@ impl App {
       message.normalize_new_input();
     }
     // Agent instructions may be inserted at the front; origins line up from the back.
-    apply_agent_instructions_for_shell(&mut input.initial_messages, tools.shell);
+    apply_agent_instructions(&mut input.initial_messages, tools);
+    let environment = crate::protocol::Message::System {
+      metadata: json!({"source":"wish_environment"}),
+      content: vec![crate::protocol::ContentBlock::Text {
+        text: super::instructions::environment_instruction(
+          &self.shell.read().unwrap(),
+          &descriptor.cwd,
+        ),
+      }],
+    };
+    if let Some(existing) = input.initial_messages.iter_mut().find(|message| matches!(message,crate::protocol::Message::System{metadata,..} if metadata["source"]=="wish_environment")) {
+      *existing=environment;
+    } else { input.initial_messages.insert(1,environment); }
     let inserted = input.initial_messages.len().saturating_sub(input.initial_origins.len());
     let origins = std::iter::repeat_n(EntryOrigin::Imported, inserted).chain(input.initial_origins);
     let initial: Vec<_> = input.initial_messages.into_iter().zip(origins).collect();
@@ -339,7 +357,11 @@ impl App {
       if session.get_state().is_stable() {
         let current = session.get_config().clone();
         let config = slot.configure_tools(current.clone())?;
-        crate::application::instructions::persist_agent_instructions(&mut session, config)?;
+        crate::application::instructions::persist_agent_instructions(
+          &mut session,
+          config,
+          slot.get_descriptor().tools,
+        )?;
         slot.refresh_status(&session);
       }
     }

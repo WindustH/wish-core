@@ -159,9 +159,18 @@ impl AskUserTool {
 
   /// Puts the form to the user and waits.
   async fn ask(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
-    let (questions, timeout) = match parse_form(&call.arguments) {
+    let parsed =
+      super::arguments::normalize(&call.arguments, &self.get_specification().input_schema)
+        .and_then(|arguments| parse_form(&arguments));
+    let (questions, timeout) = match parsed {
       Ok(parsed) => parsed,
-      Err(message) => return ToolOutcome::Failed(message),
+      Err(message) => {
+        return ToolOutcome::Failed(super::arguments::error(
+          "ask_user",
+          message,
+          r#"{"questions":[{"type":"text","question":"Which directory?"}]}"#,
+        ));
+      }
     };
     let (sender, receiver) = oneshot::channel();
     self.forms.lock().unwrap().insert(
@@ -331,6 +340,7 @@ fn parse_question(value: &Value) -> Result<Question, String> {
   let question = text(value, "question")?.ok_or("`question` is required")?;
   let options = match (kind, value.get("options")) {
     (Kind::Text, None | Some(Value::Null)) => Vec::new(),
+    (Kind::Text, Some(Value::Array(items))) if items.is_empty() => Vec::new(),
     (Kind::Text, Some(_)) => {
       return Err("a text question takes no `options`; use type \"choice\"".into());
     }
@@ -443,4 +453,26 @@ fn read_answers(form: &[Question], answers: &[Value]) -> Result<Vec<Value>, Answ
     return Err(AnswerError::Invalid("answer at least one question, or skip the form".into()));
   }
   Ok(read)
+}
+
+#[cfg(test)]
+mod argument_tests {
+  use super::*;
+  #[test]
+  fn optional_empty_form_fields_use_defaults_without_inventing_questions() {
+    let tool = AskUserTool::new(|| {});
+    let arguments = super::super::arguments::normalize(&json!({
+      "questions":[{"type":"text","question":"Which directory?","options":[],"multiline":"","header":null}],
+      "timeout_seconds":" "
+    }), &tool.get_specification().input_schema).unwrap();
+    let (questions, timeout) = parse_form(&arguments).unwrap();
+    assert!(timeout.is_none());
+    assert!(!questions[0].multiline);
+    assert!(questions[0].options.is_empty());
+    for value in
+      [json!({}), json!({"questions":[]}), json!({"questions":[{"type":"text","question":""}]})]
+    {
+      assert!(parse_form(&value).is_err());
+    }
+  }
 }

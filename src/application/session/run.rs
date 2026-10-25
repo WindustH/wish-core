@@ -147,7 +147,7 @@ impl SessionSlot {
     Ok(false)
   }
   /// The epoch a run scheduled now would carry.
-  pub(super) fn get_schedule_epoch(&self) -> u64 {
+  pub(crate) fn get_schedule_epoch(&self) -> u64 {
     self.schedule_epoch.load(Ordering::SeqCst)
   }
   /// Registers an operation on the session the caller holds: resumed for a run, reported as
@@ -158,7 +158,11 @@ impl SessionSlot {
     operation: Operation,
   ) -> Result<ExecutionControl, ApplicationError> {
     let config = session.get_config().clone();
-    crate::application::instructions::persist_agent_instructions(session, config)?;
+    crate::application::instructions::persist_agent_instructions(
+      session,
+      config,
+      self.get_descriptor().tools,
+    )?;
     if operation == Operation::Run {
       session.resume()?;
     }

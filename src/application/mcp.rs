@@ -28,30 +28,6 @@ use std::{
   time::{Duration, Instant},
 };
 
-/// The section of the agent instructions on `wish mcp`, in every request with a shell (see
-/// [`crate::application::instructions::agent_instructions`]). It names no server and no tool, and does
-/// not depend on the session's MCP switch, so it never changes.
-pub const INSTRUCTIONS: &str = if cfg!(windows) {
-  // cmd.exe has no single quotes, and quoting JSON for it is fragile: the arguments go on standard
-  // input instead, which `wish mcp call` reads when they are left out.
-  "# MCP servers\n\
-   MCP servers are reached through the `wish mcp` command in the shell; their tools are not in your \
-   tool list.\n\
-   - `wish mcp list` shows the servers and their tools.\n\
-   - `wish mcp describe <server>/<tool>` shows a tool's description and parameters.\n\
-   - `wish mcp call <server>/<tool>` calls it with the JSON arguments read from standard input \
-   (give them in shell_start's data) and prints the result.\n\
-   Scripts can run it too, to chain calls and filter results before printing them."
-} else {
-  "# MCP servers\n\
-   MCP servers are reached through the `wish mcp` command in the shell; their tools are not in your \
-   tool list.\n\
-   - `wish mcp list` shows the servers and their tools.\n\
-   - `wish mcp describe <server>/<tool>` shows a tool's description and parameters.\n\
-   - `wish mcp call <server>/<tool> '<json arguments>'` calls it and prints the result.\n\
-   Scripts can run it too, to chain calls and filter results before printing them."
-};
-
 /// Headers a server's configuration may not set: the transport sends them itself.
 const RESERVED_HEADERS: &[&str] =
   &["accept", "content-type", "mcp-session-id", "mcp-protocol-version", "last-event-id"];

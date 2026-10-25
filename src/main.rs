@@ -9,6 +9,7 @@ mod protocol;
 mod server;
 mod session;
 mod storage;
+mod task;
 mod tool;
 mod transport;
 mod utils;

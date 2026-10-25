@@ -20,6 +20,7 @@ pub mod management;
 pub mod measurement;
 pub mod repository_error;
 pub mod snapshots;
+pub mod task_records;
 mod transaction;
 
 pub(crate) use database::OwnerGuard;

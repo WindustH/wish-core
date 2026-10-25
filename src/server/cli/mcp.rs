@@ -16,7 +16,17 @@ const USAGE: &str = "usage:
                                           result as the protocol gives it
 
 exit status: 0 done, 1 the tool reported an error, 2 nothing was called, 3 the call's outcome is
-unknown (it may have taken effect)";
+unknown (it may have taken effect)
+
+Examples:
+  wish mcp list
+  wish mcp describe files/read
+  wish mcp call files/read '{\"path\":\"/tmp/example.txt\"}'
+
+Run describe before calling an unfamiliar tool. Normal calls print text content; --json preserves
+all protocol fields. JSON may be piped on stdin, which also avoids shell quoting problems.
+Calls use this session's MCP permissions and bridge environment. Help works outside a session.
+An unknown outcome may already have caused side effects: inspect state before retrying.";
 
 /// Runs the command and returns its exit status.
 pub async fn run(args: Vec<String>) -> i32 {

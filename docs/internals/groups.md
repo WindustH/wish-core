@@ -61,11 +61,11 @@ where. A session without a shell reads its groups and never speaks there. What a
 told is in its history as the queued `User` messages. Nothing of a group is in the history search
 index: the transcript is searched where it is kept.
 
-## `wish session` (`server::peers`)
+## `wish session` (`server::cli::sessions`)
 
-`peers::INSTRUCTIONS` is appended to the agent instructions after the skills' when the session has
-a shell, and names no session or group; it tells the model that a message headed by a group came
-from there, and that it speaks there by sending. `peers::cli` is a bridge client like `wish mcp`'s:
+The initial instructions briefly list `wish session`, without naming sessions or groups.
+`wish session --help` explains group messages and posting replies with `send`.
+The CLI is a bridge client, like `wish mcp`; `application::peer_commands` enforces access rules.
 
 | Command | Route | Rule |
 | --- | --- | --- |

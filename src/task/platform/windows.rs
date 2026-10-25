@@ -20,7 +20,7 @@ use windows_sys::Win32::{
 };
 
 /// No breakaway permission: ordinary descendants stay in the same owned job.
-pub(in crate::tool::shell) struct ProcessTree {
+pub(in crate::task) struct ProcessTree {
   job: OwnedHandle,
   pid: u32,
 }
@@ -60,7 +60,7 @@ impl ProcessTree {
   pub fn disarm(&mut self) {}
 }
 /// Bytes in the system's OEM code page as text; None when Windows cannot convert them.
-pub(in crate::tool::shell) fn decode_oem(bytes: &[u8]) -> Option<String> {
+pub(in crate::task) fn decode_oem(bytes: &[u8]) -> Option<String> {
   use windows_sys::Win32::Globalization::{CP_OEMCP, MultiByteToWideChar};
   let length = i32::try_from(bytes.len()).ok()?;
   if length == 0 {

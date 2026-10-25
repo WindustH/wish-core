@@ -7,3 +7,5 @@ pub mod view_image;
 pub mod web_search;
 
 pub mod web_fetch;
+
+pub(crate) mod arguments;

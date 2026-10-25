@@ -15,6 +15,16 @@ mod web;
 pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
   let mut args = std::env::args().skip(1);
   match std::env::args().nth(1).as_deref() {
+    Some("--help" | "-h" | "help") => {
+      println!(
+        "Wish: agent service and session commands\n\nServer: wish [--config PATH]\nCommands: task, webfetch, websearch, askuser, mcp, skill, session\nRun wish <command> --help for its manual. Commands run inside a Wish session shell."
+      );
+      return Ok(());
+    }
+    Some(name @ ("webfetch" | "websearch" | "askuser")) => {
+      std::process::exit(cli::tool_commands::run(name, args.skip(1).collect()).await)
+    }
+    Some("task") => std::process::exit(cli::tasks::run(args.skip(1).collect()).await),
     Some("mcp") => std::process::exit(cli::mcp::run(args.skip(1).collect()).await),
     Some("skill") => std::process::exit(cli::skills::run(args.skip(1).collect()).await),
     Some("session") => std::process::exit(cli::sessions::run(args.skip(1).collect()).await),

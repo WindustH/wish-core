@@ -24,7 +24,18 @@ const USAGE: &str = "usage:
   wish session group leave <group>
 
 Sessions and groups are named by name or id. Exit status: 0 done, 1 refused or not found, 2
-nothing was asked.";
+nothing was asked.
+
+Examples:
+  wish session list
+  wish session create reviewer --instructions 'Review the patch'
+  wish session send reviewer 'Check the latest changes'
+  wish session show reviewer
+
+Commands print JSON results and use the session identity supplied by the shell bridge. They
+can inspect sessions and groups, but only configure/delete yourself or sessions you created.
+Sending to a group requires membership. A reply in your own conversation does not post to a
+group: use send when you have something to add there. Help works outside a session.";
 
 /// Runs the command and returns its exit status.
 pub async fn run(args: Vec<String>) -> i32 {

@@ -72,9 +72,18 @@ impl ToolExecutor for ViewImageTool {
     if control.is_cancelled() {
       return ToolOutcome::Cancelled;
     }
-    let args = match call.parse_arguments() {
+    let parsed =
+      super::arguments::normalize(&call.arguments, &self.get_specification().input_schema)
+        .and_then(|value| serde_json::from_value(value).map_err(|error| error.to_string()));
+    let args = match parsed {
       Ok(args) => args,
-      Err(error) => return ToolOutcome::Failed(error),
+      Err(error) => {
+        return ToolOutcome::Failed(super::arguments::error(
+          "view_image",
+          error,
+          r#"{"path":"/absolute/path/image.png"}"#,
+        ));
+      }
     };
     match control.run_until_cancelled(self.read_image(args)).await {
       Some(result) => result.unwrap_or_else(ToolOutcome::Failed),

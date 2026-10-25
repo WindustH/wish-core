@@ -577,11 +577,10 @@ Status fields:
 | `compaction` | no | `{"trigger_tokens", "target_tokens", "segment_tokens", "estimator"}`; requires `0 < target < trigger` and `segment > 0`. Absent disables compaction |
 
 Every session gets `history_search`, `history_read`, `history_query` and
-`view_image`. With `tools.shell` it also gets `shell_start`, `shell_edit`,
-`shell_poll`, `shell_write` and `shell_kill`, with `tools.ask_user` it gets
+`view_image`. With `tools.shell` it also gets the `shell` command tool (optional `edit` paths and `check_diff`), with `tools.ask_user` it gets
 `ask_user`, and with `tools.web_search` it gets [`web_search`](#web-search). On updates `tools` may list these names; any other name is
-rejected. With the shell on, `shell_start`'s description ends with a fixed note
-on `wish mcp` (see [MCP servers](#mcp-servers)). `tools.mcp` adds no tool and
+rejected. With the shell on, the initial instructions briefly list available Wish commands
+(see [MCP servers](#mcp-servers)). `tools.mcp` adds no tool and
 changes nothing in the tool list: it decides whether that command may reach
 the servers.
 
@@ -1318,3 +1317,72 @@ so an unsaved account can be used for catalog verification without saving either
 the account or the service. Redacted values resolve against stored accounts of
 the same IDs. Subscription login routes also accept `account:<id>` in place of a
 model provider ID; model-ID login routes remain compatible.
+
+
+### Session task management
+
+`GET /api/sessions/{id}/tasks` lists the session's tasks (user authentication).
+`POST` to that path performs an operation. Session CLI clients use
+`POST /api/sessions/{id}/task` with their own session bridge token instead.
+
+Request examples:
+
+```json
+{"action":"list"}
+{"action":"show","task_id":"123-456-0"}
+{"action":"background","task_id":"123-456-0"}
+{"action":"remove","task_id":"123-456-0"}
+{"action":"execute","operation":{"operation":"start","command":"npm test","timeout":0}}
+{"action":"execute","operation":{"operation":"poll","execution_id":"123-456-0","offset":0,"max_bytes":4096,"wait_ms":1000}}
+{"action":"execute","operation":{"operation":"write","execution_id":"123-456-0","data":"input","close":true}}
+{"action":"execute","operation":{"operation":"kill","execution_id":"123-456-0","mode":"graceful"}}
+```
+
+Task records include `task_id` (also `execution_id` for existing output consumers), command,
+start timestamp in Unix milliseconds, background flag, process status, captured output path
+and edit results. `background` accepts a running task and releases any foreground wait without
+restarting it. `remove` accepts only a finished task and deletes its record and captured output.
+All lookups are limited to the selected session's registry. Disabling shell execution blocks
+new tasks, while user-authenticated management of existing tasks remains available.
+
+`POST /api/sessions/{id}/tasks/background-shell` backgrounds the current foreground shell
+commands and returns `{tasks:[...]}`; already finished/background tasks are left alone.
+User input accepts `background_shell: true`: enqueue the validated message first, then release
+foreground waits. The frontend uses this for message sends, avoiding a wait for long commands.
+
+### Capability commands
+
+`GET /api/sessions/{id}/commands/{name}` returns the tool description/schema;
+`POST` accepts its normal argument object and returns its output. Names are `webfetch`,
+`websearch`, and `askuser`. Both routes require the session's own bridge token and its shell
+and capability switches to be enabled. Ask User stays pending until answered, skipped,
+timed out, or cancelled. Provider/result metadata is retained in the timeline.
+
+Session tools and default tools accept `task_delivery`, `web_fetch_delivery`,
+`web_search_delivery`, `ask_user_delivery`, each `tool` or `command`.
+
+Delivery settings are copied into a session at creation, including when the API request omits
+these fields. Changing global defaults affects only new sessions. Existing sessions retain their
+saved settings across restart and can change them explicitly through `PUT /sessions/{id}/tools`.
+Older session records use fixed compatibility defaults (task: command; other capabilities: tool),
+not the current global defaults.
+
+`PUT /api/sessions/{id}/cwd` with `{"cwd":"/absolute/directory"}` changes the working directory
+for subsequent shell commands. Existing processes keep their original directory. Shell selection
+can also be changed through the session shell endpoint while a command is running.
+Initial instructions record the effective shell and directory. Changes enqueue a system notice;
+the current generation's initial prefix stays unchanged. On the next generation switch the new
+values replace that prefix, while the preceding generation remains unchanged.
+
+The initial prompt lists available Wish commands briefly. Each command documents its arguments,
+examples, results and constraints in `wish <command> --help`, without requiring a live session.
+Optional tool parameters sent as null or blank strings are treated as omitted. Required command,
+query, path and question content is never invented. Invalid nonempty values return field-specific
+errors; invalid task ids suggest listing tasks and invalid fetch cursors explain how to restart.
+
+For existing sessions, delivery changes append a system notice describing the new route. The
+active generation keeps its initial instructions. Newly required direct-tool definitions are
+added immediately; definitions retained after a tool-to-command switch are removed at the next
+generation boundary. Disabled capabilities are revoked immediately. Changing delivery does not
+revoke access: enabled capabilities accept valid calls through either direct tools or Wish
+commands, including calls whose tool definition is currently unadvertised.

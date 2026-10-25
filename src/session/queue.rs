@@ -31,6 +31,18 @@ impl SessionSender {
   pub fn record_application_event(&self, value: Value) -> Result<EventId, SessionError> {
     self.transact(move |transaction| transaction.record_event(SessionEvent::Application(value)))
   }
+  /// Append a notice now; replace its managed initial instruction only at a generation boundary.
+  pub fn enqueue_instruction_update(
+    &self,
+    source: String,
+    text: String,
+    notice: String,
+  ) -> Result<EntryId, SessionError> {
+    self.enqueue_message(Message::System {
+      metadata: serde_json::json!({"next_generation_instruction":{"source":source,"text":text}}),
+      content: vec![crate::protocol::ContentBlock::Text { text: notice }],
+    })
+  }
   /// Move a pending input before another pending input, or to the end.
   /// Validation and writes share one transaction with enqueue/consume/cancel.
   pub fn move_queued_input(
@@ -138,7 +150,20 @@ impl Session {
   }
 }
 impl SessionTransaction<'_, '_> {
-  fn append_input(&mut self, message: Message) -> Result<EntryId, SessionError> {
+  pub(in crate::session) fn remember_instruction_update(&mut self, message: &Message) {
+    if let Message::System { metadata, .. } = message {
+      if let (Some(source), Some(text)) = (
+        metadata["next_generation_instruction"]["source"].as_str(),
+        metadata["next_generation_instruction"]["text"].as_str(),
+      ) {
+        self.record.next_generation_instructions.insert(source.into(), text.into());
+      }
+    }
+  }
+  pub(in crate::session) fn append_input(
+    &mut self,
+    message: Message,
+  ) -> Result<EntryId, SessionError> {
     let entry = self.store_entry(message, EntryOrigin::Input)?;
     self.store.append_item(&self.record.queue, &entry)?;
     self.record_event(SessionEvent::MessageQueued { entry })?;
@@ -151,6 +176,7 @@ impl SessionTransaction<'_, '_> {
     let generation = self.load_generation(self.record.active)?;
     for id in self.store.read_from::<EntryId>(&self.record.queue, queue_start)? {
       let entry = self.load_entry(*id)?;
+      self.remember_instruction_update(&entry.message);
       self.store.append_item(&generation.entries, &entry.id)?;
       self.record_history(Fact::Message(&entry), self.record.active_model_call)?;
     }

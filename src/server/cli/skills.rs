@@ -10,7 +10,17 @@ const USAGE: &str = "usage:
   wish skill list            every skill, in its folders
   wish skill show <name>     a skill's instructions, and the files beside them
 
-exit status: 0 done, 1 no skill matched or has that name, 2 nothing was asked";
+exit status: 0 done, 1 no skill matched or has that name, 2 nothing was asked
+
+Examples:
+  wish skill find spreadsheet
+  wish skill list
+  wish skill show spreadsheet
+
+Skills contain task instructions and sometimes scripts or reference files. Find returns ranked
+matches; list groups skills by folder; show prints instructions and nearby files. Follow a
+loaded skill's instructions. Commands use this session's configured directories and permissions.
+Help works outside a session; discovery requires the bridge environment from a session shell.";
 
 /// Runs the command and returns its exit status.
 pub async fn run(args: Vec<String>) -> i32 {

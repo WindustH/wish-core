@@ -158,6 +158,76 @@ impl SessionTransaction<'_, '_> {
     previous.status = GenerationStatus::Sealed;
     self.save_generation(&previous)?;
     let mut activated = self.load_generation(next)?;
+    // An environment notice may still be queued when a caller explicitly switches generation.
+    for id in self.store.read_from::<EntryId>(&self.record.queue, self.record.queue_head)? {
+      let message = self.load_entry(*id)?.message.clone();
+      self.remember_instruction_update(&message);
+    }
+    if !self.record.next_generation_instructions.is_empty() {
+      let replacements = self.record.next_generation_instructions.clone();
+      let mut installed = std::collections::HashSet::new();
+      let mut entries = Vec::new();
+      let mut cursor = 0;
+      for (position, id) in
+        self.store.read_from::<EntryId>(&activated.entries, 0)?.iter().enumerate()
+      {
+        let entry = self.load_entry(**id)?;
+        if let crate::protocol::Message::System { metadata, .. } = &entry.message {
+          if metadata.get("next_generation_instruction").is_some() {
+            continue;
+          }
+          if let Some(source) = metadata["source"].as_str() {
+            if let Some(text) = replacements.get(source) {
+              if !installed.insert(source.to_owned()) {
+                continue;
+              }
+              let replacement = self.store_entry(
+                crate::protocol::Message::System {
+                  metadata: serde_json::json!({"source":source}),
+                  content: vec![crate::protocol::ContentBlock::Text { text: text.clone() }],
+                },
+                EntryOrigin::Context,
+              )?;
+              entries.push(replacement);
+              if (position as u64) < activated.compaction_cursor {
+                cursor += 1;
+              }
+              continue;
+            }
+          }
+        }
+        entries.push(**id);
+        if (position as u64) < activated.compaction_cursor {
+          cursor += 1;
+        }
+      }
+      for (source, text) in replacements {
+        if installed.contains(&source) {
+          continue;
+        }
+        let entry = self.store_entry(
+          crate::protocol::Message::System {
+            metadata: serde_json::json!({"source":source}),
+            content: vec![crate::protocol::ContentBlock::Text { text }],
+          },
+          EntryOrigin::Context,
+        )?;
+        entries.insert(0, entry);
+        if activated.compaction_cursor > 0 {
+          cursor += 1;
+        }
+      }
+      // A standby's entries may be reused elsewhere; create a fresh list before replacing its prefix.
+      let list = self.allocate_list::<EntryId>()?;
+      self.store.append_items(&list, &entries)?;
+      let old = std::mem::replace(&mut activated.entries, list);
+      self.store.delete_list::<EntryId>(&old)?;
+      activated.compaction_cursor = cursor;
+    }
+    if let Some(tools) = &self.record.next_generation_tools {
+      activated.config.tools = tools.clone();
+      self.record.config.tools = tools.clone();
+    }
     activated.status = GenerationStatus::Active;
     activated.source = None;
     self.save_generation(&activated)?;

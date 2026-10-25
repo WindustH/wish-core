@@ -1,9 +1,9 @@
 //! One execution of a shell command: its shared state, stdin writes, termination, and the
 //! supervisor task that waits for the process, kills its group on request and records how it ended.
 use super::edit::{EditCapture, EditResult};
-use super::{KillMode, ShellError, platform::ProcessTree};
+use super::{KillMode, TaskError, platform::ProcessTree};
 use crate::executor::ExecutionControl;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{io, path::PathBuf, sync::Arc, time::Duration};
 use tokio::{
   io::AsyncWriteExt,
@@ -11,15 +11,16 @@ use tokio::{
   sync::{Mutex, mpsc, watch},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Status {
   Running,
   Exited,
   Killed,
+  Interrupted,
   Unknown,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct Snapshot {
   pub status: Status,
   pub exit_code: Option<i32>,
@@ -45,6 +46,11 @@ impl Default for Snapshot {
 }
 pub(super) struct Execution {
   pub id: String,
+  pub command: String,
+  pub started_at: u64,
+  pub background: watch::Sender<bool>,
+  pub notification_claimed: std::sync::atomic::AtomicBool,
+  pub record_lock: Mutex<()>,
   pub output_path: PathBuf,
   pub stdin: Mutex<Option<ChildStdin>>,
   pub state: watch::Sender<Snapshot>,
@@ -53,30 +59,37 @@ pub(super) struct Execution {
   pub initial_input_done: watch::Sender<bool>,
 }
 impl Execution {
+  pub fn describe(&self) -> serde_json::Value {
+    serde_json::json!({"execution_id":self.id,"task_id":self.id,"command":self.command,"started_at":self.started_at,"background":*self.background.borrow(),"process":self.get_snapshot(),"output_path":self.output_path,"edits":*self.get_snapshot().edits})
+  }
+  pub async fn persist(&self) -> Result<(), TaskError> {
+    let _guard = self.record_lock.lock().await;
+    crate::storage::task_records::save(self.output_path.parent().unwrap(), &self.describe())
+      .await?;
+    Ok(())
+  }
+
   pub fn get_snapshot(&self) -> Snapshot {
     self.state.borrow().clone()
   }
-  pub async fn wait_for_exit(&self) -> Result<Snapshot, ShellError> {
+  pub async fn wait_for_exit(&self) -> Result<Snapshot, TaskError> {
     let mut state = self.state.subscribe();
     loop {
       let snapshot = state.borrow_and_update().clone();
       if snapshot.status != Status::Running {
         if snapshot.status == Status::Unknown {
-          return Err(ShellError::Unknown(snapshot.error.unwrap_or_default()));
+          return Err(TaskError::Unknown(snapshot.error.unwrap_or_default()));
         }
         return Ok(snapshot);
       }
-      state
-        .changed()
-        .await
-        .map_err(|_| ShellError::Unknown("process supervisor stopped".into()))?;
+      state.changed().await.map_err(|_| TaskError::Unknown("process supervisor stopped".into()))?;
     }
   }
-  pub async fn terminate(&self, mode: KillMode) -> Result<Snapshot, ShellError> {
+  pub async fn terminate(&self, mode: KillMode) -> Result<Snapshot, TaskError> {
     if self.get_snapshot().status == Status::Running {
       // A concurrent natural exit may have closed the mailbox; the retained state is authoritative.
       if self.kills.send(mode).is_err() && self.get_snapshot().status == Status::Running {
-        return Err(ShellError::Unknown("process supervisor stopped".into()));
+        return Err(TaskError::Unknown("process supervisor stopped".into()));
       }
     }
     self.wait_for_exit().await
@@ -152,6 +165,9 @@ pub(super) async fn supervise(
   initial_input: Option<tokio::task::JoinHandle<()>>,
   edits: Vec<EditCapture>,
 ) {
+  if let Err(error) = execution.persist().await {
+    eprintln!("task record: {error}");
+  }
   let mut killed = false;
   let mut deadline = None;
   let result = loop {
@@ -187,7 +203,8 @@ pub(super) async fn supervise(
   }
   execution.stdin.lock().await.take();
   let edits = futures_util::future::join_all(edits.into_iter().map(EditCapture::finish)).await;
-  execution.state.send_modify(|snapshot| {
+  let mut snapshot = execution.get_snapshot();
+  {
     snapshot.edits = Arc::new(edits);
     match result.and_then(|status| cleanup.map(|_| status)) {
       Ok(status) => {
@@ -204,5 +221,17 @@ pub(super) async fn supervise(
         snapshot.error = Some(error.to_string());
       }
     }
-  });
+  }
+  {
+    let _record = execution.record_lock.lock().await;
+    let mut record = execution.describe();
+    record["process"] = serde_json::json!(snapshot);
+    record["edits"] = serde_json::json!(*snapshot.edits);
+    if let Err(error) =
+      crate::storage::task_records::save(execution.output_path.parent().unwrap(), &record).await
+    {
+      eprintln!("task record: {error}");
+    }
+    execution.state.send_replace(snapshot);
+  }
 }

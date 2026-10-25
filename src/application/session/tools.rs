@@ -26,15 +26,35 @@ use std::sync::{
 };
 
 const HISTORY_TOOLS: [&str; 3] = ["history_search", "history_read", "history_query"];
-const SHELL_TOOLS: [&str; 5] =
-  ["shell_start", "shell_edit", "shell_poll", "shell_write", "shell_kill"];
+const SHELL_TOOLS: [&str; 6] =
+  ["shell", "shell_start", "shell_edit", "shell_poll", "shell_write", "shell_kill"];
+
+/// How an enabled capability is presented to the model.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolDelivery {
+  #[default]
+  Tool,
+  Command,
+}
+fn command_delivery() -> ToolDelivery {
+  ToolDelivery::Command
+}
 
 /// The optional built-in tools of a session. History search and `view_image` are always there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolSwitches {
-  /// Commands in the session's working directory: `shell_start`, `shell_edit` and the rest.
+  /// The simple `shell` tool and session task commands.
   pub shell: bool,
+  #[serde(default = "command_delivery")]
+  pub task_delivery: ToolDelivery,
+  #[serde(default)]
+  pub web_fetch_delivery: ToolDelivery,
+  #[serde(default)]
+  pub web_search_delivery: ToolDelivery,
+  #[serde(default)]
+  pub ask_user_delivery: ToolDelivery,
   /// Questions to the user: `ask_user`.
   pub ask_user: bool,
   /// Whether `wish mcp` in the session's shell may reach the MCP servers. The model's request is
@@ -56,6 +76,10 @@ impl ToolSwitches {
   pub fn apply_changes(self, changes: ToolChanges) -> Self {
     Self {
       shell: changes.shell.unwrap_or(self.shell),
+      task_delivery: changes.task_delivery.unwrap_or(self.task_delivery),
+      web_fetch_delivery: changes.web_fetch_delivery.unwrap_or(self.web_fetch_delivery),
+      web_search_delivery: changes.web_search_delivery.unwrap_or(self.web_search_delivery),
+      ask_user_delivery: changes.ask_user_delivery.unwrap_or(self.ask_user_delivery),
       ask_user: changes.ask_user.unwrap_or(self.ask_user),
       mcp: changes.mcp.unwrap_or(self.mcp),
       web_search: changes.web_search.unwrap_or(self.web_search),
@@ -68,6 +92,7 @@ impl ToolSwitches {
   fn allow(self, name: &str) -> bool {
     match name {
       "view_image" => true,
+      "task" => self.shell,
       "ask_user" => self.ask_user,
       "web_search" => self.web_search,
       "web_fetch" => self.web_fetch,
@@ -82,6 +107,10 @@ impl ToolSwitches {
 #[serde(deny_unknown_fields)]
 pub struct ToolChanges {
   pub shell: Option<bool>,
+  pub task_delivery: Option<ToolDelivery>,
+  pub web_fetch_delivery: Option<ToolDelivery>,
+  pub web_search_delivery: Option<ToolDelivery>,
+  pub ask_user_delivery: Option<ToolDelivery>,
   pub ask_user: Option<bool>,
   pub mcp: Option<bool>,
   pub web_search: Option<bool>,
@@ -94,6 +123,10 @@ impl From<ToolSwitches> for ToolChanges {
   fn from(switches: ToolSwitches) -> Self {
     Self {
       shell: Some(switches.shell),
+      task_delivery: Some(switches.task_delivery),
+      web_fetch_delivery: Some(switches.web_fetch_delivery),
+      web_search_delivery: Some(switches.web_search_delivery),
+      ask_user_delivery: Some(switches.ask_user_delivery),
       ask_user: Some(switches.ask_user),
       mcp: Some(switches.mcp),
       web_search: Some(switches.web_search),
@@ -146,6 +179,13 @@ impl SessionTools {
   pub fn shell(&self) -> Option<&ShellTool> {
     self.shell.get()
   }
+  pub async fn task_manager(&self) -> Result<&ShellTool, ApplicationError> {
+    self
+      .shell
+      .get_or_try_init(|| ShellTool::new(self.shell_config.clone()))
+      .await
+      .map_err(|error| ApplicationError::invalid(format!("could not open tasks: {error}")))
+  }
   /// Applies the session's switches, starting the shell tool the first time it is on.
   pub async fn switch(&self, switches: ToolSwitches) -> Result<(), ApplicationError> {
     if switches.shell {
@@ -165,20 +205,30 @@ impl SessionTools {
     };
     let epoch = self.slot.upgrade().map(|slot| slot.get_schedule_epoch());
     let outcome = shell.execute(call, control).await;
-    let ToolOutcome::Success(output) = &outcome else {
-      return outcome;
-    };
-    if call.name != "shell_start" || output["process"]["status"] != "running" {
-      return outcome;
+    if let ToolOutcome::Success(output) | ToolOutcome::SuccessWithMetadata { output, .. } = &outcome
+    {
+      self.notify_background(output, call.arguments["command"].clone(), epoch);
     }
-    let Some(id) = output["execution_id"].as_str() else { return outcome };
-    let Some(app) = self.slot.upgrade().and_then(|slot| slot.app.upgrade()) else {
-      return outcome;
-    };
+    outcome
+  }
+  pub fn notify_background(
+    &self,
+    output: &serde_json::Value,
+    command: serde_json::Value,
+    epoch: Option<u64>,
+  ) {
+    if output["process"]["status"] != "running" {
+      return;
+    }
+    let Some(shell) = self.shell() else { return };
+    let Some(id) = output["execution_id"].as_str() else { return };
+    if !shell.claim_notification(id) {
+      return;
+    }
+    let Some(app) = self.slot.upgrade().and_then(|slot| slot.app.upgrade()) else { return };
     // A command left running in the background reports its end as a message, which starts a run
     // unless the session was interrupted since this one began.
-    let (shell, id, slot, command) =
-      (shell.clone(), id.to_owned(), self.slot.clone(), call.arguments["command"].clone());
+    let (shell, id, slot, command) = (shell.clone(), id.to_owned(), self.slot.clone(), command);
     let owner = app.clone();
     app.lifecycle.tasks.spawn(async move {
       let result = tokio::select! {
@@ -190,7 +240,7 @@ impl SessionTools {
         Err(error) => json!({"execution_id":id,"error":error.to_string()}),
       };
       let message = Message::Developer {
-        metadata: json!({"source":"background_execution_finished","execution_id":id,"completion":{"command":command,"result":result}}),
+        metadata: json!({"source":"background_execution_finished","execution_id":id,"completion":{"command":command,"result":result},"edits":shell.show(&id).ok().map(|task|task["edits"].clone())}),
         fixed: Some(false),
         content: vec![ContentBlock::Text {
           text: format!(
@@ -211,7 +261,6 @@ impl SessionTools {
         }
       }
     });
-    outcome
   }
   async fn view_image(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
     let outcome = ViewImageTool.execute(call, control).await;
@@ -263,9 +312,34 @@ fn questions_changed(slot: Weak<SessionSlot>) -> impl Fn() + Send + Sync + 'stat
   }
 }
 impl ToolExecutor for SessionTools {
+  fn accepts_unadvertised_call(&self, name: &str) -> bool {
+    // Recognize the route here; execute checks permissions and gives a specific disabled error.
+    matches!(name, "task" | "web_fetch" | "web_search" | "ask_user")
+  }
+
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
     match call.name.as_str() {
       "view_image" => self.view_image(call, control).await,
+      "task" => {
+        let Some(slot) = self.slot.upgrade() else {
+          return ToolOutcome::Failed("session is closed".into());
+        };
+        let Some(app) = slot.app.upgrade() else {
+          return ToolOutcome::Failed("server is closed".into());
+        };
+        let request = match crate::application::task_access::parse_request(&call.arguments) {
+          Ok(request) => request,
+          Err(error) => return ToolOutcome::Failed(error.to_string()),
+        };
+        match control
+          .run_until_cancelled(crate::application::task_access::execute(&app, slot, request, false))
+          .await
+        {
+          Some(Ok(output)) => ToolOutcome::Success(output),
+          Some(Err(error)) => ToolOutcome::Failed(error.to_string()),
+          None => ToolOutcome::Cancelled,
+        }
+      }
       "ask_user" => {
         if !self.ask_user_on.load(Ordering::Acquire) {
           return ToolOutcome::Failed("ask_user is not enabled for this session".into());
@@ -302,7 +376,7 @@ impl SessionSlot {
     if let Some(tool) = config.tools.iter().find(|tool| !switches.allow(&tool.name)) {
       return Err(ApplicationError::invalid(format!("no executor for tool {}", tool.name)));
     }
-    config.tools.clear();
+    let previous_tools = std::mem::take(&mut config.tools);
     config.tools.extend(self.tools.history.get_specifications());
     config.tools.push(ViewImageTool.get_specification());
     if switches.shell
@@ -310,15 +384,35 @@ impl SessionSlot {
     {
       config.tools.extend(shell.get_specifications());
     }
-    if switches.ask_user {
+    if switches.shell && switches.task_delivery == ToolDelivery::Tool {
+      config.tools.push(crate::application::task_access::specification());
+    }
+    if switches.ask_user && (!switches.shell || switches.ask_user_delivery == ToolDelivery::Tool) {
       config.tools.push(self.tools.ask_user.get_specification());
     }
-    if switches.web_fetch {
+    if switches.web_fetch && (!switches.shell || switches.web_fetch_delivery == ToolDelivery::Tool)
+    {
       config.tools.push(self.tools.web_fetch.get_specification());
     }
-    if switches.web_search {
+    if switches.web_search
+      && (!switches.shell || switches.web_search_delivery == ToolDelivery::Tool)
+    {
       config.tools.push(self.tools.web_search.get_specification());
     }
+    // Preserve the active definition order and command-backed definitions until a generation
+    // switch. Disabled capabilities are removed immediately by the caller's cleared target list.
+    let mut ordered = Vec::new();
+    for previous in previous_tools {
+      if let Some(index) = config.tools.iter().position(|tool| tool.name == previous.name) {
+        ordered.push(config.tools.remove(index));
+      } else if matches!(previous.name.as_str(), "task" | "web_fetch" | "web_search" | "ask_user")
+        && switches.allow(&previous.name)
+      {
+        ordered.push(previous);
+      }
+    }
+    ordered.append(&mut config.tools);
+    config.tools = ordered;
     Ok(config)
   }
   /// Turns optional tools on or off; the caller then reinstalls the session's tool list.
@@ -335,28 +429,71 @@ impl SessionSlot {
     }
     Ok(())
   }
-  /// Applies the application's new shell unless this session has its own.
+  fn environment_notice(
+    &self,
+    shell: &ShellCommand,
+    cwd: &std::path::Path,
+  ) -> Result<(), ApplicationError> {
+    let text = crate::application::instructions::environment_instruction(shell, cwd);
+    self.sender.enqueue_instruction_update(
+      "wish_environment".into(),
+      text.clone(),
+      format!("Execution environment changed. Use these settings for subsequent commands:\n{text}"),
+    )?;
+    let _ = self.events.send(json!({"type":"history_changed"}));
+    Ok(())
+  }
+  /// Sessions following global settings get a tail notice, never a rewritten active prefix.
   pub fn follow_global_shell(&self, global: &ShellCommand) {
     if self.descriptor.read().unwrap().shell_override.is_none() {
-      *self.effective_shell.write().unwrap() = global.clone();
+      let previous = self.effective_shell.read().unwrap().clone();
+      if previous != *global {
+        let cwd = self.get_descriptor().cwd;
+        if let Err(error) = self.environment_notice(global, &cwd) {
+          eprintln!("shell environment notice: {error}");
+          return;
+        }
+        *self.effective_shell.write().unwrap() = global.clone();
+      }
     }
   }
-  /// Gives this session its own shell, or with None returns it to the application's.
+  /// Gives this session its own shell; only new commands use it.
   pub fn set_shell(
     &self,
     settings: Option<ShellSettings>,
     global: &ShellCommand,
   ) -> Result<(), ApplicationError> {
-    if !self.descriptor.read().unwrap().tools.shell {
-      return Err(ApplicationError::invalid("this session has no shell tool"));
-    }
     let next = match &settings {
       Some(settings) => settings.resolve()?,
       None => global.clone(),
     };
+    let previous = self.effective_shell.read().unwrap().clone();
+    self.edit_descriptor(None, |descriptor| {
+      descriptor.shell_override = settings;
+      Ok(())
+    })?;
+    if previous != next {
+      self.environment_notice(&next, &self.get_descriptor().cwd)?;
+    }
     *self.effective_shell.write().unwrap() = next;
-    self.descriptor.write().unwrap().shell_override = settings;
-    self.persist_index()
+    Ok(())
+  }
+  pub fn set_working_directory(&self, cwd: std::path::PathBuf) -> Result<(), ApplicationError> {
+    let cwd =
+      std::fs::canonicalize(cwd).map_err(|error| ApplicationError::invalid(error.to_string()))?;
+    if !cwd.is_dir() {
+      return Err(ApplicationError::invalid("cwd must be a directory"));
+    }
+    if self.get_descriptor().cwd == cwd {
+      return Ok(());
+    }
+    self.edit_descriptor(None, |descriptor| {
+      descriptor.cwd = cwd.clone();
+      Ok(())
+    })?;
+    self.environment_notice(&self.effective_shell.read().unwrap(), &cwd)?;
+    *self.tools.shell_config.cwd.write().unwrap() = cwd;
+    Ok(())
   }
 }
 

@@ -221,6 +221,10 @@ impl Default for Defaults {
       model: String::new(),
       cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp")),
       tools: ToolSwitches {
+        task_delivery: super::session::ToolDelivery::Command,
+        web_fetch_delivery: Default::default(),
+        web_search_delivery: Default::default(),
+        ask_user_delivery: Default::default(),
         shell: true,
         ask_user: true,
         mcp: true,

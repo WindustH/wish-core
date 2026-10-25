@@ -1,0 +1,36 @@
+wish askuser — ask questions in the UI and wait for the user's response
+
+USAGE
+  wish askuser --json '{"questions":[{"type":"text","question":"Which name?"}]}'
+  wish askuser '<JSON argument object>'
+  wish askuser --stdin
+  wish askuser --schema
+
+JSON ARGUMENTS
+  questions         Required array of 1–8 questions. Each question supports:
+    type            Required: text or choice.
+    question        Required question text; Markdown is allowed.
+    header          Optional short label.
+    placeholder     Optional text-input hint (text questions).
+    options         Required for choice: 2–8 objects with label and optional description.
+    multi_select    Boolean, default false (choice questions).
+    allow_other     Boolean, default true: allow a free-text choice answer.
+  timeout_seconds   Optional integer 1–604800. Omitted means wait indefinitely.
+
+OUTPUT / LIFECYCLE
+  JSON status is answered, skipped, or timed_out. answered includes one item per
+  question in answers; omitted questions have skipped:true. A timeout allows the
+  command to finish. A later answer is delivered to the session as a new message.
+  Cancelling the command cancels its pending form. Calls, forms and answers are
+  displayed in the timeline just like direct Ask User tool calls.
+  Ask for information only the user can supply, not facts you can inspect locally.
+
+EXAMPLES (POSIX shell quoting)
+  wish askuser --json '{"questions":[{"type":"choice","question":"Which target?","options":[{"label":"Preview","description":"Recommended for review"},{"label":"Production"}]}],"timeout_seconds":60}'
+  cat questions.json | wish askuser --stdin
+
+REQUIREMENTS / EXIT STATUS
+  Run in this Wish session's shell; Shell and Ask User must be enabled.
+  --schema prints the complete current description and schema. --help is local
+  and needs no server connection. Exit 0 includes answered/skipped/timed_out;
+  2 means invalid arguments or a refused/failed request; 3 means unknown outcome.

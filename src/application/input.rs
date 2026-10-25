@@ -26,6 +26,8 @@ pub struct Attachment {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Input {
+  #[serde(default)]
+  pub background_shell: bool,
   pub text: String,
   #[serde(default)]
   pub attachments: Vec<Attachment>,

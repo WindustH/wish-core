@@ -25,7 +25,6 @@ pub(crate) mod model_catalog;
 pub(crate) mod model_observation;
 pub(crate) mod naming;
 pub(crate) mod peer_commands;
-pub(crate) mod peers;
 pub(crate) mod presets;
 pub(crate) mod provider;
 pub(crate) mod provider_operations;
@@ -46,3 +45,8 @@ pub(crate) mod storage_usage;
 pub(crate) mod usage_queries;
 pub(crate) mod web_services;
 pub(crate) use crate::storage::{blobs, management};
+pub(crate) mod task_access;
+
+pub mod tool_commands;
+
+pub mod command_trace;

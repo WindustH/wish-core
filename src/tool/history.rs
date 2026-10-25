@@ -204,9 +204,31 @@ impl ToolExecutor for HistoryTools {
     if control.is_cancelled() {
       return ToolOutcome::Cancelled;
     }
-    let operation = match Self::parse_operation(call) {
+    let mut normalized = call.clone();
+    if let Some(specification) =
+      self.get_specifications().into_iter().find(|tool| tool.name == call.name)
+    {
+      normalized.arguments =
+        match super::arguments::normalize(&call.arguments, &specification.input_schema) {
+          Ok(arguments) => arguments,
+          Err(error) => return ToolOutcome::Failed(error),
+        };
+    }
+    let operation = match Self::parse_operation(&normalized) {
       Ok(operation) => operation,
-      Err(error) => return ToolOutcome::Failed(error),
+      Err(error) => {
+        return ToolOutcome::Failed(super::arguments::error(
+          &call.name,
+          error,
+          match call.name.as_str() {
+            "history_search" => r#"{"text":"keyword"}"#,
+            "history_read" => r#"{"sequence":0}"#,
+            _ => {
+              "{} (omit cursor to restart; otherwise copy the previous result's next cursor exactly)"
+            }
+          },
+        ));
+      }
     };
     let tool = self.clone();
     // SQLite dispatch is synchronous; keep it off the executor's async thread. Await completion

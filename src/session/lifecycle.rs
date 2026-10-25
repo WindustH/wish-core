@@ -24,6 +24,8 @@ impl Session {
     let record = storage.transaction(move |store| -> Result<_, SessionError> {
       let key = target;
       let mut record = SessionRecord {
+        next_generation_tools: None,
+        next_generation_instructions: Default::default(),
         metadata: Value::Null,
         config: config.clone(),
         state: SessionState::Idle,

@@ -3,24 +3,22 @@
 A skill is a directory holding a `SKILL.md`: YAML front matter with a `name` and a `description`,
 then instructions, which may point to scripts or reference files beside them. The format is the
 one other agents read, so one set of skills can serve them all. Wish tells the model none of them.
-The agent instructions of a session with a shell only say how to find them; the model runs
-`wish skill` in its shell, through the same bridge as `wish mcp` ([MCP](mcp.md)). Adding, removing
-or switching off a skill therefore never changes a byte of the request a conversation's prompt
-cache is keyed on, and neither does a session's `tools.skills` switch, which only the bridge
-checks.
+Initial instructions briefly list `wish skill`; `wish skill --help` explains finding and loading
+skills through the session bridge. Adding or removing skills does not rewrite the initial prefix.
+Changing `tools.skills` adds a system notice, while the bridge enforces access.
 
 ```text
-model --shell_start("wish skill find deploy")--> session shell (WISH_URL, WISH_SESSION, WISH_SESSION_TOKEN)
+model --shell("wish skill find deploy")--> session shell (WISH_URL, WISH_SESSION, WISH_SESSION_TOKEN)
                                                         |
-                                  wish skill  (server::skills::cli, no server started)
+                                  wish skill  (server::cli::skills, no server started)
                                                         | HTTP on loopback, session token
                                                         v
                          /api/sessions/{id}/skills[/{name}]  (server::http::skills)
                                                         |
-                                    server::skills: discover, find, show
+                                    application::skills: discover, find, show
 ```
 
-## Finding skills (`server::skills`)
+## Finding skills (`application::skills`)
 
 `roots` gives the places to look, first first: `.agents/skills` under the session's working
 directory, Wish's own directory (`App::skills_dir`, `skills` beside the configuration file, made at
@@ -46,7 +44,7 @@ other files, relative to its directory, up to 60 of them.
 Discovery reads the disk on each request, in `blocking`: skills and the configuration's
 `skills` section take effect on the next command, with no restart and no cache to empty.
 
-## `wish skill` (`server::skills::cli`)
+## `wish skill` (`server::cli::skills`)
 
 Like `wish mcp`, it runs before any configuration is read, reads `WISH_URL`, `WISH_SESSION` and
 `WISH_SESSION_TOKEN` through `server::bridge::client::BridgeClient`, and prints what the model

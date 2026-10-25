@@ -1,0 +1,70 @@
+wish task — supervise and manage this session's commands
+
+USAGE
+  wish task list [--running] [--json]
+  wish task show <id|self>
+  wish task start [--interactive] [--data TEXT|--stdin] [--encoding utf8|base64]
+                  [--wait SECONDS] -- COMMAND
+  wish task poll <id|self> [--offset BYTES] [--max-bytes BYTES]
+                 [--wait-ms MS] [--encoding utf8|base64]
+  wish task wait <id>
+  wish task write <id|self> [DATA|--stdin] [--close] [--encoding utf8|base64]
+  wish task kill <id|self> [--force]
+  wish task background <id|self>
+  wish task remove <id>
+
+OPERATIONS
+  list        All tasks in this session, including finished ones. Columns: id,
+              process status, foreground/background, command. --running filters
+              active tasks; --json returns complete task records.
+  show        Command, start time, process state, output path and captured edits.
+  start       Starts a new command (alias: run). Default --wait 0 returns immediately.
+              --wait N is a soft wait: expiry NEVER kills the process. -1 uses the
+              configured soft wait. Keep the command after --, quoted as one script.
+              --interactive leaves stdin open; otherwise it closes after initial data.
+              No PTY is allocated. --stdin reads initial input from the CLI's stdin.
+  poll        Reads output starting at a byte offset (default 0), up to max-bytes
+              (default 65536). wait-ms defaults to 0; it waits for output or exit.
+              The result includes offsets, whether more output remains, and process
+              status. Save the returned next_offset for the next read.
+  wait        Waits for a terminal process state, without reading its output. A task
+              cannot wait for itself. Exit 0 means the task exited successfully;
+              exit 1 means it did not. Use poll to read its captured output.
+  write       Writes DATA to an interactive task; --stdin reads input from stdin.
+              --close closes the task's input after writing (including empty data).
+              utf8 is default; base64 carries binary data for start/write/poll.
+  kill        Stops the process tree gracefully, escalating after the configured
+              grace period. --force terminates immediately. Retains output/records.
+  background  Releases a running foreground shell without restarting or signalling
+              its process. Alias: bg. The detached task keeps running after the
+              foreground invocation returns or is cancelled.
+  remove      Deletes a completed task's record and captured output. Running tasks
+              must be stopped first. This cannot be undone.
+
+IDENTITY / OUTPUT / LIFECYCLE
+  Every shell call is registered as a task. self resolves WISH_TASK_ID, the shell
+  currently executing this command. Task IDs are scoped to their owning session.
+  Except list, commands print JSON. start/poll include execution_id, process,
+  text (or base64 output), offsets and output_path. Full output remains on disk
+  even when the shell tool truncates its inline result.
+  Background completion notifies the session. Records survive Wish restarts;
+  live processes are stopped on graceful shutdown and are NOT resumed on restart.
+  Records left running after an abrupt shutdown become interrupted.
+  Edit capture belongs to shell's optional edit/check_diff arguments, not Task.
+
+EXAMPLES (POSIX shell quoting)
+  wish task start -- 'npm test'
+  wish task list --running
+  wish task poll TASK_ID --offset 0 --max-bytes 4096
+  wish task start --interactive -- 'python worker.py'
+  printf 'hello\n' | wish task write TASK_ID --stdin --close
+  wish task background self
+  wish task kill TASK_ID --force
+  wish task remove TASK_ID
+
+REQUIREMENTS / EXIT STATUS
+  Run in this Wish session's shell. Shell must be enabled. No explicit credentials
+  are needed. --help is available without a server. Exit 0 means the management
+  operation succeeded (inspect process/write fields for the task's own outcome);
+  wait also uses exit 1 for unsuccessful tasks. Exit 2 is a refused/invalid request,
+  and exit 3 is an interrupted response whose outcome is unknown.

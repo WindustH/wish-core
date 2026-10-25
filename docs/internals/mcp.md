@@ -1,26 +1,20 @@
 # MCP
 
 Wish calls MCP servers on the model's behalf without ever showing their tools to the model as tools.
-Every session with a shell gets one fixed section in its agent instructions, the system message
-Wish puts first in every request (`server::mcp::INSTRUCTIONS`, added by
-`server::session_model::agent_instructions` when the request has `shell_start`), and a few variables in its
-shell's environment. The model finds servers
-and tools by running `wish mcp list` and `wish mcp describe`, calls them with `wish mcp call`, and
-reads the answers as command output. What servers exist, what tools they offer and whether the
-session may use them can all change at any time without changing a byte of the request a
-conversation's prompt cache is keyed on: the session's `tools.mcp` switch is enforced only by the
-bridge, which answers a session with MCP off by saying so, and the model reads that like any other
-output.
+A session with a shell gets a brief `wish mcp` entry in its initial instructions, built by
+`application::instructions`, and bridge variables in its environment. `wish mcp --help` documents
+discovery, schemas, calls and output handling. MCP server/tool discovery does not rewrite the
+initial prefix. Changing the session's MCP switch adds a system notice; the bridge enforces it.
 
 ```text
-model --shell_start("wish mcp call s/t '{...}'")--> session shell (WISH_URL, WISH_SESSION, WISH_SESSION_TOKEN)
+model --shell("wish mcp call s/t '{...}'")--> session shell (WISH_URL, WISH_SESSION, WISH_SESSION_TOKEN)
                                                         |
-                                    wish mcp  (server::mcp::cli, no server started)
+                                    wish mcp  (server::cli::mcp, no server started)
                                                         | HTTP on loopback, session token
                                                         v
                           server::http::mcp  /api/sessions/{id}/mcp/{servers,tool,call}
                                                         |
-                                               server::mcp::McpHub
+                                               application::mcp::McpHub
                                                         |
                                        mcp::Connection (rmcp) -- stdio process / Streamable HTTP
 ```
@@ -95,6 +89,6 @@ exit status (`2`, `2`, `2`, `3`; a result with `isError` exits `1`). The call ha
 dropped when the command's connection closes, which drops the pending call and sends the
 cancellation.
 
-`wish mcp` (`server::mcp::cli`) runs before any configuration is read: `server::run` hands it the
+`wish mcp` (`server::cli::mcp`) runs before any configuration is read: `server::run` hands it the
 arguments after `mcp`. It reaches the bridge with proxies disabled, since a proxy from the shell's
 environment must not stand between it and the loopback address.

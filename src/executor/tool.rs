@@ -9,6 +9,12 @@ use std::future::Future;
 /// is known to be unknown. The loop never drops a started execution to pretend it was cancelled.
 /// Futures must not panic. Parallel mode requires tools safe to execute concurrently.
 pub trait ToolExecutor: Sync {
+  /// Applications may accept enabled capabilities through an alternative, unadvertised
+  /// route. Generic executors retain strict registration unless they opt in explicitly.
+  fn accepts_unadvertised_call(&self, _name: &str) -> bool {
+    false
+  }
+
   fn execute(
     &self,
     call: &ToolCall,
@@ -30,7 +36,7 @@ pub(super) async fn execute_tools(
       for call in calls {
         let outcome = if unknown || control.is_cancelled() {
           ToolOutcome::Cancelled
-        } else if !is_registered(session, call) {
+        } else if !is_registered(session, call) && !executor.accepts_unadvertised_call(&call.name) {
           ToolOutcome::Failed(format!("unknown tool: {}", call.name))
         } else {
           session.start_tool(call)?;
@@ -50,7 +56,8 @@ pub(super) async fn execute_tools(
     ToolMode::Parallel => {
       let mut futures = Vec::new();
       for call in calls {
-        let registered = is_registered(session, call);
+        let registered =
+          is_registered(session, call) || executor.accepts_unadvertised_call(&call.name);
         if registered && !control.is_cancelled() {
           session.start_tool(call)?;
           deliver_new_events(session, delivered, observe)?;

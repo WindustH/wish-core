@@ -25,16 +25,6 @@ const FILE_LIMIT: usize = 60;
 /// How much of a `SKILL.md` a search reads.
 const SEARCH_BYTES: usize = 64 * 1024;
 
-/// What the model is told about skills: how to find them, and none of them.
-pub const INSTRUCTIONS: &str = "# Skills\n\
-   Skills are instructions, sometimes with scripts or reference files, for particular kinds of \
-   tasks: a file format, a tool or service, a procedure or house style. None are listed here; the \
-   `wish skill` command in the shell finds them.\n\
-   - `wish skill find <words>` shows the skills that fit a task, best first; `wish skill list` \
-   shows them all.\n\
-   - `wish skill show <name>` prints a skill's instructions and the files beside them.\n\
-   Before starting a task that may have one, look, and follow the skill you load.";
-
 /// A place skills are found: where it comes from, as settings show it, and the directory.
 #[derive(Clone, Debug)]
 pub struct Root {

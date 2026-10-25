@@ -1,88 +1,154 @@
-//! Stateful shell tool: start, edit, poll, write and kill. One instance owns its executions.
-mod edit;
-mod operation;
-mod platform;
-mod process;
-mod runtime;
-
-use operation::{DataEncoding, KillMode, ShellOperation};
-pub use runtime::ShellTool;
-use std::{
-  collections::BTreeMap,
-  path::{Path, PathBuf},
-  sync::{Arc, RwLock},
-  time::Duration,
+//! The model-facing command tool. Process ownership and task operations live in `task`.
+pub use crate::task::{
+  ShellCommand, TaskConfig as ShellConfig, TaskError as ShellError, is_runnable,
 };
-
-/// The program a command runs under and the arguments placed before the command text.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShellCommand {
-  pub program: PathBuf,
-  /// Arguments before the command text, which is passed as one final argument.
-  pub args: Vec<String>,
+use crate::{
+  executor::{ExecutionControl, tool::ToolExecutor},
+  protocol::Tool,
+  session::{ToolCall, ToolOutcome},
+  task::TaskManager,
+};
+use serde::Deserialize;
+#[derive(Clone)]
+pub struct ShellTool {
+  tasks: TaskManager,
 }
-impl ShellCommand {
-  /// `/bin/sh -c` on Unix, `%COMSPEC% /D /S /C` on Windows.
-  pub fn platform_default() -> Self {
-    Self { program: platform::default_program(), args: platform::default_args() }
-  }
-  /// The shell at `program` with the arguments its family takes before command text.
-  pub fn for_program(program: PathBuf) -> Self {
-    let args = platform::family_args(&program);
-    Self { program, args }
-  }
-  /// Shells found on `PATH`, one per known name, in a fixed order.
-  pub fn installed() -> Vec<Self> {
-    platform::installed_shells().into_iter().map(Self::for_program).collect()
+impl std::ops::Deref for ShellTool {
+  type Target = TaskManager;
+  fn deref(&self) -> &TaskManager {
+    &self.tasks
   }
 }
-/// Whether `path` is a file this process may execute.
-pub fn is_runnable(path: &Path) -> bool {
-  platform::is_executable_file(path)
+impl ShellTool {
+  pub async fn new(config: ShellConfig) -> Result<Self, ShellError> {
+    Ok(Self { tasks: TaskManager::new(config).await? })
+  }
+  pub fn get_specifications(&self) -> Vec<Tool> {
+    vec![Tool {
+      name: "shell".into(),
+      description: format!(
+        "Execute a shell command in the session working directory and wait for completion. Optional timeout is a hard limit in seconds; omitted means no time limit. Each call uses a new shell, without a PTY. Output is limited to its last 2000 lines / 50 KiB; the full output remains available. For background jobs, stdin, task management use `wish task --help`. All commands are registered as tasks. `wish task background <id>` transfers a running command to the background without restarting it. {}",
+        crate::task::SHELL_DESCRIPTION_NOTE
+      ),
+      input_schema: serde_json::json!({"type":"object","additionalProperties":false,"required":["command"],"properties":{"command":{"type":"string"},"edit":{"type":"array","items":{"type":"string"},"description":"Absolute paths to compare before and after the command."},"check_diff":{"type":"boolean","default":false,"description":"Include full file diffs in the result; otherwise return summaries."},"timeout":{"type":"number","exclusiveMinimum":0,"description":"Hard timeout in seconds. Omit for no timeout."}}}),
+    }]
+  }
 }
-
-#[derive(Clone, Debug)]
-pub struct ShellConfig {
-  /// Read at each start, so replacing it reaches the next command of every tool sharing it.
-  pub command: Arc<RwLock<ShellCommand>>,
-  pub cwd: PathBuf,
-  pub capture_dir: PathBuf,
-  /// Overrides on top of the application's inherited environment.
-  pub env: BTreeMap<String, String>,
-  pub soft_timeout: Duration,
-  pub inline_bytes: usize,
-  pub poll_bytes: usize,
-  pub kill_grace: Duration,
-  pub stdin_write_timeout: Duration,
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Command {
+  command: String,
+  timeout: Option<f64>,
+  #[serde(default)]
+  edit: Vec<std::path::PathBuf>,
+  #[serde(default)]
+  check_diff: bool,
 }
-impl ShellConfig {
-  pub fn new(cwd: impl Into<PathBuf>, capture_dir: impl Into<PathBuf>) -> Self {
-    Self {
-      command: Arc::new(RwLock::new(ShellCommand::platform_default())),
-      cwd: cwd.into(),
-      capture_dir: capture_dir.into(),
-      env: BTreeMap::new(),
-      soft_timeout: Duration::from_secs(10),
-      inline_bytes: 64 * 1024,
-      poll_bytes: 64 * 1024,
-      kill_grace: Duration::from_secs(1),
-      stdin_write_timeout: Duration::from_secs(10),
+impl ToolExecutor for ShellTool {
+  async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
+    if call.name == "shell_edit" {
+      if !call.arguments["diff"].as_array().is_some_and(|paths| !paths.is_empty())
+        || call.arguments.get("timeout").is_some()
+      {
+        return ToolOutcome::Failed(
+          "legacy shell_edit requires diff paths and does not accept timeout".into(),
+        );
+      }
+      let mut arguments = call.arguments.clone();
+      if let Some(object) = arguments.as_object_mut() {
+        if let Some(paths) = object.remove("diff") {
+          object.insert("edit".into(), paths);
+        }
+      }
+      let input: Command = match serde_json::from_value(arguments) {
+        Ok(input) => input,
+        Err(error) => return ToolOutcome::Failed(error.to_string()),
+      };
+      return self
+        .tasks
+        .foreground(input.command, input.timeout, input.edit, input.check_diff, control)
+        .await
+        .unwrap_or_else(Into::into);
     }
+    if call.name != "shell" {
+      return match parse_legacy_call(&call.name, call.arguments.clone()) {
+        Ok(operation) => self.tasks.run(operation, control).await,
+        Err(error) => ToolOutcome::Failed(error.to_string()),
+      };
+    }
+    let parsed =
+      super::arguments::normalize(&call.arguments, &self.get_specifications()[0].input_schema)
+        .and_then(|value| {
+          serde_json::from_value::<Command>(value).map_err(|error| error.to_string())
+        });
+    let input = match parsed {
+      Ok(input) => input,
+      Err(error) => {
+        return ToolOutcome::Failed(super::arguments::error(
+          "shell",
+          error,
+          r#"{"command":"pwd"}"#,
+        ));
+      }
+    };
+    if input.command.trim().is_empty() {
+      return ToolOutcome::Failed(super::arguments::error(
+        "shell",
+        "`command` must be a non-empty string",
+        r#"{"command":"pwd"}"#,
+      ));
+    }
+    self
+      .tasks
+      .foreground(input.command, input.timeout, input.edit, input.check_diff, control)
+      .await
+      .unwrap_or_else(Into::into)
   }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ShellError {
-  #[error("shell operation interrupted")]
-  Interrupted,
-  #[error("invalid shell arguments: {0}")]
-  InvalidArguments(String),
-  #[error("unknown shell execution: {0}")]
-  ExecutionNotFound(String),
-  #[error("shell runtime is shut down")]
-  Closed,
-  #[error("shell execution outcome is unknown: {0}")]
-  Unknown(String),
-  #[error(transparent)]
-  Io(#[from] std::io::Error),
+fn parse_legacy_call(
+  name: &str,
+  mut arguments: serde_json::Value,
+) -> Result<crate::task::TaskOperation, ShellError> {
+  let operation = match name {
+    "shell_start" => "start",
+    "shell_poll" => "poll",
+    "shell_write" => "write",
+    "shell_kill" => "kill",
+    _ => return Err(ShellError::InvalidArguments(format!("unknown shell tool: {name}"))),
+  };
+  if let Some(object) = arguments.as_object_mut() {
+    object.insert("operation".into(), operation.into());
+  }
+  serde_json::from_value(arguments).map_err(|error| ShellError::InvalidArguments(error.to_string()))
+}
+
+#[cfg(test)]
+mod argument_tests {
+  use super::*;
+  use serde_json::json;
+  #[tokio::test]
+  async fn optional_empty_values_execute_but_missing_command_does_not() {
+    let directory = std::env::temp_dir().join(format!("wish-shell-args-{}", uuid::Uuid::new_v4()));
+    let tool = ShellTool::new(ShellConfig::new(std::env::temp_dir(), &directory)).await.unwrap();
+    let call = |arguments| ToolCall { call_id: "shell".into(), name: "shell".into(), arguments };
+    let outcome = tool
+      .execute(
+        &call(json!({"command":"echo fallback","edit":null,"timeout":"","check_diff":" "})),
+        &ExecutionControl::new(),
+      )
+      .await;
+    assert!(
+      matches!(outcome, ToolOutcome::Success(ref output) if output["text"].as_str().unwrap().contains("fallback")),
+      "{outcome:?}"
+    );
+    for arguments in [json!(null), json!({"command":" "}), json!({"command":42})] {
+      let outcome = tool.execute(&call(arguments), &ExecutionControl::new()).await;
+      assert!(
+        matches!(outcome, ToolOutcome::Failed(message) if message.contains("command") && message.contains("Example:"))
+      );
+    }
+    assert_eq!(tool.list().unwrap()["tasks"].as_array().unwrap().len(), 1);
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+  }
 }

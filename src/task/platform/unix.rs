@@ -1,7 +1,7 @@
 use std::io;
 
 /// The group remains owned until the supervisor finishes or is dropped.
-pub(in crate::tool::shell) struct ProcessTree {
+pub(in crate::task) struct ProcessTree {
   pid: u32,
   armed: bool,
 }

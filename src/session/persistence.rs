@@ -16,6 +16,10 @@ use std::sync::Arc;
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionRecord {
+  #[serde(default)]
+  pub next_generation_tools: Option<Vec<crate::protocol::Tool>>,
+  #[serde(default)]
+  pub next_generation_instructions: std::collections::BTreeMap<String, String>,
   pub(super) metadata: Value,
   pub(super) config: SessionConfig,
   pub(super) state: SessionState,

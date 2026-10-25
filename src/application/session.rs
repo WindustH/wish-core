@@ -15,7 +15,7 @@ mod tools;
 
 pub use run::Operation;
 pub use status::web_event;
-pub use tools::{ToolChanges, ToolSwitches};
+pub use tools::{ToolChanges, ToolDelivery, ToolSwitches};
 
 use crate::application::{
   app::App,

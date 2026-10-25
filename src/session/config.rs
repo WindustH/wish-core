@@ -85,6 +85,38 @@ impl Session {
 }
 
 impl Session {
+  /// Keep the active prefix while making a tool change explicit to the model. The exact
+  /// target tool set and instruction are installed at the next generation boundary.
+  pub fn defer_instruction_config(
+    &mut self,
+    source: String,
+    text: String,
+    notice: String,
+    immediate: SessionConfig,
+    next_tools: Vec<Tool>,
+  ) -> Result<(), SessionError> {
+    self.require_stable()?;
+    immediate.validate()?;
+    self.update(move |tx| {
+      tx.record.next_generation_instructions.insert(source.clone(), text.clone());
+      tx.record.next_generation_tools = Some(next_tools);
+      tx.record.config = immediate.clone();
+      for id in [tx.record.active, tx.record.standby] {
+        let mut generation = tx.load_generation(id)?;
+        generation.config = immediate.clone();
+        tx.save_generation(&generation)?;
+      }
+      tx.append_input(crate::protocol::Message::System {
+        metadata: serde_json::json!({"next_generation_instruction":{"source":source,"text":text}}),
+        content: vec![crate::protocol::ContentBlock::Text { text: notice }],
+      })?;
+      tx.record_event(SessionEvent::ConfigUpdated(Box::new(immediate)))?;
+      Ok(())
+    })
+  }
+  pub fn has_deferred_instruction(&self, source: &str) -> bool {
+    self.record.next_generation_instructions.contains_key(source)
+  }
   /// Persist a managed system instruction before use. Changed instructions start a new
   /// generation, preserving the previous generation's message references and configuration.
   pub fn set_system_instruction_config(

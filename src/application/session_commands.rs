@@ -169,7 +169,11 @@ pub async fn set_config(
   let mut session = slot.lock_idle_or_conflict().await?;
   blocking(move || {
     slot.require_live()?;
-    crate::application::instructions::persist_agent_instructions(&mut session, config)?;
+    crate::application::instructions::persist_agent_instructions(
+      &mut session,
+      config,
+      slot.get_descriptor().tools,
+    )?;
     Ok(slot.publish(&session)?)
   })
   .await
@@ -183,13 +187,41 @@ pub async fn set_tools(
   let slot = app.get_session(&id).await?;
   let mut session = slot.lock_idle_or_conflict().await?;
   slot.require_live()?;
+  let previous = slot.get_descriptor().tools;
+  let next = previous.apply_changes(changes);
+  if previous == next {
+    return Ok(slot.describe());
+  }
   slot.switch_tools(changes).await?;
-  // The tool list is rebuilt from the switches, so a tool just switched off is not kept.
-  let mut config = session.get_config().clone();
-  config.tools.clear();
-  let config = slot.configure_tools(config)?;
+  let mut target = session.get_config().clone();
+  target.tools.clear();
+  let target = slot.configure_tools(target)?;
+  let mut immediate = session.get_config().clone();
+  // Removing an enabled tool solely because its delivery changed can wait until the next
+  // generation. Disabling permission removes its definition immediately.
+  immediate.tools.retain(|tool| {
+    target.tools.iter().any(|wanted| wanted.name == tool.name)
+      || match tool.name.as_str() {
+        "task" => next.shell,
+        "web_fetch" => next.web_fetch,
+        "web_search" => next.web_search,
+        "ask_user" => next.ask_user,
+        _ => false,
+      }
+  });
+  for tool in &target.tools {
+    if !immediate.tools.iter().any(|existing| existing.name == tool.name) {
+      immediate.tools.push(tool.clone());
+    }
+  }
   blocking(move || {
-    crate::application::instructions::persist_agent_instructions(&mut session, config)?;
+    session.defer_instruction_config(
+      "wish_agent_instructions".into(),
+      crate::application::instructions::agent_instructions(next),
+      crate::application::instructions::delivery_notice(previous, next),
+      immediate,
+      target.tools,
+    )?;
     Ok(slot.publish(&session)?)
   })
   .await
@@ -219,10 +251,31 @@ pub async fn set_shell(
 ) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
+  let _update = slot.update_lock.clone().lock_owned().await;
   let global = app.shell.read().unwrap().clone();
   blocking(move || {
     slot.require_live()?;
     slot.set_shell(settings, &global)?;
+    Ok(slot.describe())
+  })
+  .await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkingDirectory {
+  pub cwd: std::path::PathBuf,
+}
+pub async fn set_working_directory(
+  app: Arc<App>,
+  id: String,
+  input: WorkingDirectory,
+) -> Result<Value, ApplicationError> {
+  app.lifecycle.require_open()?;
+  let slot = app.get_session(&id).await?;
+  let _update = slot.update_lock.clone().lock_owned().await;
+  blocking(move || {
+    slot.require_live()?;
+    slot.set_working_directory(input.cwd)?;
     Ok(slot.describe())
   })
   .await
@@ -268,8 +321,23 @@ pub async fn submit_input(
 ) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
+  let background_shell = input.background_shell;
   let message = input::message(&app.data_dir.blobs(&id), input).await?;
+  // Queue the message before releasing the foreground wait, so the next model step sees it.
   let entry = slot.enqueue(message).await?;
+  if background_shell && slot.tools.shell().is_some() {
+    if let Err(error) = super::task_access::execute(
+      &app,
+      slot.clone(),
+      super::task_access::TaskRequest::BackgroundForeground,
+      true,
+    )
+    .await
+    {
+      // Input is already durable. Do not report a failed submission that invites a duplicate.
+      eprintln!("backgrounding shell after accepting input failed: {error}");
+    }
+  }
   slot.touch()?;
   slot.schedule(&app);
   let reader = slot.reader.clone();

@@ -1,14 +1,12 @@
-//! The shell tool's runtime: the registry of one tool's executions, and each operation on them -
-//! start, edit, poll, write and kill - with the foreground wait of a command started.
+//! Session-scoped process supervision, task records and foreground/background ownership.
 use super::{
-  DataEncoding, KillMode, ShellConfig, ShellError, ShellOperation,
+  DataEncoding, KillMode, TaskConfig, TaskError, TaskOperation,
   edit::{EditCapture, EditResult},
-  operation,
   platform::{self, ProcessTree},
   process::{self, Execution, Snapshot, Status},
 };
-use crate::executor::{ExecutionControl, tool::ToolExecutor};
-use crate::session::{ToolCall, ToolOutcome};
+use crate::executor::ExecutionControl;
+use crate::session::ToolOutcome;
 use base64::Engine;
 use serde_json::{Value, json};
 use std::{
@@ -31,11 +29,11 @@ use tokio::{
 /// lock covers lookup, and spawn plus registration so shutdown never misses a started process; no
 /// asynchronous I/O runs under that lock.
 #[derive(Clone)]
-pub struct ShellTool {
+pub struct TaskManager {
   inner: Arc<Runtime>,
 }
 struct Runtime {
-  config: ShellConfig,
+  config: TaskConfig,
   registry: Mutex<Registry>,
 }
 #[derive(Default)]
@@ -57,55 +55,90 @@ struct Foreground {
 }
 impl Drop for Foreground {
   fn drop(&mut self) {
-    if !self.returned {
+    if !self.returned && !*self.execution.background.borrow() {
       let _ = self.execution.kills.send(KillMode::Force);
     }
   }
 }
 
-impl ShellTool {
-  pub async fn new(mut config: ShellConfig) -> Result<Self, ShellError> {
+impl TaskManager {
+  pub async fn new(mut config: TaskConfig) -> Result<Self, TaskError> {
     if !cfg!(any(unix, windows)) {
       return Err(
         io::Error::new(io::ErrorKind::Unsupported, "shell supervision requires Unix or Windows")
           .into(),
       );
     }
-    config.cwd = tokio::fs::canonicalize(&config.cwd).await?;
-    if !tokio::fs::metadata(&config.cwd).await?.is_dir() {
-      return Err(ShellError::InvalidArguments("cwd must be a directory".into()));
+    let cwd = config.cwd.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cwd = tokio::fs::canonicalize(cwd).await?;
+    if !tokio::fs::metadata(&cwd).await?.is_dir() {
+      return Err(TaskError::InvalidArguments("cwd must be a directory".into()));
     }
+    *config.cwd.write().unwrap_or_else(|e| e.into_inner()) = cwd;
     for duration in [config.soft_timeout, config.kill_grace, config.stdin_write_timeout] {
       resolve_deadline(duration)?;
     }
     tokio::fs::create_dir_all(&config.capture_dir).await?;
     config.capture_dir = tokio::fs::canonicalize(&config.capture_dir).await?;
-    Ok(Self { inner: Arc::new(Runtime { config, registry: Mutex::new(Registry::default()) }) })
+    let mut registry = Registry::default();
+    for record in crate::storage::task_records::load(&config.capture_dir).await? {
+      let Some(id) = record["task_id"].as_str() else { continue };
+      if !crate::session::resources::is_execution_id(id) {
+        continue;
+      }
+      let mut snapshot: Snapshot = serde_json::from_value(record["process"].clone())
+        .map_err(|error| TaskError::Unknown(error.to_string()))?;
+      snapshot.edits =
+        Arc::new(serde_json::from_value(record["edits"].clone()).unwrap_or_default());
+      if snapshot.status == Status::Running {
+        snapshot.status = Status::Interrupted;
+        snapshot.error = Some("Wish restarted before task completion was recorded".into());
+      }
+      let (state, _) = watch::channel(snapshot);
+      let (kills, _) = mpsc::unbounded_channel();
+      let (background, _) = watch::channel(record["background"].as_bool().unwrap_or(true));
+      let (initial_input_done, _) = watch::channel(true);
+      let execution = Arc::new(Execution {
+        id: id.to_owned(),
+        command: record["command"].as_str().unwrap_or_default().into(),
+        started_at: record["started_at"].as_u64().unwrap_or_default(),
+        background,
+        notification_claimed: false.into(),
+        record_lock: tokio::sync::Mutex::new(()),
+        output_path: config.capture_dir.join(id).join("output.log"),
+        stdin: tokio::sync::Mutex::new(None),
+        state,
+        initial_input_done,
+        kills,
+        write_timeout: config.stdin_write_timeout,
+      });
+      execution.persist().await?;
+      registry.executions.insert(id.to_owned(), execution);
+    }
+    Ok(Self { inner: Arc::new(Runtime { config, registry: Mutex::new(registry) }) })
   }
-  pub fn get_specifications(&self) -> Vec<crate::protocol::Tool> {
-    operation::build_specifications()
-  }
-  fn lock_registry(&self) -> Result<std::sync::MutexGuard<'_, Registry>, ShellError> {
+
+  fn lock_registry(&self) -> Result<std::sync::MutexGuard<'_, Registry>, TaskError> {
     self
       .inner
       .registry
       .lock()
-      .map_err(|_| ShellError::Unknown("shell registry lock poisoned".into()))
+      .map_err(|_| TaskError::Unknown("shell registry lock poisoned".into()))
   }
-  fn get_execution(&self, id: &str) -> Result<Arc<Execution>, ShellError> {
+  pub(super) fn get_execution(&self, id: &str) -> Result<Arc<Execution>, TaskError> {
     self
       .lock_registry()?
       .executions
       .get(id)
       .cloned()
-      .ok_or_else(|| ShellError::ExecutionNotFound(id.into()))
+      .ok_or_else(|| TaskError::ExecutionNotFound(id.into()))
   }
   /// Whether the execution `id` is still running, so its capture is still being written.
   pub fn is_running(&self, id: &str) -> bool {
     self.get_execution(id).is_ok_and(|execution| execution.get_snapshot().status == Status::Running)
   }
   /// Stop all owned process groups and await reaping. Captures and completed handles are retained.
-  pub async fn shutdown(&self) -> Result<(), ShellError> {
+  pub async fn shutdown(&self) -> Result<(), TaskError> {
     let executions: Vec<_> = {
       let mut registry = self.lock_registry()?;
       registry.closed = true;
@@ -122,32 +155,29 @@ impl ShellTool {
   }
   /// Wait for an execution returned by start and read its final status without inline output.
   /// Applications can enqueue this result as a background completion notification.
-  pub async fn wait_for_completion(&self, id: &str) -> Result<Value, ShellError> {
+  pub async fn wait_for_completion(&self, id: &str) -> Result<Value, TaskError> {
     let execution = self.get_execution(id)?;
     // Unknown is a terminal outcome too; retain the diagnostic in the returned snapshot.
     let _ = execution.wait_for_exit().await;
     read_output(&execution, 0, 0, DataEncoding::Utf8).await
   }
-  async fn run(&self, operation: ShellOperation, control: &ExecutionControl) -> ToolOutcome {
+  pub async fn run(&self, operation: TaskOperation, control: &ExecutionControl) -> ToolOutcome {
     if control.is_cancelled() {
       return ToolOutcome::Cancelled;
     }
     let result = match operation {
-      ShellOperation::Start { command, timeout, data, encoding, interactive } => {
+      TaskOperation::Start { command, timeout, data, encoding, interactive } => {
         let timeout = match timeout {
           None | Some(-1.0) => Ok(self.inner.config.soft_timeout),
           Some(seconds) => Duration::try_from_secs_f64(seconds)
-            .map_err(|error| ShellError::InvalidArguments(error.to_string())),
+            .map_err(|error| TaskError::InvalidArguments(error.to_string())),
         };
         match (timeout, data.map(|data| encoding.decode(data)).transpose()) {
           (Ok(timeout), Ok(data)) => self.start(command, timeout, data, interactive, control).await,
           (Err(error), _) | (_, Err(error)) => Err(error),
         }
       }
-      ShellOperation::Edit { command, diff, check_diff } => {
-        return self.edit(command, diff, check_diff, control).await.unwrap_or_else(Into::into);
-      }
-      ShellOperation::Poll { execution_id, offset, max_bytes, wait_ms, encoding } => {
+      TaskOperation::Poll { execution_id, offset, max_bytes, wait_ms, encoding } => {
         self
           .poll(
             &execution_id,
@@ -159,7 +189,7 @@ impl ShellTool {
           )
           .await
       }
-      ShellOperation::Write { execution_id, data, encoding, close } => {
+      TaskOperation::Write { execution_id, data, encoding, close } => {
         match (self.get_execution(&execution_id), encoding.decode(data)) {
           (Ok(execution), Ok(bytes)) => {
             let result = execution.write_bytes(&bytes, close, control, true).await;
@@ -168,7 +198,7 @@ impl ShellTool {
           (Err(error), _) | (_, Err(error)) => Err(error),
         }
       }
-      ShellOperation::Kill { execution_id, mode } => match self.get_execution(&execution_id) {
+      TaskOperation::Kill { execution_id, mode } => match self.get_execution(&execution_id) {
         Ok(execution) => execution
           .terminate(mode)
           .await
@@ -178,6 +208,117 @@ impl ShellTool {
     };
     result.map(ToolOutcome::Success).unwrap_or_else(Into::into)
   }
+  pub fn list(&self) -> Result<Value, TaskError> {
+    let mut tasks: Vec<_> =
+      self.lock_registry()?.executions.values().map(|task| task.describe()).collect();
+    tasks.sort_by_key(|task| std::cmp::Reverse(task["started_at"].as_u64().unwrap_or(0)));
+    Ok(json!({"tasks":tasks}))
+  }
+  pub async fn remove(&self, id: &str) -> Result<Value, TaskError> {
+    let task = {
+      let mut registry = self.lock_registry()?;
+      let task =
+        registry.executions.get(id).ok_or_else(|| TaskError::ExecutionNotFound(id.into()))?;
+      if task.get_snapshot().status == Status::Running {
+        return Err(TaskError::InvalidArguments("stop the task before removing it".into()));
+      }
+      registry.executions.remove(id).unwrap()
+    };
+    let _record = task.record_lock.lock().await;
+    if let Err(error) =
+      crate::storage::task_records::remove(task.output_path.parent().unwrap()).await
+    {
+      self.lock_registry()?.executions.insert(id.into(), task.clone());
+      return Err(error.into());
+    }
+    Ok(json!({"removed":id}))
+  }
+  pub fn show(&self, id: &str) -> Result<Value, TaskError> {
+    Ok(self.get_execution(id)?.describe())
+  }
+  pub fn claim_notification(&self, id: &str) -> bool {
+    self.get_execution(id).is_ok_and(|task| !task.notification_claimed.swap(true, Ordering::AcqRel))
+  }
+  pub async fn background(&self, id: &str) -> Result<Value, TaskError> {
+    let task = self.get_execution(id)?;
+    if task.get_snapshot().status != Status::Running {
+      return Err(TaskError::InvalidArguments("only a running task can be backgrounded".into()));
+    }
+    task.background.send_replace(true);
+    task.persist().await?;
+    Ok(task.describe())
+  }
+  pub async fn foreground(
+    &self,
+    command: String,
+    timeout: Option<f64>,
+    paths: Vec<std::path::PathBuf>,
+    check_diff: bool,
+    control: &ExecutionControl,
+  ) -> Result<ToolOutcome, TaskError> {
+    let deadline = match timeout {
+      Some(seconds) if seconds.is_finite() && seconds > 0.0 => Some(resolve_deadline(
+        Duration::try_from_secs_f64(seconds)
+          .map_err(|e| TaskError::InvalidArguments(e.to_string()))?,
+      )?),
+      Some(_) => {
+        return Err(TaskError::InvalidArguments(
+          "timeout must be a positive finite number of seconds".into(),
+        ));
+      }
+      None => None,
+    };
+    let mut edits = Vec::with_capacity(paths.len());
+    for path in paths {
+      edits.push(EditCapture::capture(path).await?);
+    }
+    let task = self.spawn(command, None, false, edits, control).await?;
+    let mut guard = Foreground { execution: task.clone(), returned: false };
+    let mut detached = task.background.subscribe();
+    let reason = tokio::select! {
+      biased;
+      _=async {let _=detached.wait_for(|value|*value).await;}=>"backgrounded",
+      _=control.wait_for_cancellation()=>{task.terminate(KillMode::Graceful).await?;"interrupted"},
+      _=async {match deadline{Some(deadline)=>tokio::time::sleep_until(deadline).await,None=>std::future::pending().await}}=>{task.terminate(KillMode::Graceful).await?;"timeout"},
+      result=task.wait_for_exit()=>{result?;"exited"},
+    };
+    guard.returned = true;
+    let total = tokio::fs::metadata(&task.output_path).await?.len();
+    let mut output =
+      read_output(&task, total.saturating_sub(50 * 1024), 50 * 1024, DataEncoding::Utf8).await?;
+    let text = output["text"].as_str().unwrap_or_default().to_owned();
+    let lines: Vec<_> = text.split_inclusive('\n').collect();
+    if lines.len() > 2000 {
+      output["text"] = lines[lines.len() - 2000..].concat().into();
+    }
+    output["truncated"] = json!(total > 50 * 1024 || lines.len() > 2000);
+    output["return_reason"] = reason.into();
+    output["task_id"] = task.id.clone().into();
+    output["background"] = json!(*task.background.borrow());
+    let edits = json!(*task.get_snapshot().edits);
+    let mut summaries = edits.clone();
+    if !check_diff {
+      for item in summaries.as_array_mut().into_iter().flatten() {
+        if let Some(item) = item.as_object_mut() {
+          item.remove("diff");
+        }
+      }
+    }
+    output["edits"] = summaries;
+    // Preserve captured diagnostics and the task identifier even when the command fails.
+    output["success"] = json!(
+      reason == "backgrounded" || (reason == "exited" && task.get_snapshot().exit_code == Some(0))
+    );
+    if matches!(reason, "timeout" | "interrupted")
+      || (reason == "exited" && task.get_snapshot().exit_code != Some(0))
+    {
+      return Ok(ToolOutcome::Failed(output.to_string()));
+    }
+    if !check_diff && !task.get_snapshot().edits.is_empty() {
+      return Ok(ToolOutcome::SuccessWithMetadata { output, metadata: json!({"edits":edits}) });
+    }
+    Ok(ToolOutcome::Success(output))
+  }
   async fn spawn(
     &self,
     command: String,
@@ -185,7 +326,12 @@ impl ShellTool {
     interactive: bool,
     edits: Vec<EditCapture>,
     control: &ExecutionControl,
-  ) -> Result<Arc<Execution>, ShellError> {
+  ) -> Result<Arc<Execution>, TaskError> {
+    if command.trim().is_empty() {
+      return Err(TaskError::InvalidArguments(
+        "`command` must be non-empty; for example, wish task start -- 'pwd'".into(),
+      ));
+    }
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
     let id =
@@ -205,20 +351,21 @@ impl ShellTool {
     let mut builder = Command::new(&shell.program);
     builder
       .args(&shell.args)
-      .current_dir(&self.inner.config.cwd)
+      .current_dir(self.inner.config.cwd.read().unwrap_or_else(|e| e.into_inner()).clone())
       .envs(&self.inner.config.env)
       .stdout(Stdio::from(file.try_clone()?))
       .stderr(Stdio::from(file))
       .stdin(if interactive || data.is_some() { Stdio::piped() } else { Stdio::null() })
       .kill_on_drop(true);
+    builder.env("WISH_TASK_ID", &id);
     platform::configure_command(&mut builder, &shell.program, &command);
     // Serialize spawn/registration with shutdown so a successfully spawned process is never missed.
     let mut registry = self.lock_registry()?;
     if registry.closed {
-      return Err(ShellError::Closed);
+      return Err(TaskError::Closed);
     }
     if control.is_cancelled() {
-      return Err(ShellError::Interrupted);
+      return Err(TaskError::Interrupted);
     }
     let mut child = builder.spawn()?;
     let group = ProcessTree::attach(&child)?;
@@ -232,6 +379,11 @@ impl ShellTool {
     let (initial_input_done, _) = watch::channel(data.is_none());
     let execution = Arc::new(Execution {
       id: id.clone(),
+      command: command.clone(),
+      started_at: (timestamp / 1_000_000) as u64,
+      background: watch::channel(false).0,
+      notification_claimed: false.into(),
+      record_lock: tokio::sync::Mutex::new(()),
       output_path,
       stdin: tokio::sync::Mutex::new(child.stdin.take()),
       state,
@@ -275,7 +427,7 @@ impl ShellTool {
     data: Option<Vec<u8>>,
     interactive: bool,
     control: &ExecutionControl,
-  ) -> Result<Value, ShellError> {
+  ) -> Result<Value, TaskError> {
     let deadline = resolve_deadline(timeout)?;
     let execution = self.spawn(command, data, interactive, Vec::new(), control).await?;
     let mut foreground = Foreground { execution: execution.clone(), returned: false };
@@ -284,19 +436,22 @@ impl ShellTool {
         execution.terminate(KillMode::Graceful).await?;
         break "interrupted";
       }
+      if *execution.background.borrow() {
+        break "backgrounded";
+      }
       let snapshot = execution.get_snapshot();
       let output_bytes = match tokio::fs::metadata(&execution.output_path).await {
         Ok(metadata) => metadata.len(),
         Err(error) => {
           execution.terminate(KillMode::Force).await?;
-          return Err(ShellError::Unknown(format!(
+          return Err(TaskError::Unknown(format!(
             "execution {} output unavailable: {error}",
             execution.id
           )));
         }
       };
       if snapshot.status == Status::Unknown {
-        return Err(ShellError::Unknown(snapshot.error.unwrap_or_default()));
+        return Err(TaskError::Unknown(snapshot.error.unwrap_or_default()));
       }
       if snapshot.status != Status::Running {
         break if output_bytes > self.inner.config.inline_bytes as u64 {
@@ -322,49 +477,14 @@ impl ShellTool {
         read_output(&execution, 0, self.inner.config.inline_bytes, DataEncoding::Utf8).await?;
     }
     output["return_reason"] = if control.is_cancelled() { "interrupted" } else { reason }.into();
+    if execution.get_snapshot().status == Status::Running {
+      execution.background.send_replace(true);
+    }
+    execution.persist().await?;
     foreground.returned = true;
     Ok(output)
   }
   /// Run an editing command to exit, so the diffs it returns are final. Without `check_diff` the
-  /// model sees only whether each file changed; the diffs stay on the result for the application.
-  async fn edit(
-    &self,
-    command: String,
-    paths: Vec<std::path::PathBuf>,
-    check_diff: bool,
-    control: &ExecutionControl,
-  ) -> Result<ToolOutcome, ShellError> {
-    if paths.is_empty() {
-      return Err(ShellError::InvalidArguments("diff needs at least one file path".into()));
-    }
-    let mut edits = Vec::with_capacity(paths.len());
-    for path in paths {
-      edits.push(EditCapture::capture(path).await?);
-    }
-    let execution = self.spawn(command, None, false, edits, control).await?;
-    let mut foreground = Foreground { execution: execution.clone(), returned: false };
-    let (snapshot, reason) = match control.run_until_cancelled(execution.wait_for_exit()).await {
-      Some(snapshot) => (snapshot?, "exited"),
-      None => (execution.terminate(KillMode::Graceful).await?, "interrupted"),
-    };
-    foreground.returned = true;
-    let mut output =
-      read_output(&execution, 0, self.inner.config.inline_bytes, DataEncoding::Utf8).await?;
-    output["return_reason"] = reason.into();
-    let edits = json!(*snapshot.edits);
-    if check_diff {
-      output["edits"] = edits;
-      return Ok(ToolOutcome::Success(output));
-    }
-    let mut summaries = edits.clone();
-    for summary in summaries.as_array_mut().into_iter().flatten() {
-      if let Some(summary) = summary.as_object_mut() {
-        summary.remove("diff");
-      }
-    }
-    output["edits"] = summaries;
-    Ok(ToolOutcome::SuccessWithMetadata { output, metadata: json!({"edits": edits}) })
-  }
   async fn poll(
     &self,
     id: &str,
@@ -373,12 +493,12 @@ impl ShellTool {
     wait: Duration,
     encoding: DataEncoding,
     control: &ExecutionControl,
-  ) -> Result<Value, ShellError> {
+  ) -> Result<Value, TaskError> {
     let execution = self.get_execution(id)?;
     let deadline = resolve_deadline(wait)?;
     loop {
       if control.is_cancelled() {
-        return Err(ShellError::Interrupted);
+        return Err(TaskError::Interrupted);
       }
       if execution.get_snapshot().status != Status::Running
         || tokio::fs::metadata(&execution.output_path).await?.len() > offset
@@ -390,30 +510,22 @@ impl ShellTool {
     }
   }
 }
-impl ToolExecutor for ShellTool {
-  async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
-    match ShellOperation::parse_call(&call.name, call.arguments.clone()) {
-      Ok(operation) => self.run(operation, control).await,
-      Err(error) => ToolOutcome::Failed(error.to_string()),
-    }
-  }
-}
 /// Waits one polling tick, ended early by `deadline` or by cancellation.
 async fn wait_tick(deadline: tokio::time::Instant, control: &ExecutionControl) {
   let tick = deadline.min(tokio::time::Instant::now() + Duration::from_millis(20));
   control.run_until_cancelled(tokio::time::sleep_until(tick)).await;
 }
-fn resolve_deadline(duration: Duration) -> Result<tokio::time::Instant, ShellError> {
+fn resolve_deadline(duration: Duration) -> Result<tokio::time::Instant, TaskError> {
   tokio::time::Instant::now()
     .checked_add(duration)
-    .ok_or_else(|| ShellError::InvalidArguments("wait duration overflows the clock".into()))
+    .ok_or_else(|| TaskError::InvalidArguments("wait duration overflows the clock".into()))
 }
 async fn read_output(
   execution: &Execution,
   offset: u64,
   max_bytes: usize,
   encoding: DataEncoding,
-) -> Result<Value, ShellError> {
+) -> Result<Value, TaskError> {
   let mut file = tokio::fs::File::open(&execution.output_path).await?;
   file.seek(io::SeekFrom::Start(offset)).await?;
   let mut bytes = Vec::new();
@@ -436,11 +548,11 @@ async fn read_output(
 
 /// The outcome a shell error reports: an interruption cancels, and a lost process leaves the
 /// outcome unknown.
-impl From<ShellError> for ToolOutcome {
-  fn from(error: ShellError) -> Self {
+impl From<TaskError> for ToolOutcome {
+  fn from(error: TaskError) -> Self {
     match error {
-      ShellError::Interrupted => ToolOutcome::Cancelled,
-      ShellError::Unknown(message) => ToolOutcome::Unknown(message),
+      TaskError::Interrupted => ToolOutcome::Cancelled,
+      TaskError::Unknown(message) => ToolOutcome::Unknown(message),
       error => ToolOutcome::Failed(error.to_string()),
     }
   }

@@ -164,3 +164,11 @@ pub async fn generation_structure(
 ) -> Result<Json<Value>, ApiError> {
   Ok(Json(session_queries::generation_structure(app, (id, generation), page).await?))
 }
+
+pub async fn set_working_directory(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Json(input): Json<session_commands::WorkingDirectory>,
+) -> Result<Json<Value>, ApiError> {
+  Ok(Json(session_commands::set_working_directory(app, id, input).await?))
+}

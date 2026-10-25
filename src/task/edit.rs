@@ -1,10 +1,10 @@
-//! The files a `shell_edit` command edits: read before launch, compared after exit, and each
+//! The files a task edit command edits: read before launch, compared after exit, and each
 //! change reported as a unified diff.
-use super::ShellError;
+use super::TaskError;
 use imara_diff::{
   Algorithm, Diff, InternedInput, Interner, Token, UnifiedDiffConfig, UnifiedDiffPrinter,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
   fmt, io,
   path::{Path, PathBuf},
@@ -15,7 +15,7 @@ pub(super) struct EditCapture {
   before: Vec<u8>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(super) enum EditResult {
   Pending { path: PathBuf },
@@ -24,9 +24,9 @@ pub(super) enum EditResult {
 }
 
 impl EditCapture {
-  pub async fn capture(path: PathBuf) -> Result<Self, ShellError> {
+  pub async fn capture(path: PathBuf) -> Result<Self, TaskError> {
     if !path.is_absolute() {
-      return Err(ShellError::InvalidArguments(format!(
+      return Err(TaskError::InvalidArguments(format!(
         "diff paths must be absolute: {}",
         path.display()
       )));

@@ -20,6 +20,8 @@ mod skills;
 mod sse;
 mod status;
 mod storage;
+mod tasks;
+pub mod tool_commands;
 mod usage;
 use crate::application::{app::App, presets};
 use crate::server::{
@@ -105,6 +107,9 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/blobs/{blob}/meta", get(content::metadata))
     .route("/sessions/{id}/config", put(sessions::set_config))
     .route("/sessions/{id}/metadata", put(sessions::set_metadata))
+    .route("/sessions/{id}/tasks/background-shell", post(tasks::background_foreground))
+    .route("/sessions/{id}/tasks", get(tasks::list).post(tasks::user))
+    .route("/sessions/{id}/cwd", put(sessions::set_working_directory))
     .route("/sessions/{id}/shell", put(sessions::set_shell))
     .route("/sessions/{id}/tools", put(sessions::set_tools))
     .route("/sessions/{id}/answer", post(sessions::answer))
@@ -131,6 +136,11 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route_layer(middleware::from_fn_with_state(app.clone(), authorize))
     // The bridge a session's shell reaches its MCP servers through checks that session's own token
     // instead of the application's.
+    .route(
+      "/sessions/{id}/commands/{name}",
+      get(tool_commands::describe).post(tool_commands::execute),
+    )
+    .route("/sessions/{id}/task", post(tasks::session))
     .route("/sessions/{id}/mcp/servers", get(mcp::servers))
     .route("/sessions/{id}/mcp/tool", get(mcp::tool))
     .route("/sessions/{id}/mcp/call", post(mcp::call))

@@ -20,10 +20,10 @@ extra model input after the whole batch's results, preserving call/result pairin
 `SuccessWithMetadata` keeps its metadata on the stored result message, which is never sent to the
 model.
 
-The server's dispatcher is `SessionTools`
+The application's dispatcher is `SessionTools`
 ([`src/application/session/tools.rs`](../../src/application/session/tools.rs)). Every session gets
 `history_search`, `history_read`, `history_query` and `view_image`. The session's switches
-(`descriptor.tools`) add the five shell tools, `ask_user` and `web_search`; the `mcp` and `skills`
+(`descriptor.tools`) add the simple `shell` tool, `ask_user` and `web_search`; the `mcp` and `skills`
 switches add no tool (see [MCP](mcp.md) and [skills](skills.md)). The `ShellTool` starts the first time the shell is switched on and stays
 alive while it is off, so background commands still report. The server rewrites `config.tools` to
 exactly that set and rejects a config naming any other tool (`no executor for tool X`), in the same
@@ -40,7 +40,45 @@ let outcome = executor::run(&model_caller, &mut session, &shell, &control, obser
 shell.shutdown().await?;
 ```
 
-## Shell
+## Shell and tasks
+
+The model sees `shell({command, timeout?, edit?, check_diff?})`. It runs a new shell in the session's working
+directory and waits until exit. Omitted timeout means no limit; a positive timeout is a hard
+runtime limit and terminates the process tree. Large output does not background the command:
+the result retains the last 2000 lines / 50 KiB and points to the complete capture.
+
+`tool/shell.rs` adapts model calls. `task/` owns the process registry, supervision, input/output,
+background transfer and edit captures. `application/task_access.rs` enforces session ownership
+and schedules completion notifications. HTTP and CLI remain adapters. `storage/task_records.rs`
+writes task records alongside their output, atomically. Completed records survive restart;
+previously running records become `interrupted`, since restarting Wish cannot recover process
+ownership. Graceful shutdown terminates managed tasks.
+
+Every foreground shell call is registered too. `wish task background <id>` releases its foreground
+wait without restarting or signalling the process. Inside that shell, `self` resolves to the
+injected `WISH_TASK_ID`. A detached task survives cancellation of that foreground invocation;
+explicit task termination and service shutdown still stop it.
+
+```text
+wish task list --running
+wish task start --interactive -- 'python worker.py'
+wish task show <id>
+wish task poll <id> --offset 0 --max-bytes 4096
+printf 'input\n' | wish task write <id> --stdin --close
+wish task background <id>
+wish task wait <id>
+wish task kill <id> --force
+wish task remove <id>
+```
+
+`start` defaults to immediate background execution; `--wait` is a soft wait, distinct from the
+simple tool's hard timeout. The shell tool accepts optional `edit` (absolute file paths) and
+`check_diff`; full diffs remain metadata unless `check_diff` is true. Task management has no edit operation. `remove` refuses running tasks and deletes completed task
+records and captures. List output is tabular, or JSON with `--json`; other commands return JSON.
+The task list is scoped to its owning session. User API callers can still inspect and terminate
+existing tasks with the session's shell switch off; starting a new command is refused.
+
+### Process configuration
 
 Linux, macOS and BSD supervise commands with Unix process groups; Windows uses Job Objects. Other
 platforms are refused by `ShellTool::new`, which also canonicalizes `cwd` (it must be an existing
@@ -70,7 +108,10 @@ opens. Deleting a session removes its capture directory
 ([`src/application/session.rs`](../../src/application/session.rs),
 [`src/application/session/tools.rs`](../../src/application/session/tools.rs), [API](../api.md#sessions)).
 
-### Operations
+### Task operations and legacy tool calls
+
+The following tool names are accepted by the compatibility adapter for old callers but are not
+advertised to models. Their operations are available through `wish task`.
 
 | Tool | Required Inputs | Optional Inputs | Behavior |
 | --- | --- | --- | --- |
@@ -97,7 +138,7 @@ limit. Output is written directly to `<capture_dir>/<execution id>/output.log`, 
 stderr sharing the file. Execution IDs are `<pid>-<unix nanos>-<counter>`. Captures are retained;
 the server removes them only with the session.
 
-`return_reason` on `shell_start`:
+`return_reason` on `wish task start` / legacy `shell_start`:
 
 | Value | Meaning |
 | --- | --- |
@@ -108,7 +149,7 @@ the server removes them only with the session.
 | `interrupted` | the run was interrupted; the group was terminated |
 
 Start, edit and poll results (and `wait_for_completion`) share one shape: `execution_id`,
-`process` (`status`: `running`, `exited`, `killed` or `unknown`; `exit_code`; Unix-only
+`process` (`status`: `running`, `exited`, `killed`, `interrupted` or `unknown`; `exit_code`; Unix-only
 `term_signal`; `error`; initial stdin bytes and error), `output_path`, `output_bytes`,
 `next_offset`, `eof`, `encoding`, `text` and `lossy`. `output_notice` appears when unread output
 remains and advises a bounded read or a search of `output_path`. Start and edit add
@@ -282,3 +323,41 @@ publishes the list as `status.pending_questions` and takes answers through
 enqueues `late_answer_message`, a `Developer { fixed: false }` message with metadata
 `{source: "ask_user_answer", call_id, questions, answers}`, and wakes the session, as a background
 completion does; skipped, it is dropped. A restart closes every open form.
+
+## Capability delivery
+
+Session/default tool settings keep the enable switches and add `task_delivery`,
+`web_fetch_delivery`, `web_search_delivery`, and `ask_user_delivery`: `tool` or `command`.
+Task defaults to command delivery; the other capabilities retain direct-tool delivery.
+Command delivery removes that capability from the model tool list and supplies command
+instructions instead. When shell is disabled, enabled web/question capabilities fall back to
+direct tools, so they remain reachable.
+
+`wish webfetch URL`, `wish websearch QUERY`, and `wish askuser --json '{"questions":[...]}'`
+share the direct tools' implementations. All three support `--json`, `--stdin` and `--schema`.
+Task direct delivery exposes one `task` tool using the task API's request object.
+
+Command calls/results are stored as application history events and projected into ordinary
+frontend tool cards, including search metadata and question forms. They are not synthetic
+model messages. A cancelled request records cancellation as well.
+
+Global delivery settings are creation defaults. `App::create_session` copies them into the
+session descriptor and `SessionSlot::open` uses that descriptor on reopen. Settings saves do
+not propagate delivery changes to existing sessions. Legacy descriptors deserialize with fixed
+compatibility defaults rather than consulting current global settings.
+
+`tool::arguments` omits null/blank optional parameters according to each tool's schema before
+its ordinary parser runs. Required values and stdin payload whitespace are preserved. Tool
+implementations validate meaning and report the field plus recovery instructions. The task
+application parser applies the same rules to HTTP and direct calls; the CLI is only an adapter.
+
+Delivery changes use `Session::defer_instruction_config`: the model sees a tail system notice,
+while instruction replacements and the target tool list are saved for the next generation.
+Adding a direct tool takes effect immediately; removing its definition solely for command delivery
+can wait. Permission revocation takes effect immediately. Reopening and starting another run do
+not rewrite that generation's initial instructions.
+
+`ToolExecutor::accepts_unadvertised_call` defaults to false. The application explicitly recognizes
+Task, Web Fetch, Web Search and Ask User independently of presentation mode, then checks capability
+permissions in its dispatcher so disabled capabilities return a specific error. Generic executors still reject unknown tools. Both serial and parallel batch
+execution use this contract, and both routes retain the same validators and timeline semantics.

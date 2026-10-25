@@ -45,12 +45,25 @@ impl ToolExecutor for WebFetchTool {
 
 impl WebFetchTool {
   async fn read_page(&self, call: &ToolCall) -> Result<ToolOutcome, String> {
+    let arguments =
+      super::arguments::normalize(&call.arguments, &self.get_specification().input_schema)?;
+    for field in ["url", "cursor"] {
+      if arguments.get(field).is_some_and(|value| !value.is_string()) {
+        return Err(format!(
+          "web_fetch: `{field}` must be a string; omit empty optional fields. Example: {{\"url\":\"https://example.com\"}}"
+        ));
+      }
+    }
+    if arguments.get("refresh").is_some_and(|value| !value.is_boolean()) {
+      return Err("web_fetch: `refresh` must be true or false; omit it to use false".into());
+    }
+    const CURSOR_ERROR: &str = "web_fetch: invalid cursor; copy `next_cursor` exactly from the preceding result, or omit `cursor` and provide `url` to start a new fetch";
     let (page, snapshot_id, start) = if let Some(cursor) =
-      call.arguments["cursor"].as_str().map(str::trim).filter(|cursor| !cursor.is_empty())
+      arguments["cursor"].as_str().map(str::trim).filter(|cursor| !cursor.is_empty())
     {
-      let (snapshot, offset) = cursor.split_once(':').ok_or("invalid cursor")?;
-      let snapshot_id = uuid::Uuid::parse_str(snapshot).map_err(|_| "invalid cursor")?;
-      let start: usize = offset.parse().map_err(|_| "invalid cursor")?;
+      let (snapshot, offset) = cursor.split_once(':').ok_or(CURSOR_ERROR)?;
+      let snapshot_id = uuid::Uuid::parse_str(snapshot).map_err(|_| CURSOR_ERROR)?;
+      let start: usize = offset.parse().map_err(|_| CURSOR_ERROR)?;
       let page: FetchPage = self
         .snapshots
         .read(snapshot_id)
@@ -58,11 +71,12 @@ impl WebFetchTool {
         .map_err(|_| "page snapshot is unavailable; fetch the URL again")?;
       (page, snapshot_id, start)
     } else {
-      let url = call.arguments["url"]
+      let url = arguments["url"]
         .as_str()
+        .map(str::trim)
         .filter(|url| !url.is_empty() && url.len() <= 8192)
-        .ok_or("url or cursor is required")?;
-      let refresh = call.arguments["refresh"].as_bool().unwrap_or(false);
+        .ok_or("web_fetch: `url` or a returned `cursor` is required. Example: {\"url\":\"https://example.com\"}")?;
+      let refresh = arguments["refresh"].as_bool().unwrap_or(false);
       let page = (self.backend)(url.into(), refresh).await?;
       if page.content.len() > 4 * 1024 * 1024 {
         return Err("page exceeds the 4 MiB snapshot limit".into());
@@ -72,7 +86,7 @@ impl WebFetchTool {
     };
     let total_chars = page.content.chars().count();
     if start > total_chars {
-      return Err("cursor offset is outside page".into());
+      return Err(format!("{CURSOR_ERROR}; offset is outside the saved page"));
     }
     let content: String = page.content.chars().skip(start).take(20_000).collect();
     let end = start + content.chars().count();
@@ -156,7 +170,7 @@ mod tests {
           &ToolCall {
             call_id: "read".into(),
             name: "web_fetch".into(),
-            arguments: json!({"url":"https://example.com", "cursor":cursor, "refresh":false}),
+            arguments: json!({"url":"https://example.com", "cursor":cursor, "refresh":""}),
           },
           &ExecutionControl::new(),
         )

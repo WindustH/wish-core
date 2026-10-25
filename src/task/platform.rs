@@ -13,7 +13,7 @@ pub(super) use unix::ProcessTree;
 #[cfg(windows)]
 pub(super) use windows::ProcessTree;
 
-/// What `shell_start` adds to its description about where commands run: models write POSIX shell
+/// What the shell tool adds to its description about where commands run: models write POSIX shell
 /// by default, which cmd.exe and PowerShell reject.
 pub(super) const DESCRIPTION_NOTE: &str = if cfg!(windows) {
   " Commands run on Windows, in the shell set for this session: cmd.exe unless configured otherwise. Write Windows commands in that shell's syntax, not POSIX sh."
