@@ -1,6 +1,6 @@
 //! Explicit stateless naming requests. Only clients decide when to call this endpoint.
 use crate::{
-  executor::model::{CallResponse, ModelCaller, ModelStream},
+  executor::model::{CallResponse, ModelCaller},
   protocol::{ContentBlock, Message, model_use::request::ToolChoice},
   server::{
     app::App,
