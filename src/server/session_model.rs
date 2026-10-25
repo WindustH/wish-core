@@ -1,5 +1,5 @@
 //! The model a session calls: its provider's client, seen through the session. Each request gets
-//! the agent instructions first, encrypted compaction items the provider cannot read replaced by
+//! encrypted compaction items the provider cannot read replaced by
 //! their handoff, and its images projected for what the model accepts - the stored conversation
 //! keeps the originals. An upstream that refuses images turns them into file references for the
 //! rest of the model's life.
@@ -28,7 +28,7 @@ use std::{
 
 const AGENT_INSTRUCTIONS: &str =
   "You are the agent operating this session. Use the provided tools to complete the user's task.";
-/// The agent instructions a request with `tools` carries: the fixed text, then how to reach MCP
+/// The agent instructions persisted for a generation with `tools`: the fixed text, then how to reach MCP
 /// servers, skills and other sessions when there is a shell to reach them from. None depends on
 /// what there is or on the session's switches, so only switching the shell - which changes the
 /// tools anyway - changes it.
@@ -51,9 +51,6 @@ pub fn agent_instructions_for_shell(shell: bool) -> String {
 }
 /// Puts the current agent instructions in the conversation: in place of the ones it carries, or
 /// first when it carries none.
-pub fn apply_agent_instructions(messages: &mut Vec<Message>, tools: &[Tool]) {
-  replace_agent_instructions(messages, agent_instructions(tools));
-}
 /// Creation knows the switches before tool implementations are installed.
 pub fn apply_agent_instructions_for_shell(messages: &mut Vec<Message>, shell: bool) {
   replace_agent_instructions(messages, agent_instructions_for_shell(shell));
@@ -77,6 +74,16 @@ fn replace_agent_instructions(messages: &mut Vec<Message>, text: String) {
       },
     );
   }
+}
+pub fn persist_agent_instructions(
+  session: &mut crate::session::Session,
+  config: crate::session::SessionConfig,
+) -> Result<(), crate::session::SessionError> {
+  session.set_system_instruction_config(
+    "wish_agent_instructions".into(),
+    agent_instructions(&config.tools),
+    config,
+  )
 }
 pub struct SessionModel {
   provider: Arc<Provider>,
@@ -173,7 +180,6 @@ impl SessionModel {
     save: bool,
   ) -> Result<(Request, bool), Error> {
     let mut request = request.clone();
-    apply_agent_instructions(&mut request.conversation, &request.tools);
     compaction_item::project(&mut request.conversation, &self.provider.id);
     // File writes run outside the async runtime workers; validation below performs no I/O.
     let (mut messages, model, provider, image_dir, rejected) = (
@@ -306,7 +312,6 @@ impl ModelCaller for SessionModel {
   }
   fn validate_request(&self, request: &Request) -> Result<(), Error> {
     let mut request = request.clone();
-    apply_agent_instructions(&mut request.conversation, &request.tools);
     compaction_item::project(&mut request.conversation, &self.provider.id);
     let rejected = self.rejected.load(Ordering::Relaxed);
     let models = &self.provider.config.models;

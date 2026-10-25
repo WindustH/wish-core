@@ -151,6 +151,8 @@ impl SessionSlot {
     session: &mut Session,
     operation: Operation,
   ) -> Result<ExecutionControl, ApiError> {
+    let config = session.get_config().clone();
+    crate::server::session_model::persist_agent_instructions(session, config)?;
     if operation == Operation::Run {
       session.resume()?;
     }

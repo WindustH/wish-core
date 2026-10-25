@@ -295,11 +295,7 @@ impl App {
       if session.get_state().is_stable() {
         let current = session.get_config().clone();
         let config = slot.configure_tools(current.clone())?;
-        // Reopening usually installs the tools the session already has; only a change is
-        // recorded, since each record holds the whole configuration.
-        if serde_json::to_value(&config).ok() != serde_json::to_value(&current).ok() {
-          session.set_config(config)?;
-        }
+        crate::server::session_model::persist_agent_instructions(&mut session, config)?;
         slot.refresh_status(&session);
       }
     }

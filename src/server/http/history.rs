@@ -37,8 +37,6 @@ pub async fn timeline(
   Query(query): Query<Timeline>,
 ) -> Result<Json<Value>, ApiError> {
   let slot = app.get_session(&id).await?;
-  let current_instructions =
-    crate::server::session_model::agent_instructions_for_shell(slot.get_descriptor().tools.shell);
   let reader = slot.reader.clone();
   blocking(move || {
     let order = match query.order.as_str() {
@@ -106,10 +104,10 @@ pub async fn timeline(
         }
       } else {
         let mut value = json!(item);
-        if value["content"]["value"]["message"]["System"]["metadata"]["source"]
-          == "wish_agent_instructions"
-        {
-          value["instruction_preview"] = json!(current_instructions);
+        if value["content"]["value"]["id"] == 0 {
+          if let Some(generation) = reader.get_generations().get(0)? {
+            value["initial_tools"] = json!(generation.config.tools);
+          }
         }
         items.push(value);
       }

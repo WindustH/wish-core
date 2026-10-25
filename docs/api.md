@@ -753,8 +753,9 @@ for what happens.
 
 Returns `{ provider, captured_at, request }`. `request` uses the normalized model request
 shape: current committed conversation, installed tool definitions and model settings.
-The application applies its complete agent instructions, compaction handoff projection and
-configured image capabilities, as it does before a model call. Image blocks carry
+Agent instructions are persisted system entries referenced by the active generation. The
+application applies compaction handoff projection and configured image capabilities, as it
+does before a model call. Image blocks carry
 `image_blob_id` and `byte_count` in place of inline image bytes (the `data_base64` field
 contains a display placeholder); this inspection response must not be replayed as a request.
 
@@ -1056,8 +1057,12 @@ tool definitions. These are display-only records, never additional conversation 
 identical records are deduplicated within one model instance. They record preparation of
 an attempted request, not proof of upstream acceptance. Continuation, summary and handoff
 prompts are recorded from this version onward; older unrecorded prompts cannot be recovered.
-Legacy agent system records may include an `instruction_preview` field alongside the
-record: this is derived from current tool switches, not the historical message itself.
+The first stored message includes `initial_tools`, containing generation #0’s saved tool
+definitions for the timeline opening inspector. Each generation also exposes its own tools
+in `config.tools`. Managed agent instructions (including MCP, skills and session usage) are
+stored as system entries before execution. Changes create a new active generation and seal
+the previous one. Legacy active generations are upgraded when opened in a stable state;
+sealed history retains its original text. No current-settings instruction preview is added.
 
 ### `POST /api/sessions/{id}/history/query`
 

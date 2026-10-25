@@ -98,7 +98,7 @@ pub async fn set_config(
   let mut session = slot.lock_idle_or_conflict().await?;
   blocking(move || {
     slot.require_live()?;
-    session.set_config(config)?;
+    crate::server::session_model::persist_agent_instructions(&mut session, config)?;
     Ok(Json(slot.publish(&session)?))
   })
   .await
@@ -120,7 +120,7 @@ pub async fn set_tools(
   config.tools.clear();
   let config = slot.configure_tools(config)?;
   blocking(move || {
-    session.set_config(config)?;
+    crate::server::session_model::persist_agent_instructions(&mut session, config)?;
     Ok(Json(slot.publish(&session)?))
   })
   .await
