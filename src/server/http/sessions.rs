@@ -1,18 +1,15 @@
-//! Sessions over HTTP: the list, creating and reading one, its settings, running it, its live
-//! events, and pages of its stored lists - entries, queue, generations and model calls.
+//! HTTP adapters; domain operations live in the application layer.
+use crate::application::session_commands::Answer;
+use crate::application::session_queries::SessionQuery;
+use crate::application::session_queries::{Page, StructurePage};
 use crate::application::{
   app::App,
   config::ShellSettings,
-  session::{CreateSession, Operation, ToolChanges},
+  session::{CreateSession, ToolChanges},
 };
-use crate::server::error::{ApiError, blocking};
-use crate::storage::management::SessionQuery;
-use crate::{
-  protocol::Message,
-  session::SessionConfig,
-  storage::{ReadList, StoredValue},
-  tool::ask_user::{Delivery, late_answer_message},
-};
+use crate::application::{session_commands, session_queries};
+use crate::server::error::ApiError;
+use crate::{protocol::Message, session::SessionConfig};
 use axum::{
   Json,
   extract::{Path, Query, State},
@@ -22,370 +19,148 @@ use axum::{
     sse::{Event, KeepAlive},
   },
 };
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use futures_util::StreamExt;
+use serde_json::Value;
 use std::{convert::Infallible, sync::Arc};
-use tokio::sync::broadcast::error::RecvError;
 
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Page {
-  pub start: u64,
-  pub limit: usize,
-}
-impl Default for Page {
-  fn default() -> Self {
-    Self { start: 0, limit: 50 }
-  }
-}
-async fn read_page<T: StoredValue + Serialize>(
-  list: ReadList<T>,
-  page: Page,
-) -> Result<Json<Value>, ApiError> {
-  blocking(move || {
-    let page = list.read_page(page.start, page.limit)?;
-    Ok(Json(json!({"start":page.start,"items":page.items,"next":page.next})))
-  })
-  .await
-}
 pub async fn list(
   State(app): State<Arc<App>>,
   Query(query): Query<SessionQuery>,
 ) -> Result<Json<Value>, ApiError> {
-  let management = app.management.clone();
-  blocking(move || Ok(Json(project_list(management.list(query)?)))).await
+  Ok(Json(session_queries::list(app, query).await?))
 }
-/// What a user browses: sessions and groups, newest first.
 pub async fn conversations(
   State(app): State<Arc<App>>,
   Query(query): Query<SessionQuery>,
 ) -> Result<Json<Value>, ApiError> {
-  let management = app.management.clone();
-  blocking(move || Ok(Json(project_list(management.conversations(query)?)))).await
+  Ok(Json(session_queries::conversations(app, query).await?))
 }
 pub async fn create(
   State(app): State<Arc<App>>,
   Json(input): Json<CreateSession>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-  Ok((StatusCode::CREATED, Json(app.create_session(input).await?.describe())))
+  Ok((StatusCode::CREATED, Json(session_commands::create(app, input).await?)))
 }
 pub async fn get(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-  Ok(Json(app.get_session(&id).await?.describe()))
+  Ok(Json(session_queries::get(app, id).await?))
 }
 pub async fn enqueue(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
-  Json(mut message): Json<Message>,
+  Json(message): Json<Message>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-  app.lifecycle.require_open()?;
-  message.normalize_new_input();
-  let slot = app.get_session(&id).await?;
-  let entry = slot.enqueue(message).await?;
-  slot.touch()?;
-  Ok((StatusCode::CREATED, Json(json!({"entry":entry}))))
+  Ok((StatusCode::CREATED, Json(session_commands::enqueue(app, id, message).await?)))
 }
 pub async fn set_config(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Json(config): Json<SessionConfig>,
 ) -> Result<Json<Value>, ApiError> {
-  app.lifecycle.require_open()?;
-  let slot = app.get_session(&id).await?;
-  let config = slot.configure_tools(config)?;
-  let mut session = slot.lock_idle_or_conflict().await?;
-  blocking(move || {
-    slot.require_live()?;
-    crate::application::instructions::persist_agent_instructions(&mut session, config)?;
-    Ok(Json(slot.publish(&session)?))
-  })
-  .await
+  Ok(Json(session_commands::set_config(app, id, config).await?))
 }
-/// Body: `{"shell", "ask_user", "mcp", "web_search"}`, each optional. Turns the session's optional
-/// tools on or off.
 pub async fn set_tools(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Json(changes): Json<ToolChanges>,
 ) -> Result<Json<Value>, ApiError> {
-  app.lifecycle.require_open()?;
-  let slot = app.get_session(&id).await?;
-  let mut session = slot.lock_idle_or_conflict().await?;
-  slot.require_live()?;
-  slot.switch_tools(changes).await?;
-  // The tool list is rebuilt from the switches, so a tool just switched off is not kept.
-  let mut config = session.get_config().clone();
-  config.tools.clear();
-  let config = slot.configure_tools(config)?;
-  blocking(move || {
-    crate::application::instructions::persist_agent_instructions(&mut session, config)?;
-    Ok(Json(slot.publish(&session)?))
-  })
-  .await
+  Ok(Json(session_commands::set_tools(app, id, changes).await?))
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Answer {
-  call_id: String,
-  #[serde(default)]
-  answers: Option<Vec<Value>>,
-  #[serde(default)]
-  skip: bool,
-}
-/// Body: `{"call_id", "answers"}`, or `{"call_id", "skip": true}`. Answers an `ask_user` form.
 pub async fn answer(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Json(input): Json<Answer>,
 ) -> Result<Json<Value>, ApiError> {
-  app.lifecycle.require_open()?;
-  let slot = app.get_session(&id).await?;
-  let delivered =
-    match slot.tools.ask_user.answer(&input.call_id, input.answers.as_deref(), input.skip)? {
-      Delivery::Now => "now",
-      Delivery::Dropped => "dropped",
-      // The call timed out and the agent moved on: the answers follow as a message, like a
-      // background command's report, and wake the session.
-      Delivery::Later { questions, answers } => {
-        slot.enqueue(late_answer_message(&input.call_id, &questions, &answers)).await?;
-        slot.schedule(&app);
-        "later"
-      }
-    };
-  slot.touch()?;
-  Ok(Json(json!({"delivered": delivered})))
+  Ok(Json(session_commands::answer(app, id, input).await?))
 }
-/// Body: `{"program", "args"}` for the session's own shell, or null to follow the application's.
 pub async fn set_shell(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Json(settings): Json<Option<ShellSettings>>,
 ) -> Result<Json<Value>, ApiError> {
-  app.lifecycle.require_open()?;
-  let slot = app.get_session(&id).await?;
-  let global = app.shell.read().unwrap().clone();
-  blocking(move || {
-    slot.require_live()?;
-    slot.set_shell(settings, &global)?;
-    Ok(Json(slot.describe()))
-  })
-  .await
+  Ok(Json(session_commands::set_shell(app, id, settings).await?))
 }
 pub async fn set_metadata(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Json(metadata): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-  app.lifecycle.require_open()?;
-  let slot = app.get_session(&id).await?;
-  let mut session = slot.lock_idle_or_conflict().await?;
-  blocking(move || {
-    slot.require_live()?;
-    session.set_metadata(metadata)?;
-    Ok(Json(slot.publish(&session)?))
-  })
-  .await
+  Ok(Json(session_commands::set_metadata(app, id, metadata).await?))
 }
 pub async fn run(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-  start(app, id, Operation::Run).await
+  Ok((StatusCode::ACCEPTED, Json(session_commands::run(app, id).await?)))
 }
 pub async fn compact(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-  start(app, id, Operation::Compact).await
-}
-async fn start(
-  app: Arc<App>,
-  id: String,
-  operation: Operation,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-  let slot = app.get_session(&id).await?;
-  slot.start(&app, operation).await?;
-  Ok((StatusCode::ACCEPTED, Json(json!({"accepted":true}))))
+  Ok((StatusCode::ACCEPTED, Json(session_commands::compact(app, id).await?)))
 }
 pub async fn interrupt(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-  let slot = app.get_session(&id).await?;
-  let requested = slot.interrupt_or_settle()?;
-  // The scheduler waits for the cancelled run to release the session, then consumes pending
-  // inputs. The interrupt invalidated older schedulers; only this fresh one resumes.
-  slot.schedule(&app);
-  Ok(Json(json!({"requested": requested})))
+  Ok(Json(session_commands::interrupt(app, id).await?))
 }
 pub async fn entries(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Query(page): Query<Page>,
 ) -> Result<Json<Value>, ApiError> {
-  read_page(app.get_session(&id).await?.reader.get_entries(), page).await
+  Ok(Json(session_queries::entries(app, id, page).await?))
 }
 pub async fn queue(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Query(page): Query<Page>,
 ) -> Result<Json<Value>, ApiError> {
-  read_page(app.get_session(&id).await?.reader.get_message_queue(), page).await
+  Ok(Json(session_queries::queue(app, id, page).await?))
 }
 pub async fn generations(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Query(page): Query<Page>,
 ) -> Result<Json<Value>, ApiError> {
-  read_page(app.get_session(&id).await?.reader.get_generations(), page).await
+  Ok(Json(session_queries::generations(app, id, page).await?))
 }
 pub async fn generation_entries(
   State(app): State<Arc<App>>,
   Path((id, generation)): Path<(String, u64)>,
   Query(page): Query<Page>,
 ) -> Result<Json<Value>, ApiError> {
-  let reader = app.get_session(&id).await?.reader.clone();
-  let list = blocking(move || {
-    let generation = reader.get_generations().get(generation)?.ok_or_else(ApiError::not_found)?;
-    Ok(reader.get_generation_entry_ids(generation.id)?)
-  })
-  .await?;
-  read_page(list, page).await
+  Ok(Json(session_queries::generation_entries(app, (id, generation), page).await?))
 }
 pub async fn calls(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Query(page): Query<Page>,
 ) -> Result<Json<Value>, ApiError> {
-  read_page(app.get_session(&id).await?.reader.get_model_calls(), page).await
+  Ok(Json(session_queries::calls(app, id, page).await?))
 }
-/// A `snapshot` of the session and its live preview first, then each change. A client that fell
-/// behind gets a fresh snapshot; the stream ends after reporting the session's deletion.
 pub async fn events(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-  let slot = app.get_session(&id).await?;
-  let (receiver, snapshot) = slot.subscribe_live();
-  let snapshot = Some(snapshot);
-  // It ends there because it holds the slot, and nothing else would ever be sent on it.
-  let stream = futures_util::stream::unfold(
-    (receiver, app.lifecycle.stop.clone(), snapshot, slot, false),
-    |(mut receiver, stop, mut snapshot, slot, deleted)| async move {
-      if deleted {
-        return None;
-      }
-      let value = if let Some(value) = snapshot.take() {
-        value
-      } else {
-        tokio::select! {
-          _ = stop.cancelled() => return None,
-          result = receiver.recv() => match result {
-            Ok(value) => value,
-            Err(RecvError::Lagged(_)) => {
-              let (fresh, snapshot) = slot.subscribe_live();
-              receiver = fresh;
-              snapshot
-            }
-            Err(RecvError::Closed) => return None,
-          }
-        }
-      };
-      let deleted = value["type"] == "deleted";
-      Some((
-        Ok(Event::default().event("wish").data(value.to_string())),
-        (receiver, stop, snapshot, slot, deleted),
-      ))
-    },
-  );
+  let stream = crate::application::events::session_events(app, id)
+    .await?
+    .map(|value| Ok(Event::default().event("wish").data(value.to_string())));
   Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
-
-/// A read-only view of committed current context after application-level projection.
-/// Queued inputs and an unfinished tool batch are deliberately excluded by the snapshot reader.
 pub async fn inspect_context(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-  let slot = app.get_session(&id).await?;
-  let owner = slot.clone();
-  let request = blocking(move || {
-    let mut request = owner.sender.build_context_snapshot()?;
-    request.tools = owner.configure_tools(SessionConfig::new(&request.model))?.tools;
-    Ok(request)
-  })
-  .await?;
-  let descriptor = slot.get_descriptor();
-  let model = slot.make_model(app.get_provider(&descriptor.provider)?);
-  let projected = model.inspect(&request).await.map_err(ApiError::internal)?;
-  Ok(Json(
-    json!({"provider":descriptor.provider,"request":projected,"captured_at":crate::utils::time::Timestamp::now().0}),
-  ))
+  Ok(Json(session_queries::inspect_context(app, id).await?))
 }
-
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct StructurePage {
-  start: u64,
-  limit: usize,
-  kind: Option<String>,
-  origin: Option<String>,
-}
-impl Default for StructurePage {
-  fn default() -> Self {
-    Self { start: 0, limit: 20, kind: None, origin: None }
-  }
-}
-
-/// Stored generation membership, not the separately projected model request.
 pub async fn generation_structure(
   State(app): State<Arc<App>>,
   Path((id, generation)): Path<(String, usize)>,
   Query(page): Query<StructurePage>,
 ) -> Result<Json<Value>, ApiError> {
-  if page.limit == 0 || page.limit > 100 {
-    return Err(ApiError::bad_request("limit must be between 1 and 100"));
-  }
-  if page.kind.as_deref().is_some_and(|value| {
-    ![
-      "System",
-      "Developer",
-      "User",
-      "Assistant",
-      "Reasoning",
-      "ToolUse",
-      "ToolResult",
-      "UpstreamCompaction",
-    ]
-    .contains(&value)
-  }) || page.origin.as_deref().is_some_and(|value| {
-    !["Imported", "Input", "Model", "Tool", "Interrupted", "Context", "Summary"].contains(&value)
-  }) {
-    return Err(ApiError::bad_request("unknown message type or origin"));
-  }
-  let reader = app.get_session(&id).await?.reader.clone();
-  blocking(move || {
-    if reader.get_generations().get(generation as u64)?.is_none() { return Err(ApiError::not_found()) }
-    let (generation, count, positions, entries) = reader.generation_structure(crate::session::GenerationId(generation), page.start, page.limit, page.kind, page.origin)?;
-    let mut items = Vec::new();
-    for entry in entries.items {
-      let mut value = json!(entry);
-      let mut image_view = json!({"conversation":[value["message"].clone()]});
-      crate::application::session_model::image_references(&mut image_view);
-      value["message"] = image_view["conversation"][0].take();
-      items.push(value);
-    }
-    Ok(Json(json!({"generation":generation,"count":count,"positions":positions,"start":entries.start,"next":entries.next,"items":items})))
-  }).await
-}
-
-fn project_list(mut page: Value) -> Value {
-  if let Some(items) = page["items"].as_array_mut() {
-    for record in items {
-      crate::application::session::preview_pending_selection(record);
-    }
-  }
-  page
+  Ok(Json(session_queries::generation_structure(app, (id, generation), page).await?))
 }

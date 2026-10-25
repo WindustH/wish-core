@@ -22,9 +22,6 @@ pub struct ApplicationError {
   pub details: Option<serde_json::Value>,
 }
 impl ApplicationError {
-  pub fn bad_request(message: impl Into<String>) -> Self {
-    Self::invalid(message)
-  }
   pub fn invalid(message: impl Into<String>) -> Self {
     Self { kind: ErrorKind::InvalidInput, message: message.into(), details: None }
   }
@@ -102,7 +99,7 @@ impl From<crate::Error> for ApplicationError {
 
 /// Runs storage work on a thread of its own, off the async workers.
 ///
-/// The rule: request handlers read and write the databases - `wish.sqlite` through a session or the
+/// Application use cases read and write the databases - `wish.sqlite` through a session or the
 /// storage, `management.sqlite` through the index - inside `blocking`. The one exception is saving
 /// a session's index record where the session changes (`SessionSlot::persist_index`, and the model
 /// calls saved beside it when an operation ends): a single small write, which the engine's event

@@ -7,7 +7,7 @@ use axum::{
   Json,
   extract::{Path, State},
 };
-pub(crate) use naming::{NamingInput, first_user};
+pub(crate) use naming::NamingInput;
 use serde_json::Value;
 use std::sync::Arc;
 pub async fn generate(

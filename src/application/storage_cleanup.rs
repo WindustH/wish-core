@@ -3,24 +3,27 @@
 use crate::{
   application::{
     app::App,
-    blobs::{blob_id, description_path, is_blob_id},
-    data_dir::{DataDir, size, with_suffix},
-    error::{ApplicationError as ApiError, blocking},
+    error::{ApplicationError, blocking},
   },
-  protocol::Message,
   session::SessionError,
   tool::shell::ShellTool,
   utils::time::Timestamp,
 };
-use axum::{Json, extract::State};
-use base64::Engine;
+use crate::{
+  session::resources::{collect_references, is_execution_id},
+  storage::{
+    blobs::{description_path, is_blob_id},
+    data_dir::DataDir,
+    files::{ResourceFiles, release_resources, size, with_suffix},
+  },
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::HashSet, sync::Arc};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Prune {
+pub struct PruneRequest {
   /// The sessions to prune; every session when absent.
   #[serde(default)]
   sessions: Option<Vec<String>>,
@@ -33,15 +36,15 @@ pub struct Prune {
 }
 
 #[derive(Default)]
-struct Released {
+struct CleanupSummary {
   messages: u64,
   events: u64,
   files: u64,
   history_bytes: u64,
   file_bytes: u64,
 }
-impl Released {
-  fn add(&mut self, other: &Released) {
+impl CleanupSummary {
+  fn add(&mut self, other: &CleanupSummary) {
     self.messages += other.messages;
     self.events += other.events;
     self.files += other.files;
@@ -60,10 +63,7 @@ impl Released {
 
 /// Prunes each session in turn and shrinks the database once at the end. A running session is
 /// skipped and reported rather than waited for.
-pub async fn prune(
-  State(app): State<Arc<App>>,
-  Json(input): Json<Prune>,
-) -> Result<Json<Value>, ApiError> {
+pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
   let every = input.sessions.is_none();
   let ids = match input.sessions {
@@ -88,7 +88,7 @@ pub async fn prune(
     ["", "-wal"].iter().map(|suffix| size(&with_suffix(&database, suffix)).unwrap_or(0)).sum()
   };
   let initial = database_bytes();
-  let (mut total, mut sessions, mut skipped) = (Released::default(), Vec::new(), Vec::new());
+  let (mut total, mut sessions, mut skipped) = (CleanupSummary::default(), Vec::new(), Vec::new());
   for id in ids {
     let slot = match app.get_session(&id).await {
       Ok(slot) => slot,
@@ -107,18 +107,23 @@ pub async fn prune(
     let result = blocking(move || {
       let mut session = session;
       slot.require_live()?;
-      let history = match session.prune_history(before, apply, references) {
+      let history = match session.prune_history(before, apply, collect_references) {
         Ok(history) => history,
         Err(SessionError::Busy) => return Ok(None),
         Err(error) => return Err(error.into()),
       };
-      let (files, file_bytes) =
-        release_files(&data_dir, &target, &history.resources, slot.tools.shell(), apply)
-          .map_err(ApiError::internal)?;
+      let (files, file_bytes) = release_unreferenced_files(
+        &data_dir,
+        &target,
+        &history.resources,
+        slot.tools.shell(),
+        apply,
+      )
+      .map_err(ApplicationError::internal)?;
       if apply && (history.messages > 0 || history.events > 0) {
         let _ = slot.events.send(json!({"type": "history_pruned"}));
       }
-      Ok(Some(Released {
+      Ok(Some(CleanupSummary {
         messages: history.messages,
         events: history.events,
         files,
@@ -142,94 +147,38 @@ pub async fn prune(
   if apply {
     if total.history_bytes > 0 {
       let storage = app.storage.clone();
-      blocking(move || storage.vacuum().map_err(ApiError::from)).await?;
+      blocking(move || storage.vacuum().map_err(ApplicationError::from)).await?;
     }
     result["database"] = json!({"before": initial, "after": database_bytes()});
   }
-  Ok(Json(result))
+  Ok(result)
 }
 
-/// The session files a message names: blobs by the SHA-256 of their bytes, which is also what an
-/// inline image hashes to, and shell executions by their id. Any word shaped like one counts;
-/// only those on disk matter.
-fn references(message: &Message, found: &mut HashSet<String>) {
-  if let Ok(value) = serde_json::to_value(message) {
-    collect(&value, found);
-  }
-}
-fn collect(value: &Value, found: &mut HashSet<String>) {
-  match value {
-    Value::String(text) => {
-      for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
-        if is_blob_id(word) || is_execution(word) {
-          found.insert(word.to_owned());
-        }
-      }
-    }
-    Value::Array(items) => items.iter().for_each(|item| collect(item, found)),
-    Value::Object(fields) => {
-      for (key, item) in fields {
-        match (key.as_str(), item) {
-          ("data_base64", Value::String(data)) => {
-            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
-              found.insert(blob_id(&bytes));
-            }
-          }
-          _ => collect(item, found),
-        }
-      }
-    }
-    _ => {}
-  }
-}
-/// A shell execution id: `<pid>-<nanoseconds>-<counter>`.
-fn is_execution(word: &str) -> bool {
-  let parts: Vec<_> = word.split('-').collect();
-  parts.len() == 3
-    && parts.iter().all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-}
-
-/// Remove, or with `apply` false only measure, the files `names` point at: a blob with its
-/// description, or a finished execution's output. Returns how many and their bytes.
-fn release_files(
+/// Select resource paths while the session lock is held. Running shell output is retained.
+fn release_unreferenced_files(
   data_dir: &DataDir,
   id: &str,
   names: &HashSet<String>,
   shell: Option<&ShellTool>,
   apply: bool,
 ) -> std::io::Result<(u64, u64)> {
-  let (blobs, executions) = (data_dir.blobs(id), data_dir.shell(id));
-  let (mut count, mut bytes) = (0, 0);
-  for name in names {
-    if is_blob_id(name) {
-      let paths = [blobs.join(name), description_path(&blobs, name)];
-      if !paths[0].is_file() {
-        continue;
+  let blobs = data_dir.blobs(id);
+  let executions = data_dir.shell(id);
+  let resources: Vec<_> = names
+    .iter()
+    .filter_map(|name| {
+      if is_blob_id(name) {
+        Some(ResourceFiles::File {
+          path: blobs.join(name),
+          companions: vec![description_path(&blobs, name)],
+        })
+      } else if is_execution_id(name) && !shell.is_some_and(|shell| shell.is_running(name)) {
+        Some(ResourceFiles::Directory { path: executions.join(name) })
+      } else {
+        None
       }
-      count += 1;
-      for path in paths {
-        bytes += size(&path)?;
-        if apply {
-          remove(std::fs::remove_file(&path))?;
-        }
-      }
-    } else if is_execution(name) {
-      let path = executions.join(name);
-      if !path.is_dir() || shell.is_some_and(|shell| shell.is_running(name)) {
-        continue;
-      }
-      count += 1;
-      bytes += size(&path)?;
-      if apply {
-        remove(std::fs::remove_dir_all(&path))?;
-      }
-    }
-  }
-  Ok((count, bytes))
-}
-fn remove(result: std::io::Result<()>) -> std::io::Result<()> {
-  match result {
-    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-    result => result,
-  }
+    })
+    .collect();
+  let released = release_resources(&resources, apply)?;
+  Ok((released.resources, released.bytes))
 }

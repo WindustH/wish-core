@@ -2,8 +2,7 @@
 //! through it, and `wish skill` reads its skills. The shell gets the server's address, known once it
 //! listens, the session's own token, and a directory that puts this build's `wish` first on its
 //! `PATH`; `client` is the half those commands run.
-
-use crate::application::data_dir::DataDir;
+use crate::storage::data_dir::DataDir;
 use std::{
   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
   path::PathBuf,

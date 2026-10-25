@@ -8,6 +8,7 @@ mod machine;
 mod persistence;
 mod queue;
 mod reader;
+pub mod resources;
 pub mod statistics;
 mod tool;
 

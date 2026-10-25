@@ -11,10 +11,13 @@ macro_rules! list_key {
 pub mod blobs;
 mod cache;
 pub mod calendar;
+pub mod data_dir;
 mod database;
+pub mod files;
 pub(crate) mod history_index;
 mod list;
 pub mod management;
+pub mod measurement;
 pub mod repository_error;
 pub mod snapshots;
 mod transaction;

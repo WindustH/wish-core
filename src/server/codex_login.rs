@@ -1,12 +1,7 @@
-//! Browser authorization for the Codex subscription preset: the login attempt, the callback the
-//! browser returns to (or the redirect a person pastes back), and the worker that renews every
-//! subscription's tokens - Codex's and Copilot's - before they run out. The token exchanges
-//! themselves are [`codex_oauth`]'s and
-//! [`copilot_oauth`](crate::protocol::endpoint::copilot_oauth)'s.
+//! HTTP login adapters and the local browser callback listener.
 
 use crate::application::app::App;
-use crate::application::codex_login::{LoginAttempt, LoginGrant};
-use crate::protocol::endpoint::codex_oauth;
+use crate::application::codex_login::{LOGIN_LIFETIME, LoginGrant};
 use crate::server::error::ApiError;
 use axum::{
   Json, Router,
@@ -17,14 +12,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{
-  collections::HashMap,
-  sync::Arc,
-  time::{Duration, Instant},
-};
-use tokio_util::sync::CancellationToken;
-
-const LOGIN_LIFETIME: Duration = Duration::from_secs(600);
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 struct Callback {
   app: Arc<App>,
@@ -42,35 +30,18 @@ pub async fn start(
   State(app): State<Arc<App>>,
   Path(provider_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-  app.lifecycle.require_open()?;
-  let account = app.get_login_account(&provider_id)?;
-  if !account.config.is_codex() {
-    return Err(ApiError::bad_request("ChatGPT login is available only for the Codex preset"));
-  }
-  let proxy = app.config_file.lock().await.config.proxy.policy(account.config.proxy_enabled);
-  let mut current = app.codex_login.attempt.lock().await;
-  if let Some(previous) = current.take() {
-    previous.grant.end.cancel();
-  }
-  let listener = bind_callback().await?;
-  let port = listener.local_addr().map_err(ApiError::internal)?.port();
-  let redirect_uri = format!("http://localhost:{port}/auth/callback");
-  let state = uuid::Uuid::new_v4().to_string();
-  let verifier = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
-  let issuer = codex_oauth::issuer();
-  let url = codex_oauth::authorization_url(&issuer, &redirect_uri, &state, &verifier)?;
-  let attempt_id = uuid::Uuid::new_v4().to_string();
-  let end = CancellationToken::new();
-  let grant = LoginGrant { state, verifier, redirect_uri, issuer, proxy, end: end.clone() };
-  *current = Some(LoginAttempt {
-    id: attempt_id.clone(),
-    provider: provider_id.clone(),
-    expires: Instant::now() + LOGIN_LIFETIME,
-    status: "pending",
-    error: None,
-    grant: grant.clone(),
-  });
-  drop(current);
+  let crate::application::codex_login::PendingLogin {
+    callback_endpoint: listener,
+    attempt_id,
+    grant,
+    authorization_url: url,
+  } = crate::application::codex_login::begin(&app, &provider_id, async {
+    let listener = bind_callback().await?;
+    let port = listener.local_addr().map_err(ApiError::internal)?.port();
+    Ok((listener, format!("http://localhost:{port}/auth/callback")))
+  })
+  .await?;
+  let end = grant.end.clone();
   let context = Arc::new(Callback {
     app: Arc::clone(&app),
     attempt_id: attempt_id.clone(),
@@ -99,15 +70,7 @@ pub async fn status(
   State(app): State<Arc<App>>,
   Path(provider_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-  let account = app.get_login_account(&provider_id)?;
-  if !account.config.is_codex() {
-    return Err(ApiError::bad_request("ChatGPT login is available only for the Codex preset"));
-  }
-  let attempt = app.codex_login.attempt.lock().await;
-  let Some(attempt) = attempt.as_ref().filter(|a| a.provider == provider_id) else {
-    return Ok(Json(json!({"status":"idle"})));
-  };
-  Ok(Json(json!({"status":attempt.status,"error":attempt.error})))
+  Ok(Json(crate::application::codex_login::status(app, provider_id).await?))
 }
 
 /// Finish a login when the browser and Wish are on different machines. The pasted
@@ -117,52 +80,7 @@ pub async fn complete(
   Path(provider_id): Path<String>,
   Json(input): Json<CallbackUrl>,
 ) -> Result<Json<Value>, ApiError> {
-  app.lifecycle.require_open()?;
-  let (id, grant) = {
-    let attempt = app.codex_login.attempt.lock().await;
-    let current = attempt.as_ref().filter(|a| a.provider == provider_id).ok_or_else(|| {
-      ApiError::conflict("start a ChatGPT login before submitting its redirect URL")
-    })?;
-    if current.status == "complete" {
-      return Ok(Json(json!({"status":"complete"})));
-    }
-    if current.status != "pending" || current.expires <= Instant::now() {
-      return Err(ApiError::conflict("ChatGPT login expired or is no longer pending; start again"));
-    }
-    (current.id.clone(), current.grant.clone())
-  };
-  let url = reqwest::Url::parse(input.callback_url.trim())
-    .map_err(|_| ApiError::bad_request("paste the complete redirect URL from the browser"))?;
-  let mut base = url.clone();
-  base.set_query(None);
-  base.set_fragment(None);
-  let expected = reqwest::Url::parse(&grant.redirect_uri).map_err(ApiError::internal)?;
-  if base != expected {
-    return Err(ApiError::bad_request("redirect URL does not match this login attempt"));
-  }
-  let mut state = None;
-  let mut code = None;
-  for (name, value) in url.query_pairs() {
-    let (seen, name) = match name.as_ref() {
-      "state" => (&mut state, "state"),
-      "code" => (&mut code, "code"),
-      _ => continue,
-    };
-    if seen.replace(value.into_owned()).is_some() {
-      return Err(ApiError::bad_request(format!("redirect URL has duplicate {name}")));
-    }
-  }
-  if state.as_deref() != Some(grant.state.as_str()) {
-    return Err(ApiError::bad_request("authorization state did not match"));
-  }
-  let code = code
-    .filter(|value| !value.is_empty())
-    .ok_or_else(|| ApiError::bad_request("redirect URL contains no authorization code"))?;
-  if !app.codex_login.claim(&id).await {
-    return Err(ApiError::conflict("login attempt is no longer pending"));
-  }
-  app.codex_login.redeem(&app, &id, &grant, &provider_id, &code).await?;
-  Ok(Json(json!({"status":"complete"})))
+  Ok(Json(crate::application::codex_login::complete(app, provider_id, input.callback_url).await?))
 }
 
 async fn bind_callback() -> Result<tokio::net::TcpListener, ApiError> {
@@ -170,7 +88,7 @@ async fn bind_callback() -> Result<tokio::net::TcpListener, ApiError> {
   if let Ok(port) = std::env::var("WISH_TEST_CODEX_CALLBACK_PORT") {
     let port: u16 = port
       .parse()
-      .map_err(|error: std::num::ParseIntError| ApiError::bad_request(error.to_string()))?;
+      .map_err(|error: std::num::ParseIntError| ApiError::invalid(error.to_string()))?;
     return tokio::net::TcpListener::bind(("127.0.0.1", port)).await.map_err(ApiError::internal);
   }
   for _ in 0..20 {
@@ -188,28 +106,19 @@ async fn callback(
   State(context): State<Arc<Callback>>,
   Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-  if query.get("state") != Some(&context.grant.state) {
-    return (StatusCode::BAD_REQUEST, Html("Authorization state did not match")).into_response();
-  }
-  if let Some(error) = query.get("error") {
-    context.app.codex_login.finish(&context.attempt_id, "failed", Some(error.clone())).await;
-    context.grant.end.cancel();
-    return (StatusCode::BAD_REQUEST, Html("ChatGPT authorization was declined")).into_response();
-  }
-  let Some(code) = query.get("code").filter(|code| !code.is_empty()) else {
-    return (StatusCode::BAD_REQUEST, Html("Authorization code is missing")).into_response();
-  };
-  if !context.app.codex_login.claim(&context.attempt_id).await {
-    return (StatusCode::CONFLICT, Html("Login attempt is no longer active")).into_response();
-  }
-  let redeemed = context
-    .app
-    .codex_login
-    .redeem(&context.app, &context.attempt_id, &context.grant, &context.provider, code)
-    .await;
-  match redeemed {
+  use crate::application::codex_login::{CallbackFailure, receive_callback};
+  match receive_callback(&context.app,&context.attempt_id,&context.grant,&context.provider,
+    query.get("state").map(String::as_str),query.get("code").map(String::as_str),query.get("error").map(String::as_str)).await {
     Ok(()) => Html("<meta charset=\"utf-8\"><h1>ChatGPT 登录成功</h1><p>可以返回 Wish。</p><script>window.close()</script>").into_response(),
-    Err(_) => (StatusCode::BAD_GATEWAY, Html("ChatGPT login failed; return to Wish for details"))
-      .into_response(),
+    Err(failure)=>{
+      let (status,message)=match failure {
+       CallbackFailure::StateMismatch=>(StatusCode::BAD_REQUEST,"Authorization state did not match"),
+       CallbackFailure::Declined=>(StatusCode::BAD_REQUEST,"ChatGPT authorization was declined"),
+       CallbackFailure::MissingCode=>(StatusCode::BAD_REQUEST,"Authorization code is missing"),
+       CallbackFailure::Inactive=>(StatusCode::CONFLICT,"Login attempt is no longer active"),
+       CallbackFailure::RedemptionFailed=>(StatusCode::BAD_GATEWAY,"ChatGPT login failed; return to Wish for details"),
+      };
+      (status,Html(message)).into_response()
+    }
   }
 }

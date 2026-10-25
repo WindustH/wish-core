@@ -5,6 +5,8 @@ use crate::protocol::endpoint::{
   copilot_oauth::{self, DeviceCode, DevicePoll},
 };
 use crate::transport::ReqwestTransport;
+use serde_json::{Value, json};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -79,4 +81,61 @@ impl CopilotLoginManager {
       current.error = error;
     }
   }
+}
+
+pub async fn start(app: Arc<App>, provider_id: String) -> Result<Value, ApplicationError> {
+  app.lifecycle.require_open()?;
+  let account = app.get_login_account(&provider_id)?;
+  if !account.config.is_copilot() {
+    return Err(ApplicationError::invalid(
+      "GitHub sign-in is available only for the Copilot preset",
+    ));
+  }
+  let proxy = app.config_file.lock().await.config.proxy.policy(account.config.proxy_enabled);
+  let transport = ReqwestTransport::new(Default::default(), proxy)?;
+  let code = copilot_oauth::request_device_code(&transport).await?;
+  let id = uuid::Uuid::new_v4().to_string();
+  let end = CancellationToken::new();
+  {
+    let mut current = app.copilot_login.attempt.lock().await;
+    if let Some(previous) = current.take() {
+      previous.end.cancel();
+    }
+    *current = Some(LoginAttempt {
+      id: id.clone(),
+      provider: provider_id.clone(),
+      status: "pending",
+      error: None,
+      end: end.clone(),
+    });
+  }
+  let answer = json!({"verification_uri": code.verification_uri, "user_code": code.user_code,
+    "expires_in": code.expires_in});
+  let worker = Arc::clone(&app);
+  app.lifecycle.tasks.spawn(async move {
+    let (status, error) = match wait_for_approval(&worker, &transport, &code, &end).await {
+      Some(Ok(github)) => match redeem(&worker, &transport, &id, &provider_id, github).await {
+        Ok(()) => ("complete", None),
+        Err(error) => ("failed", Some(error.to_string())),
+      },
+      Some(Err((status, error))) => (status, error),
+      // Replaced, or the server is stopping: nothing is left to tell.
+      None => return,
+    };
+    worker.copilot_login.finish(&id, status, error).await;
+  });
+  Ok(answer)
+}
+pub async fn status(app: Arc<App>, provider_id: String) -> Result<Value, ApplicationError> {
+  let account = app.get_login_account(&provider_id)?;
+  if !account.config.is_copilot() {
+    return Err(ApplicationError::invalid(
+      "GitHub sign-in is available only for the Copilot preset",
+    ));
+  }
+  let attempt = app.copilot_login.attempt.lock().await;
+  let Some(attempt) = attempt.as_ref().filter(|a| a.provider == provider_id) else {
+    return Ok(json!({"status":"idle"}));
+  };
+  Ok(json!({"status":attempt.status,"error":attempt.error}))
 }

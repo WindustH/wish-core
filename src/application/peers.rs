@@ -2,7 +2,7 @@
 //! `wish session` in its shell (`cli`), a client of the bridge like `wish mcp`. The model is told
 //! none of them, only how to look: listing, making, configuring and messaging sessions never
 //! changes its request. What a session may do to another is the bridge's rule
-//! (`http::peers`): it sees every session and group, messages any session, and configures or
+//! (`peer_commands`): it sees every session and group, messages any session, and configures or
 //! deletes only itself and the sessions it made.
 
 /// What the model is told about other sessions and groups: how to reach them, and none of them.

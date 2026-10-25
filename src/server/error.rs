@@ -1,6 +1,6 @@
 //! Converts application failures to HTTP responses at the server boundary.
+pub use crate::application::error::ApplicationError as ApiError;
 use crate::application::error::ErrorKind;
-pub use crate::application::error::{ApplicationError as ApiError, blocking};
 use axum::{
   Json,
   http::StatusCode,

@@ -4,6 +4,7 @@ use crate::protocol::endpoint::{Credentials, Tokens, codex_oauth};
 use crate::transport::{Proxy, ReqwestTransport};
 use crate::utils::time::unix_seconds;
 use serde_json::Value;
+use serde_json::json;
 use std::{
   sync::Arc,
   time::{Duration, Instant},
@@ -220,4 +221,149 @@ async fn refresh_due(app: &Arc<App>) {
       Err(error) => eprintln!("Token refresh for {id} failed: {error}"),
     }
   }
+}
+
+pub const LOGIN_LIFETIME: Duration = Duration::from_secs(600);
+pub async fn status(app: Arc<App>, provider_id: String) -> Result<Value, ApplicationError> {
+  let account = app.get_login_account(&provider_id)?;
+  if !account.config.is_codex() {
+    return Err(ApplicationError::invalid("ChatGPT login is available only for the Codex preset"));
+  }
+  let attempt = app.codex_login.attempt.lock().await;
+  let Some(attempt) = attempt.as_ref().filter(|a| a.provider == provider_id) else {
+    return Ok(json!({"status":"idle"}));
+  };
+  Ok(json!({"status":attempt.status,"error":attempt.error}))
+}
+pub async fn complete(
+  app: Arc<App>,
+  provider_id: String,
+  callback_url: String,
+) -> Result<Value, ApplicationError> {
+  app.lifecycle.require_open()?;
+  let (id, grant) = {
+    let attempt = app.codex_login.attempt.lock().await;
+    let current = attempt.as_ref().filter(|a| a.provider == provider_id).ok_or_else(|| {
+      ApplicationError::conflict("start a ChatGPT login before submitting its redirect URL")
+    })?;
+    if current.status == "complete" {
+      return Ok(json!({"status":"complete"}));
+    }
+    if current.status != "pending" || current.expires <= Instant::now() {
+      return Err(ApplicationError::conflict(
+        "ChatGPT login expired or is no longer pending; start again",
+      ));
+    }
+    (current.id.clone(), current.grant.clone())
+  };
+  let url = reqwest::Url::parse(callback_url.trim())
+    .map_err(|_| ApplicationError::invalid("paste the complete redirect URL from the browser"))?;
+  let mut base = url.clone();
+  base.set_query(None);
+  base.set_fragment(None);
+  let expected = reqwest::Url::parse(&grant.redirect_uri).map_err(ApplicationError::internal)?;
+  if base != expected {
+    return Err(ApplicationError::invalid("redirect URL does not match this login attempt"));
+  }
+  let mut state = None;
+  let mut code = None;
+  for (name, value) in url.query_pairs() {
+    let (seen, name) = match name.as_ref() {
+      "state" => (&mut state, "state"),
+      "code" => (&mut code, "code"),
+      _ => continue,
+    };
+    if seen.replace(value.into_owned()).is_some() {
+      return Err(ApplicationError::invalid(format!("redirect URL has duplicate {name}")));
+    }
+  }
+  if state.as_deref() != Some(grant.state.as_str()) {
+    return Err(ApplicationError::invalid("authorization state did not match"));
+  }
+  let code = code
+    .filter(|value| !value.is_empty())
+    .ok_or_else(|| ApplicationError::invalid("redirect URL contains no authorization code"))?;
+  if !app.codex_login.claim(&id).await {
+    return Err(ApplicationError::conflict("login attempt is no longer pending"));
+  }
+  app.codex_login.redeem(&app, &id, &grant, &provider_id, &code).await?;
+  Ok(json!({"status":"complete"}))
+}
+/// Registers a login while serializing replacement of its callback endpoint.
+/// The server supplies endpoint binding; this layer owns account checks, PKCE and expiry.
+pub struct PendingLogin<T> {
+  pub callback_endpoint: T,
+  pub attempt_id: String,
+  pub grant: LoginGrant,
+  pub authorization_url: String,
+}
+pub async fn begin<T>(
+  app: &Arc<App>,
+  provider_id: &str,
+  callback_endpoint: impl std::future::Future<Output = Result<(T, String), ApplicationError>>,
+) -> Result<PendingLogin<T>, ApplicationError> {
+  app.lifecycle.require_open()?;
+  let account = app.get_login_account(provider_id)?;
+  if !account.config.is_codex() {
+    return Err(ApplicationError::invalid("ChatGPT login is available only for the Codex preset"));
+  }
+  let proxy = app.config_file.lock().await.config.proxy.policy(account.config.proxy_enabled);
+  let mut current = app.codex_login.attempt.lock().await;
+  if let Some(previous) = current.take() {
+    previous.grant.end.cancel();
+  }
+  let (callback_endpoint, redirect_uri) = callback_endpoint.await?;
+  let state = uuid::Uuid::new_v4().to_string();
+  let verifier = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+  let issuer = codex_oauth::issuer();
+  let url = codex_oauth::authorization_url(&issuer, &redirect_uri, &state, &verifier)?;
+  let attempt_id = uuid::Uuid::new_v4().to_string();
+  let end = CancellationToken::new();
+  let grant = LoginGrant { state, verifier, redirect_uri, issuer, proxy, end: end.clone() };
+  *current = Some(LoginAttempt {
+    id: attempt_id.clone(),
+    provider: provider_id.to_owned(),
+    expires: Instant::now() + LOGIN_LIFETIME,
+    status: "pending",
+    error: None,
+    grant: grant.clone(),
+  });
+  drop(current);
+  Ok(PendingLogin { callback_endpoint, attempt_id, grant, authorization_url: url.to_string() })
+}
+
+/// Browser callback failures safe to describe without exposing the upstream token exchange.
+pub enum CallbackFailure {
+  StateMismatch,
+  Declined,
+  MissingCode,
+  Inactive,
+  RedemptionFailed,
+}
+pub async fn receive_callback(
+  app: &Arc<App>,
+  attempt_id: &str,
+  grant: &LoginGrant,
+  provider_id: &str,
+  state: Option<&str>,
+  code: Option<&str>,
+  error: Option<&str>,
+) -> Result<(), CallbackFailure> {
+  if state != Some(grant.state.as_str()) {
+    return Err(CallbackFailure::StateMismatch);
+  }
+  if let Some(error) = error {
+    app.codex_login.finish(attempt_id, "failed", Some(error.to_owned())).await;
+    grant.end.cancel();
+    return Err(CallbackFailure::Declined);
+  }
+  let code = code.filter(|code| !code.is_empty()).ok_or(CallbackFailure::MissingCode)?;
+  if !app.codex_login.claim(attempt_id).await {
+    return Err(CallbackFailure::Inactive);
+  }
+  app
+    .codex_login
+    .redeem(app, attempt_id, grant, provider_id, code)
+    .await
+    .map_err(|_| CallbackFailure::RedemptionFailed)
 }

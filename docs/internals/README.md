@@ -37,6 +37,19 @@ agent execution; it does not choose protocol-specific wire behavior. `protocol/`
 rules and does not know about application configuration or persistence. `storage/` accepts
 records to persist and does not reach back into application or session logic.
 
+The application facades separate session commands from read-only queries and history views.
+Peer, MCP and Skill access enforce session permissions before invoking their services. Event
+subscriptions return application values; HTTP adapters add SSE framing and response headers.
+Login state and account checks live in the application layer; callback listeners remain in
+`server/` and upstream OAuth exchanges remain in `protocol/`.
+
+Storage cleanup crosses three boundaries deliberately: `session/resources.rs` recognizes
+references carried by messages, `application/storage_cleanup.rs` coordinates idle-session locks,
+history pruning and notifications, and `storage/files.rs` measures or deletes selected resources.
+`storage/data_dir.rs` owns the persisted path layout; `storage/measurement.rs` attributes database
+space. Storage does not decide whether a session or shell execution is still using a resource.
+The storage HTTP module only decodes requests and serializes these use-case results.
+
 Account credentials have an independent `AccountRuntime` and `AccountClient`; a search or fetch
 service does not need a synthetic model endpoint to reuse an account. Service configuration
 selects its upstream protocol, transport policy and account. Application errors are mapped to

@@ -45,29 +45,3 @@ impl DataDir {
     self.0.join("bin")
   }
 }
-
-/// A database file's companion, such as its `-wal` log.
-pub fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
-  let mut name = path.as_os_str().to_owned();
-  name.push(suffix);
-  name.into()
-}
-
-/// The bytes under a path: a file's length, or everything a directory holds without following
-/// links. A path that does not exist holds none.
-pub fn size(path: &Path) -> std::io::Result<u64> {
-  if !path.exists() {
-    return Ok(0);
-  }
-  if path.is_file() {
-    return Ok(path.metadata()?.len());
-  }
-  let mut total = 0;
-  for entry in std::fs::read_dir(path)? {
-    let entry = entry?;
-    if !entry.file_type()?.is_symlink() {
-      total += size(&entry.path())?;
-    }
-  }
-  Ok(total)
-}

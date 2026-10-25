@@ -8,7 +8,6 @@ use crate::application::{
   config::Config,
   config_file::ConfigFile,
   copilot_login::CopilotLoginManager,
-  data_dir::DataDir,
   error::{ApplicationError, blocking},
   instructions::apply_agent_instructions_for_shell,
   management::ManagementStore,
@@ -17,6 +16,7 @@ use crate::application::{
   search::{PreparedSearch, SearchHub},
   session::{CreateSession, Descriptor, SessionSlot, ToolSwitches},
 };
+use crate::storage::data_dir::DataDir;
 use crate::{
   session::{EntryOrigin, Session},
   storage::{Storage, StorageOptions},

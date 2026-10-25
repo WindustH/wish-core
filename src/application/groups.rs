@@ -5,7 +5,7 @@
 //! A session takes part as a person would. A post goes to the transcript and to every other
 //! member's queue as a user message headed by the group and the author, which wakes it; what it
 //! answers there stays in its own conversation, and it speaks in the group only by sending, with
-//! `wish session send` in its shell (`http::peers::send`), as often as it has something to say. A
+//! `wish session send` in its shell (`peer_commands::send`), as often as it has something to say. A
 //! message to a session is a post in the group of the two and the user, made when needed
 //! (`App::group_of_two`).
 pub use crate::application::management::{Author, GroupMessage, GroupRecord};
