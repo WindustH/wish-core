@@ -36,7 +36,10 @@ pub async fn timeline(
   Path(id): Path<String>,
   Query(query): Query<Timeline>,
 ) -> Result<Json<Value>, ApiError> {
-  let reader = app.get_session(&id).await?.reader.clone();
+  let slot = app.get_session(&id).await?;
+  let current_instructions =
+    crate::server::session_model::agent_instructions_for_shell(slot.get_descriptor().tools.shell);
+  let reader = slot.reader.clone();
   blocking(move || {
     let order = match query.order.as_str() {
       "asc" => HistoryOrder::OldestFirst,
@@ -102,7 +105,13 @@ pub async fn timeline(
           items.push(json!({"record":item.record,"content":{"kind":"event","value":event}}));
         }
       } else {
-        items.push(json!(item));
+        let mut value = json!(item);
+        if value["content"]["value"]["message"]["System"]["metadata"]["source"]
+          == "wish_agent_instructions"
+        {
+          value["instruction_preview"] = json!(current_instructions);
+        }
+        items.push(value);
       }
     }
     Ok(Json(json!({"items":items,"next":next,"end_sequence":page.end_sequence})))

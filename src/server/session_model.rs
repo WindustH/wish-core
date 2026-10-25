@@ -18,10 +18,10 @@ use crate::{
 use base64::Engine;
 use serde_json::Value;
 use std::{
-  collections::BTreeMap,
+  collections::{BTreeMap, HashSet},
   path::{Path, PathBuf},
   sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
   },
 };
@@ -35,7 +35,7 @@ const AGENT_INSTRUCTIONS: &str =
 pub fn agent_instructions(tools: &[Tool]) -> String {
   agent_instructions_for_shell(tools.iter().any(|tool| tool.name == "shell_start"))
 }
-fn agent_instructions_for_shell(shell: bool) -> String {
+pub fn agent_instructions_for_shell(shell: bool) -> String {
   let mut text = AGENT_INSTRUCTIONS.to_owned();
   if shell {
     for section in [
@@ -85,11 +85,84 @@ pub struct SessionModel {
   image_dir: PathBuf,
   /// Set once the upstream refused an image.
   rejected: AtomicBool,
+  history: Option<(crate::session::SessionSender, tokio::sync::broadcast::Sender<Value>)>,
+  recorded: Mutex<HashSet<String>>,
 }
 impl SessionModel {
   /// A model calling through `client`, the provider's own dressed for the session.
   pub fn new(provider: Arc<Provider>, image_dir: PathBuf, client: ModelClient) -> Self {
-    Self { provider, client, image_dir, rejected: AtomicBool::new(false) }
+    Self {
+      provider,
+      client,
+      image_dir,
+      rejected: AtomicBool::new(false),
+      history: None,
+      recorded: Mutex::new(HashSet::new()),
+    }
+  }
+  pub fn with_history(
+    mut self,
+    sender: crate::session::SessionSender,
+    events: tokio::sync::broadcast::Sender<Value>,
+  ) -> Self {
+    self.history = Some((sender, events));
+    self
+  }
+  async fn record_instructions(&self, original: &Request, request: &Request) -> Result<(), Error> {
+    let Some((sender, events)) = &self.history else { return Ok(()) };
+    let mut notes = Vec::new();
+    for (index, message) in request.conversation.iter().enumerate() {
+      match message {
+        Message::System { content, .. }
+          if original.conversation.get(index).is_none_or(|before| {
+            serde_json::to_value(before).ok() != serde_json::to_value(message).ok()
+          }) =>
+        {
+          notes.push(serde_json::json!({"title":"系统指令（请求时补入）","content":content}));
+        }
+        Message::User { metadata, content }
+          if metadata["source"]
+            .as_str()
+            .is_some_and(|source| source.starts_with("wish_request_")) =>
+        {
+          notes.push(serde_json::json!({"title":metadata["instruction_title"],"content":content,"position":index}));
+        }
+        _ => {}
+      }
+      if let Message::User { content, .. } | Message::Assistant { content, .. } = message {
+        for block in content {
+          if let ContentBlock::Text { text } = block
+            && text.starts_with("[Image sha256:")
+          {
+            notes.push(serde_json::json!({"title":"图片输入说明","content":[block]}));
+          }
+        }
+      }
+    }
+    if !request.tools.is_empty() {
+      notes.push(serde_json::json!({"title":"可用工具定义","content":[{"Text":{"text":serde_json::to_string_pretty(&request.tools).unwrap_or_default()}}]}));
+    }
+    let notes: Vec<_> = {
+      let mut recorded = self.recorded.lock().unwrap();
+      notes.into_iter().filter(|note| recorded.insert(note.to_string())).collect()
+    };
+    if notes.is_empty() {
+      return Ok(());
+    }
+    let sender = sender.clone();
+    tokio::task::spawn_blocking(move || {
+      for note in notes {
+        sender.record_application_event(
+          serde_json::json!({"type":"model_instruction","instruction":note}),
+        )?;
+      }
+      Ok::<_, crate::session::SessionError>(())
+    })
+    .await
+    .map_err(|error| Error::Build(error.to_string()))?
+    .map_err(|error| Error::Build(error.to_string()))?;
+    let _ = events.send(serde_json::json!({"type":"history_changed"}));
+    Ok(())
   }
   async fn prepare(&self, request: &Request) -> Result<(Request, bool), Error> {
     self.prepare_projection(request, true).await
@@ -291,11 +364,13 @@ impl ModelCaller for SessionModel {
   }
   async fn call(&self, original: &Request) -> Result<CallResponse<Self::Stream>, Error> {
     let (request, images) = self.prepare(original).await?;
+    self.record_instructions(original, &request).await?;
     let result = match self.client.call(&request).await {
       // Client has not handed out any event; partial stream failures never enter this branch.
       Err(error) if images && rejects_images(&error) => {
         self.rejected.store(true, Ordering::Relaxed);
         let (request, _) = self.prepare(original).await?;
+        self.record_instructions(original, &request).await?;
         self.client.call(&request).await
       }
       result => result,

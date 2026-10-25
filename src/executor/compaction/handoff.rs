@@ -172,7 +172,7 @@ pub(crate) async fn write_handoff(
   let mut request = plan.request.clone();
   request.conversation.truncate(end);
   request.conversation.push(Message::User {
-    metadata: Default::default(),
+    metadata: serde_json::json!({"source":"wish_request_handoff","instruction_title":"上下文交接指令"}),
     content: vec![ContentBlock::Text { text: HANDOFF_PROMPT.into() }],
   });
   // Tools, reasoning and cache stay as the conversation calls send them, so the handoff reads the

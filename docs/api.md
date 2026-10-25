@@ -1049,6 +1049,15 @@ Returns `{"items": [{"record", "content": {"kind", "value"}}], "next", "end_sequ
 `next` is `null` on the last page; otherwise pass its `after_sequence` as
 `before` (for `desc`) or `after` (for `asc`).
 
+Timeline history includes `Application` events with `type: "model_instruction"`.
+Their `instruction` contains a title and text content for request-time instructions or
+tool definitions. These are display-only records, never additional conversation input;
+identical records are deduplicated within one model instance. They record preparation of
+an attempted request, not proof of upstream acceptance. Continuation, summary and handoff
+prompts are recorded from this version onward; older unrecorded prompts cannot be recovered.
+Legacy agent system records may include an `instruction_preview` field alongside the
+record: this is derived from current tool switches, not the historical message itself.
+
 ### `POST /api/sessions/{id}/history/query`
 
 Chronological, filtered history:

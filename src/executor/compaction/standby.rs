@@ -261,7 +261,7 @@ fn build_summary_request(original: &Request, prefix: usize, start: usize, end: u
   );
   let mut messages = conversation[..prefix].to_vec();
   messages.push(Message::User {
-    metadata: Default::default(),
+    metadata: serde_json::json!({"source":"wish_request_compaction","instruction_title":"上下文压缩指令"}),
     content: vec![ContentBlock::Text { text: instruction }],
   });
   Request {
