@@ -43,6 +43,8 @@ pub const WISH_USER_AGENT: &str = concat!("wish/", env!("CARGO_PKG_VERSION"));
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
   pub display_name: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub credential_id: Option<String>,
   pub preset: Option<String>,
   #[serde(default = "crate::server::config::yes")]
   pub enabled: bool,

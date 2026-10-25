@@ -58,6 +58,8 @@ pub struct App {
   pub mcp: McpHub,
   /// The search providers `web_search` asks.
   pub search: SearchHub,
+  pub fetch: super::fetch::FetchHub,
+  pub accounts: RwLock<Providers>,
 }
 
 /// Startup to shutdown. Shutdown begins by refusing new work and cancelling long waits, then waits
@@ -98,6 +100,7 @@ impl Lifecycle {
 
 /// A configuration, checked and built, waiting for its file to be written.
 struct PreparedConfig {
+  accounts: Providers,
   providers: Providers,
   search: PreparedSearch,
   shell: ShellCommand,
@@ -105,8 +108,13 @@ struct PreparedConfig {
 
 impl App {
   pub async fn open(config: &Config, config_path: PathBuf) -> Result<Arc<Self>, ApiError> {
+    let mut canonical = config.clone();
+    canonical.migrate_accounts()?;
+    let migrated = serde_json::to_value(config).map_err(ApiError::internal)?
+      != serde_json::to_value(&canonical).map_err(ApiError::internal)?;
+    let config = &canonical;
     config.validate()?;
-    let search = SearchHub::new(&config.search, &config.proxy)?;
+    let search = SearchHub::new(&config.resolved_search()?, &config.proxy)?;
     let shell = config.shell.resolve()?;
     let data_dir = DataDir::new(config.data_dir.clone());
     tokio::fs::create_dir_all(data_dir.root()).await.map_err(ApiError::internal)?;
@@ -123,13 +131,26 @@ impl App {
     })
     .await?;
     let lifecycle = Lifecycle::new();
-    let providers =
-      provider::build_all(&config.providers, &config.proxy, &management, &lifecycle.tasks)?;
+    let providers = provider::build_all(
+      &config.resolved_providers()?,
+      &config.proxy,
+      &management,
+      &lifecycle.tasks,
+    )?;
     let skills_dir =
       std::path::absolute(&config_path).map_err(ApiError::internal)?.with_file_name("skills");
     // Made at once, so there is a place to put skills in.
     let _ = std::fs::create_dir_all(&skills_dir);
-    let config_file = ConfigFile::open(config_path, config.clone())?;
+    let accounts = provider::build_all(
+      &config.account_providers()?,
+      &config.proxy,
+      &management,
+      &lifecycle.tasks,
+    )?;
+    let mut config_file = ConfigFile::open(config_path, config.clone())?;
+    if migrated {
+      config_file.write(config.clone()).await?;
+    }
     let (events, _) = tokio::sync::broadcast::channel(256);
     let bearer_token = config
       .bearer_token_env
@@ -147,6 +168,7 @@ impl App {
       events,
       started: std::time::Instant::now(),
       providers: RwLock::new(providers),
+      accounts: RwLock::new(accounts),
       shell: RwLock::new(shell),
       sessions: AsyncMutex::new(BTreeMap::new()),
       data_dir,
@@ -156,6 +178,7 @@ impl App {
       skills_dir,
       mcp,
       search,
+      fetch: super::fetch::FetchHub::new(config.fetch.clone(), config.proxy.clone()),
     });
     crate::server::codex_login::start_refresh_worker(&app);
     let reaper = app.clone();
@@ -170,6 +193,27 @@ impl App {
     Ok(app)
   }
   /// An enabled provider.
+  pub fn get_auth_provider(&self, id: &str) -> Result<Arc<Provider>, ApiError> {
+    if id.starts_with("account:") {
+      return self.accounts.read().unwrap().get(id).cloned().ok_or_else(ApiError::not_found);
+    }
+    let model = self.get_provider(id)?;
+    if let Some(account) = &model.config.credential_id {
+      return self
+        .accounts
+        .read()
+        .unwrap()
+        .get(&format!("account:{account}"))
+        .cloned()
+        .ok_or_else(ApiError::not_found);
+    }
+    Ok(model)
+  }
+  pub fn get_search_providers(&self) -> Providers {
+    let mut providers = self.get_providers();
+    providers.extend(self.accounts.read().unwrap().clone());
+    providers
+  }
   pub fn get_provider(&self, id: &str) -> Result<Arc<Provider>, ApiError> {
     self
       .providers
@@ -212,11 +256,13 @@ impl App {
       ask_user: true,
       mcp: true,
       web_search: false,
+      web_fetch: false,
       skills: true,
       sessions: true,
     }
     .apply_changes(input.tools);
-    tools.web_search &= self.search.is_available(&self.providers.read().unwrap());
+    tools.web_search &= self.search.is_available(&self.get_search_providers());
+    tools.web_fetch &= self.fetch.available();
     let folder = input.folder.take();
     if let Some(folder) = &folder
       && self.management.folder(folder)?.is_none()
@@ -317,7 +363,7 @@ impl App {
   /// Checks a configuration a save sends against the current one, and builds what it describes.
   fn prepare_config(&self, next: &Config, current: &Config) -> Result<PreparedConfig, ApiError> {
     next.validate()?;
-    let search = SearchHub::prepare(&next.search, &next.proxy)?;
+    let search = SearchHub::prepare(&next.resolved_search()?, &next.proxy)?;
     let shell = next.shell.resolve()?;
     if next.listen != current.listen
       || next.data_dir != current.data_dir
@@ -330,8 +376,12 @@ impl App {
          the file and restart",
       ));
     }
-    let providers =
-      provider::build_all(&next.providers, &next.proxy, &self.management, &self.lifecycle.tasks)?;
+    let providers = provider::build_all(
+      &next.resolved_providers()?,
+      &next.proxy,
+      &self.management,
+      &self.lifecycle.tasks,
+    )?;
     if !next.defaults.provider.is_empty() && !providers.contains_key(&next.defaults.provider) {
       return Err(ApiError::bad_request("default provider does not exist"));
     }
@@ -340,10 +390,16 @@ impl App {
     }
     // Validate core budgets without creating a persistent session.
     let _ = Session::new(next.defaults.session_config())?;
-    Ok(PreparedConfig { providers, search, shell })
+    let accounts = provider::build_all(
+      &next.account_providers()?,
+      &next.proxy,
+      &self.management,
+      &self.lifecycle.tasks,
+    )?;
+    Ok(PreparedConfig { accounts, providers, search, shell })
   }
   async fn apply_config(&self, prepared: PreparedConfig, config: &Config) {
-    let PreparedConfig { providers, search, shell } = prepared;
+    let PreparedConfig { accounts, providers, search, shell } = prepared;
     self.mcp.apply(
       config.mcp.clone(),
       config.proxy.clone(),
@@ -351,6 +407,7 @@ impl App {
       &providers,
     );
     self.search.apply(search);
+    self.fetch.apply(config.fetch.clone(), config.proxy.clone());
     self.management.set_stream_sample_limit(config.usage.stream_sample_limit);
     let management = self.management.clone();
     self.lifecycle.tasks.spawn_blocking(move || {
@@ -358,6 +415,7 @@ impl App {
         eprintln!("merging stream samples failed: {error:?}");
       }
     });
+    *self.accounts.write().unwrap() = accounts;
     *self.providers.write().unwrap() = providers;
     *self.shell.write().unwrap() = shell.clone();
     for slot in self.sessions.lock().await.values() {

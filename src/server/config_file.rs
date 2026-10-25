@@ -35,15 +35,32 @@ impl ConfigFile {
       return Err(ApiError::conflict("configuration changed; reload before saving"));
     }
     restore(&mut value, &serde_json::to_value(&self.config).unwrap())?;
-    serde_json::from_value(value).map_err(|e| ApiError::bad_request(e.to_string()))
+    let mut config: Config =
+      serde_json::from_value(value).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    config.migrate_accounts()?;
+    Ok(config)
   }
   /// A provider a page holds before saving it, with the secrets it sends back redacted put back
   /// from the provider of that id here.
-  pub fn read_draft_provider(&self, id: &str, provider: Value) -> Result<ProviderConfig, ApiError> {
+  pub fn read_draft_provider(
+    &self,
+    id: &str,
+    provider: Value,
+    accounts: Option<Value>,
+  ) -> Result<ProviderConfig, ApiError> {
     let mut value = json!({ "providers": { id: provider } });
+    if let Some(accounts) = accounts {
+      value["accounts"] = accounts;
+    }
     restore(&mut value, &serde_json::to_value(&self.config).unwrap())?;
-    serde_json::from_value(value["providers"][id].take())
-      .map_err(|e| ApiError::bad_request(e.to_string()))
+    let provider = serde_json::from_value(value["providers"][id].take())
+      .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let mut config = self.config.clone();
+    if let Some(accounts) = value.get("accounts").filter(|v| !v.is_null()) {
+      config.accounts = serde_json::from_value(accounts.clone())
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    }
+    config.resolve_provider(&provider)
   }
   /// Writes a configuration over the file and takes it as the current one.
   pub async fn write(&mut self, config: Config) -> Result<(), ApiError> {
@@ -89,6 +106,36 @@ struct Secret {
 }
 /// In the order a save is checked: item by item, as the save lists them, each field in turn.
 const SECRETS: &[Secrets] = &[
+  Secrets {
+    items: &["fetch", "providers"],
+    each: true,
+    fields: &[Secret {
+      path: &["headers", "*"],
+      shown_empty: false,
+      missing: |_, _| "redacted fetch header has no stored value".into(),
+    }],
+  },
+  Secrets {
+    items: &["accounts"],
+    each: true,
+    fields: &[
+      Secret {
+        path: &["api_key"],
+        shown_empty: false,
+        missing: |_, _| "redacted account key has no stored value".into(),
+      },
+      Secret {
+        path: &["refresh_token"],
+        shown_empty: false,
+        missing: |_, _| "redacted account token has no stored value".into(),
+      },
+      Secret {
+        path: &["credentials", "*"],
+        shown_empty: false,
+        missing: |_, _| "redacted account field has no stored value".into(),
+      },
+    ],
+  },
   Secrets {
     items: &["providers"],
     each: true,

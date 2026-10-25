@@ -72,7 +72,7 @@ pub async fn start(
   Path(provider_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
   app.lifecycle.require_open()?;
-  let provider = app.get_provider(&provider_id)?;
+  let provider = app.get_auth_provider(&provider_id)?;
   if !provider.config.is_codex() {
     return Err(ApiError::bad_request("ChatGPT login is available only for the Codex preset"));
   }
@@ -145,7 +145,7 @@ pub async fn status(
   State(app): State<Arc<App>>,
   Path(provider_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-  let provider = app.get_provider(&provider_id)?;
+  let provider = app.get_auth_provider(&provider_id)?;
   if !provider.config.is_codex() {
     return Err(ApiError::bad_request("ChatGPT login is available only for the Codex preset"));
   }
@@ -353,24 +353,46 @@ pub(crate) async fn save_credentials(
   id: &str,
   credentials: &Credentials,
 ) -> Result<(), ApiError> {
+  save_credentials_if_current(app, id, credentials, None).await
+}
+
+async fn save_credentials_if_current(
+  app: &App,
+  id: &str,
+  credentials: &Credentials,
+  expected: Option<&super::provider::ProviderConfig>,
+) -> Result<(), ApiError> {
   for _ in 0..3 {
     let (revision, mut next) = {
       let current = app.config_file.lock().await;
       (current.revision.clone(), current.config.clone())
     };
-    let provider = next.providers.get_mut(id).ok_or_else(ApiError::not_found)?;
-    if provider.get_renewal().is_none() {
-      return Err(ApiError::bad_request("provider is not a subscription preset"));
+    let account_id = id
+      .strip_prefix("account:")
+      .map(str::to_owned)
+      .or_else(|| next.providers.get(id).and_then(|p| p.credential_id.clone()))
+      .ok_or_else(ApiError::not_found)?;
+    let account = next.accounts.get_mut(&account_id).ok_or_else(ApiError::not_found)?;
+    if !matches!(account.preset.as_deref(), Some("openai_codex" | "github_copilot")) {
+      return Err(ApiError::bad_request("account does not support token renewal"));
     }
-    provider.api_key = Some(credentials.api_key.clone());
-    provider.api_key_env = None;
-    if let Some(refresh_token) = &credentials.refresh_token {
-      provider.refresh_token = Some(refresh_token.clone());
+    if let Some(expected) = expected {
+      if account.api_key != expected.api_key
+        || account.refresh_token != expected.refresh_token
+        || account.preset != expected.preset
+      {
+        return Ok(()); // A new login or account edit supersedes this background renewal.
+      }
     }
-    provider.expires_at = credentials.expires_at;
+    account.api_key = Some(credentials.api_key.clone());
+    account.api_key_env = None;
+    if let Some(token) = &credentials.refresh_token {
+      account.refresh_token = Some(token.clone());
+    }
+    account.expires_at = credentials.expires_at;
     if let Some(account_id) = &credentials.account_id {
-      provider.credentials.insert("account_id".to_owned(), account_id.clone());
-      provider.credentials_env.remove("account_id");
+      account.credentials.insert("account_id".to_owned(), account_id.clone());
+      account.credentials_env.remove("account_id");
     }
     let value = serde_json::to_value(next).map_err(ApiError::internal)?;
     match app.save_config(revision, value).await {
@@ -398,10 +420,14 @@ pub fn start_refresh_worker(app: &Arc<App>) {
 async fn refresh_due(app: &Arc<App>) {
   let now = unix_seconds();
   let due: Vec<_> = app
-    .get_providers()
+    .accounts
+    .read()
+    .unwrap()
+    .clone()
     .into_values()
     .filter(|provider| {
-      provider.config.get_renewal().is_some()
+      provider.config.enabled
+        && provider.config.get_renewal().is_some()
         && provider.config.refresh_token.as_deref().is_some_and(|token| !token.is_empty())
         && provider.config.expires_at.is_some_and(|expires| expires <= now + REFRESH_MARGIN)
     })
@@ -410,7 +436,9 @@ async fn refresh_due(app: &Arc<App>) {
     let id = &provider.id;
     match provider.client.refresh_credentials().await {
       Ok(tokens) => {
-        if let Err(error) = save_credentials(app, id, &tokens).await {
+        if let Err(error) =
+          save_credentials_if_current(app, id, &tokens, Some(&provider.config)).await
+        {
           eprintln!("Token refresh for {id} could not be saved: {error}");
         }
       }

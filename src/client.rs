@@ -119,6 +119,11 @@ impl<T: Transport> Client<T> {
     self
   }
 
+  pub fn with_transport(mut self, transport: T) -> Self {
+    self.transport = transport;
+    self
+  }
+
   /// The account's credentials, placed into every call this client makes.
   ///
   /// A client whose auth scheme names a credential the account does not carry fails the call when
@@ -250,6 +255,10 @@ impl<T: Transport> Client<T> {
   /// The API key or OAuth token the account is reached with, for a caller that reaches another
   /// service of the same account by it.
   #[must_use]
+  pub fn get_credentials(&self) -> &Credentials {
+    &self.credentials
+  }
+
   pub fn get_api_key(&self) -> &str {
     &self.credentials.api_key
   }

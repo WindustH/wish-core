@@ -18,6 +18,9 @@ pub(super) fn find_source(protocol: SearchProtocol) -> Source {
     headers: &[],
   };
   match protocol {
+    SearchProtocol::ZaiSearch => {
+      at(Some("https://api.z.ai/api/paas/v4"), "/web_search", AuthScheme::Bearer(None))
+    }
     // The same bearer and account header as the subscription's model calls, which already carry
     // the client's identity; the base URL is the model provider's.
     SearchProtocol::CodexAlphaSearch => Source {

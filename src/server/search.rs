@@ -46,6 +46,8 @@ pub struct SearchConfig {
 pub struct SearchProviderConfig {
   /// The search preset, which names the protocol and the service's own address.
   pub preset: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub credential_id: Option<String>,
   #[serde(default = "crate::server::config::yes")]
   pub enabled: bool,
   /// Where the service is, for a self-hosted one or another region; absent, the preset's.
@@ -144,7 +146,7 @@ impl SearchConfig {
 /// How a provider's searches are proven.
 enum Account {
   /// A model provider's, looked up at each search.
-  Borrowed(String),
+  Borrowed(String, ReqwestTransport),
   /// Its own key, through a client of its own.
   Own(Box<OwnAccount>),
 }
@@ -302,7 +304,17 @@ fn build(config: &SearchConfig, proxy: &ProxyConfig) -> Result<State, ApiError> 
     let preset = find_preset(id, provider)?;
     let protocol = parse_protocol(preset)?;
     let account = match &provider.auth_provider {
-      Some(lender) => Account::Borrowed(lender.clone()),
+      Some(lender) => Account::Borrowed(
+        lender.clone(),
+        ReqwestTransport::new(
+          crate::protocol::attempt::Limits {
+            first_byte: TIMEOUT,
+            total: TIMEOUT,
+            ..Default::default()
+          },
+          proxy.policy(provider.proxy_enabled),
+        )?,
+      ),
       None => {
         let mut credentials = Credentials::default();
         if provider.enabled {
@@ -332,11 +344,11 @@ fn usable(built: &Built, providers: &Providers) -> Result<(), String> {
     return Err("switched off".to_owned());
   }
   match &built.account {
-    Account::Borrowed(lender) => match providers.get(lender) {
-      None => Err(format!("its model provider {lender} no longer exists")),
-      Some(model) if !model.config.enabled => Err(format!("its model provider {lender} is off")),
+    Account::Borrowed(lender, _) => match providers.get(lender) {
+      None => Err(format!("its account {lender} no longer exists")),
+      Some(model) if !model.config.enabled => Err(format!("its account {lender} is off")),
       Some(model) if model.client.get_api_key().is_empty() => {
-        Err(format!("its model provider {lender} is not signed in"))
+        Err(format!("its account {lender} is not signed in"))
       }
       Some(_) => Ok(()),
     },
@@ -360,7 +372,7 @@ async fn search_with(
   let mut headers: Vec<(String, String)> =
     built.config.headers.iter().map(|(name, value)| (name.clone(), value.clone())).collect();
   match &built.account {
-    Account::Borrowed(lender) => {
+    Account::Borrowed(lender, transport) => {
       let model = providers.get(lender).ok_or("its model provider is gone")?;
       // A service beside the model API shares its base URL; one on a regional host follows the
       // region of the lending provider's preset.
@@ -378,7 +390,7 @@ async fn search_with(
       if let Some(agent) = model.get_user_agent() {
         headers.push(("user-agent".to_owned(), agent));
       }
-      let mut client = model.client.clone();
+      let mut client = model.client.clone().with_transport(transport.clone());
       if let Some(observer) = observer {
         client = client.with_retry_observer(observer);
       }

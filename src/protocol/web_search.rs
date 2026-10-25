@@ -33,6 +33,7 @@ mod searxng;
 mod serper;
 mod source;
 mod tavily;
+mod zai;
 
 pub use fetch::search;
 
@@ -143,6 +144,7 @@ text_id_enum! {
     MinimaxCodingPlanSearch => "minimax_coding_plan_search",
     /// DeepSeek's search, with a DeepSeek API key.
     DeepseekSearch => "deepseek_search",
+    ZaiSearch => "zai_search",
   }
 }
 
@@ -168,7 +170,8 @@ impl SearchProtocol {
       | Self::SearxngSearch
       | Self::BochaSearch
       | Self::DeepseekSearch => true,
-      Self::JinaSearch
+      Self::ZaiSearch
+      | Self::JinaSearch
       | Self::MetasoSearch
       | Self::KimiCodeSearch
       | Self::MinimaxCodingPlanSearch => false,
@@ -192,6 +195,7 @@ impl SearchProtocol {
       Self::KimiCodeSearch => kimi::build_draft(query),
       Self::MinimaxCodingPlanSearch => minimax::build_draft(query),
       Self::DeepseekSearch => deepseek::build_draft(query, now),
+      Self::ZaiSearch => zai::build_draft(query),
     }
   }
 
@@ -221,6 +225,7 @@ impl SearchProtocol {
       Self::KimiCodeSearch => kimi::parse_body(body),
       Self::MinimaxCodingPlanSearch => minimax::parse_body(body),
       Self::DeepseekSearch => deepseek::parse_body(body),
+      Self::ZaiSearch => zai::parse_body(body),
     }
   }
 }

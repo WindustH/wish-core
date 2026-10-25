@@ -14,6 +14,7 @@
 //! - `web` hands out the web app beside the API and guards a server without a token;
 //!   `user_dirs` is where a start without `--config` finds its configuration.
 
+mod accounts;
 mod app;
 mod blobs;
 mod bridge;
@@ -26,6 +27,7 @@ mod console;
 mod copilot_login;
 mod data_dir;
 mod error;
+mod fetch;
 mod groups;
 mod http;
 mod management;

@@ -8,17 +8,30 @@
       "base_url": "https://api.openai.com",
       "path": "/v1/responses",
       "auth": "bearer",
-      "api_key_env": "OPENAI_API_KEY",
       "token_count": "openai_responses",
       "compaction": "openai_responses",
       "model_list": "openai_models",
-      "model_list_path": "/v1/models"
+      "model_list_path": "/v1/models",
+      "credential_id": "openai"
     }
   },
   "defaults": {
     "provider": "openai",
     "model": "YOUR_MODEL_ID",
-    "run": {"tools": "Parallel"},
-    "compaction": {"trigger_tokens": 200000, "target_tokens": 80000, "segment_tokens": 20000}
+    "run": {
+      "tools": "Parallel"
+    },
+    "compaction": {
+      "trigger_tokens": 200000,
+      "target_tokens": 80000,
+      "segment_tokens": 20000
+    }
+  },
+  "accounts": {
+    "openai": {
+      "name": "OpenAI",
+      "preset": "openai",
+      "api_key_env": "OPENAI_API_KEY"
+    }
   }
 }

@@ -28,6 +28,7 @@ a temporary file and renamed into place). Most changes apply immediately; see
 
 - [A complete example](#a-complete-example)
 - [Top-level fields](#top-level-fields)
+- [Accounts](#accounts)
 - [Providers](#providers)
 - [Session defaults](#session-defaults)
 - [Proxy](#proxy)
@@ -99,6 +100,8 @@ fields are rejected everywhere, so typos fail loudly.
 | `bearer_token_env` | `null` | Name of an environment variable holding the API access token. When set, every `/api` request needs `Authorization: Bearer <token>`, and web pages on other origins may call the API (they still need the token). The variable must be set and non-empty at startup |
 | `web_dir` | `null` | The built web app, served at `/`. When unset, Wish uses the `web` directory beside its program, where its packages and release archives put the app (a link to the program, such as `wish` on the `PATH`, is followed first); finding none, it serves the API alone. A directory set here must hold `index.html` |
 | `allowed_hosts` | `[]` | `host:port` names browsers may reach Wish by besides `localhost`, `127.0.0.1`, `[::1]` and `listen`, such as `192.168.1.20:8790` or `wish.example.com`. Matters only without an access token: Wish then refuses requests addressed to another name (`421`) and changes sent from another origin (`403`), so a web page cannot drive it through a visitor's browser |
+| `accounts` | `{}` | Shared credentials, keyed by account ID; see [Accounts](#accounts) |
+| `fetch` | `{"order": [], "providers": {}}` | Independent webpage readers; see [Web fetch](#web-fetch) |
 | `providers` | `{}` | Model providers by ID; see [Providers](#providers) |
 | `defaults` | | Defaults for new sessions; see [Session defaults](#session-defaults) |
 | `proxy` | environment | Outbound proxy; see [Proxy](#proxy) |
@@ -107,6 +110,33 @@ fields are rejected everywhere, so typos fail loudly.
 | `search` | `{"order": [], "providers": {}}` | The services the `web_search` tool asks; see [Web search](#web-search) |
 | `skills` | `{"dirs": [], "disabled": []}` | Where sessions find skills besides Wish's own directory, and which are off; see [Skills](#skills) |
 | `usage` | `{"stream_sample_limit": 20000}` | How much of the usage records is kept; see [Usage records](#usage-records) |
+
+## Accounts
+
+`accounts` is the shared credential pool. A model, search or fetch service refers
+to one account through `credential_id`; it retains its own address, protocol,
+proxy switch, enabled state and other service settings.
+
+```json
+"accounts": {
+  "deepseek-main": {"name": "DeepSeek", "preset": "deepseek", "api_key_env": "DEEPSEEK_API_KEY"}
+}
+```
+
+An account stores `name`, optional `preset`, `api_key` / `api_key_env`,
+`credentials` / `credentials_env`, and the `refresh_token` / `expires_at`
+maintained by subscription sign-in. Its `proxy_enabled` controls sign-in and
+renewal only. ChatGPT and Copilot tokens renew once per account, and every linked
+service receives the new credentials. Service requests use their own proxy switch.
+All credential values are redacted by the configuration API. An account that a
+service still references cannot be removed. Disabling or deleting a model service
+does not disable search or fetch services sharing its account.
+
+On startup or configuration save, legacy inline credentials move into accounts;
+model IDs stay unchanged. Legacy search `auth_provider` references become shared
+account references, preserving the old effective address and proxy switch. This
+migration is idempotent. Back up the configuration before downgrading to a version
+without account support.
 
 ## Providers
 
@@ -120,6 +150,7 @@ entry needs at least `protocol`, `base_url` and `path`.
 
 | Field | Default | Description |
 | --- | --- | --- |
+| `credential_id` | `null` | Account in the shared pool. Inline credential fields are accepted for legacy migration |
 | `protocol` | required | Wire protocol, see [below](#protocols) |
 | `base_url` | required | `http://` or `https://` origin, optionally with a path prefix. Credential names such as `{region}` or `{workspace_id}` are replaced by their values |
 | `path` | required | Request path appended to `base_url`. `{model}` is replaced by the model ID, and credential names as in `base_url` |
@@ -294,7 +325,7 @@ sessions keep their own settings.
 | `provider` | `""` | Default provider ID; must exist in `providers` |
 | `model` | `""` | Default model ID |
 | `cwd` | Wish's start directory | Default working directory, an absolute path |
-| `tools` | `{"shell": true, "ask_user": true, "mcp": true, "web_search": true, "skills": true, "sessions": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell, `web_search` lets it search the web through the [search providers](#web-search), `skills` lets it read [skills](#skills) from the shell, `sessions` lets it see, make and message other sessions and [groups](#groups) from the shell. Each session can switch them later. A new session gets `web_search` only while some search provider can answer |
+| `tools` | `{"shell": true, "ask_user": true, "mcp": true, "web_search": true, "web_fetch": true, "skills": true, "sessions": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell, `web_search` lets it search the web through the [search providers](#web-search), `skills` lets it read [skills](#skills) from the shell, `sessions` lets it see, make and message other sessions and [groups](#groups) from the shell. Each session can switch them later. A new session gets `web_search` only while some search provider can answer |
 | `stream` | `true` | Stream model output |
 | `instructions` | `""` | Extra instructions the web app adds to each new session |
 | `reasoning` | `null` | `{"enabled": bool, "effort": "low", "summary": "Auto"}`. Accepted effort values depend on the provider |
@@ -495,32 +526,25 @@ their order does not change the model's request or its prompt cache.
 "search": {
   "order": ["chatgpt", "tavily"],
   "providers": {
-    "chatgpt": {"preset": "openai_codex_search", "auth_provider": "openai_codex"},
-    "tavily": {"preset": "tavily", "api_key_env": "WISH_SEARCH_TAVILY_KEY"}
+    "chatgpt": {"preset": "openai_codex_search", "credential_id": "chatgpt-account"},
+    "tavily": {"preset": "tavily", "credential_id": "tavily-account"}
   }
 }
 ```
 
-A provider is one of two kinds:
-
-- **Borrowed.** Search that comes with a subscription uses a model provider's
-  account: `auth_provider` names it. The search uses that provider's
-  credentials and proxy setting as they stand at the moment of the search, so
-  a renewed ChatGPT sign-in applies at once. A borrowed provider takes no key of
-  its own, and only the model presets its preset lists can lend it their
-  account. While that model provider is disabled or missing its credentials,
-  the search provider is skipped.
-- **Own key.** Any other search service takes its own key, like a model
-  provider: `api_key`, or `api_key_env` naming an environment variable.
+Search services use `credential_id` to choose an account, independently of model
+services. Subscription presets restrict the account type they accept; other
+services can use any account containing an API key. Keyless services need none.
+Legacy `auth_provider`, `api_key` and `api_key_env` are accepted for migration.
 
 | Field | Default | Description |
 | --- | --- | --- |
 | `preset` | required | A search preset ID (below); it names the protocol and the service's address |
 | `enabled` | `true` | A disabled provider is kept in the file but never asked |
-| `auth_provider` | | Borrowed: the model provider whose account the search uses |
-| `api_key`, `api_key_env` | | Own key: the key, or the environment variable that holds it |
+| `credential_id` | | Shared account ID; subscription presets require a compatible account type |
+| `api_key`, `api_key_env`, `auth_provider` | | Legacy input, migrated into the account pool |
 | `base_url` | the service's | Where the service is: required for a self-hosted one, otherwise only to reach another address |
-| `proxy_enabled` | `true` | Own key: use the [proxy](#proxy). A borrowed provider follows its model provider |
+| `proxy_enabled` | `true` | Use the [proxy](#proxy), independently of other services |
 | `headers` | `{}` | Headers added to every search request |
 
 Search presets:
@@ -602,3 +626,38 @@ Deleting a session removes its rows and both of its directories, and the databas
 whole directory while Wish is stopped, or copy the databases with
 `sqlite3 wish.sqlite ".backup backup.sqlite"` while it runs. See
 [deployment](deployment.md#backups-and-upgrades).
+
+
+## Web fetch
+
+`fetch.providers` and `fetch.order` configure the `web_fetch` tool independently
+of models and search. Available presets are `deepseek_fetch`, `zai_reader`,
+`jina_reader` (optional key) and `codex_fetch` (experimental ChatGPT subscription
+endpoint). `zai_search` separately provides Z.AI search-prime search.
+
+```json
+"fetch": {
+  "order": ["reader"],
+  "providers": {
+    "reader": {"preset": "deepseek_fetch", "credential_id": "deepseek-main", "enabled": true, "proxy_enabled": true}
+  }
+}
+```
+
+Each service accepts `preset`, `credential_id`, optional `base_url`, `enabled`,
+`proxy_enabled`, and extra `headers` (redacted in the settings API). Providers are
+tried in order. Retryable failures receive the auxiliary policy: up to three
+retries, each after 2 seconds plus 0–1 second jitter. An attempt has a 60 second
+ceiling and an 8 MiB response limit. Cancellation stops in-flight reading or retry
+waits. New sessions only receive the tool when enabled in their tools settings and
+at least one configured reader is enabled in the order.
+
+`web_fetch({url, refresh?})` returns provider-extracted content, title, URL,
+retrieval time and, for long pages, `next_cursor`. Call `web_fetch({cursor})` to
+continue the saved snapshot without another upstream request. Each chunk contains
+at most 20,000 Unicode characters; a snapshot is limited to 4 MiB and stored under
+the session's execution-output directory. Deleting the session removes it.
+`refresh` asks Z.AI/Jina to bypass caches; not every provider supports this.
+No additional model call rewrites the content. Codex may return a processed
+excerpt rather than the full page; it uses an undocumented endpoint and remains
+experimental. Tool outputs and snapshot metadata are retained in normal history.

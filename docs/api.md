@@ -159,6 +159,9 @@ engine error, for example
 | GET | `/api/skills/{name}` | One skill's instructions and files |
 | POST | `/api/mcp/servers/{id}/check` | Connect to an MCP server and list its tools |
 | GET | `/api/search-presets` | The search services Wish knows |
+| GET | `/api/fetch-presets` | Supported webpage reader presets |
+| GET | `/api/fetch/providers` | Configured webpage readers and availability |
+| POST | `/api/fetch/providers/{id}/check` | Fetch example.com through a saved reader |
 | GET | `/api/search/providers` | Configured search providers and whether each can search now |
 | POST | `/api/search/providers/{id}/check` | Run one test search on a saved search provider |
 | GET | `/api/sessions/{id}/mcp/servers` | MCP bridge: servers and tools (session token) |
@@ -1305,3 +1308,13 @@ cancels a run.
 - After a restart, sessions load on first use and never resume by themselves.
   If the process was killed during a tool call, the session reports the
   unfinished state and does not repeat the call; `interrupt` settles it.
+
+
+Shared accounts are managed through `GET /api/config` and revision-checked
+`PUT /api/config`, under `config.accounts`. Secret fields are redacted and may be
+sent back unchanged. Model/search/fetch service configurations use `credential_id`.
+`POST /api/provider-draft/models` additionally accepts an optional `accounts` map,
+so an unsaved account can be used for catalog verification without saving either
+the account or the service. Redacted values resolve against stored accounts of
+the same IDs. Subscription login routes also accept `account:<id>` in place of a
+model provider ID; model-ID login routes remain compatible.

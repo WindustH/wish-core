@@ -42,6 +42,8 @@ pub struct ToolSwitches {
   pub mcp: bool,
   /// Searches of the web: `web_search`, answered by the configured search providers.
   pub web_search: bool,
+  #[serde(default)]
+  pub web_fetch: bool,
   /// Whether `wish skill` in the session's shell may read skills. Like `mcp`, it changes neither
   /// the tools nor the instructions, so switching it keeps the prompt cache.
   pub skills: bool,
@@ -57,6 +59,7 @@ impl ToolSwitches {
       ask_user: changes.ask_user.unwrap_or(self.ask_user),
       mcp: changes.mcp.unwrap_or(self.mcp),
       web_search: changes.web_search.unwrap_or(self.web_search),
+      web_fetch: changes.web_fetch.unwrap_or(self.web_fetch),
       skills: changes.skills.unwrap_or(self.skills),
       sessions: changes.sessions.unwrap_or(self.sessions),
     }
@@ -67,6 +70,7 @@ impl ToolSwitches {
       "view_image" => true,
       "ask_user" => self.ask_user,
       "web_search" => self.web_search,
+      "web_fetch" => self.web_fetch,
       name if HISTORY_TOOLS.contains(&name) => true,
       name if SHELL_TOOLS.contains(&name) => self.shell,
       _ => false,
@@ -81,6 +85,7 @@ pub struct ToolChanges {
   pub ask_user: Option<bool>,
   pub mcp: Option<bool>,
   pub web_search: Option<bool>,
+  pub web_fetch: Option<bool>,
   pub skills: Option<bool>,
   pub sessions: Option<bool>,
 }
@@ -92,6 +97,7 @@ impl From<ToolSwitches> for ToolChanges {
       ask_user: Some(switches.ask_user),
       mcp: Some(switches.mcp),
       web_search: Some(switches.web_search),
+      web_fetch: Some(switches.web_fetch),
       skills: Some(switches.skills),
       sessions: Some(switches.sessions),
     }
@@ -107,6 +113,8 @@ pub struct SessionTools {
   ask_user_on: AtomicBool,
   pub ask_user: AskUserTool,
   web_search_on: AtomicBool,
+  web_fetch_on: AtomicBool,
+  pub web_fetch: crate::tool::web_fetch::WebFetchTool,
   pub web_search: WebSearchTool,
   history: HistoryTools,
   slot: Weak<SessionSlot>,
@@ -118,6 +126,8 @@ impl SessionTools {
     session: &Session,
     session_id: &str,
   ) -> Self {
+    let web_fetch =
+      make_fetch(slot.clone(), session_id, shell_config.capture_dir.join("web-fetch"));
     Self {
       shell: tokio::sync::OnceCell::new(),
       shell_config,
@@ -125,6 +135,8 @@ impl SessionTools {
       ask_user_on: AtomicBool::new(false),
       ask_user: AskUserTool::new(questions_changed(slot.clone())),
       web_search_on: AtomicBool::new(false),
+      web_fetch_on: AtomicBool::new(false),
+      web_fetch,
       web_search: WebSearchTool::new(search_backend(slot.clone()), session_id.to_owned()),
       history: HistoryTools::new(session),
       slot,
@@ -146,6 +158,7 @@ impl SessionTools {
     self.shell_on.store(switches.shell, Ordering::Release);
     self.ask_user_on.store(switches.ask_user, Ordering::Release);
     self.web_search_on.store(switches.web_search, Ordering::Release);
+    self.web_fetch_on.store(switches.web_fetch, Ordering::Release);
     Ok(())
   }
   async fn execute_shell(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
@@ -233,7 +246,7 @@ fn search_backend(slot: Weak<SessionSlot>) -> SearchBackend {
     let observer = owner.map(|slot| slot.retry_observer());
     Box::pin(async move {
       let app = app.ok_or_else(|| vec!["the server is shutting down".to_owned()])?;
-      let found = app.search.search(&app.get_providers(), &query, observer).await?;
+      let found = app.search.search(&app.get_search_providers(), &query, observer).await?;
       Ok(Answer { provider: found.provider, name: found.name, results: found.results })
     })
   })
@@ -258,6 +271,12 @@ impl ToolExecutor for SessionTools {
           return ToolOutcome::Failed("ask_user is not enabled for this session".into());
         }
         self.ask_user.execute(call, control).await
+      }
+      "web_fetch" => {
+        if !self.web_fetch_on.load(Ordering::Acquire) {
+          return ToolOutcome::Failed("web_fetch is not enabled for this session".into());
+        }
+        self.web_fetch.execute(call, control).await
       }
       "web_search" => {
         if !self.web_search_on.load(Ordering::Acquire) {
@@ -290,6 +309,9 @@ impl SessionSlot {
     }
     if switches.ask_user {
       config.tools.push(self.tools.ask_user.get_specification());
+    }
+    if switches.web_fetch {
+      config.tools.push(self.tools.web_fetch.get_specification());
     }
     if switches.web_search {
       config.tools.push(self.tools.web_search.get_specification());
@@ -333,4 +355,33 @@ impl SessionSlot {
     self.descriptor.write().unwrap().shell_override = settings;
     self.persist_index()
   }
+}
+
+fn make_fetch(
+  slot: Weak<SessionSlot>,
+  session_id: &str,
+  directory: std::path::PathBuf,
+) -> crate::tool::web_fetch::WebFetchTool {
+  let conversation = session_id.to_owned();
+  crate::tool::web_fetch::WebFetchTool::new(
+    Arc::new(move |url, refresh| {
+      let owner = slot.upgrade();
+      let app = owner.as_ref().and_then(|s| s.app.upgrade());
+      let observer = owner.map(|s| s.retry_observer());
+      let conversation = conversation.clone();
+      Box::pin(async move {
+        let app = app.ok_or("server is shutting down")?;
+        let accounts = app.get_search_providers();
+        let p = app.fetch.fetch(&url, refresh, &conversation, &accounts, observer, None).await?;
+        Ok(crate::tool::web_fetch::FetchPage {
+          url: p.url,
+          title: p.title,
+          content: p.content,
+          provider: p.provider,
+          fetched_at: p.fetched_at,
+        })
+      })
+    }),
+    directory,
+  )
 }

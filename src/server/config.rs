@@ -23,11 +23,13 @@ pub struct Config {
   /// server without a token by: a LAN address or a domain. Read at startup.
   pub allowed_hosts: Vec<String>,
   pub providers: BTreeMap<String, ProviderConfig>,
+  pub accounts: BTreeMap<String, super::accounts::AccountConfig>,
   pub proxy: ProxyConfig,
   pub shell: ShellSettings,
   pub mcp: McpConfig,
   /// The services `web_search` asks, and in what order.
   pub search: SearchConfig,
+  pub fetch: super::fetch::FetchConfig,
   /// Where `wish skill` finds skills besides Wish's own directory, and which are off.
   pub skills: SkillsConfig,
   /// How much of the usage records is kept.
@@ -39,7 +41,10 @@ impl Config {
   pub fn validate(&self) -> Result<(), ApiError> {
     self.proxy.validate()?;
     self.mcp.validate(&self.providers)?;
-    self.search.validate(&self.providers)?;
+    let mut providers = self.resolved_providers()?;
+    providers.extend(self.account_providers()?);
+    self.resolved_search()?.validate(&providers)?;
+    self.fetch.validate(&self.accounts)?;
     self.usage.validate()
   }
 }
@@ -217,6 +222,7 @@ impl Default for Defaults {
         ask_user: true,
         mcp: true,
         web_search: true,
+        web_fetch: true,
         skills: true,
         sessions: true,
       },
@@ -249,10 +255,12 @@ impl Default for Config {
       web_dir: None,
       allowed_hosts: Vec::new(),
       providers: BTreeMap::new(),
+      accounts: BTreeMap::new(),
       proxy: ProxyConfig::default(),
       shell: ShellSettings::default(),
       mcp: Default::default(),
       search: Default::default(),
+      fetch: Default::default(),
       skills: SkillsConfig::default(),
       usage: UsageConfig::default(),
       defaults: Defaults::default(),

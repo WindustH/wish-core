@@ -144,6 +144,17 @@
       "region": "cn",
       "key_url": "https://metaso.cn/search-api/api-keys",
       "docs_url": "https://metaso.cn/search-api/playground"
+    },
+    {
+      "id": "zai_search",
+      "name": "Z.AI",
+      "protocol": "zai_search",
+      "key": "required",
+      "region": "global",
+      "borrows_from": [],
+      "brand": "Z.AI",
+      "docs_url": "https://docs.z.ai/api-reference/tools/web-search",
+      "key_url": "https://z.ai/manage-apikey/apikey-list"
     }
   ]
 }

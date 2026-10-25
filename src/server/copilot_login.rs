@@ -37,7 +37,7 @@ pub async fn start(
   Path(provider_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
   app.lifecycle.require_open()?;
-  let provider = app.get_provider(&provider_id)?;
+  let provider = app.get_auth_provider(&provider_id)?;
   if !provider.config.is_copilot() {
     return Err(ApiError::bad_request("GitHub sign-in is available only for the Copilot preset"));
   }
@@ -81,7 +81,7 @@ pub async fn status(
   State(app): State<Arc<App>>,
   Path(provider_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-  let provider = app.get_provider(&provider_id)?;
+  let provider = app.get_auth_provider(&provider_id)?;
   if !provider.config.is_copilot() {
     return Err(ApiError::bad_request("GitHub sign-in is available only for the Copilot preset"));
   }

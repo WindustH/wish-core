@@ -89,6 +89,7 @@ pub struct DraftCatalog {
   /// sends back redacted.
   id: String,
   provider: Value,
+  accounts: Option<Value>,
   cursor: Option<String>,
   limit: Option<u32>,
 }
@@ -100,7 +101,10 @@ pub async fn draft_models(
 ) -> Result<Json<Value>, ApiError> {
   let (config, proxy) = {
     let file = app.config_file.lock().await;
-    (file.read_draft_provider(&draft.id, draft.provider)?, file.config.proxy.clone())
+    (
+      file.read_draft_provider(&draft.id, draft.provider, draft.accounts)?,
+      file.config.proxy.clone(),
+    )
   };
   let provider = Provider::build(draft.id, config, &proxy)?;
   catalog_page(&app, &provider, CatalogQuery { cursor: draft.cursor, limit: draft.limit }).await

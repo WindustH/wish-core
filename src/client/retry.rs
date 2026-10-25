@@ -15,6 +15,7 @@ pub enum RetryOperation {
   ModelList,
   AccountState,
   WebSearch,
+  WebFetch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
