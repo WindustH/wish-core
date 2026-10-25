@@ -33,8 +33,11 @@ const AGENT_INSTRUCTIONS: &str =
 /// what there is or on the session's switches, so only switching the shell - which changes the
 /// tools anyway - changes it.
 pub fn agent_instructions(tools: &[Tool]) -> String {
+  agent_instructions_for_shell(tools.iter().any(|tool| tool.name == "shell_start"))
+}
+fn agent_instructions_for_shell(shell: bool) -> String {
   let mut text = AGENT_INSTRUCTIONS.to_owned();
-  if tools.iter().any(|tool| tool.name == "shell_start") {
+  if shell {
     for section in [
       crate::server::mcp::INSTRUCTIONS,
       crate::server::skills::INSTRUCTIONS,
@@ -49,7 +52,13 @@ pub fn agent_instructions(tools: &[Tool]) -> String {
 /// Puts the current agent instructions in the conversation: in place of the ones it carries, or
 /// first when it carries none.
 pub fn apply_agent_instructions(messages: &mut Vec<Message>, tools: &[Tool]) {
-  let text = agent_instructions(tools);
+  replace_agent_instructions(messages, agent_instructions(tools));
+}
+/// Creation knows the switches before tool implementations are installed.
+pub fn apply_agent_instructions_for_shell(messages: &mut Vec<Message>, shell: bool) {
+  replace_agent_instructions(messages, agent_instructions_for_shell(shell));
+}
+fn replace_agent_instructions(messages: &mut Vec<Message>, text: String) {
   let mut found = false;
   for message in messages.iter_mut() {
     if let Message::System { metadata, content } = message
@@ -83,6 +92,13 @@ impl SessionModel {
     Self { provider, client, image_dir, rejected: AtomicBool::new(false) }
   }
   async fn prepare(&self, request: &Request) -> Result<(Request, bool), Error> {
+    self.prepare_projection(request, true).await
+  }
+  async fn prepare_projection(
+    &self,
+    request: &Request,
+    save: bool,
+  ) -> Result<(Request, bool), Error> {
     let mut request = request.clone();
     apply_agent_instructions(&mut request.conversation, &request.tools);
     compaction_item::project(&mut request.conversation, &self.provider.id);
@@ -96,13 +112,21 @@ impl SessionModel {
     );
     let (conversation, images) = tokio::task::spawn_blocking(move || {
       let models = &provider.config.models;
-      project_images(models, &model, &image_dir, rejected, &mut messages, true)
+      project_images(models, &model, &image_dir, rejected, &mut messages, save)
         .map(|images| (messages, images))
     })
     .await
     .map_err(|e| Error::Build(e.to_string()))??;
     request.conversation = conversation;
     Ok((request, images))
+  }
+  /// Read-only projection for inspection. This is current context, not a past wire request.
+  pub async fn inspect(&self, request: &Request) -> Result<Value, Error> {
+    let (projected, _) = self.prepare_projection(request, false).await?;
+    let mut value =
+      serde_json::to_value(projected).map_err(|error| Error::Build(error.to_string()))?;
+    image_references(&mut value);
+    Ok(value)
   }
   fn with_model_context(&self, error: Error, model: &str) -> Error {
     match error {
@@ -277,5 +301,49 @@ impl ModelCaller for SessionModel {
       result => result,
     };
     result.map_err(|error| self.with_model_context(error, &request.model))
+  }
+}
+
+/// Images remain inspectable by blob reference without duplicating base64 in the JSON response.
+fn image_references(value: &mut Value) {
+  let Some(messages) = value["conversation"].as_array_mut() else { return };
+  for message in messages {
+    for role in ["System", "Developer", "User", "Assistant"] {
+      let Some(blocks) = message
+        .get_mut(role)
+        .and_then(|message| message.get_mut("content"))
+        .and_then(Value::as_array_mut)
+      else {
+        continue;
+      };
+      for block in blocks {
+        let Some(image) = block.get_mut("Image").and_then(Value::as_object_mut) else { continue };
+        let Some(Value::String(encoded)) = image.remove("data_base64") else { continue };
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&encoded) {
+          image.insert("image_blob_id".into(), Value::String(blobs::blob_id(&bytes)));
+          image.insert("byte_count".into(), serde_json::json!(bytes.len()));
+        }
+        image.insert(
+          "data_base64".into(),
+          Value::String("[image bytes represented by blob reference]".into()),
+        );
+      }
+    }
+  }
+}
+
+#[cfg(test)]
+mod inspection_tests {
+  use super::*;
+  #[test]
+  fn image_inspection_preserves_tool_arguments() {
+    let argument = serde_json::json!({"Image":{"data_base64":"YWJj"}});
+    let mut request = serde_json::json!({"conversation":[
+      {"User":{"content":[{"Image":{"mime_type":"image/png","data_base64":"YWJj"}}]}},
+      {"ToolUse":{"arguments":argument.clone()}}
+    ]});
+    image_references(&mut request);
+    assert_eq!(request["conversation"][0]["User"]["content"][0]["Image"]["byte_count"], 3);
+    assert_eq!(request["conversation"][1]["ToolUse"]["arguments"], argument);
   }
 }

@@ -302,3 +302,25 @@ pub async fn events(
   );
   Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
+
+/// A read-only view of committed current context after application-level projection.
+/// Queued inputs and an unfinished tool batch are deliberately excluded by the snapshot reader.
+pub async fn inspect_context(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+  let slot = app.get_session(&id).await?;
+  let owner = slot.clone();
+  let request = blocking(move || {
+    let mut request = owner.sender.build_context_snapshot()?;
+    request.tools = owner.configure_tools(SessionConfig::new(&request.model))?.tools;
+    Ok(request)
+  })
+  .await?;
+  let descriptor = slot.get_descriptor();
+  let model = slot.make_model(app.get_provider(&descriptor.provider)?);
+  let projected = model.inspect(&request).await.map_err(ApiError::internal)?;
+  Ok(Json(
+    json!({"provider":descriptor.provider,"request":projected,"captured_at":crate::utils::time::Timestamp::now().0}),
+  ))
+}

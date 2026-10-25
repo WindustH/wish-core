@@ -91,6 +91,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/groups", get(groups::of_session))
     .route("/sessions/{id}/fork", post(manage::fork))
     .route("/sessions/{id}/context/clear", post(manage::clear_context))
+    .route("/sessions/{id}/context/inspect", get(sessions::inspect_context))
     .route("/sessions/{id}/messages", post(sessions::enqueue))
     .route("/sessions/{id}/input", post(content::input))
     .route("/sessions/{id}/queue/{entry}", delete(manage::cancel_input).patch(manage::move_input))

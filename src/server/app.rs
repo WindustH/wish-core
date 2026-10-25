@@ -14,7 +14,7 @@ use crate::server::{
   provider::{self, Provider, Providers, read_secret},
   search::{PreparedSearch, SearchHub},
   session::{CreateSession, Descriptor, SessionSlot, ToolSwitches},
-  session_model::apply_agent_instructions,
+  session_model::apply_agent_instructions_for_shell,
 };
 use crate::{
   session::{EntryOrigin, Session},
@@ -240,7 +240,7 @@ impl App {
       message.normalize_new_input();
     }
     // Agent instructions may be inserted at the front; origins line up from the back.
-    apply_agent_instructions(&mut input.initial_messages, &input.config.tools);
+    apply_agent_instructions_for_shell(&mut input.initial_messages, tools.shell);
     let inserted = input.initial_messages.len().saturating_sub(input.initial_origins.len());
     let origins = std::iter::repeat_n(EntryOrigin::Imported, inserted).chain(input.initial_origins);
     let initial: Vec<_> = input.initial_messages.into_iter().zip(origins).collect();
