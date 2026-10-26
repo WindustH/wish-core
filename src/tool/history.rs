@@ -244,3 +244,69 @@ impl ToolExecutor for HistoryTools {
     }
   }
 }
+
+/// Readable CLI output: keep record addresses and continuation without JSON-escaping prose.
+pub fn render(output: &Value, arguments: &Value) -> String {
+  fn content(value: &Value, indent: usize, lines: &mut Vec<String>) {
+    let pad = "  ".repeat(indent);
+    match value {
+      Value::Object(fields) => {
+        for (key, value) in fields {
+          if value.is_null() {
+            continue;
+          }
+          if key == "data_base64" {
+            lines.push(format!("{pad}{key}: [image bytes; use view_image on the attachment file]"));
+          } else if let Some(text) = value.as_str() {
+            lines.push(format!("{pad}{key}: {text}"));
+          } else {
+            lines.push(format!("{pad}{key}:"));
+            content(value, indent + 1, lines);
+          }
+        }
+      }
+      Value::Array(items) => {
+        for item in items {
+          content(item, indent, lines);
+        }
+      }
+      Value::String(text) => lines.push(format!("{pad}{text}")),
+      value => lines.push(format!("{pad}{value}")),
+    }
+  }
+  let mut lines = Vec::new();
+  if let Some(items) = output["items"].as_array() {
+    for item in items {
+      let kind = item["message_type"].as_str().or(item["event_type"].as_str()).unwrap_or("record");
+      lines.push(format!("#{} {kind}", item["record"]["sequence"]));
+      if let Some(snippet) = item["snippet"].as_str() {
+        lines.push(snippet.to_owned());
+      }
+      if let Some(value) = item.get("content") {
+        content(value, 0, &mut lines);
+      }
+      lines.push(String::new());
+    }
+    if items.is_empty() {
+      lines.push("No matching history records.".into());
+    }
+  }
+  if let Some(cursor) = output.get("next").filter(|value| !value.is_null()) {
+    let mut next = arguments.clone();
+    if !next.is_object() {
+      next = json!({});
+    }
+    if next["page"].is_object() {
+      next["page"]["cursor"] = cursor.clone();
+    } else {
+      next["cursor"] = cursor.clone();
+    }
+    // JSON can contain apostrophes in user filters; quote the complete argument for POSIX shells.
+    let quoted = next.to_string().replace('\'', "'\"'\"'");
+    lines.push(format!("Continue: wish history query --json '{quoted}'"));
+  }
+  if output["has_more"] == true {
+    lines.push("More matches exist; narrow the search or increase limit.".into());
+  }
+  lines.join("\n")
+}

@@ -576,8 +576,12 @@ Status fields:
 | `cache` | no | `{"key", "breakpoints"}` prompt-cache hints |
 | `compaction` | no | `{"trigger_tokens", "target_tokens", "segment_tokens", "estimator"}`; requires `0 < target < trigger` and `segment > 0`. Absent disables compaction |
 
-Every session gets `history_search`, `history_read`, `history_query` and
-`view_image`. With `tools.shell` it also gets the `shell` command tool (optional `edit` paths and `check_diff`), with `tools.ask_user` it gets
+Every session gets `view_image`. History access (`history_search`, `history_read`,
+`history_query`) is controlled together by `history_search` and
+`history_search_delivery` (`tool` or `command`). New sessions default to
+`wish history search/read/query`; existing sessions retain direct tools unless edited.
+Disabling history access blocks both routes. With Shell off, enabled history access
+falls back to direct tools. `wish history --help` documents arguments and cursors. With `tools.shell` it also gets the `shell` command tool (optional `edit` paths and `check_diff`), with `tools.ask_user` it gets
 `ask_user`, and with `tools.web_search` it gets [`web_search`](#web-search). On updates `tools` may list these names; any other name is
 rejected. With the shell on, the initial instructions briefly list available Wish commands
 (see [MCP servers](#mcp-servers)). `tools.mcp` adds no tool and
@@ -1405,3 +1409,10 @@ added immediately; definitions retained after a tool-to-command switch are remov
 generation boundary. Disabled capabilities are revoked immediately. Changing delivery does not
 revoke access: enabled capabilities accept valid calls through either direct tools or Wish
 commands, including calls whose tool definition is currently unadvertised.
+
+
+History delivery follows the same per-session configuration and deferred-prefix rules
+as Web Fetch and Web Search. Global defaults only affect new sessions. A delivery
+change appends a system notice; moving from direct tools to commands retains the
+active definitions until the next generation, while disabling history removes them
+immediately. Valid requests via either route are accepted while history is enabled.

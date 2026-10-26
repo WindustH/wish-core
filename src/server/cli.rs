@@ -6,3 +6,5 @@ pub mod skills;
 pub mod tasks;
 
 pub mod tool_commands;
+
+pub mod history;

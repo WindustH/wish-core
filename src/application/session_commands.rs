@@ -212,6 +212,7 @@ pub async fn set_tools(
   immediate.tools.retain(|tool| {
     target.tools.iter().any(|wanted| wanted.name == tool.name)
       || match tool.name.as_str() {
+        "history_search" | "history_read" | "history_query" => next.history_search,
         "task" => next.shell,
         "web_fetch" => next.web_fetch,
         "web_search" => next.web_search,

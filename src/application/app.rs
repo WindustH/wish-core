@@ -271,6 +271,8 @@ impl App {
     // Delivery defaults are copied once. Existing descriptors never follow global changes.
     let delivery_defaults = self.config_file.lock().await.config.defaults.tools;
     let mut tools = ToolSwitches {
+      history_search: delivery_defaults.history_search,
+      history_search_delivery: delivery_defaults.history_search_delivery,
       task_delivery: delivery_defaults.task_delivery,
       web_fetch_delivery: delivery_defaults.web_fetch_delivery,
       web_search_delivery: delivery_defaults.web_search_delivery,

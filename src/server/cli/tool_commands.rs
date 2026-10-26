@@ -19,6 +19,7 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
     println!(
       "{}",
       match name {
+        "history_search" | "history_read" | "history_query" => include_str!("help/history.txt"),
         "webfetch" => include_str!("help/webfetch.txt"),
         "websearch" => include_str!("help/websearch.txt"),
         _ => include_str!("help/askuser.txt"),
@@ -28,6 +29,7 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
   }
   let bridge = BridgeClient::from_environment(name)?;
   let url = bridge.url(&format!("commands/{name}"), &[])?;
+  let mut requested_arguments = Value::Null;
   let output = if args == ["--schema"] {
     bridge.send(bridge.client.get(url)).await?
   } else {
@@ -43,6 +45,8 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
       }
       Some(value) if !value.starts_with("--") => match name {
         "webfetch" if args.len() == 1 => json!({"url":value}),
+        "history_search" => json!({"text":args.join(" ")}),
+        "history_read" if args.len() == 1 => json!({"sequence":value.parse::<u64>().map_err(|_| (2, "sequence must be a non-negative integer; use wish history --help".into()))?}),
         "websearch" => json!({"query":args.join(" ")}),
         "askuser" if args.len() == 1 => {
           serde_json::from_str(value).map_err(|e| (2, e.to_string()))?
@@ -51,6 +55,7 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
       },
       _ => return Err((2, "invalid arguments; use --help".into())),
     };
+    requested_arguments = arguments.clone();
     bridge
       .send(
         bridge
@@ -61,7 +66,9 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
       )
       .await?
   };
-  if name == "webfetch" && output.get("content").is_some() && !structured {
+  if name.starts_with("history_") && output.get("items").is_some() && !structured {
+    println!("{}", crate::tool::history::render(&output, &requested_arguments));
+  } else if name == "webfetch" && output.get("content").is_some() && !structured {
     println!("{}", crate::tool::web_fetch::render(&output));
   } else if name == "askuser" && output.get("status").is_some() && !structured {
     println!("{}", crate::tool::ask_user::render(&output));

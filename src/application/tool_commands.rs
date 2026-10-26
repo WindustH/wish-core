@@ -22,6 +22,9 @@ pub async fn execute(
     return Err(ApplicationError::conflict("shell is disabled for this session"));
   }
   let (enabled, specification): (bool, Tool) = match name.as_str() {
+    "history_search" | "history_read" | "history_query" => (switches.history_search,
+      slot.tools.history.get_specifications().into_iter().find(|tool| tool.name == name)
+        .ok_or_else(ApplicationError::not_found)?),
     "webfetch" => (switches.web_fetch, slot.tools.web_fetch.get_specification()),
     "websearch" => (switches.web_search, slot.tools.web_search.get_specification()),
     "askuser" => (switches.ask_user, slot.tools.ask_user.get_specification()),

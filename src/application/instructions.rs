@@ -22,6 +22,9 @@ pub fn agent_instructions(switches: super::session::ToolSwitches) -> String {
     if switches.web_search && switches.web_search_delivery == ToolDelivery::Command {
       commands.push("`wish websearch` — web search");
     }
+    if switches.history_search && switches.history_search_delivery == ToolDelivery::Command {
+      commands.push("`wish history` — search/read session history");
+    }
     if switches.ask_user && switches.ask_user_delivery == ToolDelivery::Command {
       commands.push("`wish askuser` — ask the user");
     }
@@ -105,6 +108,8 @@ pub fn delivery_notice(
   };
   let mut changes = Vec::new();
   for (name, was, enabled, old_delivery, delivery) in [
+    ("history / wish history", previous.history_search, next.history_search,
+      previous.history_search_delivery, next.history_search_delivery),
     ("task", previous.shell, next.shell, previous.task_delivery, next.task_delivery),
     (
       "web_fetch / wish webfetch",

@@ -38,14 +38,19 @@ pub enum ToolDelivery {
   Tool,
   Command,
 }
+fn enabled_by_default() -> bool { true }
 fn command_delivery() -> ToolDelivery {
   ToolDelivery::Command
 }
 
-/// The optional built-in tools of a session. History search and `view_image` are always there.
+/// The optional built-in tools of a session. `view_image` is always available.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolSwitches {
+  #[serde(default = "enabled_by_default")]
+  pub history_search: bool,
+  #[serde(default)]
+  pub history_search_delivery: ToolDelivery,
   /// The simple `shell` tool and session task commands.
   pub shell: bool,
   #[serde(default = "command_delivery")]
@@ -76,6 +81,8 @@ impl ToolSwitches {
   /// These switches with a request's changes; what it leaves out stays as it is.
   pub fn apply_changes(self, changes: ToolChanges) -> Self {
     Self {
+      history_search: changes.history_search.unwrap_or(self.history_search),
+      history_search_delivery: changes.history_search_delivery.unwrap_or(self.history_search_delivery),
       shell: changes.shell.unwrap_or(self.shell),
       task_delivery: changes.task_delivery.unwrap_or(self.task_delivery),
       web_fetch_delivery: changes.web_fetch_delivery.unwrap_or(self.web_fetch_delivery),
@@ -97,7 +104,7 @@ impl ToolSwitches {
       "ask_user" => self.ask_user,
       "web_search" => self.web_search,
       "web_fetch" => self.web_fetch,
-      name if HISTORY_TOOLS.contains(&name) => true,
+      name if HISTORY_TOOLS.contains(&name) => self.history_search,
       name if SHELL_TOOLS.contains(&name) => self.shell,
       _ => false,
     }
@@ -107,6 +114,8 @@ impl ToolSwitches {
 #[derive(Clone, Copy, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolChanges {
+  pub history_search: Option<bool>,
+  pub history_search_delivery: Option<ToolDelivery>,
   pub shell: Option<bool>,
   pub task_delivery: Option<ToolDelivery>,
   pub web_fetch_delivery: Option<ToolDelivery>,
@@ -123,6 +132,8 @@ impl From<ToolSwitches> for ToolChanges {
   /// Every switch set as these are.
   fn from(switches: ToolSwitches) -> Self {
     Self {
+      history_search: Some(switches.history_search),
+      history_search_delivery: Some(switches.history_search_delivery),
       shell: Some(switches.shell),
       task_delivery: Some(switches.task_delivery),
       web_fetch_delivery: Some(switches.web_fetch_delivery),
@@ -150,7 +161,8 @@ pub struct SessionTools {
   web_fetch_on: AtomicBool,
   pub web_fetch: crate::tool::web_fetch::WebFetchTool,
   pub web_search: WebSearchTool,
-  history: HistoryTools,
+  pub history: HistoryTools,
+  history_on: AtomicBool,
   slot: Weak<SessionSlot>,
 }
 impl SessionTools {
@@ -173,6 +185,7 @@ impl SessionTools {
       web_fetch,
       web_search: WebSearchTool::new(search_backend(slot.clone()), session_id.to_owned()),
       history: HistoryTools::new(session),
+      history_on: AtomicBool::new(true),
       slot,
     }
   }
@@ -194,6 +207,7 @@ impl SessionTools {
         |error| ApplicationError::invalid(format!("could not start the shell: {error}")),
       )?;
     }
+    self.history_on.store(switches.history_search, Ordering::Release);
     self.shell_on.store(switches.shell, Ordering::Release);
     self.ask_user_on.store(switches.ask_user, Ordering::Release);
     self.web_search_on.store(switches.web_search, Ordering::Release);
@@ -317,7 +331,7 @@ fn questions_changed(slot: Weak<SessionSlot>) -> impl Fn() + Send + Sync + 'stat
 impl ToolExecutor for SessionTools {
   fn accepts_unadvertised_call(&self, name: &str) -> bool {
     // Recognize the route here; execute checks permissions and gives a specific disabled error.
-    matches!(name, "task" | "web_fetch" | "web_search" | "ask_user")
+    matches!(name, "task" | "web_fetch" | "web_search" | "ask_user") || HISTORY_TOOLS.contains(&name)
   }
 
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
@@ -366,7 +380,12 @@ impl ToolExecutor for SessionTools {
         }
         self.web_search.execute(call, control).await
       }
-      name if HISTORY_TOOLS.contains(&name) => self.history.execute(call, control).await,
+      name if HISTORY_TOOLS.contains(&name) => {
+        if !self.history_on.load(Ordering::Acquire) {
+          return ToolOutcome::Failed("history search is disabled for this session".into());
+        }
+        self.history.execute(call, control).await
+      },
       name if SHELL_TOOLS.contains(&name) => self.execute_shell(call, control).await,
       _ => ToolOutcome::Failed(format!("unknown tool: {}", call.name)),
     }
@@ -385,7 +404,9 @@ impl SessionSlot {
       return Err(ApplicationError::invalid(format!("no executor for tool {}", tool.name)));
     }
     let previous_tools = std::mem::take(&mut config.tools);
-    config.tools.extend(self.tools.history.get_specifications());
+    if switches.history_search && (!switches.shell || switches.history_search_delivery == ToolDelivery::Tool) {
+      config.tools.extend(self.tools.history.get_specifications());
+    }
     config.tools.push(ViewImageTool.get_specification());
     if switches.shell
       && let Some(shell) = self.tools.shell()
@@ -413,7 +434,7 @@ impl SessionSlot {
     for previous in previous_tools {
       if let Some(index) = config.tools.iter().position(|tool| tool.name == previous.name) {
         ordered.push(config.tools.remove(index));
-      } else if matches!(previous.name.as_str(), "task" | "web_fetch" | "web_search" | "ask_user")
+      } else if (matches!(previous.name.as_str(), "task" | "web_fetch" | "web_search" | "ask_user") || HISTORY_TOOLS.contains(&previous.name.as_str()))
         && switches.allow(&previous.name)
       {
         ordered.push(previous);

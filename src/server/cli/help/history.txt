@@ -1,0 +1,22 @@
+wish history — search and read this session's durable history, including past generations
+
+Usage:
+  wish history search WORDS
+  wish history search --json '{"text":"keyword","mode":"terms","limit":20}'
+  wish history read SEQUENCE
+  wish history read --json '{"sequence":12,"before":2,"after":2}'
+  wish history query
+  wish history query --json '{"limit":20,"order":"newest_first"}'
+  wish history <search|read|query> --schema
+  wish history <search|read|query> --stdin
+  wish history <search|read|query> --output-json --json '{...}'
+
+Search defaults to terms mode, 20 hits and message records. Read uses an absolute
+history sequence, with optional before/after counts. Query defaults to 50 records;
+copy a returned next cursor exactly into the next query's cursor field. Omit cursor
+to restart. --schema describes all filters and supported values for each operation.
+--stdin reads one JSON argument object. Empty search text is invalid; query accepts {}.
+Records include their sequence, kind and content. No matches is a successful empty result.
+Runs inside a Wish session shell. Disabling History Search blocks all three operations
+through both commands and direct tools. Shell must be enabled for the command route.
+Exit status: 0 success; nonzero indicates invalid input, disabled access or another failure.

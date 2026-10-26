@@ -230,6 +230,8 @@ impl Default for Defaults {
       model: String::new(),
       cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp")),
       tools: ToolSwitches {
+        history_search: true,
+        history_search_delivery: super::session::ToolDelivery::Command,
         task_delivery: super::session::ToolDelivery::Command,
         web_fetch_delivery: super::session::ToolDelivery::Command,
         web_search_delivery: super::session::ToolDelivery::Command,
