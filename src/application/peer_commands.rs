@@ -255,6 +255,7 @@ pub async fn create(
   };
   let slot = app
     .create_session(CreateSession {
+      first_input: None,
       created_by: Some(mine.id.clone()),
       // Beside the session that makes it, as a file is made in the directory one works in.
       folder: app.management.folder_of(&mine.id)?,

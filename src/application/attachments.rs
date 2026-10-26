@@ -46,3 +46,12 @@ pub async fn metadata(
   let item = blobs::read_description(&app.data_dir.blobs(owner), blob).await?;
   Ok(BlobMetadata { id: item.id, mime_type: item.mime_type, byte_count: item.byte_count })
 }
+
+/// Stage bytes under a submission UUID without creating or publishing an empty session.
+/// Content-addressed names make retries reuse the same file; acceptance adopts this directory.
+pub async fn upload_draft(app: &Arc<App>, request_id: &str, body: &[u8]) -> Result<Blob, ApplicationError> {
+  app.lifecycle.require_open()?;
+  let id = uuid::Uuid::parse_str(request_id)
+    .map_err(|_| ApplicationError::invalid("draft request_id must be a UUID"))?.to_string();
+  Ok(blobs::save_upload(&app.data_dir.blobs(&id), body).await?)
+}

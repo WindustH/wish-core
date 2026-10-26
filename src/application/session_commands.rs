@@ -119,6 +119,7 @@ pub async fn fork(app: Arc<App>, id: String) -> Result<Value, ApplicationError> 
     initial_origins.push(entry.origin);
   }
   let input = CreateSession {
+      first_input: None,
     created_by: None,
     folder: app.management.folder_of(&descriptor.id)?,
     name: format!("{} (copy)", descriptor.name),
@@ -144,7 +145,16 @@ pub struct Answer {
   skip: bool,
 }
 pub async fn create(app: Arc<App>, input: CreateSession) -> Result<Value, ApplicationError> {
-  Ok(app.create_session(input).await?.describe())
+  let has_input = input.first_input.is_some();
+  let slot = app.create_session(input).await?;
+  let mut result = slot.describe();
+  if has_input {
+    let reader = slot.reader.clone();
+    if let Ok(Some(entry)) = blocking(move || super::naming::first_user(&reader)).await {
+      result["first_input_entry"] = json!(entry);
+    }
+  }
+  Ok(result)
 }
 pub async fn enqueue(
   app: Arc<App>,

@@ -78,6 +78,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/providers/{id}/call", post(providers::call))
     .route("/providers/{id}/count-tokens", post(providers::count))
     .route("/providers/{id}/compact", post(providers::compact))
+    .route("/session-drafts/{id}/blobs", post(content::upload_draft))
     .route("/sessions", get(sessions::list).post(sessions::create))
     .route(
       "/sessions/{id}",

@@ -56,17 +56,7 @@ pub async fn save_upload(directory: &Path, body: &[u8]) -> Result<Blob, Reposito
 
 /// The image formats a model reads, by their magic bytes; anything else is octet-stream.
 fn sniff_mime_type(bytes: &[u8]) -> &'static str {
-  if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-    "image/png"
-  } else if bytes.starts_with(b"\xff\xd8\xff") {
-    "image/jpeg"
-  } else if bytes.starts_with(b"GIF8") {
-    "image/gif"
-  } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-    "image/webp"
-  } else {
-    "application/octet-stream"
-  }
+  crate::utils::image_format::supported_mime(bytes).unwrap_or("application/octet-stream")
 }
 
 /// A blob's bytes.

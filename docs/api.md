@@ -645,6 +645,25 @@ asked for, while no search provider can answer. `initial_messages` optionally se
 messages. `folder` puts it in that [folder](#folders) instead of the root. Returns `201`
 with the session. `404` if the provider is unknown or disabled.
 
+New-chat clients can include `first_input` in the creation request:
+
+```json
+{"first_input":{"request_id":"b15605df-64a4-4e3e-aef4-c6b6a7e23b26","text":"Describe this file","attachments":[{"kind":"file","name":"photo.heic","data_base64":"..."}]}}
+```
+
+`request_id` is a client-generated UUID reused when retrying the same submission.
+Upload raw bytes first to `POST /api/session-drafts/{request_id}/blobs`; this returns
+blob metadata without creating a session. Pass its `id` in each attachment of
+`first_input`. This keeps large files out of the JSON request and reuses their stored
+bytes when the session is accepted. Attachments accept `kind` (`image` or `file`),
+optional `name` and `placeholder`, and exactly one of `id` or inline `data_base64`. Validation happens before the session is published; accepted input is
+queued before the session becomes visible and automatically starts the run. The response
+includes `first_input_entry`. Replaying an accepted request returns the same session;
+reusing its ID with different input returns `409`, including after a restart.
+Image format is detected from bytes. Unsupported image formats should be sent as
+`file` attachments, preserving their original bytes. `view_image` reports detected
+unsupported formats and suggests conversion to a supported format before retrying.
+
 ### `GET /api/sessions/{id}`
 
 Loads the session if needed and returns it as `{"session", "status"}`.

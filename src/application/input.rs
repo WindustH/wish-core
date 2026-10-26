@@ -93,7 +93,7 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
     let block = match attachment.kind.as_str() {
       "image" => {
         if !blob.mime_type.starts_with("image/") {
-          return Err(ApplicationError::invalid("attachment is not a supported image"));
+          return Err(ApplicationError::invalid("attachment is not PNG, JPEG, GIF or WebP; convert HEIF/HEIC or other formats before sending (renaming the extension does not convert an image)"));
         }
         let bytes = tokio::fs::read(&blob.path).await.map_err(ApplicationError::internal)?;
         ContentBlock::Image {
@@ -127,4 +127,42 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
     content,
     metadata: json!({"custom":input.metadata,"attachments":input.attachments,"input_text":input.text,"input_parts":parts}),
   })
+}
+
+/// The first input travels with session creation, so rejected uploads cannot leave empty sessions.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitialInput {
+  pub request_id: String,
+  pub text: String,
+  #[serde(default)]
+  pub attachments: Vec<InitialAttachment>,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InitialAttachment {
+  pub kind: String,
+  pub name: Option<String>,
+  pub placeholder: Option<String>,
+  pub data_base64: Option<String>,
+  pub id: Option<String>,
+}
+impl InitialInput {
+  pub async fn prepare(self, directory: &Path) -> Result<Message, ApplicationError> {
+    let mut attachments = Vec::new();
+    for item in self.attachments {
+      let blob = match (item.id, item.data_base64) {
+        (Some(id), None) if is_blob_id(&id) => blobs::read_description(directory, &id).await?,
+        (None, Some(data)) => {
+          let bytes = base64::engine::general_purpose::STANDARD.decode(&data)
+            .map_err(|_| ApplicationError::invalid("attachment data is not valid base64"))?;
+          blobs::save_upload(directory, &bytes).await?
+        }
+        _ => return Err(ApplicationError::invalid("attachment requires exactly one valid id or data_base64")),
+      };
+      attachments.push(Attachment { id: blob.id, kind: item.kind, name: item.name,
+        placeholder: item.placeholder, byte_count: Some(blob.byte_count) });
+    }
+    message(directory, Input { text: self.text, attachments, metadata: Value::Null, background_shell: false }).await
+  }
 }

@@ -44,17 +44,8 @@ impl ViewImageTool {
     if bytes.len() as u64 > MAX_IMAGE_BYTES {
       return Err("image exceeds 20 MiB; use shell to resize it first".into());
     }
-    let mime_type = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-      "image/png"
-    } else if bytes.starts_with(b"\xff\xd8\xff") {
-      "image/jpeg"
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-      "image/gif"
-    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-      "image/webp"
-    } else {
-      return Err("unsupported image format; expected PNG, JPEG, GIF or WebP".into());
-    };
+    let mime_type = crate::utils::image_format::supported_mime(&bytes)
+      .ok_or_else(|| crate::utils::image_format::conversion_hint(&bytes))?;
     Ok(ToolOutcome::SuccessWithInput {
       output: json!({"path":args.path,"mime_type":mime_type,"byte_count":bytes.len()}),
       input: vec![

@@ -45,6 +45,8 @@ pub struct App {
   /// The shell sessions without their own run commands under. A configuration save replaces it
   /// and hands the new one to those sessions (`SessionSlot::follow_global_shell`).
   pub shell: RwLock<ShellCommand>,
+  /// Serializes creation with first-input retries, including requests whose response was lost.
+  creation_lock: AsyncMutex<()>,
   /// The sessions opened since startup, by id. A session is opened on first use and stays open
   /// until it is deleted.
   pub sessions: AsyncMutex<BTreeMap<String, Arc<SessionSlot>>>,
@@ -167,6 +169,7 @@ impl App {
       providers: RwLock::new(providers),
       accounts: RwLock::new(accounts),
       shell: RwLock::new(shell),
+      creation_lock: AsyncMutex::new(()),
       sessions: AsyncMutex::new(BTreeMap::new()),
       data_dir,
       bearer_token,
@@ -228,6 +231,25 @@ impl App {
     mut input: CreateSession,
   ) -> Result<Arc<SessionSlot>, ApplicationError> {
     self.lifecycle.require_open()?;
+    // Serialize creation/replay so a retry after a lost response cannot enqueue the first input twice.
+    let _creation = self.creation_lock.lock().await;
+    let initial_input_digest = input.first_input.as_ref().map(|first| {
+      serde_json::to_vec(first).map(|bytes| crate::storage::blobs::blob_id(&bytes))
+        .map_err(ApplicationError::internal)
+    }).transpose()?;
+    let id = match input.first_input.as_ref() {
+      Some(first) => uuid::Uuid::parse_str(&first.request_id)
+        .map_err(|_| ApplicationError::invalid("first_input.request_id must be a UUID"))?.to_string(),
+      None => uuid::Uuid::new_v4().to_string(),
+    };
+    if input.first_input.is_some() {
+      match self.get_session(&id).await {
+        Ok(slot) if slot.get_descriptor().initial_input_digest == initial_input_digest => return Ok(slot),
+        Ok(_) => return Err(ApplicationError::conflict("request_id was already used for different input")),
+        Err(error) if error.kind == super::error::ErrorKind::NotFound => {},
+        Err(error) => return Err(error),
+      }
+    }
     self.get_provider(&input.provider)?;
     if !input.cwd.is_absolute() {
       return Err(ApplicationError::invalid("cwd must be absolute"));
@@ -271,9 +293,10 @@ impl App {
       return Err(ApplicationError::invalid(format!("no folder `{folder}`")));
     }
     let descriptor = Descriptor {
+      initial_input_digest,
       pending_selection: None,
       created_by: input.created_by,
-      id: uuid::Uuid::new_v4().to_string(),
+      id,
       provider: input.provider,
       cwd: input.cwd,
       tools,
@@ -283,6 +306,17 @@ impl App {
       name: input.name,
       revision: 0,
     };
+    let first_message = if let Some(first_input) = input.first_input {
+      let directory = self.data_dir.blobs(&descriptor.id);
+      match first_input.prepare(&directory).await {
+        Ok(message) => Some(message),
+        Err(error) => {
+          let _ = tokio::fs::remove_dir_all(&directory).await;
+          return Err(error);
+        }
+      }
+    } else { None };
+    let start_run = first_message.is_some();
     for message in &mut input.initial_messages {
       message.normalize_new_input();
     }
@@ -309,6 +343,9 @@ impl App {
       let mut session = Session::create(storage, &id, input.config)?;
       session.set_metadata(input.metadata)?;
       session.import_history(initial)?;
+      if let Some(message) = first_message {
+        session.create_sender().enqueue_message(message)?;
+      }
       Ok(session)
     })
     .await?;
@@ -317,6 +354,7 @@ impl App {
       self.management.place(&[slot.get_descriptor().id], Some(&folder))?;
     }
     self.sessions.lock().await.insert(slot.get_descriptor().id.clone(), slot.clone());
+    if start_run { slot.schedule(self); }
     Ok(slot)
   }
   /// An open session, opened from storage when it is not open yet.

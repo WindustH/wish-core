@@ -45,3 +45,9 @@ pub async fn input(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
   Ok((StatusCode::ACCEPTED, Json(session_commands::submit_input(app, id, input).await?)))
 }
+
+pub async fn upload_draft(
+  State(app): State<Arc<App>>, Path(id): Path<String>, body: Bytes,
+) -> Result<Json<Blob>, ApiError> {
+  Ok(Json(attachments::upload_draft(&app, &id, &body).await?))
+}

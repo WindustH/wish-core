@@ -47,6 +47,8 @@ use tools::SessionTools;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub initial_input_digest: Option<String>,
   /// A provider and config chosen while an operation ran, applied at its next boundary.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub pending_selection: Option<selection::PendingSelection>,
@@ -71,6 +73,8 @@ pub struct Descriptor {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSession {
+  #[serde(default)]
+  pub first_input: Option<super::input::InitialInput>,
   /// The session making this one through `wish session`, which may then configure and delete it.
   #[serde(skip)]
   pub created_by: Option<String>,
