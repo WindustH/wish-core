@@ -29,10 +29,7 @@ impl CommandTrace {
     Ok(Self { slot, call, finished: false, tasks: app.lifecycle.tasks.clone() })
   }
   pub async fn finish(mut self, outcome: &ToolOutcome) -> Result<(), ApplicationError> {
-    let metadata = match outcome {
-      ToolOutcome::SuccessWithMetadata { metadata, .. } => metadata.clone(),
-      _ => Value::Null,
-    };
+    let metadata = outcome.metadata();
     record(&self.slot,json!({"type":"command_tool_result","call_id":self.call.call_id,"name":self.call.name,"content":outcome.encode_content(),"metadata":metadata})).await?;
     self.finished = true;
     Ok(())

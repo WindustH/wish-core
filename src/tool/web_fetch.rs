@@ -88,20 +88,112 @@ impl WebFetchTool {
     if start > total_chars {
       return Err(format!("{CURSOR_ERROR}; offset is outside the saved page"));
     }
-    let content: String = page.content.chars().skip(start).take(20_000).collect();
+    // Leave room for URL/title/continuation and shell presentation. Both entry points
+    // return the same snapshot range, without shell truncating a second time.
+    let mut content = String::new();
+    let mut lines = 0;
+    for ch in page.content.chars().skip(start).take(20_000) {
+      if content.len() + ch.len_utf8() > 32 * 1024 || lines >= 1800 {
+        break;
+      }
+      content.push(ch);
+      if ch == '\n' {
+        lines += 1;
+      }
+    }
     let end = start + content.chars().count();
     let next_cursor = (end < total_chars).then(|| format!("{snapshot_id}:{end}"));
-    Ok(ToolOutcome::SuccessWithMetadata {
-      output: json!({"url":page.url,"title":page.title,"content":content,"start":start,"total_chars":total_chars,"next_cursor":next_cursor,"content_kind":"provider_extracted","fetched_at":page.fetched_at}),
+    let output = json!({"url":page.url,"title":page.title,"content":content,"start":start,"total_chars":total_chars,"next_cursor":next_cursor,"content_kind":"provider_extracted","fetched_at":page.fetched_at});
+    Ok(ToolOutcome::Report {
+      text: render(&output),
+      output,
+      failed: false,
       metadata: json!({"provider":page.provider,"snapshot":snapshot_id.to_string(),"url":page.url,"title":page.title}),
     })
   }
+}
+
+/// The same readable page for direct tools and `wish webfetch`.
+pub fn render(output: &serde_json::Value) -> String {
+  let title: String = output["title"].as_str().unwrap_or_default().chars().take(200).collect();
+  let mut text = format!(
+    "{title}\n{}\n\n{}",
+    output["url"].as_str().unwrap_or_default(),
+    output["content"].as_str().unwrap_or_default()
+  );
+  if let Some(cursor) = output["next_cursor"].as_str() {
+    text.push_str(&format!("\n\n[Page incomplete: starts at character {} of {}. Continue with cursor {cursor}; CLI: wish webfetch --json '{{\"cursor\":\"{cursor}\"}}']", output["start"], output["total_chars"]));
+  }
+  text
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
   use std::sync::atomic::{AtomicUsize, Ordering};
+
+  #[tokio::test]
+  async fn unicode_pages_survive_shell_delivery_and_resume_without_losing_text() {
+    let directory =
+      std::env::temp_dir().join(format!("wish-page-delivery-{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir_all(&directory).await.unwrap();
+    let original = "中文正文\n\"quoted\"\n".repeat(3000);
+    let body = original.clone();
+    let backend: FetchBackend = Arc::new(move |url, _| {
+      let content = body.clone();
+      Box::pin(async move {
+        Ok(FetchPage {
+          url,
+          title: "Title".into(),
+          content,
+          provider: "mock".into(),
+          fetched_at: 1,
+        })
+      })
+    });
+    let reader = WebFetchTool::new(backend, directory.join("snapshots"));
+    let shell = crate::tool::shell::ShellTool::new(crate::tool::shell::ShellConfig::new(
+      &directory,
+      directory.join("tasks"),
+    ))
+    .await
+    .unwrap();
+    let mut arguments = json!({"url":"https://example.com"});
+    let mut reconstructed = String::new();
+    loop {
+      let result = reader
+        .execute(
+          &ToolCall { call_id: "read".into(), name: "web_fetch".into(), arguments },
+          &ExecutionControl::new(),
+        )
+        .await;
+      let ToolOutcome::Report { text, output, .. } = result else { panic!("{result:?}") };
+      assert_eq!(text, render(&output));
+      assert!(text.len() < 40 * 1024 && text.lines().count() < 2000);
+      tokio::fs::write(directory.join("page.txt"), &text).await.unwrap();
+      let command = if cfg!(windows) { "type page.txt" } else { "cat page.txt" };
+      let result = shell
+        .execute(
+          &ToolCall {
+            call_id: "shell".into(),
+            name: "shell".into(),
+            arguments: json!({"command":command}),
+          },
+          &ExecutionControl::new(),
+        )
+        .await;
+      let ToolOutcome::Report { text: shell_text, failed: false, .. } = result else {
+        panic!("{result:?}")
+      };
+      assert_eq!(shell_text, text);
+      reconstructed.push_str(output["content"].as_str().unwrap());
+      let Some(cursor) = output["next_cursor"].as_str() else { break };
+      arguments = json!({"cursor":cursor});
+    }
+    assert_eq!(reconstructed, original);
+    shell.shutdown().await.unwrap();
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+  }
 
   #[tokio::test]
   async fn continuation_survives_reopening_without_fetching_again() {
@@ -114,7 +206,7 @@ mod tests {
         Ok(FetchPage {
           url,
           title: "Page".into(),
-          content: "字".repeat(20_001),
+          content: "a".repeat(20_001),
           provider: "mock".into(),
           fetched_at: 1,
         })
@@ -124,18 +216,14 @@ mod tests {
     let first = WebFetchTool::new(backend.clone(), directory.clone())
       .execute(&call(json!({"url":"https://example.com"})), &ExecutionControl::new())
       .await;
-    let ToolOutcome::SuccessWithMetadata { output, .. } = first else {
-      panic!("first page failed: {first:?}")
-    };
+    let ToolOutcome::Report { output, .. } = first else { panic!("first page failed: {first:?}") };
     assert_eq!(output["content"].as_str().unwrap().chars().count(), 20_000);
     let reopened = WebFetchTool::new(backend, directory.clone());
     let next = reopened
       .execute(&call(json!({"cursor":output["next_cursor"]})), &ExecutionControl::new())
       .await;
-    let ToolOutcome::SuccessWithMetadata { output, .. } = next else {
-      panic!("continuation failed: {next:?}")
-    };
-    assert_eq!(output["content"], "字");
+    let ToolOutcome::Report { output, .. } = next else { panic!("continuation failed: {next:?}") };
+    assert_eq!(output["content"], "a");
     assert!(output["next_cursor"].is_null());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     let invalid =
@@ -175,7 +263,7 @@ mod tests {
           &ExecutionControl::new(),
         )
         .await;
-      assert!(matches!(outcome, ToolOutcome::SuccessWithMetadata { .. }), "{outcome:?}");
+      assert!(matches!(outcome, ToolOutcome::Report { .. }), "{outcome:?}");
     }
     let outcome = reader
       .execute(

@@ -18,8 +18,10 @@ JSON ARGUMENTS
   timeout_seconds   Optional integer 1–604800. Omitted means wait indefinitely.
 
 OUTPUT / LIFECYCLE
-  JSON status is answered, skipped, or timed_out. answered includes one item per
-  question in answers; omitted questions have skipped:true. A timeout allows the
+  Default output lists questions and answers as text, including skipped questions.
+  A skipped form or timeout is stated explicitly. Prefix --output-json for scripts:
+  status is answered, skipped, or timed_out; answers contains one item per question,
+  with skipped:true for omitted questions. A timeout allows the
   command to finish. A later answer is delivered to the session as a new message.
   Cancelling the command cancels its pending form. Calls, forms and answers are
   displayed in the timeline just like direct Ask User tool calls.

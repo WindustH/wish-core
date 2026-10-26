@@ -153,13 +153,19 @@ impl TaskManager {
     }
     Ok(())
   }
-  /// Wait for an execution returned by start and read its final status without inline output.
+  /// Wait for completion and return final status with a bounded output tail and edit summary.
   /// Applications can enqueue this result as a background completion notification.
   pub async fn wait_for_completion(&self, id: &str) -> Result<Value, TaskError> {
     let execution = self.get_execution(id)?;
     // Unknown is a terminal outcome too; retain the diagnostic in the returned snapshot.
     let _ = execution.wait_for_exit().await;
-    read_output(&execution, 0, 0, DataEncoding::Utf8).await
+    let total = tokio::fs::metadata(&execution.output_path).await?.len();
+    let mut output =
+      read_output(&execution, total.saturating_sub(8192), 8192, DataEncoding::Utf8).await?;
+    output["truncated"] = json!(total > 8192);
+    output["edits"] = json!(*execution.get_snapshot().edits);
+    output["edits_path"] = json!(execution.output_path.with_file_name("task.json"));
+    Ok(output)
   }
   pub async fn run(&self, operation: TaskOperation, control: &ExecutionControl) -> ToolOutcome {
     if control.is_cancelled() {
@@ -206,7 +212,14 @@ impl TaskManager {
         Err(error) => Err(error),
       },
     };
-    result.map(ToolOutcome::Success).unwrap_or_else(Into::into)
+    result
+      .map(|output| ToolOutcome::Report {
+        text: super::output::render(&output, false),
+        output,
+        metadata: Value::Null,
+        failed: false,
+      })
+      .unwrap_or_else(Into::into)
   }
   pub fn list(&self) -> Result<Value, TaskError> {
     let mut tasks: Vec<_> =
@@ -289,6 +302,8 @@ impl TaskManager {
     let text = output["text"].as_str().unwrap_or_default().to_owned();
     let lines: Vec<_> = text.split_inclusive('\n').collect();
     if lines.len() > 2000 {
+      let removed: usize = lines[..lines.len() - 2000].iter().map(|line| line.len()).sum();
+      output["start_offset"] = json!(output["start_offset"].as_u64().unwrap_or(0) + removed as u64);
       output["text"] = lines[lines.len() - 2000..].concat().into();
     }
     output["truncated"] = json!(total > 50 * 1024 || lines.len() > 2000);
@@ -309,15 +324,18 @@ impl TaskManager {
     output["success"] = json!(
       reason == "backgrounded" || (reason == "exited" && task.get_snapshot().exit_code == Some(0))
     );
-    if matches!(reason, "timeout" | "interrupted")
-      || (reason == "exited" && task.get_snapshot().exit_code != Some(0))
-    {
-      return Ok(ToolOutcome::Failed(output.to_string()));
+    if !edits.as_array().is_none_or(Vec::is_empty) {
+      // The supervisor persists final edits here before publishing completion.
+      // Refer to that record, including for a foreground command detached mid-edit.
+      output["edits_path"] = json!(task.output_path.with_file_name("task.json"));
     }
-    if !check_diff && !task.get_snapshot().edits.is_empty() {
-      return Ok(ToolOutcome::SuccessWithMetadata { output, metadata: json!({"edits":edits}) });
-    }
-    Ok(ToolOutcome::Success(output))
+    let failed = output["success"] != true;
+    Ok(ToolOutcome::Report {
+      text: super::output::render(&output, check_diff),
+      output,
+      metadata: json!({"edits":edits}),
+      failed,
+    })
   }
   async fn spawn(
     &self,
@@ -538,7 +556,7 @@ async fn read_output(
     DataEncoding::Base64 => (base64::engine::general_purpose::STANDARD.encode(&bytes), false),
   };
   let mut output = json!({"execution_id":execution.id, "process":snapshot, "output_path":execution.output_path,
-    "output_bytes":total, "next_offset":next_offset, "eof":snapshot.status != Status::Running && next_offset >= total,
+    "output_bytes":total, "start_offset":offset, "next_offset":next_offset, "eof":snapshot.status != Status::Running && next_offset >= total,
     "encoding":encoding, "text":text, "lossy":lossy});
   if next_offset < total {
     output["output_notice"] = "Output limited. Read only the needed range or search output_path. Use poll with next_offset to continue; avoid reading the entire file or repeating broad commands.".into();

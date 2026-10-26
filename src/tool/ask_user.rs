@@ -213,7 +213,12 @@ impl AskUserTool {
     };
     drop(open);
     (self.changed)();
-    outcome
+    match outcome {
+      ToolOutcome::Success(output) => {
+        ToolOutcome::Report { text: render(&output), output, metadata: Value::Null, failed: false }
+      }
+      other => other,
+    }
   }
 
   /// Answers an open form, or with `skip` declines it.
@@ -273,6 +278,44 @@ impl Drop for CloseOnDrop<'_> {
   }
 }
 
+/// A readable answer shared by native tools and command delivery.
+pub fn render(output: &Value) -> String {
+  if output["status"] != "answered" {
+    return format!(
+      "{}: {}",
+      output["status"].as_str().unwrap_or("unknown"),
+      output["note"].as_str().unwrap_or_default()
+    );
+  }
+  output["answers"]
+    .as_array()
+    .into_iter()
+    .flatten()
+    .enumerate()
+    .map(|(index, answer)| {
+      let mut text =
+        format!("{}. {}\n", index + 1, answer["question"].as_str().unwrap_or_default());
+      if answer["skipped"] == true {
+        text.push_str("Skipped by user.");
+      } else {
+        for selected in answer["selected"].as_array().into_iter().flatten() {
+          if let Some(label) = selected.as_str() {
+            text.push_str(&format!("- {label}\n"));
+          }
+        }
+        for field in ["text", "other"] {
+          if let Some(written) = answer[field].as_str() {
+            text.push_str(written);
+            text.push('\n');
+          }
+        }
+      }
+      text
+    })
+    .collect::<Vec<_>>()
+    .join("\n")
+}
+
 /// The message that brings answers given after a timeout; its metadata carries the questions
 /// too, so the answers can be shown without the call that asked them.
 pub fn late_answer_message(call_id: &str, questions: &Value, answers: &[Value]) -> Message {
@@ -282,7 +325,7 @@ pub fn late_answer_message(call_id: &str, questions: &Value, answers: &[Value]) 
     content: vec![ContentBlock::Text {
       text: format!(
         "The user answered the questions you asked earlier (ask_user call {call_id}), after they had timed out:\n{}",
-        json!(answers)
+        render(&json!({"status":"answered","answers":answers}))
       ),
     }],
   }

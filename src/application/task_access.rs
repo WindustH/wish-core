@@ -114,6 +114,8 @@ pub(crate) async fn execute(
       let result = app.lifecycle.until_shutdown(shell.run(operation, &control)).await?;
       drop(guard);
       match result {
+        ToolOutcome::Report { output, failed: false, .. } => output,
+        ToolOutcome::Report { text, .. } => return Err(ApplicationError::invalid(text)),
         ToolOutcome::Success(output) => output,
         ToolOutcome::SuccessWithMetadata { output, .. } => output,
         ToolOutcome::Failed(message) => return Err(ApplicationError::invalid(message)),

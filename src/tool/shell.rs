@@ -139,7 +139,7 @@ mod argument_tests {
       )
       .await;
     assert!(
-      matches!(outcome, ToolOutcome::Success(ref output) if output["text"].as_str().unwrap().contains("fallback")),
+      matches!(outcome, ToolOutcome::Report { ref output, failed: false, .. } if output["text"].as_str().unwrap().contains("fallback")),
       "{outcome:?}"
     );
     for arguments in [json!(null), json!({"command":" "}), json!({"command":42})] {

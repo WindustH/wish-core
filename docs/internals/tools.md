@@ -13,8 +13,12 @@ pub trait ToolExecutor: Sync {
 ```
 
 `ToolOutcome` is `Success(Value)`, `SuccessWithInput { output, input }`,
-`SuccessWithMetadata { output, metadata }`, `Failed(String)`, `Cancelled` or `Unknown(String)`.
-The model receives `{status, output}` or `{status, message}`. `Unknown` means an external effect
+`SuccessWithMetadata { output, metadata }`, `Report { text, output, metadata, failed }`,
+`Failed(String)`, `Cancelled` or `Unknown(String)`. New built-in reports separate readable model
+text from structured program output and UI metadata. The durable result retains all three;
+protocol adapters project only `model_text` onto the model wire. Failed reports use the native
+Anthropic/Bedrock error flag where available. Older stored results retain their wire shape,
+so this change does not rewrite an existing conversation prefix. `Unknown` means an external effect
 may have happened and suspends the run ([executor](executor.md#run)). `SuccessWithInput` appends
 extra model input after the whole batch's results, preserving call/result pairing.
 `SuccessWithMetadata` keeps its metadata on the stored result message, which is never sent to the
@@ -45,7 +49,12 @@ shell.shutdown().await?;
 The model sees `shell({command, timeout?, edit?, check_diff?})`. It runs a new shell in the session's working
 directory and waits until exit. Omitted timeout means no limit; a positive timeout is a hard
 runtime limit and terminates the process tree. Large output does not background the command:
-the result retains the last 2000 lines / 50 KiB and points to the complete capture.
+the structured result retains the last 2000 lines / 50 KiB and points to the complete capture.
+The model sees ordinary command output without encoding, empty process fields or task identifiers.
+Failure, timeout, background execution and truncation add only necessary diagnostics or next steps.
+Model text reserves room within its 50 KiB budget for notices and up to 8 KiB of requested diff;
+full edits remain in the durable task record and UI metadata. Background completion notifications
+include an 8 KiB output tail and edit summaries, avoiding an obligatory follow-up status read.
 
 `tool/shell.rs` adapts model calls. `task/` owns the process registry, supervision, input/output,
 background transfer and edit captures. `application/task_access.rs` enforces session ownership
@@ -74,7 +83,8 @@ wish task remove <id>
 `start` defaults to immediate background execution; `--wait` is a soft wait, distinct from the
 simple tool's hard timeout. The shell tool accepts optional `edit` (absolute file paths) and
 `check_diff`; full diffs remain metadata unless `check_diff` is true. Task management has no edit operation. `remove` refuses running tasks and deletes completed task
-records and captures. List output is tabular, or JSON with `--json`; other commands return JSON.
+records and captures. Commands return readable text by default; prefix `--output-json` for scripts.
+The HTTP task API continues to return structured data.
 The task list is scoped to its owning session. User API callers can still inspect and terminate
 existing tasks with the session's shell switch off; starting a new command is refused.
 
@@ -361,3 +371,13 @@ not rewrite that generation's initial instructions.
 Task, Web Fetch, Web Search and Ask User independently of presentation mode, then checks capability
 permissions in its dispatcher so disabled capabilities return a specific error. Generic executors still reject unknown tools. Both serial and parallel batch
 execution use this contract, and both routes retain the same validators and timeline semantics.
+
+## Command presentation
+
+Native Web Fetch, Web Search, Ask User and Task calls share presentation with their `wish`
+command adapters. CLI `--output-json` is an explicit leading option for programmatic consumers;
+`--json` continues to mean JSON input for web/ask commands. Web Fetch snapshots paginate at
+20,000 characters, 32 KiB, or 1,800 newlines, preserving room for title, URL and cursor instructions
+under the enclosing shell limit. Continuation always reads the same snapshot. Ask User prints
+questions with selected/written answers, skipped questions and timeout guidance without JSON
+escaping. Structured API responses and timeline data remain available independently.

@@ -31,13 +31,28 @@ pub enum ToolOutcome {
     output: Value,
     metadata: Value,
   },
+  /// A presentation separated from program data and UI-only metadata.
+  Report {
+    text: String,
+    output: Value,
+    metadata: Value,
+    failed: bool,
+  },
   Failed(String),
   Cancelled,
   Unknown(String),
 }
 
 impl ToolOutcome {
-  /// The tool result's content as the model receives it.
+  pub(crate) fn metadata(&self) -> Value {
+    match self {
+      Self::Report { metadata, .. } | Self::SuccessWithMetadata { metadata, .. } => {
+        metadata.clone()
+      }
+      _ => Value::Null,
+    }
+  }
+  /// Durable result data. Protocol adapters send only model_text for new reports.
   pub(crate) fn encode_content(&self) -> Value {
     match self {
       Self::Success(value)
@@ -45,9 +60,19 @@ impl ToolOutcome {
       | Self::SuccessWithMetadata { output: value, .. } => {
         json!({"status": "success", "output": value})
       }
-      Self::Failed(message) => json!({"status": "failed", "message": message}),
-      Self::Cancelled => json!({"status": "cancelled"}),
-      Self::Unknown(message) => json!({"status": "unknown", "message": message}),
+      Self::Report { text, output, failed, .. } => json!({
+        "status": if *failed { "failed" } else { "success" },
+        "output": output, "model_text": text,
+      }),
+      Self::Failed(message) => {
+        json!({"status": "failed", "message": message, "model_text":format!("Failed: {message}")})
+      }
+      Self::Cancelled => {
+        json!({"status": "cancelled", "model_text":"Cancelled. The operation did not complete."})
+      }
+      Self::Unknown(message) => {
+        json!({"status": "unknown", "message": message, "model_text":format!("Outcome unknown: {message}. Inspect the resulting state before retrying; effects may already have occurred.")})
+      }
     }
   }
 }

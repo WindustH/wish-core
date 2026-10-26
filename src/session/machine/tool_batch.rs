@@ -100,10 +100,7 @@ impl SessionTransaction<'_, '_> {
       if let ToolOutcome::SuccessWithInput { input, .. } = outcome {
         inputs.push((execution.call.clone(), input.clone()));
       }
-      let metadata = match outcome {
-        ToolOutcome::SuccessWithMetadata { metadata, .. } => metadata.clone(),
-        _ => Default::default(),
-      };
+      let metadata = outcome.metadata();
       self.append_message(
         Message::ToolResult {
           metadata,

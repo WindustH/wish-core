@@ -293,8 +293,9 @@ fn render_user_parts(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
 }
 
 fn render_function_response(call_id: &str, name: &str, content: &Value) -> Value {
-  let response = match content {
-    Value::Object(_) => content.clone(),
+  let projected = crate::protocol::model_use::tool::tool_result_value(content);
+  let response = match &projected {
+    Value::Object(_) => projected.clone(),
     other => json!({"content": other}),
   };
   let mut function_response = json!({"name": name, "response": response});

@@ -92,8 +92,10 @@ impl ToolExecutor for WebSearchTool {
       return ToolOutcome::Cancelled;
     };
     match answer {
-      Ok(answer) => ToolOutcome::SuccessWithMetadata {
+      Ok(answer) => ToolOutcome::Report {
+        text: render(&text, &answer.results),
         output: json!(render(&text, &answer.results)),
+        failed: false,
         metadata: json!({
           "query": text,
           "provider": answer.provider,

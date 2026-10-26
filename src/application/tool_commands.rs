@@ -43,6 +43,8 @@ pub async fn execute(
   let outcome = app.lifecycle.until_shutdown(slot.tools.execute(&call, &control)).await?;
   trace.finish(&outcome).await?;
   match outcome {
+    ToolOutcome::Report { output, failed: false, .. } => Ok(output),
+    ToolOutcome::Report { text, .. } => Err(ApplicationError::invalid(text)),
     ToolOutcome::Success(output) | ToolOutcome::SuccessWithMetadata { output, .. } => Ok(output),
     ToolOutcome::Failed(message) => Err(ApplicationError::invalid(message)),
     ToolOutcome::Cancelled => Err(ApplicationError::conflict("command cancelled")),

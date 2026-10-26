@@ -1,6 +1,7 @@
 //! Supervised session tasks: process lifecycle, output, stdin and file-edit capture.
 mod edit;
 mod operation;
+pub mod output;
 mod platform;
 mod process;
 mod runtime;

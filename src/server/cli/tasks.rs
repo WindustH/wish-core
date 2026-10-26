@@ -36,7 +36,18 @@ async fn send(bridge: &BridgeClient, request: Value) -> Result<Value, Failure> {
     )
     .await
 }
-async fn execute(args: Vec<String>) -> Result<i32, Failure> {
+async fn execute(mut args: Vec<String>) -> Result<i32, Failure> {
+  let structured = args.first().is_some_and(|arg| arg == "--output-json");
+  if structured {
+    args.remove(0);
+  }
+  let display = |value: &Value| {
+    if structured {
+      print(value);
+    } else {
+      println!("{}", crate::task::output::render(value, false));
+    }
+  };
   let Some(command) = args.first().map(String::as_str) else {
     println!("{USAGE}");
     return Ok(0);
@@ -57,7 +68,7 @@ async fn execute(args: Vec<String>) -> Result<i32, Failure> {
         tasks.retain(|task| task["process"]["status"] == "running");
       }
     }
-    if args.iter().any(|arg| arg == "--json") {
+    if structured || args.iter().any(|arg| arg == "--json") {
       print(&result);
     } else {
       for task in result["tasks"].as_array().into_iter().flatten() {
@@ -85,13 +96,13 @@ async fn execute(args: Vec<String>) -> Result<i32, Failure> {
         let result=send(&bridge,json!({"action":"execute","operation":{"operation":"poll","execution_id":id,"max_bytes":0,"wait_ms":1000}})).await?;
         if result["process"]["status"] != "running" {
           let success = result["process"]["exit_code"] == 0;
-          print(&result);
+          display(&result);
           return Ok(if success { 0 } else { 1 });
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
       }
     }
-    print(
+    display(
       &send(&bridge, json!({"action":if command=="bg"{"background"}else{command},"task_id":id}))
         .await?,
     );
@@ -139,6 +150,9 @@ async fn execute(args: Vec<String>) -> Result<i32, Failure> {
       if command == "write" {
         operation["data"] = "".into();
       }
+      if command == "poll" && !structured {
+        operation["max_bytes"] = (32 * 1024).into();
+      }
       let mut data_seen = false;
       while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -179,6 +193,6 @@ async fn execute(args: Vec<String>) -> Result<i32, Failure> {
     }
     _ => return Err(invalid(USAGE)),
   }
-  print(&send(&bridge, json!({"action":"execute","operation":operation})).await?);
+  display(&send(&bridge, json!({"action":"execute","operation":operation})).await?);
   Ok(0)
 }

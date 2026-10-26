@@ -49,7 +49,7 @@
 //!   own mode and an axis a mode has no spelling for is rejected, never dropped. DeepSeek's switch
 //!   and effort spelling follow the controls its chat wire takes, because its messages wire takes
 //!   neither; Qwen's wire replaces the budget with `output_config.effort` entirely.
-//! - The wire's `is_error` flag is never sent (the model keeps its `false` default), reasoning
+//! - New failed reports carry `is_error`; legacy payloads preserve their wire shape. Reasoning
 //!   provider/model binding of otherwise matching signatures is not tracked, and
 //!   `prompt_cache_retention` is not modeled.
 //! - A breakpoint needs a block to live on, so a cached prompt head is sent as a one-block `system`
@@ -466,11 +466,16 @@ fn render_reasoning_block(plaintext: &str, signature: &str, ciphertext: &str) ->
 }
 
 fn render_tool_result(call_id: &str, content: &Value) -> Value {
-  json!({
-    "type": "tool_result",
-    "tool_use_id": call_id,
+  let mut result = json!({
+    "type": "tool_result", "tool_use_id": call_id,
     "content": tool_result_text(content),
-  })
+  });
+  if content.get("model_text").is_some()
+    && crate::protocol::model_use::tool::tool_result_is_error(content)
+  {
+    result["is_error"] = json!(true);
+  }
+  result
 }
 
 /// End the cached prefix where this wire takes a breakpoint: after the system block, after the
@@ -510,5 +515,24 @@ fn render_tool_choice(choice: ToolChoice) -> Value {
     ToolChoice::Auto => json!({"type": "auto"}),
     ToolChoice::Required => json!({"type": "any"}),
     ToolChoice::None => unreachable!("tool_choice `none` is rejected before rendering"),
+  }
+}
+
+#[cfg(test)]
+mod report_tests {
+  use super::*;
+  #[test]
+  fn failed_reports_use_protocol_error_flag_without_leaking_internal_data() {
+    let result = render_tool_result(
+      "call",
+      &json!({"status":"failed","model_text":"exit code 1: error", "output":{"encoding":"utf8"}}),
+    );
+    assert_eq!(result["is_error"], true);
+    assert_eq!(result["content"], "exit code 1: error");
+    assert!(
+      render_tool_result("call", &json!({"status":"failed","message":"legacy"}))
+        .get("is_error")
+        .is_none()
+    );
   }
 }

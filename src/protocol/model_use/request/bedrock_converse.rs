@@ -208,7 +208,7 @@ fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
           vec![json!({
             "toolResult": {
               "toolUseId": call_id,
-              "status": "success",
+              "status": if content.get("model_text").is_some() && crate::protocol::model_use::tool::tool_result_is_error(content) { "error" } else { "success" },
               "content": render_tool_result_blocks(content),
             }
           })],
@@ -277,6 +277,9 @@ fn render_tool_choice(choice: ToolChoice) -> Value {
 }
 
 fn render_tool_result_blocks(content: &Value) -> Value {
+  if content.get("model_text").is_some() {
+    return json!([{"text":tool_result_text(content)}]);
+  }
   let block = match content {
     Value::Object(_) => json!({"json": content}),
     other => json!({"text": tool_result_text(other)}),

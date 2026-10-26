@@ -122,7 +122,7 @@ fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
         steps.push(step);
       }
       Message::ToolResult { call_id, name, content, .. } => {
-        let mut step = json!({"type": "function_result", "name": name, "result": content});
+        let mut step = json!({"type": "function_result", "name": name, "result": crate::protocol::model_use::tool::tool_result_value(content)});
         if !call_id.is_empty() {
           step["call_id"] = json!(call_id);
         }

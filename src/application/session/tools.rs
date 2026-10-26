@@ -206,7 +206,9 @@ impl SessionTools {
     };
     let epoch = self.slot.upgrade().map(|slot| slot.get_schedule_epoch());
     let outcome = shell.execute(call, control).await;
-    if let ToolOutcome::Success(output) | ToolOutcome::SuccessWithMetadata { output, .. } = &outcome
+    if let ToolOutcome::Success(output)
+    | ToolOutcome::SuccessWithMetadata { output, .. }
+    | ToolOutcome::Report { output, failed: false, .. } = &outcome
     {
       self.notify_background(output, call.arguments["command"].clone(), epoch);
     }
@@ -245,8 +247,8 @@ impl SessionTools {
         fixed: Some(false),
         content: vec![ContentBlock::Text {
           text: format!(
-            "A background shell execution reached a terminal state.\n{}",
-            json!({"command":command,"result":result})
+            "Background task {id} finished.\nCommand: {}\n{}",
+            command.as_str().unwrap_or_default(), crate::task::output::render(&result, false)
           ),
         }],
       };
@@ -336,7 +338,12 @@ impl ToolExecutor for SessionTools {
           .run_until_cancelled(crate::application::task_access::execute(&app, slot, request, false))
           .await
         {
-          Some(Ok(output)) => ToolOutcome::Success(output),
+          Some(Ok(output)) => ToolOutcome::Report {
+            text: crate::task::output::render(&output, false),
+            output,
+            metadata: serde_json::Value::Null,
+            failed: false,
+          },
           Some(Err(error)) => ToolOutcome::Failed(error.to_string()),
           None => ToolOutcome::Cancelled,
         }

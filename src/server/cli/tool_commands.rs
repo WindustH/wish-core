@@ -10,7 +10,11 @@ pub async fn run(name: &str, args: Vec<String>) -> i32 {
     }
   }
 }
-async fn execute(name: &str, args: Vec<String>) -> Result<(), Failure> {
+async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
+  let structured = args.first().is_some_and(|arg| arg == "--output-json");
+  if structured {
+    args.remove(0);
+  }
   if args.is_empty() || args.iter().any(|arg| matches!(arg.as_str(), "--help" | "-h")) {
     println!(
       "{}",
@@ -57,7 +61,11 @@ async fn execute(name: &str, args: Vec<String>) -> Result<(), Failure> {
       )
       .await?
   };
-  if let Some(text) = output.as_str() {
+  if name == "webfetch" && output.get("content").is_some() && !structured {
+    println!("{}", crate::tool::web_fetch::render(&output));
+  } else if name == "askuser" && output.get("status").is_some() && !structured {
+    println!("{}", crate::tool::ask_user::render(&output));
+  } else if let Some(text) = output.as_str().filter(|_| !structured) {
     println!("{text}");
   } else {
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
