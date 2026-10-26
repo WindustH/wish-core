@@ -22,9 +22,13 @@ pub fn render(output: &Value, include_diff: bool) -> String {
       .iter()
       .map(|task| {
         format!(
-          "{} [{}; {}] {}",
+          "{} [{}{}; {}] {}",
           task["task_id"].as_str().unwrap_or("?"),
           task["process"]["status"].as_str().unwrap_or("unknown"),
+          task["process"]["exit_code"]
+            .as_i64()
+            .map(|code| format!(", exit {code}"))
+            .unwrap_or_default(),
           if task["background"] == true { "background" } else { "foreground" },
           task["command"].as_str().unwrap_or_default()
         )
@@ -189,6 +193,11 @@ pub fn render(output: &Value, include_diff: bool) -> String {
 mod tests {
   use super::*;
   use serde_json::json;
+  #[test]
+  fn task_list_distinguishes_success_from_failure() {
+    let output = json!({"tasks":[{"task_id":"job","command":"build","process":{"status":"exited","exit_code":2},"background":true}]});
+    assert_eq!(render(&output, false), "job [exited, exit 2; background] build");
+  }
   #[test]
   fn ordinary_commands_only_return_their_output() {
     let output = json!({"execution_id":"unused", "process":{"status":"exited","exit_code":0,"error":null,"initial_input_bytes":0},"output_path":"private", "encoding":"utf8", "lossy":false,"text":"/workspace\n"});

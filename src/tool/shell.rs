@@ -30,7 +30,7 @@ impl ShellTool {
         "Execute a shell command in the session working directory and wait for completion. Optional timeout is a hard limit in seconds; omitted means no time limit. Each call uses a new shell, without a PTY. Output is limited to its last 2000 lines / 50 KiB; the full output remains available. For background jobs, stdin, task management use `wish task --help`. All commands are registered as tasks. `wish task background <id>` transfers a running command to the background without restarting it. {}",
         crate::task::SHELL_DESCRIPTION_NOTE
       ),
-      input_schema: serde_json::json!({"type":"object","additionalProperties":false,"required":["command"],"properties":{"command":{"type":"string"},"edit":{"type":"array","items":{"type":"string"},"description":"Absolute paths to compare before and after the command."},"check_diff":{"type":"boolean","default":false,"description":"Include full file diffs in the result; otherwise return summaries."},"timeout":{"type":"number","exclusiveMinimum":0,"description":"Hard timeout in seconds. Omit for no timeout."}}}),
+      input_schema: serde_json::json!({"type":"object","additionalProperties":false,"required":["command"],"properties":{"command":{"type":"string"},"edit":{"type":"array","items":{"type":"string"},"description":"Absolute paths to compare before and after the command."},"check_diff":{"type":"boolean","default":false,"description":"Include bounded file diffs in the result; omitted portions remain in the task record. Otherwise return change summaries."},"timeout":{"type":"number","exclusiveMinimum":0,"description":"Hard timeout in seconds. Omit for no timeout."}}}),
     }]
   }
 }

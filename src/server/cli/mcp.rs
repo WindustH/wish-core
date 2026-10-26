@@ -167,11 +167,9 @@ async fn call(args: Vec<String>) -> Result<i32, Failure> {
 }
 
 /// Prints a result the way a reader wants it: text as text, files as their paths, and structured
-/// content as JSON when nothing else says it.
+/// content as JSON unless a text block already carries that exact value.
 fn print_result(result: &Value) {
-  let mut printed = false;
   for block in result["content"].as_array().into_iter().flatten() {
-    printed = true;
     let mime = block["mimeType"].as_str().unwrap_or("");
     match block["type"].as_str() {
       Some("text") => println!("{}", block["text"].as_str().unwrap_or("")),
@@ -198,7 +196,33 @@ fn print_result(result: &Value) {
       _ => println!("{block}"),
     }
   }
-  if !printed && !result["structuredContent"].is_null() {
+  if has_distinct_structured_content(result) {
     println!("{}", serde_json::to_string_pretty(&result["structuredContent"]).unwrap_or_default());
+  }
+}
+
+// A prose summary is not necessarily a substitute for fields returned by an MCP server.
+// Only suppress the structured copy when a text block contains the same complete JSON value.
+fn has_distinct_structured_content(result: &Value) -> bool {
+  let structured = &result["structuredContent"];
+  !structured.is_null()
+    && !result["content"].as_array().into_iter().flatten().any(|block| {
+      block["type"] == "text"
+        && block["text"]
+          .as_str()
+          .is_some_and(|text| serde_json::from_str::<Value>(text).ok().as_ref() == Some(structured))
+    })
+}
+
+#[cfg(test)]
+mod presentation_tests {
+  use super::*;
+  #[test]
+  fn keep_structured_fields_missing_from_prose_but_deduplicate_json_copy() {
+    let mut result =
+      json!({"content":[{"type":"text","text":"Job started"}],"structuredContent":{"job_id":"42"}});
+    assert!(has_distinct_structured_content(&result));
+    result["content"][0]["text"] = r#"{"job_id":"42"}"#.into();
+    assert!(!has_distinct_structured_content(&result));
   }
 }

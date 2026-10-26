@@ -238,7 +238,12 @@ impl ToolExecutor for HistoryTools {
       return ToolOutcome::Cancelled;
     }
     match result {
-      Ok(Ok(result)) => ToolOutcome::Success(result),
+      Ok(Ok(output)) => ToolOutcome::Report {
+        text: render_result(&output, &call.arguments, false),
+        output,
+        metadata: Value::Null,
+        failed: false,
+      },
       Ok(Err(error)) => ToolOutcome::Failed(error),
       Err(error) => ToolOutcome::Failed(error.to_string()),
     }
@@ -247,6 +252,10 @@ impl ToolExecutor for HistoryTools {
 
 /// Readable CLI output: keep record addresses and continuation without JSON-escaping prose.
 pub fn render(output: &Value, arguments: &Value) -> String {
+  render_result(output, arguments, true)
+}
+
+fn render_result(output: &Value, arguments: &Value, command: bool) -> String {
   fn content(value: &Value, indent: usize, lines: &mut Vec<String>) {
     let pad = "  ".repeat(indent);
     match value {
@@ -303,10 +312,33 @@ pub fn render(output: &Value, arguments: &Value) -> String {
     }
     // JSON can contain apostrophes in user filters; quote the complete argument for POSIX shells.
     let quoted = next.to_string().replace('\'', "'\"'\"'");
-    lines.push(format!("Continue: wish history query --json '{quoted}'"));
+    if command {
+      lines.push(format!("Continue: wish history query --json '{quoted}'"));
+    } else {
+      lines.push(format!("Continue with history_query: {next}"));
+    }
   }
   if output["has_more"] == true {
     lines.push("More matches exist; narrow the search or increase limit.".into());
   }
   lines.join("\n")
+}
+
+#[cfg(test)]
+mod presentation_tests {
+  use super::*;
+  #[test]
+  fn direct_history_keeps_text_and_resumable_filters_without_shell_dependency() {
+    let cursor = json!({"end_sequence":9,"after_sequence":3,"order":"oldest_first"});
+    let output = json!({"items":[{"record":{"sequence":3},"message_type":"user_message","content":{"text":"first\nsecond"}}],"next":cursor});
+    let arguments = json!({"limit":1,"filter":{"kinds":["user_message"]}});
+    let text = render_result(&output, &arguments, false);
+    assert!(text.contains("#3 user_message") && text.contains("first\nsecond"));
+    assert!(!text.contains("wish "));
+    let next: Value =
+      serde_json::from_str(text.split("Continue with history_query: ").nth(1).unwrap()).unwrap();
+    assert_eq!(next["filter"], arguments["filter"]);
+    assert_eq!(next["cursor"], cursor);
+    assert_eq!(next["limit"], 1);
+  }
 }
