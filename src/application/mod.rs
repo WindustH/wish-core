@@ -45,6 +45,8 @@ pub(crate) mod storage_usage;
 pub(crate) mod usage_queries;
 pub(crate) mod web_services;
 pub(crate) use crate::storage::{blobs, management};
+pub(crate) mod background_tools;
+pub(crate) mod session_access;
 pub(crate) mod task_access;
 
 pub mod tool_commands;

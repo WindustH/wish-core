@@ -283,7 +283,8 @@ impl App {
       web_search: false,
       web_fetch: false,
       skills: true,
-      sessions: true,
+      sessions: delivery_defaults.sessions,
+      sessions_delivery: delivery_defaults.sessions_delivery,
     }
     .apply_changes(input.tools);
     tools.web_search &= self.search.is_available(&self.get_service_accounts());

@@ -162,6 +162,7 @@ pub async fn delete(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
     ApplicationError::conflict("interrupt and wait for the session before deleting")
   })?;
   slot.require_live()?;
+  slot.tools.background.shutdown().await;
   if let Some(shell) = slot.tools.shell() {
     shell.shutdown().await.map_err(ApplicationError::internal)?;
   }

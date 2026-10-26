@@ -124,7 +124,7 @@ pub struct SessionSlot {
   /// its shells do not outlive the process.
   pub bridge_token: String,
   tasks: tokio_util::task::TaskTracker,
-  app: Weak<App>,
+  pub(super) app: Weak<App>,
   /// This session's live events, for `GET /sessions/{id}/events`.
   pub events: broadcast::Sender<Value>,
   live: Arc<Mutex<live::LivePreview>>,
@@ -179,6 +179,7 @@ impl SessionSlot {
       status,
       control: Mutex::new(None),
     });
+    super::background_tools::recover(&slot).await?;
     slot.tools.switch(switches).await?;
     Ok(slot)
   }

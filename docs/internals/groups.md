@@ -1,7 +1,7 @@
 # Groups and peers
 
 A group is a chat among the user and several sessions, like a chat app's group chat; peers is
-what a session sees of the other sessions and the groups, through `wish session` in its shell.
+what a session sees of the other sessions and the groups, through the direct `session` tool or `wish session` in its shell.
 Both are application-owned: the engine knows only messages and notes in a session's history. A session
 takes part in a group as a person would: a post wakes it, and it speaks only by sending.
 
@@ -57,7 +57,7 @@ conversation's, as a person's thoughts are. It speaks in a group by sending - `w
 one shell command like any other - which posts as the session (`App::post`) and notes it in its
 own history as `SessionEvent::Application` `{"type": "group_message_sent", "group", "text",
 "woken"}` through `SessionSender::record_application_event`, so its page shows what it said
-where. A session without a shell reads its groups and never speaks there. What a session was
+where. A session without a shell can send through the direct `session` tool when session operations are enabled. What a session was
 told is in its history as the queued `User` messages. Nothing of a group is in the history search
 index: the transcript is searched where it is kept.
 
@@ -86,3 +86,17 @@ Format 9 adds `tools.sessions`, on, to every session record and the defaults; fo
 the group tables and moves the groups earlier builds kept as sessions into them; format 11 drops
 the relay limit: the `groups` setting, the groups' relay counts and Wish's notes
 ([migration](migration.md)).
+
+## Shared capability and timeline
+
+`application/session_access.rs` defines the direct tool schema and routes both model and
+bridge requests to `peer_commands.rs`. Authorization, ownership and membership rules are
+shared. `sessions_delivery` follows the same direct/command policy as other capabilities;
+`sessions = false` disables both routes. Legacy descriptors
+without the delivery field retain `command`.
+
+Shell requests first authenticate the session bridge token, then record paired
+`command_tool_use` / `command_tool_result` application events with the name `session`.
+Failed operations retain their result; cancelled requests are settled by `CommandTrace`.
+These observations do not create synthetic model messages. Direct calls already have normal
+ToolUse/ToolResult history and are not traced a second time.

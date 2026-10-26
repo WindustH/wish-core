@@ -152,7 +152,16 @@ impl Provider {
     let mut client = Client::new(
       crate::protocol::model_use::catalog::parse_protocol(&config.protocol)?,
       endpoint,
-      ReqwestTransport::new(Default::default(), proxy.policy(config.proxy_enabled))?
+      ReqwestTransport::new(
+        crate::protocol::attempt::Limits {
+          // Models can think without sending body chunks. Give both body silence and buffered
+          // attempts three times the transport defaults; keep connection/header limits intact.
+          idle: std::time::Duration::from_secs(180),
+          total: std::time::Duration::from_secs(900),
+          ..Default::default()
+        },
+        proxy.policy(config.proxy_enabled),
+      )?
         .with_stream_total(std::time::Duration::from_secs(30 * 60)),
     )
     .with_credentials(credentials);

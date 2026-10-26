@@ -11,8 +11,10 @@ pub fn agent_instructions(switches: super::session::ToolSwitches) -> String {
     let mut commands = vec![
       "`wish mcp` — MCP services",
       "`wish skill` — discover/read skills",
-      "`wish session` — sessions and groups",
     ];
+    if switches.sessions && switches.sessions_delivery == ToolDelivery::Command {
+      commands.push("`wish session` — sessions and groups");
+    }
     if switches.task_delivery == ToolDelivery::Command {
       commands.push("`wish task` — task management");
     }
@@ -110,6 +112,7 @@ pub fn delivery_notice(
   for (name, was, enabled, old_delivery, delivery) in [
     ("history / wish history", previous.history_search, next.history_search,
       previous.history_search_delivery, next.history_search_delivery),
+    ("session / wish session", previous.sessions, next.sessions, previous.sessions_delivery, next.sessions_delivery),
     ("task", previous.shell, next.shell, previous.task_delivery, next.task_delivery),
     (
       "web_fetch / wish webfetch",
@@ -143,7 +146,6 @@ pub fn delivery_notice(
     ("shell", previous.shell, next.shell),
     ("wish mcp", previous.mcp, next.mcp),
     ("wish skill", previous.skills, next.skills),
-    ("wish session", previous.sessions, next.sessions),
   ] {
     if was != enabled {
       changes.push(format!("{name}: {}", if enabled { "enabled" } else { "disabled" }));

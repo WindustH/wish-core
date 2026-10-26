@@ -97,7 +97,7 @@ pub(crate) async fn execute(
           let id = task["task_id"].as_str().unwrap();
           // A task can finish between the snapshot and this operation.
           if let Ok(result) = shell.background(id).await {
-            slot.tools.notify_background(&result, task["command"].clone(), Some(epoch));
+            slot.tools.notify_background(&result, task["command"].clone(), Some(epoch)).await;
             detached.push(result);
           }
         }
@@ -131,7 +131,7 @@ pub(crate) async fn execute(
     if let Some(id) = result["execution_id"].as_str() {
       let task = shell.show(id).map_err(failure)?;
       if task["background"] == true {
-        slot.tools.notify_background(&result, task["command"].clone(), Some(epoch));
+        slot.tools.notify_background(&result, task["command"].clone(), Some(epoch)).await;
       }
     }
   }

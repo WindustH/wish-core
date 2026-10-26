@@ -1,5 +1,4 @@
 //! Session-authorized peer operations and ownership checks.
-use super::bridge_access as bridge;
 use crate::application::error::ApplicationError;
 use crate::application::{
   app::App,
@@ -8,25 +7,17 @@ use crate::application::{
   session::{CreateSession, Descriptor, SessionSlot, ToolChanges},
 };
 use crate::protocol::{ContentBlock, Message};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 
-/// The session a bridge request speaks for, when its sessions switch is on.
-async fn me(
-  app: &Arc<App>,
-  id: &str,
-  token: Option<&str>,
-) -> Result<Arc<SessionSlot>, ApplicationError> {
-  let slot = bridge::authenticate_session(app, id, token).await?;
+/// Both direct tools and shell commands use the same live permission check.
+fn authorized(slot: &Arc<SessionSlot>) -> Result<Arc<SessionSlot>, ApplicationError> {
+  slot.require_live()?;
   if !slot.get_descriptor().tools.sessions {
-    // Said to the model through the command's output, so it knows why and who can change it.
-    return Err(ApplicationError::conflict(
-      "Session management is disabled for this session. The user can enable it in the session's \
-       settings.",
-    ));
+    return Err(ApplicationError::conflict("Session management is disabled for this session. The user can enable it in the session's settings."));
   }
-  Ok(slot)
+  Ok(slot.clone())
 }
 fn forbidden(message: &str) -> ApplicationError {
   ApplicationError {
@@ -144,12 +135,12 @@ fn group_summary(group: &GroupRecord, members: Vec<Value>) -> Value {
   json!({"kind": "group", "id": group.id, "name": group.name, "members": members})
 }
 
-pub async fn list(
+pub(super) async fn list_inner(
   app: Arc<App>,
   id: String,
-  token: Option<&str>,
+  slot: Arc<SessionSlot>,
 ) -> Result<Value, ApplicationError> {
-  me(&app, &id, token).await?;
+  authorized(&slot)?;
   let sessions = sessions(&app)?;
   let groups = app.management.groups()?;
   let summaries: Vec<Value> = sessions
@@ -174,12 +165,12 @@ pub async fn list(
 
 /// How many of a group's messages `show` gives.
 const RECENT: usize = 20;
-pub async fn show(
+pub(super) async fn show_inner(
   app: Arc<App>,
   (id, target): (String, String),
-  token: Option<&str>,
+  slot: Arc<SessionSlot>,
 ) -> Result<Value, ApplicationError> {
-  me(&app, &id, token).await?;
+  authorized(&slot)?;
   match resolve(&app, &target).await? {
     Target::Group(group) => {
       let mut summary = group_summary(&group, named_ids(&app, &group.members));
@@ -198,7 +189,7 @@ pub async fn show(
   }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewSession {
   #[serde(default)]
@@ -216,13 +207,13 @@ pub struct NewSession {
 }
 /// Makes a session for the one asking: on the configured defaults, in the asking session's
 /// directory unless another is given, with the instructions it gives.
-pub async fn create(
+pub(super) async fn create_inner(
   app: Arc<App>,
-  id: String,
-  token: Option<&str>,
+  _id: String,
+  slot: Arc<SessionSlot>,
   input: NewSession,
 ) -> Result<Value, ApplicationError> {
-  let me = me(&app, &id, token).await?;
+  let me = authorized(&slot)?;
   let mine = me.get_descriptor();
   let defaults: Defaults = app.config_file.lock().await.config.defaults.clone();
   let provider = input.provider.unwrap_or_else(|| {
@@ -273,7 +264,7 @@ pub async fn create(
   Ok(session_summary(&mine.id, &slot.get_descriptor(), &status, &[]))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Changes {
   #[serde(default)]
@@ -289,13 +280,13 @@ pub struct Changes {
 /// the last given to it as a message as well - or renames a group it is in. A session's changes go
 /// as the user's do: a name at any time, a model at the next boundary when it runs, and
 /// instructions only while it is idle.
-pub async fn configure(
+pub(super) async fn configure_inner(
   app: Arc<App>,
   (id, target): (String, String),
-  token: Option<&str>,
+  slot: Arc<SessionSlot>,
   changes: Changes,
 ) -> Result<Value, ApplicationError> {
-  let me = me(&app, &id, token).await?;
+  let me = authorized(&slot)?;
   let slot = match resolve(&app, &target).await? {
     Target::Group(group) => return rename_group(&app, &id, &group, changes),
     Target::Session(slot) => slot,
@@ -380,12 +371,12 @@ fn rename_group(
   Ok(group_summary(&group, named_ids(app, &group.members)))
 }
 
-pub async fn delete(
+pub(super) async fn delete_inner(
   app: Arc<App>,
   (id, target): (String, String),
-  token: Option<&str>,
+  slot: Arc<SessionSlot>,
 ) -> Result<(), ApplicationError> {
-  let me = me(&app, &id, token).await?;
+  let me = authorized(&slot)?;
   let slot = resolve_session(&app, &target).await?;
   let descriptor = slot.get_descriptor();
   if descriptor.id == id {
@@ -398,20 +389,20 @@ pub async fn delete(
   Ok(())
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Send {
   text: String,
 }
 /// Sends a message as the asking session: to a group it is in, or to a session, in the group of
 /// the two of them and the user. It wakes the other members, as any post does.
-pub async fn send(
+pub(super) async fn send_inner(
   app: Arc<App>,
-  (id, target): (String, String),
-  token: Option<&str>,
+  (_id, target): (String, String),
+  slot: Arc<SessionSlot>,
   input: Send,
 ) -> Result<Value, ApplicationError> {
-  let me = me(&app, &id, token).await?;
+  let me = authorized(&slot)?;
   let mine = me.get_descriptor();
   if input.text.trim().is_empty() {
     return Err(ApplicationError::invalid("nothing to send"));
@@ -436,7 +427,7 @@ pub async fn send(
   }))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewGroup {
   #[serde(default)]
@@ -444,13 +435,13 @@ pub struct NewGroup {
   /// Sessions by name or id; the asking one is a member too.
   members: Vec<String>,
 }
-pub async fn create_group(
+pub(super) async fn create_group_inner(
   app: Arc<App>,
   id: String,
-  token: Option<&str>,
+  slot: Arc<SessionSlot>,
   input: NewGroup,
 ) -> Result<Value, ApplicationError> {
-  me(&app, &id, token).await?;
+  authorized(&slot)?;
   let mut members = vec![id.clone()];
   for member in &input.members {
     members.push(resolve_session(&app, member).await?.get_descriptor().id);
@@ -460,19 +451,19 @@ pub async fn create_group(
   Ok(group_summary(&group, named_ids(&app, &group.members)))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AddMembers {
   add: Vec<String>,
 }
 /// A member of a group brings more sessions into it.
-pub async fn add_members(
+pub(super) async fn add_members_inner(
   app: Arc<App>,
   (id, target): (String, String),
-  token: Option<&str>,
+  slot: Arc<SessionSlot>,
   input: AddMembers,
 ) -> Result<Value, ApplicationError> {
-  me(&app, &id, token).await?;
+  authorized(&slot)?;
   let group = resolve_group(&app, &target).await?;
   if !group.members.contains(&id) {
     return Err(forbidden("not a member of this group"));
@@ -484,12 +475,12 @@ pub async fn add_members(
   let group = app.update_group(&group.id, None, Some(members))?;
   Ok(group_summary(&group, named_ids(&app, &group.members)))
 }
-pub async fn leave(
+pub(super) async fn leave_inner(
   app: Arc<App>,
   (id, target): (String, String),
-  token: Option<&str>,
+  slot: Arc<SessionSlot>,
 ) -> Result<(), ApplicationError> {
-  me(&app, &id, token).await?;
+  authorized(&slot)?;
   let group = resolve_group(&app, &target).await?;
   let members = group.members.iter().filter(|member| **member != id).cloned().collect();
   app.update_group(&group.id, None, Some(members))?;

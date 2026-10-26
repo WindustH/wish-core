@@ -16,6 +16,9 @@ pub enum ToolMode {
 #[serde(deny_unknown_fields)]
 pub struct RunOptions {
   pub tools: ToolMode,
+  /// Yield running tools to background owners when actionable input is queued.
+  #[serde(default)]
+  pub background_tools_on_input: bool,
 }
 /// Session settings. Conversation is resolved from the active generation for each call.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]

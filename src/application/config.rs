@@ -209,6 +209,7 @@ pub struct Defaults {
   pub tools: ToolSwitches,
   pub stream: bool,
   /// Execution policy copied into new sessions.
+  #[serde(deserialize_with = "deserialize_default_run")]
   pub run: RunOptions,
   pub instructions: String,
   pub reasoning: Option<crate::protocol::ReasoningConfig>,
@@ -221,6 +222,14 @@ fn deserialize_default_tools<'de, D: serde::Deserializer<'de>>(
 ) -> Result<ToolSwitches, D::Error> {
   let changes = super::session::ToolChanges::deserialize(deserializer)?;
   Ok(Defaults::default().tools.apply_changes(changes))
+}
+
+fn deserialize_default_run<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<RunOptions, D::Error> {
+  #[derive(Deserialize)]
+  #[serde(deny_unknown_fields)]
+  struct Changes { tools: Option<crate::session::ToolMode>, background_tools_on_input: Option<bool> }
+  let changes = Changes::deserialize(deserializer)?;
+  Ok(RunOptions { tools: changes.tools.unwrap_or_default(), background_tools_on_input: changes.background_tools_on_input.unwrap_or(true) })
 }
 
 impl Default for Defaults {
@@ -243,9 +252,10 @@ impl Default for Defaults {
         web_fetch: true,
         skills: true,
         sessions: true,
+        sessions_delivery: super::session::ToolDelivery::Command,
       },
       stream: true,
-      run: RunOptions::default(),
+      run: RunOptions { background_tools_on_input: true, ..Default::default() },
       instructions: String::new(),
       reasoning: None,
       max_output_tokens: None,

@@ -261,6 +261,7 @@ impl TaskManager {
     task.persist().await?;
     Ok(task.describe())
   }
+  #[allow(dead_code)] // standalone engine/tool fixtures
   pub async fn foreground(
     &self,
     command: String,
@@ -268,6 +269,12 @@ impl TaskManager {
     paths: Vec<std::path::PathBuf>,
     check_diff: bool,
     control: &ExecutionControl,
+  ) -> Result<ToolOutcome, TaskError> {
+    self.foreground_responsive(command, timeout, paths, check_diff, control, None).await
+  }
+  pub async fn foreground_responsive(
+    &self, command: String, timeout: Option<f64>, paths: Vec<std::path::PathBuf>,
+    check_diff: bool, control: &ExecutionControl, mut input: Option<crate::executor::tool::ToolInput>,
   ) -> Result<ToolOutcome, TaskError> {
     let deadline = match timeout {
       Some(seconds) if seconds.is_finite() && seconds > 0.0 => Some(resolve_deadline(
@@ -288,12 +295,42 @@ impl TaskManager {
     let task = self.spawn(command, None, false, edits, control).await?;
     let mut guard = Foreground { execution: task.clone(), returned: false };
     let mut detached = task.background.subscribe();
-    let reason = tokio::select! {
-      biased;
-      _=async {let _=detached.wait_for(|value|*value).await;}=>"backgrounded",
-      _=control.wait_for_cancellation()=>{task.terminate(KillMode::Graceful).await?;"interrupted"},
-      _=async {match deadline{Some(deadline)=>tokio::time::sleep_until(deadline).await,None=>std::future::pending().await}}=>{task.terminate(KillMode::Graceful).await?;"timeout"},
-      result=task.wait_for_exit()=>{result?;"exited"},
+    // The hard deadline belongs to the process, not to its foreground waiter. Detaching
+    // must not remove it. This is one deadline timer raced against exit, not a poll loop.
+    let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Some(deadline) = deadline {
+      let (execution, expired) = (task.clone(), timed_out.clone());
+      tokio::spawn(async move {
+        tokio::select! {
+          biased;
+          _ = execution.wait_for_exit() => {}
+          _ = tokio::time::sleep_until(deadline) => {
+            expired.store(true, Ordering::Release);
+            execution.state.send_modify(|state| state.error = Some("Command exceeded its hard timeout".into()));
+            let _ = execution.terminate(KillMode::Graceful).await;
+          }
+        }
+      });
+    }
+    let mut yielded_for_input = false;
+    let reason = loop {
+      tokio::select! {
+        biased;
+        _ = control.wait_for_cancellation() => { task.terminate(KillMode::Graceful).await?; break "interrupted"; }
+        result = task.wait_for_exit() => {
+          result?;
+          break if timed_out.load(Ordering::Acquire) { "timeout" } else { "exited" };
+        }
+        _ = async { let _ = detached.wait_for(|value| *value).await; } => break "backgrounded",
+        arrived = async {
+          match input.as_mut() { Some(input) => input.wait().await, None => std::future::pending().await }
+        } => {
+          match arrived {
+            Ok(()) => { self.background(&task.id).await?; yielded_for_input = true; break "backgrounded"; }
+            Err(error) => { eprintln!("input notification: {error}"); input = None; }
+          }
+        }
+      }
     };
     guard.returned = true;
     let total = tokio::fs::metadata(&task.output_path).await?.len();
@@ -310,6 +347,7 @@ impl TaskManager {
     output["return_reason"] = reason.into();
     output["task_id"] = task.id.clone().into();
     output["background"] = json!(*task.background.borrow());
+    output["yielded_for_input"] = json!(yielded_for_input);
     let edits = json!(*task.get_snapshot().edits);
     let mut summaries = edits.clone();
     if !check_diff {

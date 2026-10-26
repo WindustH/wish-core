@@ -214,6 +214,7 @@ pub async fn set_tools(
       || match tool.name.as_str() {
         "history_search" | "history_read" | "history_query" => next.history_search,
         "task" => next.shell,
+        "session" => next.sessions,
         "web_fetch" => next.web_fetch,
         "web_search" => next.web_search,
         "ask_user" => next.ask_user,
@@ -332,23 +333,9 @@ pub async fn submit_input(
 ) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
-  let background_shell = input.background_shell;
   let message = input::message(&app.data_dir.blobs(&id), input).await?;
   // Queue the message before releasing the foreground wait, so the next model step sees it.
   let entry = slot.enqueue(message).await?;
-  if background_shell && slot.tools.shell().is_some() {
-    if let Err(error) = super::task_access::execute(
-      &app,
-      slot.clone(),
-      super::task_access::TaskRequest::BackgroundForeground,
-      true,
-    )
-    .await
-    {
-      // Input is already durable. Do not report a failed submission that invites a duplicate.
-      eprintln!("backgrounding shell after accepting input failed: {error}");
-    }
-  }
   slot.touch()?;
   slot.schedule(&app);
   let reader = slot.reader.clone();

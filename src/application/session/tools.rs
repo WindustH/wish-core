@@ -8,7 +8,7 @@ use crate::application::{
 };
 use crate::{
   executor::{ExecutionControl, tool::ToolExecutor},
-  protocol::{ContentBlock, Message},
+  protocol::ContentBlock,
   session::{Session, SessionConfig, ToolCall, ToolOutcome},
   tool::{
     ask_user::AskUserTool,
@@ -74,8 +74,10 @@ pub struct ToolSwitches {
   /// the tools nor the instructions, so switching it keeps the prompt cache.
   pub skills: bool,
   /// Whether `wish session` in the session's shell may see, make and message other sessions and
-  /// groups. Like `mcp`, switching it keeps the prompt cache.
+  /// groups, or use the equivalent direct session tool.
   pub sessions: bool,
+  #[serde(default = "command_delivery")]
+  pub sessions_delivery: ToolDelivery,
 }
 impl ToolSwitches {
   /// These switches with a request's changes; what it leaves out stays as it is.
@@ -94,6 +96,7 @@ impl ToolSwitches {
       web_fetch: changes.web_fetch.unwrap_or(self.web_fetch),
       skills: changes.skills.unwrap_or(self.skills),
       sessions: changes.sessions.unwrap_or(self.sessions),
+      sessions_delivery: changes.sessions_delivery.unwrap_or(self.sessions_delivery),
     }
   }
   /// Whether a tool of this name runs under these switches.
@@ -101,6 +104,7 @@ impl ToolSwitches {
     match name {
       "view_image" => true,
       "task" => self.shell,
+      "session" => self.sessions,
       "ask_user" => self.ask_user,
       "web_search" => self.web_search,
       "web_fetch" => self.web_fetch,
@@ -127,6 +131,7 @@ pub struct ToolChanges {
   pub web_fetch: Option<bool>,
   pub skills: Option<bool>,
   pub sessions: Option<bool>,
+  pub sessions_delivery: Option<ToolDelivery>,
 }
 impl From<ToolSwitches> for ToolChanges {
   /// Every switch set as these are.
@@ -145,11 +150,13 @@ impl From<ToolSwitches> for ToolChanges {
       web_fetch: Some(switches.web_fetch),
       skills: Some(switches.skills),
       sessions: Some(switches.sessions),
+      sessions_delivery: Some(switches.sessions_delivery),
     }
   }
 }
 
 pub struct SessionTools {
+  pub background: crate::application::background_tools::BackgroundTools,
   /// Started the first time the shell is switched on, and kept while it is off so background
   /// commands finish and report as usual.
   shell: tokio::sync::OnceCell<ShellTool>,
@@ -175,6 +182,7 @@ impl SessionTools {
     let web_fetch =
       make_fetch(slot.clone(), session_id, shell_config.capture_dir.join("web-fetch"));
     Self {
+      background: Default::default(),
       shell: tokio::sync::OnceCell::new(),
       shell_config,
       shell_on: AtomicBool::new(false),
@@ -224,11 +232,11 @@ impl SessionTools {
     | ToolOutcome::SuccessWithMetadata { output, .. }
     | ToolOutcome::Report { output, failed: false, .. } = &outcome
     {
-      self.notify_background(output, call.arguments["command"].clone(), epoch);
+      self.notify_background(output, call.arguments["command"].clone(), epoch).await;
     }
     outcome
   }
-  pub fn notify_background(
+  pub async fn notify_background(
     &self,
     output: &serde_json::Value,
     command: serde_json::Value,
@@ -243,6 +251,13 @@ impl SessionTools {
       return;
     }
     let Some(app) = self.slot.upgrade().and_then(|slot| slot.app.upgrade()) else { return };
+    let Some(session) = self.slot.upgrade() else { return };
+    let sender = session.sender.clone();
+    let marker = json!({"type":"background_execution_started","id":id,"command":command});
+    if let Err(error) = blocking(move || Ok(sender.record_application_event(marker)?)).await {
+      eprintln!("background shell transfer journal: {error}");
+      // Still supervise and deliver the live result; do not silently abandon the running task.
+    }
     // A command left running in the background reports its end as a message, which starts a run
     // unless the session was interrupted since this one began.
     let (shell, id, slot, command) = (shell.clone(), id.to_owned(), self.slot.clone(), command);
@@ -256,24 +271,18 @@ impl SessionTools {
         Ok(result) => result,
         Err(error) => json!({"execution_id":id,"error":error.to_string()}),
       };
-      let message = Message::Developer {
-        metadata: json!({"source":"background_execution_finished","execution_id":id,"completion":{"command":command,"result":result},"edits":shell.show(&id).ok().map(|task|task["edits"].clone())}),
-        fixed: Some(false),
-        content: vec![ContentBlock::Text {
-          text: format!(
-            "Background task {id} finished.\nCommand: {}\n{}",
-            command.as_str().unwrap_or_default(), crate::task::output::render(&result, false)
-          ),
-        }],
-      };
       let Some(slot) = slot.upgrade().filter(|slot| slot.require_live().is_ok()) else { return };
-      if let Err(error) = slot.enqueue(message).await {
+      let edits = shell.show(&id).ok().map(|task| task["edits"].clone());
+      if let Err(error) = crate::application::background_tools::finish_shell(
+        &slot.sender, &id, command, result, edits,
+      ).await {
         eprintln!("background notification: {error}");
         return;
       }
+      let _ = slot.events.send(json!({"type":"history_changed"}));
       if slot.require_live().is_ok() {
         let _ = owner.events.send(json!({"type":"session_changed","id":slot.get_descriptor().id}));
-        if epoch == Some(slot.get_schedule_epoch()) {
+        if epoch == Some(slot.get_schedule_epoch()) && !owner.lifecycle.stop.is_cancelled() {
           slot.schedule(&owner);
         }
       }
@@ -331,12 +340,43 @@ fn questions_changed(slot: Weak<SessionSlot>) -> impl Fn() + Send + Sync + 'stat
 impl ToolExecutor for SessionTools {
   fn accepts_unadvertised_call(&self, name: &str) -> bool {
     // Recognize the route here; execute checks permissions and gives a specific disabled error.
-    matches!(name, "task" | "web_fetch" | "web_search" | "ask_user") || HISTORY_TOOLS.contains(&name)
+    matches!(name, "session" | "task" | "web_fetch" | "web_search" | "ask_user") || HISTORY_TOOLS.contains(&name)
+  }
+
+  async fn execute_with_input(&self, call: &ToolCall, control: &ExecutionControl,
+    input: Option<crate::executor::tool::ToolInput>) -> ToolOutcome {
+    let Some(input) = input else { return self.execute(call, control).await; };
+    if matches!(call.name.as_str(), "shell" | "shell_edit") {
+      let Some(shell) = self.shell().filter(|_| self.shell_on.load(Ordering::Acquire)) else {
+        return ToolOutcome::Failed("shell is not enabled for this session".into());
+      };
+      let epoch = self.slot.upgrade().map(|slot| slot.get_schedule_epoch());
+      let outcome = shell.execute_with_input(call, control, Some(input)).await;
+      if let ToolOutcome::Report { output, .. } = &outcome {
+        self.notify_background(output, call.arguments["command"].clone(), epoch).await;
+      }
+      return outcome;
+    }
+    let Some(slot) = self.slot.upgrade() else { return ToolOutcome::Failed("session is closed".into()); };
+    self.background.execute(slot, call, control, input).await
   }
 
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
     match call.name.as_str() {
       "view_image" => self.view_image(call, control).await,
+      "session" => {
+        let Some(slot) = self.slot.upgrade() else { return ToolOutcome::Failed("session is closed".into()); };
+        let Some(app) = slot.app.upgrade() else { return ToolOutcome::Failed("server is closed".into()); };
+        let request = match crate::application::session_access::parse_request(&call.arguments) {
+          Ok(request) => request,
+          Err(error) => return ToolOutcome::Failed(error.to_string()),
+        };
+        match control.run_until_cancelled(crate::application::session_access::execute(app, slot, request)).await {
+          Some(Ok(output)) => ToolOutcome::Success(output),
+          Some(Err(error)) => ToolOutcome::Failed(error.to_string()),
+          None => ToolOutcome::Cancelled,
+        }
+      }
       "task" => {
         let Some(slot) = self.slot.upgrade() else {
           return ToolOutcome::Failed("session is closed".into());
@@ -408,6 +448,9 @@ impl SessionSlot {
       config.tools.extend(self.tools.history.get_specifications());
     }
     config.tools.push(ViewImageTool.get_specification());
+    if switches.sessions && (!switches.shell || switches.sessions_delivery == ToolDelivery::Tool) {
+      config.tools.push(crate::application::session_access::specification());
+    }
     if switches.shell
       && let Some(shell) = self.tools.shell()
     {
@@ -434,7 +477,7 @@ impl SessionSlot {
     for previous in previous_tools {
       if let Some(index) = config.tools.iter().position(|tool| tool.name == previous.name) {
         ordered.push(config.tools.remove(index));
-      } else if (matches!(previous.name.as_str(), "task" | "web_fetch" | "web_search" | "ask_user") || HISTORY_TOOLS.contains(&previous.name.as_str()))
+      } else if (matches!(previous.name.as_str(), "session" | "task" | "web_fetch" | "web_search" | "ask_user") || HISTORY_TOOLS.contains(&previous.name.as_str()))
         && switches.allow(&previous.name)
       {
         ordered.push(previous);

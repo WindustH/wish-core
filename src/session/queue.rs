@@ -31,6 +31,17 @@ impl SessionSender {
   pub fn record_application_event(&self, value: Value) -> Result<EventId, SessionError> {
     self.transact(move |transaction| transaction.record_event(SessionEvent::Application(value)))
   }
+  /// Commit a background completion and its queued model input together. A crash cannot leave
+  /// a finished marker without the corresponding delivery. No session header is changed.
+  pub fn record_application_input(&self, event: Value, message: Message) -> Result<EntryId, SessionError> {
+    if !is_input(&message) { return Err(SessionError::InvalidInput); }
+    let entry = self.transact(move |tx| {
+      tx.record_event(SessionEvent::Application(event))?;
+      tx.append_input(message)
+    })?;
+    self.arrivals.announce();
+    Ok(entry)
+  }
   /// Append a notice now; replace its managed initial instruction only at a generation boundary.
   pub fn enqueue_instruction_update(
     &self,

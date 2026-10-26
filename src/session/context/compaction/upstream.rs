@@ -14,7 +14,7 @@ impl Session {
     expected_active: GenerationId,
     prefix: Vec<EntryId>,
     body: Vec<Message>,
-    latest_user: Option<EntryId>,
+    continuation: Message,
     measurement: TokenMeasurement,
     reason: CompactionReason,
   ) -> Result<(), SessionError> {
@@ -31,9 +31,8 @@ impl Session {
         transaction.store.append_item(&list, &entry)?;
       }
       let compaction_cursor = transaction.store.list_len::<EntryId>(&list)?;
-      if let Some(entry) = latest_user {
-        transaction.store.append_item(&list, &entry)?;
-      }
+      let entry = transaction.store_entry(continuation, EntryOrigin::Summary)?;
+      transaction.store.append_item(&list, &entry)?;
       let id =
         transaction.append_generation(GenerationStatus::Active, list, compaction_cursor, None)?;
       transaction.switch_active(id)?;
@@ -47,7 +46,7 @@ impl Session {
         previous: active.id,
         active: id,
         reason,
-        removed_entries: original_count - prefix.len() as u64 - u64::from(latest_user.is_some()),
+        removed_entries: original_count - prefix.len() as u64,
         measurement,
       })?;
       Ok(())

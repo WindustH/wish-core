@@ -46,6 +46,17 @@ struct Command {
 }
 impl ToolExecutor for ShellTool {
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
+    self.execute_responsive(call, control, None).await
+  }
+  async fn execute_with_input(&self, call: &ToolCall, control: &ExecutionControl,
+    input: Option<crate::executor::tool::ToolInput>) -> ToolOutcome {
+    self.execute_responsive(call, control, input).await
+  }
+}
+impl ShellTool {
+  async fn execute_responsive(&self, call: &ToolCall, control: &ExecutionControl,
+    input: Option<crate::executor::tool::ToolInput>) -> ToolOutcome {
+    let arrival = input;
     if call.name == "shell_edit" {
       if !call.arguments["diff"].as_array().is_some_and(|paths| !paths.is_empty())
         || call.arguments.get("timeout").is_some()
@@ -66,7 +77,7 @@ impl ToolExecutor for ShellTool {
       };
       return self
         .tasks
-        .foreground(input.command, input.timeout, input.edit, input.check_diff, control)
+        .foreground_responsive(input.command, input.timeout, input.edit, input.check_diff, control, arrival)
         .await
         .unwrap_or_else(Into::into);
     }
@@ -100,7 +111,7 @@ impl ToolExecutor for ShellTool {
     }
     self
       .tasks
-      .foreground(input.command, input.timeout, input.edit, input.check_diff, control)
+      .foreground_responsive(input.command, input.timeout, input.edit, input.check_diff, control, arrival)
       .await
       .unwrap_or_else(Into::into)
   }

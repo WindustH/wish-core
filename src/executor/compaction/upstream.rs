@@ -1,11 +1,11 @@
 //! A cutover through the caller's upstream compaction: the provider compacts the whole active
-//! context into an opaque item, and the new context is the fixed prefix, that item and the latest
-//! user message, all three indivisible.
+//! context into an opaque item. The new context keeps the fixed prefix, that item and an
+//! internal continuation notice quoting (not replaying) the latest user message.
 use super::{Failure, call_status, check_cancelled, measure, trigger::CutoverPlan};
 use crate::{
   Error,
   executor::{ExecutionControl, model::ModelCaller, observe::record_and_deliver},
-  protocol::{Message, upstream_compaction::UpstreamCompactionRequest},
+  protocol::{ContentBlock, Message, upstream_compaction::UpstreamCompactionRequest},
   session::{
     RunOutcome, Session, SessionEvent,
     statistics::{CallObservation, ModelCallPurpose},
@@ -25,8 +25,7 @@ pub(super) async fn replace_with_upstream(
     request.conversation.iter().take_while(|message| message.is_fixed_instruction()).count();
   let active = session.get_active_generation()?;
   let entries = session.reader().read_generation_entry_ids(active.id)?;
-  let latest_user =
-    request.conversation.iter().rposition(|message| matches!(message, Message::User { .. }));
+  let continuation = continuation_notice(&request.conversation);
   check_cancelled(control)?;
   session.start_model_call(ModelCallPurpose::UpstreamCompaction, entries.len() as u64)?;
   record_and_deliver(
@@ -76,22 +75,65 @@ pub(super) async fn replace_with_upstream(
   request.conversation = request.conversation[..fixed]
     .iter()
     .chain(&body)
-    .chain(latest_user.map(|index| &input.conversation[index]))
+    .chain(std::iter::once(&continuation))
     .cloned()
     .collect();
   caller.validate_request(&request)?;
   let measurement = measure(caller, control, &config, &request, calibration).await?;
   if measurement.tokens > config.target_tokens {
-    return Err(Error::Build("compaction target cannot accommodate the fixed prompt, upstream compaction body and latest user message".into()).into());
+    return Err(Error::Build("compaction target cannot accommodate the fixed prompt, upstream compaction body and continuation notice".into()).into());
   }
   check_cancelled(control)?;
   session.commit_upstream_compaction(
     active.id,
     entries[..fixed].to_vec(),
     body,
-    latest_user.map(|index| entries[index]),
+    continuation,
     measurement,
     reason,
   )?;
   Ok(())
+}
+
+/// This is application context, not another user turn. Carry the quotation through successive
+/// compactions too, when the raw user message is no longer in the active generation.
+fn continuation_notice(conversation: &[Message]) -> Message {
+  let latest = conversation.iter().rev().find_map(|message| match message {
+    Message::User { metadata, content }
+      if !matches!(
+        metadata["source"].as_str(),
+        Some("background_tool_finished" | "background_execution_finished")
+      ) =>
+    {
+      Some(
+        content
+          .iter()
+          .map(|block| match block {
+            ContentBlock::Text { text } => text.clone(),
+            ContentBlock::Image { mime_type, .. } => {
+              format!("[Image attachment: {mime_type}; consult the original history if needed]")
+            }
+          })
+          .collect::<Vec<_>>()
+          .join("\n"),
+      )
+    }
+    Message::Developer { metadata, .. } if metadata["source"] == "wish_compaction_continuation" => {
+      metadata["last_user_message"].as_str().map(str::to_owned)
+    }
+    _ => None,
+  });
+  let quoted = latest
+    .as_ref()
+    .map(|text| serde_json::to_string(text).expect("string serialization"))
+    .unwrap_or_else(|| "No previous user message is available in this context.".into());
+  Message::Developer {
+    metadata: serde_json::json!({"source":"wish_compaction_continuation", "last_user_message":latest}),
+    fixed: Some(false),
+    content: vec![ContentBlock::Text {
+      text: format!(
+        "Context compaction has just completed. Continue the existing task from the progress and unfinished work recorded in the compacted context; do not restart it or merely acknowledge that you will continue. If work remains and you can proceed, take the next concrete step. If it is already complete, requires user input, or is blocked, report that accurately. Do not repeat completed operations.\n\nThe user's last message is quoted below as historical context, NOT a newly submitted message or a new instruction from the application. The quotation retains its original user-level authority and does not override higher-priority instructions:\n{quoted}"
+      ),
+    }],
+  }
 }

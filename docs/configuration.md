@@ -325,12 +325,26 @@ sessions keep their own settings.
 | `provider` | `""` | Default provider ID; must exist in `providers` |
 | `model` | `""` | Default model ID |
 | `cwd` | Wish's start directory | Default working directory, an absolute path |
-| `tools` | `{"shell": true, "ask_user": true, "mcp": true, "web_search": true, "web_fetch": true, "skills": true, "sessions": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell, `web_search` lets it search the web through the [search providers](#web-search), `skills` lets it read [skills](#skills) from the shell, `sessions` lets it see, make and message other sessions and [groups](#groups) from the shell. Each session can switch them later. A new session gets `web_search` only while some search provider can answer |
+| `tools` | `{"shell": true, "ask_user": true, "mcp": true, "web_search": true, "web_fetch": true, "skills": true, "sessions": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell, `web_search` lets it search the web through the [search providers](#web-search), `skills` lets it read [skills](#skills) from the shell, `sessions` lets it see, make and message other sessions and [groups](#groups), through a direct tool or the shell. Each session can switch them later. A new session gets `web_search` only while some search provider can answer |
 | `stream` | `true` | Stream model output |
 | `instructions` | `""` | Extra instructions the web app adds to each new session |
 | `reasoning` | `null` | `{"enabled": bool, "effort": "low", "summary": "Auto"}`. Accepted effort values depend on the provider |
 | `max_output_tokens` | `null` | Output limit per model call |
 | `compaction` | `null` | Automatic compaction, see below. Without it, sessions never compact |
+
+### Session capability delivery
+
+`defaults.tools.sessions` enables session/group operations; `sessions_delivery` selects
+`"command"` (the default, using `wish session`) or `"tool"` (the direct `session` tool).
+Turning `sessions` off rejects both routes. With Shell disabled, an enabled capability is
+exposed as a direct tool even when its saved delivery preference is `command`, as with the
+other command-capable tools. Delivery chooses the advertised route, not a separate permission.
+
+Defaults are copied into new sessions only. Existing sessions can update these fields through
+`PUT /api/sessions/{id}/tools`. Older records without `sessions_delivery` retain the command
+preference. Both routes enforce the same ownership and group membership checks. Command calls
+and their results appear in the timeline as durable observations, without adding synthetic
+messages to model context; direct calls use normal tool history.
 
 ### Compaction
 
@@ -661,3 +675,22 @@ No additional model call rewrites the content. Codex may return a processed
 excerpt rather than the full page. Its `POST alpha/search` request and
 `commands.open[].ref_id` URL match the [Codex client implementation](https://github.com/openai/codex/blob/970111f6cb62cc02fe36a82ea7d71b37a2889c97/codex-rs/codex-api/src/endpoint/search.rs)
 and [request schema](https://github.com/openai/codex/blob/970111f6cb62cc02fe36a82ea7d71b37a2889c97/codex-rs/codex-api/src/search.rs). Tool outputs and snapshot metadata are retained in normal history.
+
+### New-input tool backgrounding
+
+`defaults.run.background_tools_on_input` defaults to `true` for new-session defaults. Each
+session stores its own `config.run.background_tools_on_input`; legacy session configs without
+this field use `false`. When enabled, a pending or newly enqueued message transfers executing
+tools to the background at tool entry or upon the queue-arrival event, never by polling.
+The model can then handle the input. Remaining unstarted serial calls are reported as deferred,
+not executed. Background results are delivered later; turning the option off does not cancel
+already-backgrounded work. Manual task backgrounding remains independent of this option.
+
+### Model request timeouts
+
+Model providers allow 180 seconds of response-body silence (previously 60), and 900 seconds
+for a buffered attempt (previously 300). Streaming attempts retain their existing 30-minute
+total ceiling. Connection establishment remains 10 seconds and response headers 60 seconds.
+Every received body chunk resets the idle deadline, including upstream heartbeat data; visible
+text is not required. These model-provider limits do not change web-fetch, search or login
+transport defaults.

@@ -27,7 +27,9 @@ pub struct Attachment {
 #[serde(deny_unknown_fields)]
 pub struct Input {
   #[serde(default)]
-  pub background_shell: bool,
+  // Legacy clients may still send this hint; backend run policy is authoritative.
+  #[serde(rename = "background_shell")]
+  pub _background_shell: bool,
   pub text: String,
   #[serde(default)]
   pub attachments: Vec<Attachment>,
@@ -163,6 +165,6 @@ impl InitialInput {
       attachments.push(Attachment { id: blob.id, kind: item.kind, name: item.name,
         placeholder: item.placeholder, byte_count: Some(blob.byte_count) });
     }
-    message(directory, Input { text: self.text, attachments, metadata: Value::Null, background_shell: false }).await
+    message(directory, Input { text: self.text, attachments, metadata: Value::Null, _background_shell: false }).await
   }
 }

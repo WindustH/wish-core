@@ -107,6 +107,13 @@ pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, Applicat
     let result = blocking(move || {
       let mut session = session;
       slot.require_live()?;
+      if slot.tools.background.is_active() { return Ok(None); }
+      if let Some(shell) = slot.tools.shell() {
+        let tasks = shell.list().map_err(ApplicationError::internal)?;
+        if tasks["tasks"].as_array().into_iter().flatten().any(|task| task["process"]["status"] == "running") {
+          return Ok(None);
+        }
+      }
       let history = match session.prune_history(before, apply, collect_references) {
         Ok(history) => history,
         Err(SessionError::Busy) => return Ok(None),

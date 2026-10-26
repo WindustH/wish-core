@@ -65,6 +65,7 @@ pub struct StatusView {
   pub status: SessionStatus,
   pub queue_count: u64,
   pending_questions: Vec<Value>,
+  background_tools: Vec<Value>,
   #[serde(skip_serializing_if = "std::ops::Not::not")]
   selection_pending: bool,
 }
@@ -100,7 +101,7 @@ impl SessionSlot {
       }
       None => false,
     };
-    StatusView { status, queue_count, pending_questions, selection_pending }
+    StatusView { status, queue_count, pending_questions, background_tools: self.tools.background.snapshot(), selection_pending }
   }
   /// Follows an engine event: the status, the live preview, and the event's web form to live
   /// clients. A phase change is saved to the index.

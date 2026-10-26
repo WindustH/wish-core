@@ -35,7 +35,7 @@ usage trigger / context rejection / manual request
                        |
        send the whole active context to upstream compact
                        |
-       fixed prefix + returned opaque body + latest User message
+       fixed prefix + returned opaque body + internal continuation notice
                        |
           validate protocol and measure the new request
                        |
@@ -47,21 +47,26 @@ tools, tool choice, reasoning and cache key, so it reads the conversation calls'
 platform `/compact` endpoint receives only the model and the history
 ([protocol](protocol/upstream-compaction.md)).
 
-The leading fixed prefix and the most recent `User` entry are reused verbatim, including metadata.
+The leading fixed prefix is reused verbatim, including metadata. The latest `User` entry is
+not replayed as a fresh user turn. A non-fixed `Developer` notice asks the model to continue
+unfinished work and quotes the latest user text explicitly as historical, user-level context.
+The notice is stored with Summary origin and `wish_compaction_continuation` metadata; repeated
+compaction carries the quotation forward without accumulating notices. Image attachments are
+identified in the quotation rather than copied as base64 text; original history remains intact.
 The prefix contains System messages and Developer messages explicitly marked `fixed: true` (or
 legacy records without the field), stopping at its first other message. Only returned
 `UpstreamCompaction` items form the body; echoed messages are not copied into the new context. A
-reply without one fails. If there is no `User` message, that last part is omitted. Queued input
+reply without one fails. If there is no prior user message, the notice says so. Queued input
 remains queued and is consumed normally by the executor. A later compaction sends the previous
 opaque body as part of the full active context.
 
 This path neither promotes nor seeds a standby generation. The standby handle stays empty; any
 previously prepared local context is cleared, its list deleted, on successful cutover. Old generations and history
-remain available. The compaction cursor points after the opaque body, before the retained user
-message.
+remain available. The compaction cursor points after the opaque body, before the continuation
+notice.
 
 The three parts are indivisible: exceeding the target reports failure instead of deleting the
-opaque body or latest user message. Unsupported response structure, provider/count errors and
+opaque body or continuation notice. Unsupported response structure, provider/count errors and
 cancellation preserve the active generation, without falling back to local summaries. Calls have
 purpose `UpstreamCompaction`; their usage and timing are recorded separately from conversation
 occupancy. `UpstreamCompactionStarted`/`UpstreamCompactionCompleted` events retain the upstream
