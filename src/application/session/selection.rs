@@ -267,7 +267,11 @@ impl SessionSlot {
     // The item stays, encrypted content and all, so the provider that made it reads it again
     // after switching back; the handoff rides along for every other provider.
     let replacement = compaction_item::with_handoff(plan.item(), &content, failure.is_none());
-    let (context, conversation) = plan.into_context(replacement, failure);
+    let (context, mut conversation) = plan.into_context(replacement, failure);
+    // The boundary precedes queue consumption. Validate the request that will actually be
+    // sent, not just its instruction-only compacted prefix. Keep these inputs out of the
+    // translated generation: start_turn remains their sole consumer.
+    conversation.extend(session.pending_input_messages()?);
     switch.model.validate_request(&switch.pending.config.build_request(conversation)).map_err(
       |error| {
         boundary_error(format!("translated context is invalid for the selected provider: {error}"))

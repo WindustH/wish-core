@@ -145,6 +145,17 @@ impl Session {
   pub(crate) fn has_queued_input(&self) -> Result<bool, SessionError> {
     Ok(self.reader.get_message_queue().len()? > self.record.queue_head)
   }
+  /// Snapshot input that the next model turn will consume, without advancing the queue.
+  /// Provider-switch validation runs before `start_turn` and must include this input too.
+  pub(crate) fn pending_input_messages(&self) -> Result<Vec<Message>, SessionError> {
+    self.read(|transaction| {
+      let entries = transaction.store.read_from::<EntryId>(
+        &transaction.record.queue,
+        transaction.record.queue_head,
+      )?;
+      entries.iter().map(|id| Ok(transaction.load_entry(**id)?.message.clone())).collect()
+    })
+  }
   /// Notice durable queued input at a stable boundary. Already-running phases are unchanged.
   pub fn collect_inputs(&mut self) -> Result<(), SessionError> {
     if !matches!(self.record.state, SessionState::Idle) || !self.has_queued_input()? {
@@ -196,5 +207,38 @@ impl SessionTransaction<'_, '_> {
       self.record_event(SessionEvent::InputsConsumed { queue_start, queue_end })?;
     }
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+  use super::*;
+  use crate::protocol::ContentBlock;
+  use crate::session::SessionConfig;
+
+  #[test]
+  fn pending_snapshot_preserves_queue_and_observes_edits() {
+    let session = Session::new(SessionConfig::new("test")).unwrap();
+    let sender = session.create_sender();
+    let message = |text: &str| Message::User {
+      metadata: serde_json::json!({}),
+      content: vec![ContentBlock::Text { text: text.into() }],
+    };
+    let first = sender.enqueue_message(message("first")).unwrap();
+    sender.enqueue_message(message("second")).unwrap();
+    for _ in 0..2 {
+      let snapshot = session.pending_input_messages().unwrap();
+      assert_eq!(
+        serde_json::to_value(snapshot).unwrap(),
+        serde_json::json!([message("first"), message("second")])
+      );
+      assert_eq!(session.get_queue_head(), 0);
+      assert!(session.build_request().unwrap().conversation.is_empty());
+    }
+    sender.cancel_queued_input(first).unwrap();
+    assert_eq!(
+      serde_json::to_value(session.pending_input_messages().unwrap()).unwrap(),
+      serde_json::json!([message("second")])
+    );
   }
 }

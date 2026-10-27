@@ -99,6 +99,12 @@ fails the handoff. The output cap is 8192 tokens, except on Codex Responses, whi
 caps. The reply must be 1-65 536 bytes of assistant text. Switching again later reuses the stored
 handoff without another call.
 
+Before committing a provider switch, validation includes a read-only snapshot of queued input.
+The boundary runs before the next turn consumes that queue, so validating only the compacted
+prefix can incorrectly reject instruction-only context on protocols that require conversation
+messages. The queued messages are not added to the handoff generation or consumed by validation;
+the next turn remains their sole consumer, and normal request validation still runs before I/O.
+
 The handoff is attached to a copy of the item that takes the item's place in a new active
 generation. All entries around it keep their original order and IDs. Like a standby summary, the
 copy is context rather than conversation: it joins no history, so the web does not show it, and
