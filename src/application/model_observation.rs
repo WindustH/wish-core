@@ -57,7 +57,7 @@ impl InstructionObserver {
       return Ok(());
     }
     let sender = sender.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::utils::blocking::io(move || {
       for note in notes {
         sender.record_application_event(
           serde_json::json!({"type":"model_instruction","instruction":note}),

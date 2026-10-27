@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
   collections::BTreeMap,
-  sync::{Arc, RwLock},
+  sync::{Arc, LazyLock, RwLock},
   time::Duration,
 };
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -55,8 +55,11 @@ pub struct Page {
   pub fetched_at: u64,
 }
 pub fn presets() -> Value {
-  serde_json::from_str(include_str!("../../resources/fetch-presets.json"))
-    .expect("embedded fetch presets must be valid JSON")
+  static PRESETS: LazyLock<Value> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("../../resources/fetch-presets.json"))
+      .expect("embedded fetch presets must be valid JSON")
+  });
+  PRESETS.clone()
 }
 fn preset(id: &str) -> Result<Value, ApplicationError> {
   presets()["presets"]
@@ -104,23 +107,63 @@ impl FetchConfig {
     Ok(())
   }
 }
+struct BuiltProvider {
+  config: FetchProvider,
+  protocol: FetchProtocol,
+  requires_key: bool,
+  transport: ReqwestTransport,
+}
+struct State {
+  order: Vec<String>,
+  providers: BTreeMap<String, BuiltProvider>,
+}
+/// Built before persisting configuration; applying it cannot fail midway through a save.
+pub struct PreparedFetch(State);
 pub struct FetchHub {
-  state: RwLock<(FetchConfig, ProxyConfig)>,
+  state: RwLock<Arc<State>>,
 }
 impl FetchHub {
-  pub fn new(config: FetchConfig, proxy: ProxyConfig) -> Self {
-    Self { state: RwLock::new((config, proxy)) }
+  pub fn new(config: FetchConfig, proxy: ProxyConfig) -> Result<Self, ApplicationError> {
+    Ok(Self { state: RwLock::new(Arc::new(Self::prepare(&config, &proxy)?.0)) })
   }
-  pub fn apply(&self, config: FetchConfig, proxy: ProxyConfig) {
-    *self.state.write().unwrap() = (config, proxy);
+  pub fn prepare(
+    config: &FetchConfig,
+    proxy: &ProxyConfig,
+  ) -> Result<PreparedFetch, ApplicationError> {
+    let mut providers = BTreeMap::new();
+    for (id, config) in &config.providers {
+      let spec = preset(&config.preset)?;
+      let transport = ReqwestTransport::new(
+        Limits {
+          max_response_bytes: 8 * 1024 * 1024,
+          total: Duration::from_secs(60),
+          first_byte: Duration::from_secs(30),
+          ..Default::default()
+        },
+        proxy.policy(config.proxy_enabled),
+      )?;
+      providers.insert(
+        id.clone(),
+        BuiltProvider {
+          config: config.clone(),
+          protocol: spec["protocol"].as_str().unwrap().parse()?,
+          requires_key: spec["key"] == "required",
+          transport,
+        },
+      );
+    }
+    Ok(PreparedFetch(State { order: config.order.clone(), providers }))
+  }
+  pub fn apply(&self, prepared: PreparedFetch) {
+    *self.state.write().unwrap() = Arc::new(prepared.0);
   }
   pub fn available(&self) -> bool {
     let state = self.state.read().unwrap();
-    state.0.order.iter().any(|id| state.0.providers.get(id).is_some_and(|p| p.enabled))
+    state.order.iter().any(|id| state.providers.get(id).is_some_and(|p| p.config.enabled))
   }
   pub fn describe(&self) -> Value {
     let state = self.state.read().unwrap();
-    json!({"providers":state.0.providers.iter().map(|(id,p)|json!({"id":id,"preset":p.preset,"enabled":p.enabled,"credential_id":p.credential_id})).collect::<Vec<_>>(),"available":state.0.order.iter().any(|id|state.0.providers.get(id).is_some_and(|p|p.enabled))})
+    json!({"providers":state.providers.iter().map(|(id,b)| {let p = &b.config; json!({"id":id,"preset":p.preset,"enabled":p.enabled,"credential_id":p.credential_id})}).collect::<Vec<_>>(),"available":state.order.iter().any(|id|state.providers.get(id).is_some_and(|p|p.config.enabled))})
   }
   pub async fn fetch(
     &self,
@@ -139,14 +182,14 @@ impl FetchHub {
     {
       return Err("URL must use HTTP/HTTPS without embedded credentials".into());
     }
-    let (config, proxy) = self.state.read().unwrap().clone();
-    let order = only.map(|id| vec![id.to_owned()]).unwrap_or(config.order);
+    let state = self.state.read().unwrap().clone();
+    let order = only.map(|id| vec![id.to_owned()]).unwrap_or_else(|| state.order.clone());
     let mut failures = Vec::new();
     for id in order {
-      let Some(service) = config.providers.get(&id).filter(|p| p.enabled) else { continue };
+      let Some(service) = state.providers.get(&id).filter(|p| p.config.enabled) else { continue };
       let account =
-        service.credential_id.as_ref().and_then(|id| accounts.get(&format!("account:{id}")));
-      match read(service, account, url, refresh, conversation, &proxy, observer.clone()).await {
+        service.config.credential_id.as_ref().and_then(|id| accounts.get(&format!("account:{id}")));
+      match read(service, account, url, refresh, conversation, observer.clone()).await {
         Ok((title, content)) if !content.trim().is_empty() => {
           return Ok(Page {
             url: url.into(),
@@ -168,20 +211,19 @@ impl FetchHub {
   }
 }
 async fn read(
-  p: &FetchProvider,
+  service: &BuiltProvider,
   account: Option<&Arc<AccountRuntime>>,
   url: &str,
   refresh: bool,
   conversation: &str,
-  proxy: &ProxyConfig,
   observer: Option<RetryObserver>,
 ) -> Result<(String, String), crate::Error> {
-  let spec = preset(&p.preset).map_err(|_| crate::Error::Build("unknown fetch preset".into()))?;
+  let p = &service.config;
   let credentials = account.map(|a| a.client.get_credentials().clone()).unwrap_or_default();
-  if spec["key"] == "required" && credentials.api_key.is_empty() {
+  if service.requires_key && credentials.api_key.is_empty() {
     return Err(crate::Error::Build("fetch account has no API key or active login".into()));
   }
-  let protocol: FetchProtocol = spec["protocol"].as_str().unwrap().parse()?;
+  let protocol = service.protocol;
   let mut headers: Vec<(String, String)> =
     p.headers.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
   let user_agent = account.and_then(|a| a.get_user_agent());
@@ -191,18 +233,10 @@ async fn read(
   ));
   let request =
     FetchRequest { url: url.into(), refresh, conversation: Some(conversation.into()), model: None };
-  let transport = ReqwestTransport::new(
-    Limits {
-      max_response_bytes: 8 * 1024 * 1024,
-      total: Duration::from_secs(60),
-      first_byte: Duration::from_secs(30),
-      ..Default::default()
-    },
-    proxy.policy(p.proxy_enabled),
-  )?;
+  let transport = &service.transport;
   // Shared-account calls use the same client boundary as subscription web search.
   if let Some(account) = account {
-    let mut client = account.client.clone().with_transport(transport);
+    let mut client = account.client.clone().with_transport(transport.clone());
     if let Some(observer) = observer {
       client = client.with_retry_observer(observer);
     }
@@ -215,7 +249,7 @@ async fn read(
     observer,
     |_| async {
       crate::protocol::web_fetch::fetch(
-        &transport,
+        transport,
         protocol,
         &credentials,
         p.base_url.as_deref(),
@@ -229,4 +263,91 @@ async fn read(
   )
   .await?;
   Ok((page.title, page.content))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+  #[tokio::test]
+  async fn requests_reuse_connections_and_configuration_replaces_the_pool() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counter = connections.clone();
+    let server = tokio::spawn(async move {
+      let mut tasks = tokio::task::JoinSet::new();
+      loop {
+        let (socket, _) = listener.accept().await.unwrap();
+        counter.fetch_add(1, Ordering::SeqCst);
+        tasks.spawn(async move {
+          let mut socket = BufReader::new(socket);
+          loop {
+            let mut length = 0;
+            loop {
+              let mut line = String::new();
+              if socket.read_line(&mut line).await.unwrap_or(0) == 0 {
+                return;
+              }
+              if line == "\r\n" {
+                break;
+              }
+              if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse::<usize>().unwrap();
+              }
+            }
+            let mut body = vec![0; length];
+            socket.read_exact(&mut body).await.unwrap();
+            let page = r#"{"data":{"title":"Test","content":"Page content"}}"#;
+            let response = format!(
+              "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+              page.len(),
+              page
+            );
+            if socket.get_mut().write_all(response.as_bytes()).await.is_err() {
+              return;
+            }
+          }
+        });
+      }
+    });
+    let config = FetchConfig {
+      order: vec!["reader".into()],
+      providers: BTreeMap::from([(
+        "reader".into(),
+        FetchProvider {
+          preset: "jina_reader".into(),
+          credential_id: None,
+          base_url: Some(format!("http://{address}")),
+          enabled: true,
+          proxy_enabled: false,
+          headers: BTreeMap::new(),
+        },
+      )]),
+    };
+    let proxy = ProxyConfig::default();
+    let hub = FetchHub::new(config.clone(), proxy.clone()).unwrap();
+    let accounts = AccountRegistry::default();
+    for _ in 0..5 {
+      let page = tokio::time::timeout(
+        Duration::from_secs(3),
+        hub.fetch("https://example.com", false, "test", &accounts, None, None),
+      )
+      .await
+      .unwrap()
+      .unwrap();
+      assert_eq!(page.content, "Page content");
+    }
+    assert_eq!(connections.load(Ordering::SeqCst), 1, "five calls share one TCP connection");
+    // Existing requests may keep the previous snapshot; the next call uses the new runtime.
+    let previous = hub.state.read().unwrap().clone();
+    hub.apply(FetchHub::prepare(&config, &proxy).unwrap());
+    assert!(!Arc::ptr_eq(&previous, &hub.state.read().unwrap()));
+    hub.fetch("https://example.com", false, "test", &accounts, None, None).await.unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 2);
+    server.abort();
+    let _ = server.await;
+  }
 }

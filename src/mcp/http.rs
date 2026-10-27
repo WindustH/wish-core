@@ -20,7 +20,7 @@ use rmcp::{
 use sse_stream::{Sse, SseStream};
 use std::{borrow::Cow, collections::HashMap, sync::Arc, time::Duration};
 
-use crate::transport::{Proxy, apply_proxy};
+use crate::transport::{Proxy, apply_proxy, pooled_client_builder};
 
 const SESSION_ID: &str = "mcp-session-id";
 const LAST_EVENT_ID: &str = "last-event-id";
@@ -36,7 +36,7 @@ pub struct HttpClient {
 
 impl HttpClient {
   pub fn new(proxy: Proxy) -> Result<Self, crate::Error> {
-    let builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
+    let builder = pooled_client_builder().connect_timeout(Duration::from_secs(10));
     let client = apply_proxy(builder, proxy)?
       .build()
       .map_err(|error| crate::Error::Build(format!("client build failed: {error}")))?;

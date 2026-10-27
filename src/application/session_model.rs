@@ -80,7 +80,7 @@ impl SessionModel {
       self.image_dir.clone(),
       self.rejected.load(Ordering::Relaxed),
     );
-    let (conversation, images) = tokio::task::spawn_blocking(move || {
+    let (conversation, images) = crate::utils::blocking::io(move || {
       let models = &provider.config.models;
       project_images(models, &model, &image_dir, rejected, &mut messages, save)
         .map(|images| (messages, images))

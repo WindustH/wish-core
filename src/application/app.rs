@@ -106,6 +106,7 @@ struct PreparedConfig {
   accounts: AccountRegistry,
   providers: Providers,
   search: PreparedSearch,
+  fetch: super::fetch::PreparedFetch,
   shell: ShellCommand,
 }
 
@@ -178,7 +179,7 @@ impl App {
       skills_dir,
       mcp,
       search,
-      fetch: super::fetch::FetchHub::new(config.fetch.clone(), config.proxy.clone()),
+      fetch: super::fetch::FetchHub::new(config.fetch.clone(), config.proxy.clone())?,
     });
     crate::application::codex_login::start_refresh_worker(&app);
     let reaper = app.clone();
@@ -433,6 +434,7 @@ impl App {
   ) -> Result<PreparedConfig, ApplicationError> {
     next.validate()?;
     let search = SearchHub::prepare(&next.resolved_search()?, &next.proxy)?;
+    let fetch = super::fetch::FetchHub::prepare(&next.fetch, &next.proxy)?;
     let shell = next.shell.resolve()?;
     if next.listen != current.listen
       || next.data_dir != current.data_dir
@@ -460,10 +462,10 @@ impl App {
     // Validate core budgets without creating a persistent session.
     let _ = Session::new(next.defaults.session_config())?;
     let accounts = next.build_accounts()?;
-    Ok(PreparedConfig { accounts, providers, search, shell })
+    Ok(PreparedConfig { accounts, providers, search, fetch, shell })
   }
   async fn apply_config(&self, prepared: PreparedConfig, config: &Config) {
-    let PreparedConfig { accounts, providers, search, shell } = prepared;
+    let PreparedConfig { accounts, providers, search, fetch, shell } = prepared;
     self.mcp.apply(
       config.mcp.clone(),
       config.proxy.clone(),
@@ -471,12 +473,13 @@ impl App {
       &providers,
     );
     self.search.apply(search);
-    self.fetch.apply(config.fetch.clone(), config.proxy.clone());
+    self.fetch.apply(fetch);
     self.management.set_stream_sample_limit(config.usage.stream_sample_limit);
     let management = self.management.clone();
-    self.lifecycle.tasks.spawn_blocking(move || {
-      if let Err(error) = management.merge_stream_samples() {
-        eprintln!("merging stream samples failed: {error:?}");
+    self.lifecycle.tasks.spawn(async move {
+      let result = crate::utils::blocking::io(move || management.merge_stream_samples()).await;
+      if !matches!(result, Ok(Ok(_))) {
+        eprintln!("merging stream samples failed: {result:?}");
       }
     });
     *self.accounts.write().unwrap() = accounts;

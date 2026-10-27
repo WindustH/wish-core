@@ -55,6 +55,24 @@ service does not need a synthetic model endpoint to reuse an account. Service co
 selects its upstream protocol, transport policy and account. Application errors are mapped to
 HTTP status codes only by `server/error.rs`.
 
+## Resource reuse and blocking work
+
+Model, search and fetch providers hold reusable HTTP clients for their configuration lifetime.
+Fetch snapshots are shared through `Arc`: calls do not copy all provider settings or rebuild TLS
+clients. Fetch clients are prepared before the configuration is saved and atomically replaced
+when applied; in-flight calls retain their previous snapshot. Credentials are still resolved
+per call. The shared transport policy retains at most eight idle connections per origin for
+60 seconds; this bounds idle retention, not active request concurrency.
+
+Tokio drives network I/O on its async workers. `utils::blocking` admits filesystem/database work
+with 16 permits and expensive diffs with `max(1, min(available CPUs - 1, 8))` permits before
+submitting to Tokio's blocking pool. The groups share Tokio's threads but have independent
+admission, so CPU jobs cannot consume I/O admission. Waiting callers suspend asynchronously.
+A started worker owns its permit until completion, including when its caller is cancelled or
+it panics. Do not synchronously wait for another admitted job from inside a blocking closure.
+These are conservative resource ceilings, not a measured throughput optimum. Tokio's internal
+filesystem jobs are not governed by these application admission limits.
+
 ## Protocol layer
 
 - [protocol](protocol.md): the converter model and how the pieces compose into one call.

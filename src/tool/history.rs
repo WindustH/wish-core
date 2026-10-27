@@ -233,7 +233,7 @@ impl ToolExecutor for HistoryTools {
     let tool = self.clone();
     // SQLite dispatch is synchronous; keep it off the executor's async thread. Await completion
     // even after cancellation, so a started read is not left running behind its result.
-    let result = tokio::task::spawn_blocking(move || tool.run(operation)).await;
+    let result = crate::utils::blocking::io(move || tool.run(operation)).await;
     if control.is_cancelled() {
       return ToolOutcome::Cancelled;
     }

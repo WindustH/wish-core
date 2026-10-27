@@ -18,7 +18,7 @@ mod sse;
 
 use error::TransportError;
 pub use http::ReqwestTransport;
-pub(crate) use http::apply_proxy;
+pub(crate) use http::{apply_proxy, pooled_client_builder};
 pub use record::{Framing, RecordStream};
 
 use crate::protocol::error::Error;

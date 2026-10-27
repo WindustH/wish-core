@@ -3,3 +3,5 @@ pub mod retry;
 pub mod time;
 
 pub mod image_format;
+
+pub mod blocking;

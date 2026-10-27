@@ -76,7 +76,7 @@ pub fn with_stream_sampling(
           sample.duration_ms = duration_ms;
           sample.output_bytes = total - previous_bytes;
           let (management, sample) = (management.clone(), sample.clone());
-          match tokio::task::spawn_blocking(move || management.save_stream_sample(&sample)).await {
+          match crate::utils::blocking::io(move || management.save_stream_sample(&sample)).await {
             Ok(Ok(())) => {}
             result => {
               eprintln!("stream sample persistence failed: {result:?}");
@@ -91,7 +91,7 @@ pub fn with_stream_sampling(
         }
       }
       // A call's samples may take the index past its limit.
-      let merged = tokio::task::spawn_blocking(move || management.merge_stream_samples()).await;
+      let merged = crate::utils::blocking::io(move || management.merge_stream_samples()).await;
       if !matches!(merged, Ok(Ok(_))) {
         eprintln!("merging stream samples failed: {merged:?}");
       }

@@ -31,6 +31,11 @@ storage.transaction(move |tx| -> Result<(), StorageError> {
 let page = storage.open_list::<Message>(&messages).read_page(0, 128)?;
 ```
 
+The worker queue holds at most 64 commands. Synchronous callers wait when it is full;
+application async use cases enter through the bounded blocking-work adapter, so queue waiting
+does not occupy Tokio async workers. SQLite remains a single writer with WAL and a shared LRU;
+adding independent read connections would also require a snapshot/cache consistency design.
+
 Every write goes through `Storage::transaction`, which runs an owned `Send + 'static` closure on the
 storage thread; use `move` to capture data. The closure's writes commit together, and an error
 rolls back the entire operation. Cache entries are invalidated only after commit; uncommitted

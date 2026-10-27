@@ -50,7 +50,7 @@ impl EditCapture {
   /// Retain the result at completion, so later polls cannot observe unrelated subsequent edits.
   pub async fn finish(self) -> EditResult {
     let path = self.path.clone();
-    match tokio::task::spawn_blocking(move || self.compare()).await {
+    match crate::utils::blocking::cpu(move || self.compare()).await {
       Ok(Ok(result)) => result,
       Ok(Err(error)) => EditResult::Failed { path, error: error.to_string() },
       Err(error) => EditResult::Failed { path, error: error.to_string() },

@@ -97,7 +97,7 @@ impl From<crate::Error> for ApplicationError {
   }
 }
 
-/// Runs storage work on a thread of its own, off the async workers.
+/// Admits storage work asynchronously, then runs it on the shared blocking pool.
 ///
 /// Application use cases read and write the databases - `wish.sqlite` through a session or the
 /// storage, `management.sqlite` through the index - inside `blocking`. The one exception is saving
@@ -107,7 +107,7 @@ impl From<crate::Error> for ApplicationError {
 pub async fn blocking<T: Send + 'static>(
   f: impl FnOnce() -> Result<T, ApplicationError> + Send + 'static,
 ) -> Result<T, ApplicationError> {
-  tokio::task::spawn_blocking(f).await.map_err(ApplicationError::internal)?
+  crate::utils::blocking::io(f).await.map_err(ApplicationError::internal)?
 }
 
 impl From<crate::storage::repository_error::RepositoryError> for ApplicationError {

@@ -28,7 +28,7 @@ enum Command {
   Shutdown(mpsc::SyncSender<Result<(), StorageError>>),
 }
 struct Worker {
-  sender: Option<mpsc::Sender<Command>>,
+  sender: Option<mpsc::SyncSender<Command>>,
   thread: Option<thread::JoinHandle<()>>,
   id: thread::ThreadId,
 }
@@ -71,7 +71,9 @@ impl Storage {
     Self::start_worker(Source::Memory, options)
   }
   fn start_worker(source: Source, options: StorageOptions) -> Result<Self, StorageError> {
-    let (sender, receiver) = mpsc::channel::<Command>();
+    // Synchronous callers also observe backpressure; never retain an unlimited queue
+    // of closures and their captured session data behind one SQLite writer.
+    let (sender, receiver) = mpsc::sync_channel::<Command>(64);
     let (ready, result) = mpsc::sync_channel(1);
     let thread = thread::Builder::new()
       .name("wish-storage".into())

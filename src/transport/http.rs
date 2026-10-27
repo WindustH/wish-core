@@ -28,7 +28,7 @@ pub struct ReqwestTransport {
 impl ReqwestTransport {
   /// Builds the client: connect timeout, no redirects, and the requested proxy policy.
   pub fn new(limits: Limits, proxy: Proxy) -> Result<Self, Error> {
-    let builder = reqwest::Client::builder()
+    let builder = pooled_client_builder()
       .connect_timeout(limits.connect)
       .redirect(reqwest::redirect::Policy::none())
       // One call means at most one request on the wire. The default policy silently resends on
@@ -64,6 +64,13 @@ impl ReqwestTransport {
     }
     Ok(self.client.request(method, &call.url).headers(headers).body(call.body.clone()))
   }
+}
+
+/// Shared idle-connection retention for upstream HTTP clients. Active requests are not capped.
+pub(crate) fn pooled_client_builder() -> reqwest::ClientBuilder {
+  reqwest::Client::builder()
+    .pool_max_idle_per_host(8)
+    .pool_idle_timeout(std::time::Duration::from_secs(60))
 }
 
 /// Applies a proxy policy to a client under construction.
