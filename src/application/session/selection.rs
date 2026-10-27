@@ -9,13 +9,13 @@ use crate::application::{
   session_model::SessionModel,
 };
 use crate::{
-  Error,
   executor::{
     BoundaryResult, ExecutionControl, RunBoundary,
     compaction::handoff::{self, HandoffContext, PreviousProvider},
     deliver_new_events,
     model::{CallResponse, ModelCaller},
   },
+  protocol::error::Error,
   protocol::{
     Message, Request, TokenCount, UpstreamCompaction, UpstreamCompactionRequest,
     model_use::ModelUseProtocol,

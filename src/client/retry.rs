@@ -1,5 +1,5 @@
 //! Retry progress belongs to one logical upstream request, including its cancellation.
-use crate::Error;
+use crate::protocol::error::Error;
 use crate::utils::{
   retry::{RetryDecision, RetryEvent, RetryPolicy, retry_observed},
   time::Timestamp,

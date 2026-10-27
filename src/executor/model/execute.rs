@@ -6,7 +6,7 @@ use super::{CallResponse, ModelCaller, ModelStream};
 use crate::executor::ExecutionControl;
 use crate::session::{RunOutcome, SessionEvent, TokenEstimator, statistics::CallObservation};
 use crate::{
-  Error,
+  protocol::error::Error,
   protocol::{
     Request, Response, StopReason, StreamAccumulator, StreamEvent,
     model_use::stream::{PartialResponse, StreamEnd, StreamFinalization, ToolExecutionState},

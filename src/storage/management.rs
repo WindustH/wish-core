@@ -12,7 +12,7 @@ mod usage;
 
 pub use folders::FolderRecord;
 pub use groups::{Author, GroupMessage, GroupRecord, NewGroupMessage};
-pub use sessions::SessionQuery;
+pub use sessions::{ConversationEntry, ConversationRow, RecordPage, SessionFilter};
 pub use usage::{IndexedModelCall, StreamAggregate, StreamSample, Usage, UsageBucket};
 
 use crate::storage::repository_error::RepositoryError;
@@ -51,6 +51,10 @@ const SCHEMA: &str = "
 ";
 
 impl ManagementStore {
+  fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, RepositoryError> {
+    self.db.lock().map_err(|_| RepositoryError::internal("management database lock poisoned"))
+  }
+
   pub fn open(path: &Path) -> Result<Self, RepositoryError> {
     let db = Connection::open(path)?;
     // Incremental auto-vacuum lets what is deleted leave the file ([`shrink`]). It takes hold on a
@@ -61,7 +65,7 @@ impl ManagementStore {
   }
   /// How the index's file is used: its pages by table and index, and what is free.
   pub fn shape(&self) -> Result<DatabaseShape, RepositoryError> {
-    Ok(database_shape(&self.db.lock().unwrap())?)
+    Ok(database_shape(&*self.lock()?)?)
   }
 }
 

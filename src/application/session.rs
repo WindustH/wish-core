@@ -13,21 +13,21 @@ pub mod selection;
 mod status;
 mod tools;
 
+pub use super::capabilities::{ToolChanges, ToolDelivery, ToolSwitches};
+use crate::storage::management::ManagementStore;
 pub use run::Operation;
 pub use status::web_event;
-pub use tools::{ToolChanges, ToolDelivery, ToolSwitches};
 
 use crate::application::{
   app::App,
   config::ShellSettings,
   error::{ApplicationError, blocking},
-  management::ManagementStore,
 };
 use crate::{
   executor::ExecutionControl,
   protocol::Message,
   session::{EntryId, Session, SessionConfig, SessionReader, SessionSender},
-  tool::shell::{ShellCommand, ShellConfig},
+  task::{ShellCommand, TaskConfig},
   utils::time::Timestamp,
 };
 
@@ -108,25 +108,25 @@ pub struct SessionSlot {
   /// Advanced by every interrupt: a run scheduled before one does not start after it.
   schedule_epoch: AtomicU64,
   deleted: AtomicBool,
-  pub session: Arc<AsyncMutex<Session>>,
+  pub(super) session: Arc<AsyncMutex<Session>>,
   /// Serializes descriptor edits, which never wait for an operation.
-  pub update_lock: Arc<AsyncMutex<()>>,
+  pub(super) update_lock: Arc<AsyncMutex<()>>,
   /// Queues input while an operation holds the session.
-  pub sender: SessionSender,
+  pub(super) sender: SessionSender,
   /// Reads the session's history and lists while an operation holds it.
-  pub reader: SessionReader,
-  pub tools: SessionTools,
+  pub(super) reader: SessionReader,
+  pub(super) tools: SessionTools,
   /// The command this session's shell tool starts, whether or not the tool is on.
   effective_shell: Arc<RwLock<ShellCommand>>,
   /// The session's blobs, where its images are saved.
   image_dir: PathBuf,
   /// What this session's shell shows the MCP bridge; made anew each time the session opens, since
   /// its shells do not outlive the process.
-  pub bridge_token: String,
+  pub(super) bridge_token: String,
   tasks: tokio_util::task::TaskTracker,
   pub(super) app: Weak<App>,
   /// This session's live events, for `GET /sessions/{id}/events`.
-  pub events: broadcast::Sender<Value>,
+  pub(super) events: broadcast::Sender<Value>,
   live: Arc<Mutex<live::LivePreview>>,
   status: Mutex<SessionStatus>,
   /// The running operation's, while one runs.
@@ -147,7 +147,7 @@ impl SessionSlot {
     let own = descriptor.shell_override.as_ref().and_then(|settings| settings.resolve().ok());
     let effective_shell =
       Arc::new(RwLock::new(own.unwrap_or_else(|| app.shell.read().unwrap().clone())));
-    let mut shell_config = ShellConfig::new(&descriptor.cwd, app.data_dir.shell(&descriptor.id));
+    let mut shell_config = TaskConfig::new(&descriptor.cwd, app.data_dir.shell(&descriptor.id));
     shell_config.command = Arc::clone(&effective_shell);
     let bridge_token =
       format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());

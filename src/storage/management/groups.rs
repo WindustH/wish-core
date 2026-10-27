@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// A group as the API shows it.
+/// A persisted group with ordered membership.
 #[derive(Clone, Debug, Serialize)]
 pub struct GroupRecord {
   pub id: String,
@@ -58,7 +58,7 @@ impl ManagementStore {
     group: &GroupRecord,
     folder: Option<&str>,
   ) -> Result<(), RepositoryError> {
-    let mut db = self.db.lock().unwrap();
+    let mut db = self.lock()?;
     let tx = db.transaction()?;
     if let Some(folder) = folder {
       super::folders::require_folder(&tx, folder)?;
@@ -97,7 +97,7 @@ impl ManagementStore {
     filter: &str,
     params: impl Params,
   ) -> Result<Vec<GroupRecord>, RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     let mut statement = db.prepare(&format!(
       "SELECT id,name,created_by,created_at,updated_at FROM groups {filter} ORDER BY updated_at DESC, id DESC"
     ))?;
@@ -111,10 +111,7 @@ impl ManagementStore {
   /// The group of exactly these two sessions, when there is one.
   pub fn group_of_two(&self, a: &str, b: &str) -> Result<Option<String>, RepositoryError> {
     Ok(
-      self
-        .db
-        .lock()
-        .unwrap()
+      self.lock()?
         .query_row(
           "SELECT group_id FROM group_members WHERE session_id IN (?1,?2) GROUP BY group_id \
            HAVING count(*)=2 AND (SELECT count(*) FROM group_members m WHERE m.group_id=group_members.group_id)=2 LIMIT 1",
@@ -125,14 +122,14 @@ impl ManagementStore {
     )
   }
   pub fn rename_group(&self, id: &str, name: &str, at: u64) -> Result<(), RepositoryError> {
-    self.db.lock().unwrap().execute(
+    self.lock()?.execute(
       "UPDATE groups SET name=?2,updated_at=?3 WHERE id=?1",
       params![id, name, at as i64],
     )?;
     Ok(())
   }
   pub fn set_members(&self, id: &str, members: &[String], at: u64) -> Result<(), RepositoryError> {
-    let mut db = self.db.lock().unwrap();
+    let mut db = self.lock()?;
     let tx = db.transaction()?;
     tx.execute("DELETE FROM group_members WHERE group_id=?1", [id])?;
     insert_members(&tx, id, members)?;
@@ -142,7 +139,7 @@ impl ManagementStore {
   }
   /// Takes a session out of every group; returns the groups it was in.
   pub fn leave_groups(&self, session: &str) -> Result<Vec<String>, RepositoryError> {
-    let mut db = self.db.lock().unwrap();
+    let mut db = self.lock()?;
     let tx = db.transaction()?;
     let groups: Vec<String> = {
       let mut statement = tx.prepare("SELECT group_id FROM group_members WHERE session_id=?1")?;
@@ -153,7 +150,7 @@ impl ManagementStore {
     Ok(groups)
   }
   pub fn delete_group(&self, id: &str) -> Result<(), RepositoryError> {
-    let mut db = self.db.lock().unwrap();
+    let mut db = self.lock()?;
     let tx = db.transaction()?;
     for table in ["group_messages", "group_members"] {
       tx.execute(&format!("DELETE FROM {table} WHERE group_id=?1"), [id])?;
@@ -172,7 +169,7 @@ impl ManagementStore {
     at: u64,
   ) -> Result<GroupMessage, RepositoryError> {
     let NewGroupMessage { author, text, attachments } = message;
-    let mut db = self.db.lock().unwrap();
+    let mut db = self.lock()?;
     let tx = db.transaction()?;
     let seq: u64 = tx.query_row(
       "SELECT coalesce(max(seq)+1,0) FROM group_messages WHERE group_id=?1",
@@ -204,7 +201,7 @@ impl ManagementStore {
   /// text when given. The page holds one more than `limit` when there are more.
   /// Each group's transcript: its messages and the bytes their stored values take.
   pub fn transcript_sizes(&self) -> Result<HashMap<String, (u64, u64)>, RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     let mut statement = db.prepare(
       "SELECT group_id, count(*), sum(length(CAST(text AS BLOB)) + ifnull(length(author_id),0) + \
        ifnull(length(CAST(author_name AS BLOB)),0) + ifnull(length(attachments),0)) \
@@ -222,7 +219,7 @@ impl ManagementStore {
     limit: usize,
     query: &str,
   ) -> Result<Vec<GroupMessage>, RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     let mut statement = db.prepare(
       "SELECT seq,at,author_kind,author_id,author_name,text,attachments FROM group_messages \
        WHERE group_id=?1 AND (?2 IS NULL OR seq<?2) AND (?3='' OR instr(lower(text),lower(?3))>0) \

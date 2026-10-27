@@ -229,6 +229,7 @@ struct ServerCatalog {
 }
 
 pub struct McpHub {
+  closing: tokio_util::task::TaskTracker,
   settings: RwLock<Settings>,
   instances: Mutex<HashMap<InstanceKey, Arc<Instance>>>,
   catalogs: Arc<Mutex<HashMap<String, ServerCatalog>>>,
@@ -237,6 +238,7 @@ pub struct McpHub {
 impl McpHub {
   pub fn new(config: McpConfig, proxy: ProxyConfig, default_cwd: PathBuf) -> Self {
     Self {
+      closing: tokio_util::task::TaskTracker::new(),
       settings: RwLock::new(Settings { config, proxy, default_cwd }),
       instances: Mutex::new(HashMap::new()),
       catalogs: Arc::new(Mutex::new(HashMap::new())),
@@ -328,7 +330,7 @@ impl McpHub {
       active: AtomicUsize::new(0),
     });
     if let Some(previous) = instances.insert(key, instance.clone()) {
-      close_later(previous);
+      self.close_later(previous);
     }
     Ok(instance)
   }
@@ -589,7 +591,7 @@ impl McpHub {
       }
       keep
     });
-    closing.into_iter().for_each(close_later);
+    closing.into_iter().for_each(|instance| self.close_later(instance));
   }
 
   /// Closes instances nobody has called for their server's idle time, and ones already closed.
@@ -610,7 +612,7 @@ impl McpHub {
       }
       !(closed || expired)
     });
-    closing.into_iter().for_each(close_later);
+    closing.into_iter().for_each(|instance| self.close_later(instance));
   }
 
   /// Closes a session's own instances, when it is deleted or switches MCP off.
@@ -623,15 +625,21 @@ impl McpHub {
       }
       !mine
     });
-    closing.into_iter().for_each(close_later);
+    closing.into_iter().for_each(|instance| self.close_later(instance));
+  }
+
+  fn close_later(&self, instance: Arc<Instance>) {
+    self.closing.spawn(close(instance));
   }
 
   /// Closes every instance and waits for them to go.
   pub async fn close_all(&self) {
     let instances: Vec<_> = self.instances.lock().unwrap().drain().map(|(_, i)| i).collect();
     for instance in instances {
-      close(instance).await;
+      self.close_later(instance);
     }
+    self.closing.close();
+    self.closing.wait().await;
   }
 }
 
@@ -650,52 +658,5 @@ async fn close(instance: Arc<Instance>) {
     && let Some(connection) = instance.connection.into_inner()
   {
     connection.close().await;
-  }
-}
-
-fn close_later(instance: Arc<Instance>) {
-  tokio::spawn(close(instance));
-}
-
-/// Saves a binary content block of a result - an image, audio, a resource's bytes - as a file, and
-/// puts its path where the data was, so neither the bridge nor the output carries base64.
-pub fn store_binary_content(result: &mut Value, directory: &Path) {
-  let save = |item: &mut Map<String, Value>, field: &str| {
-    let Some(data) = item.get(field).and_then(Value::as_str) else { return };
-    use base64::Engine;
-    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else { return };
-    let mime = item.get("mimeType").and_then(Value::as_str).unwrap_or("");
-    let extension = match mime {
-      "image/png" => ".png",
-      "image/jpeg" => ".jpg",
-      "image/gif" => ".gif",
-      "image/webp" => ".webp",
-      "image/svg+xml" => ".svg",
-      "audio/wav" | "audio/x-wav" => ".wav",
-      "audio/mpeg" => ".mp3",
-      "audio/ogg" => ".ogg",
-      "application/pdf" => ".pdf",
-      "application/json" => ".json",
-      _ => "",
-    };
-    use sha2::Digest;
-    let path = directory.join(format!("{:x}{extension}", sha2::Sha256::digest(&bytes)));
-    if std::fs::create_dir_all(directory).and_then(|_| std::fs::write(&path, &bytes)).is_ok() {
-      item.remove(field);
-      item.insert("path".into(), json!(path));
-    }
-  };
-  let Some(content) = result.get_mut("content").and_then(Value::as_array_mut) else { return };
-  for block in content {
-    let Some(item) = block.as_object_mut() else { continue };
-    match item.get("type").and_then(Value::as_str) {
-      Some("image" | "audio") => save(item, "data"),
-      Some("resource") => {
-        if let Some(resource) = item.get_mut("resource").and_then(Value::as_object_mut) {
-          save(resource, "blob");
-        }
-      }
-      _ => {}
-    }
   }
 }

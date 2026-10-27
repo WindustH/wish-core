@@ -1,6 +1,6 @@
 //! Records derived model-instruction observations and announces history changes.
 use crate::{
-  Error,
+  protocol::error::Error,
   protocol::{ContentBlock, Message, Request},
   session::SessionSender,
 };
@@ -9,7 +9,7 @@ use std::{collections::HashSet, sync::Mutex};
 pub struct InstructionObserver {
   sender: SessionSender,
   events: tokio::sync::broadcast::Sender<Value>,
-  recorded: Mutex<HashSet<String>>,
+  recorded: Mutex<HashSet<[u8; 32]>>,
 }
 impl InstructionObserver {
   pub fn new(sender: SessionSender, events: tokio::sync::broadcast::Sender<Value>) -> Self {
@@ -20,12 +20,14 @@ impl InstructionObserver {
     let mut notes = Vec::new();
     for (index, message) in request.conversation.iter().enumerate() {
       match message {
-        Message::System { content, .. }
-          if original.conversation.get(index).is_none_or(|before| {
-            serde_json::to_value(before).ok() != serde_json::to_value(message).ok()
-          }) =>
-        {
-          notes.push(serde_json::json!({"title":"系统指令（请求时补入）","content":content}));
+        Message::System { content, .. } => {
+          let encode = |message: &Message| {
+            serde_json::to_value(message).map_err(|error| Error::Build(error.to_string()))
+          };
+          let before = original.conversation.get(index).map(encode).transpose()?;
+          if before.as_ref() != Some(&encode(message)?) {
+            notes.push(serde_json::json!({"title":"系统指令（请求时补入）","content":content}));
+          }
         }
         Message::User { metadata, content }
           if metadata["source"]
@@ -47,11 +49,17 @@ impl InstructionObserver {
       }
     }
     if !request.tools.is_empty() {
-      notes.push(serde_json::json!({"title":"可用工具定义","content":[{"Text":{"text":serde_json::to_string_pretty(&request.tools).unwrap_or_default()}}]}));
+      notes.push(serde_json::json!({"title":"可用工具定义","content":[{"Text":{"text":serde_json::to_string_pretty(&request.tools).map_err(|error| Error::Build(error.to_string()))?}}]}));
     }
     let notes: Vec<_> = {
       let mut recorded = self.recorded.lock().unwrap();
-      notes.into_iter().filter(|note| recorded.insert(note.to_string())).collect()
+      notes
+        .into_iter()
+        .filter(|note| {
+          use sha2::Digest;
+          recorded.insert(sha2::Sha256::digest(note.to_string()).into())
+        })
+        .collect()
     };
     if notes.is_empty() {
       return Ok(());

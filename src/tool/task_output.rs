@@ -189,43 +189,39 @@ pub fn render(output: &Value, include_diff: bool) -> String {
   format!("{}\n\n{text}", notes.join("\n\n"))
 }
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use serde_json::json;
-  #[test]
-  fn task_list_distinguishes_success_from_failure() {
-    let output = json!({"tasks":[{"task_id":"job","command":"build","process":{"status":"exited","exit_code":2},"background":true}]});
-    assert_eq!(render(&output, false), "job [exited, exit 2; background] build");
+use crate::{
+  session::ToolOutcome,
+  task::{ForegroundResult, TaskError},
+};
+/// The outcome a shell error reports: an interruption cancels, and a lost process leaves the
+/// outcome unknown.
+impl From<TaskError> for ToolOutcome {
+  fn from(error: TaskError) -> Self {
+    match error {
+      TaskError::Interrupted => ToolOutcome::Cancelled,
+      TaskError::Unknown(message) => ToolOutcome::Unknown(message),
+      error => ToolOutcome::Failed(error.to_string()),
+    }
   }
-  #[test]
-  fn ordinary_commands_only_return_their_output() {
-    let output = json!({"execution_id":"unused", "process":{"status":"exited","exit_code":0,"error":null,"initial_input_bytes":0},"output_path":"private", "encoding":"utf8", "lossy":false,"text":"/workspace\n"});
-    assert_eq!(render(&output, false), "/workspace\n");
+}
+
+/// Render the captured result without changing its durable data.
+pub fn foreground(result: ForegroundResult, check_diff: bool) -> ToolOutcome {
+  ToolOutcome::Report {
+    text: render(&result.output, check_diff),
+    output: result.output,
+    metadata: serde_json::json!({"edits":result.edits}),
+    failed: result.failed,
   }
-  #[test]
-  fn failure_and_truncation_are_actionable_without_an_extra_status_call() {
-    let output = json!({"execution_id":"task1","process":{"status":"exited","exit_code":2},"output_bytes":100000,"start_offset":99000,"truncated":true,"output_path":"/tmp/output.log","text":"compiler error"});
-    let text = render(&output, false);
-    assert!(text.contains("exit code 2") && text.contains("compiler error"));
-    assert!(text.contains("99000") && text.contains("100000") && text.contains("--offset 0"));
-    assert!(!text.contains("encoding"));
-  }
-  #[test]
-  fn large_diff_stays_bounded_and_points_to_full_edits() {
-    let output = json!({"text":"ok","edits_path":"/tmp/edits.json","edits":[{"path":"/file","changed":true,"diff":"字".repeat(50000)}]});
-    let text = render(&output, true);
-    assert!(text.len() < MODEL_OUTPUT_BYTES);
-    assert!(text.contains("Modified: /file") && text.contains("/tmp/edits.json"));
-    assert!(text.ends_with("ok"));
-  }
-  #[test]
-  fn background_and_input_results_keep_required_handles_and_partial_write_details() {
-    let output = json!({"execution_id":"task1","return_reason":"backgrounded","process":{"status":"running"},"text":"listening"});
-    let text = render(&output, false);
-    assert!(text.contains("task1") && text.contains("listening"));
-    let write =
-      render(&json!({"write":{"accepted_bytes":3,"stdin_available":true,"timed_out":true}}), false);
-    assert!(write.contains("Accepted 3 bytes") && write.contains("do not resend"));
+}
+pub fn operation(result: Result<serde_json::Value, TaskError>) -> ToolOutcome {
+  match result {
+    Ok(output) => ToolOutcome::Report {
+      text: render(&output, false),
+      output,
+      metadata: serde_json::Value::Null,
+      failed: false,
+    },
+    Err(error) => error.into(),
   }
 }

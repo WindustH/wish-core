@@ -1,7 +1,7 @@
 //! Read-only session views, context inspection and paged history lists.
 use crate::application::app::App;
 use crate::application::error::{ApplicationError, blocking};
-pub use crate::storage::management::SessionQuery;
+use crate::storage::management::{ConversationEntry, ConversationRow, RecordPage, SessionFilter};
 use crate::{
   session::SessionConfig,
   storage::{ReadList, StoredValue},
@@ -9,6 +9,56 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionQuery {
+  pub start: usize,
+  pub limit: usize,
+  pub query: String,
+  pub phase: String,
+  pub tag: String,
+  pub order: String,
+  /// The folder whose listing `conversations` gives; none for the root.
+  pub folder: Option<String>,
+  /// Every session and group, wherever it is, instead of a folder's listing.
+  pub flat: bool,
+}
+impl Default for SessionQuery {
+  fn default() -> Self {
+    Self {
+      start: 0,
+      limit: 50,
+      query: String::new(),
+      phase: String::new(),
+      tag: String::new(),
+      order: "desc".into(),
+      folder: None,
+      flat: false,
+    }
+  }
+}
+impl SessionQuery {
+  fn into_filter(self) -> Result<SessionFilter, ApplicationError> {
+    super::pagination::validate_limit(self.limit, 1000)?;
+    if self.start > i64::MAX as usize {
+      return Err(ApplicationError::invalid("start is too large"));
+    }
+    if !matches!(self.order.as_str(), "asc" | "desc") {
+      return Err(ApplicationError::invalid("order must be asc or desc"));
+    }
+    Ok(SessionFilter {
+      start: self.start,
+      limit: self.limit,
+      query: self.query,
+      phase: self.phase,
+      tag: self.tag,
+      order: self.order,
+      folder: self.folder,
+      flat: self.flat,
+    })
+  }
+}
 
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -25,6 +75,7 @@ async fn read_page<T: StoredValue + Serialize>(
   list: ReadList<T>,
   page: Page,
 ) -> Result<Value, ApplicationError> {
+  super::pagination::validate_limit(page.limit, 1000)?;
   blocking(move || {
     let page = list.read_page(page.start, page.limit)?;
     Ok(json!({"start":page.start,"items":page.items,"next":page.next}))
@@ -33,11 +84,20 @@ async fn read_page<T: StoredValue + Serialize>(
 }
 pub async fn list(app: Arc<App>, query: SessionQuery) -> Result<Value, ApplicationError> {
   let management = app.management.clone();
+  let query = query.into_filter()?;
   blocking(move || Ok(project_list(management.list(query)?))).await
 }
 pub async fn conversations(app: Arc<App>, query: SessionQuery) -> Result<Value, ApplicationError> {
   let management = app.management.clone();
-  blocking(move || Ok(project_list(management.conversations(query)?))).await
+  let query = query.into_filter()?;
+  blocking(move || {
+    let page = management.conversations(query)?;
+    Ok(project_list(RecordPage {
+      items: page.items.into_iter().map(project_conversation).collect(),
+      next: page.next,
+    }))
+  })
+  .await
 }
 
 pub async fn get(app: Arc<App>, id: String) -> Result<Value, ApplicationError> {
@@ -130,7 +190,7 @@ pub async fn generation_structure(
   let reader = app.get_session(&id).await?.reader.clone();
   blocking(move || {
     if reader.get_generations().get(generation as u64)?.is_none() { return Err(ApplicationError::not_found()) }
-    let (generation, count, positions, entries) = reader.generation_structure(crate::session::GenerationId(generation), page.start, page.limit, page.kind, page.origin)?;
+    let crate::session::GenerationStructure {generation, count, positions, entries} = reader.generation_structure(crate::session::GenerationId(generation), page.start, page.limit, page.kind, page.origin)?;
     let mut items = Vec::new();
     for entry in entries.items {
       let mut value = json!(entry);
@@ -143,11 +203,26 @@ pub async fn generation_structure(
   }).await
 }
 
-fn project_list(mut page: Value) -> Value {
-  if let Some(items) = page["items"].as_array_mut() {
-    for record in items {
-      crate::application::session::preview_pending_selection(record);
-    }
+fn project_list(mut page: RecordPage<Value>) -> Value {
+  for record in &mut page.items {
+    crate::application::session::preview_pending_selection(record);
   }
-  page
+  json!({"items":page.items,"next":page.next})
+}
+fn project_conversation(row: ConversationRow) -> Value {
+  let mut value = match row.entry {
+    ConversationEntry::Session(mut record) => {
+      record["kind"] = "session".into();
+      record
+    }
+    ConversationEntry::Group(record) => json!({"kind":"group","group":record}),
+    ConversationEntry::Folder { record, size } => {
+      let mut folder = json!(record);
+      folder["items"] = json!(size);
+      json!({"kind":"folder","folder":folder})
+    }
+  };
+  value["parent"] = json!(row.parent);
+  value["pinned"] = json!(row.pinned);
+  value
 }

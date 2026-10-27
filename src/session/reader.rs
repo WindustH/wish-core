@@ -23,6 +23,12 @@ pub struct SessionReader {
   queue: ListId,
   model_calls: ListId,
 }
+pub struct GenerationStructure {
+  pub generation: Arc<Generation>,
+  pub count: u64,
+  pub positions: Vec<u64>,
+  pub entries: crate::storage::Page<Entry>,
+}
 impl SessionReader {
   pub(super) fn new(storage: Storage, record: &SessionRecord) -> Self {
     Self {
@@ -43,7 +49,7 @@ impl SessionReader {
     limit: usize,
     kind: Option<String>,
     origin: Option<String>,
-  ) -> Result<(Arc<Generation>, u64, Vec<u64>, crate::storage::Page<Entry>), SessionError> {
+  ) -> Result<GenerationStructure, SessionError> {
     let reader = self.clone();
     self.storage.transaction(move |tx| {
       let generation = tx
@@ -59,9 +65,9 @@ impl SessionReader {
             .get_item::<Entry>(&reader.entries, id.0 as u64)?
             .ok_or_else(|| StorageError::Corrupt("missing entry".into()))?;
           let message_type =
-            format!("{:?}", crate::session::history::query::MessageType::of(&entry.message));
-          if kind.as_ref().is_none_or(|kind| kind == &message_type)
-            && origin.as_ref().is_none_or(|origin| origin == &format!("{:?}", entry.origin))
+            crate::session::history::query::MessageType::of(&entry.message).structure_name();
+          if kind.as_ref().is_none_or(|kind| kind == message_type)
+            && origin.as_ref().is_none_or(|origin| origin == entry.origin.as_str())
           {
             positions.push(position);
             entries.push(entry);
@@ -69,17 +75,17 @@ impl SessionReader {
         }
         position += 1;
       }
-      Ok((
+      Ok(GenerationStructure {
         generation,
         count,
         positions,
-        crate::storage::Page {
+        entries: crate::storage::Page {
           start,
           items: entries,
           end: position,
           next: (position < count).then_some(position),
         },
-      ))
+      })
     })
   }
   pub fn get_history(&self) -> ReadList<HistoryRecord> {

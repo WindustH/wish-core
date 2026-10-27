@@ -69,3 +69,5 @@ pub enum StorageError {
   #[error("storage data is inconsistent: {0}")]
   Corrupt(String),
 }
+
+pub mod mcp_files;

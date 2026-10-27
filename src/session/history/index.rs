@@ -60,10 +60,9 @@ fn fill_message_fields(row: &mut IndexRow, entry: &Entry) -> Result<(), SessionE
   };
   // History search output is a projection of existing history, and its arguments repeat the
   // query itself. Keep it filterable, but do not index these duplicate retrieval documents.
-  row.text = if matches!(
-    row.tool_name.as_deref(),
-    Some("history_search" | "history_read" | "history_query")
-  ) {
+  row.text = if row.tool_name.as_deref().and_then(crate::capability::Capability::from_tool)
+    == Some(crate::capability::Capability::History)
+  {
     String::new()
   } else {
     text

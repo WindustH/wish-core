@@ -21,7 +21,11 @@ pub async fn update_session(
     session_commands::update_session(
       app,
       id,
-      headers.get(IF_MATCH).map(|value| value.to_str().unwrap_or("").to_owned()),
+      headers
+        .get(IF_MATCH)
+        .map(|value| value.to_str().map(str::to_owned))
+        .transpose()
+        .map_err(|_| ApiError::invalid("If-Match must contain valid header text"))?,
       input,
     )
     .await?,

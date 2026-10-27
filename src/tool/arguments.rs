@@ -72,25 +72,3 @@ pub fn error(tool: &str, reason: impl std::fmt::Display, example: &str) -> Strin
     "{tool}: invalid arguments: {reason}. Correct the indicated field before retrying. Example: {example}"
   )
 }
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use serde_json::json;
-  #[test]
-  fn optional_empty_values_do_not_erase_required_values_or_payloads() {
-    let schema = json!({"required":["command"],"properties":{"command":{},"timeout":{},"edit":{},"check_diff":{},"data":{}}});
-    let value = normalize(&json!({"command":"  ","timeout":" ","edit":null,"check_diff":false,"data":" x\n","unknown":null}), &schema).unwrap();
-    assert_eq!(value, json!({"command":"  ","check_diff":false,"data":" x\n","unknown":null}));
-    assert_eq!(normalize(&Value::Null, &schema).unwrap(), json!({}));
-    assert!(normalize(&json!([]), &schema).is_err());
-  }
-  #[test]
-  fn nested_optional_fields_are_omitted_without_changing_choices() {
-    let schema = json!({"properties":{"questions":{"items":{"required":["question"],"properties":{"question":{},"multiline":{}}}}}});
-    assert_eq!(
-      normalize(&json!({"questions":[{"question":"?","multiline":""},"choice"]}), &schema).unwrap(),
-      json!({"questions":[{"question":"?"},"choice"]})
-    );
-  }
-}

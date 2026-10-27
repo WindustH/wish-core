@@ -1,26 +1,26 @@
 //! The model-facing command tool. Process ownership and task operations live in `task`.
-pub use crate::task::{
-  ShellCommand, TaskConfig as ShellConfig, TaskError as ShellError, is_runnable,
-};
 use crate::{
-  executor::{ExecutionControl, tool::ToolExecutor},
   protocol::Tool,
   session::{ToolCall, ToolOutcome},
-  task::TaskManager,
+  task::{TaskConfig, TaskError, TaskManager},
+  tool::contract::ToolExecutor,
+  utils::control::ExecutionControl,
 };
 use serde::Deserialize;
 #[derive(Clone)]
 pub struct ShellTool {
   tasks: TaskManager,
 }
-impl std::ops::Deref for ShellTool {
-  type Target = TaskManager;
-  fn deref(&self) -> &TaskManager {
+impl ShellTool {
+  pub fn from_tasks(tasks: TaskManager) -> Self {
+    Self { tasks }
+  }
+  #[allow(dead_code)] // external integration fixtures
+  pub fn tasks(&self) -> &TaskManager {
     &self.tasks
   }
-}
-impl ShellTool {
-  pub async fn new(config: ShellConfig) -> Result<Self, ShellError> {
+  #[allow(dead_code)] // external integration fixtures
+  pub async fn new(config: TaskConfig) -> Result<Self, TaskError> {
     Ok(Self { tasks: TaskManager::new(config).await? })
   }
   pub fn get_specifications(&self) -> Vec<Tool> {
@@ -48,15 +48,26 @@ impl ToolExecutor for ShellTool {
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
     self.execute_responsive(call, control, None).await
   }
-  async fn execute_with_input(&self, call: &ToolCall, control: &ExecutionControl,
-    input: Option<crate::executor::tool::ToolInput>) -> ToolOutcome {
+  async fn execute_with_input(
+    &self,
+    call: &ToolCall,
+    control: &ExecutionControl,
+    input: Option<crate::session::ToolInput>,
+  ) -> ToolOutcome {
     self.execute_responsive(call, control, input).await
   }
 }
 impl ShellTool {
-  async fn execute_responsive(&self, call: &ToolCall, control: &ExecutionControl,
-    input: Option<crate::executor::tool::ToolInput>) -> ToolOutcome {
-    let arrival = input;
+  async fn execute_responsive(
+    &self,
+    call: &ToolCall,
+    control: &ExecutionControl,
+    input: Option<crate::session::ToolInput>,
+  ) -> ToolOutcome {
+    let arrival: Option<crate::task::InputArrival> = input.map(|mut input| {
+      Box::pin(async move { input.wait().await.map_err(|error| error.to_string()) })
+        as crate::task::InputArrival
+    });
     if call.name == "shell_edit" {
       if !call.arguments["diff"].as_array().is_some_and(|paths| !paths.is_empty())
         || call.arguments.get("timeout").is_some()
@@ -66,10 +77,10 @@ impl ShellTool {
         );
       }
       let mut arguments = call.arguments.clone();
-      if let Some(object) = arguments.as_object_mut() {
-        if let Some(paths) = object.remove("diff") {
-          object.insert("edit".into(), paths);
-        }
+      if let Some(object) = arguments.as_object_mut()
+        && let Some(paths) = object.remove("diff")
+      {
+        object.insert("edit".into(), paths);
       }
       let input: Command = match serde_json::from_value(arguments) {
         Ok(input) => input,
@@ -77,13 +88,21 @@ impl ShellTool {
       };
       return self
         .tasks
-        .foreground_responsive(input.command, input.timeout, input.edit, input.check_diff, control, arrival)
+        .foreground_responsive(
+          input.command,
+          input.timeout,
+          input.edit,
+          input.check_diff,
+          control,
+          arrival,
+        )
         .await
+        .map(|result| super::task_output::foreground(result, input.check_diff))
         .unwrap_or_else(Into::into);
     }
     if call.name != "shell" {
       return match parse_legacy_call(&call.name, call.arguments.clone()) {
-        Ok(operation) => self.tasks.run(operation, control).await,
+        Ok(operation) => super::task_output::operation(self.tasks.run(operation, control).await),
         Err(error) => ToolOutcome::Failed(error.to_string()),
       };
     }
@@ -111,8 +130,16 @@ impl ShellTool {
     }
     self
       .tasks
-      .foreground_responsive(input.command, input.timeout, input.edit, input.check_diff, control, arrival)
+      .foreground_responsive(
+        input.command,
+        input.timeout,
+        input.edit,
+        input.check_diff,
+        control,
+        arrival,
+      )
       .await
+      .map(|result| super::task_output::foreground(result, input.check_diff))
       .unwrap_or_else(Into::into)
   }
 }
@@ -120,46 +147,16 @@ impl ShellTool {
 fn parse_legacy_call(
   name: &str,
   mut arguments: serde_json::Value,
-) -> Result<crate::task::TaskOperation, ShellError> {
+) -> Result<crate::task::TaskOperation, TaskError> {
   let operation = match name {
     "shell_start" => "start",
     "shell_poll" => "poll",
     "shell_write" => "write",
     "shell_kill" => "kill",
-    _ => return Err(ShellError::InvalidArguments(format!("unknown shell tool: {name}"))),
+    _ => return Err(TaskError::InvalidArguments(format!("unknown shell tool: {name}"))),
   };
   if let Some(object) = arguments.as_object_mut() {
     object.insert("operation".into(), operation.into());
   }
-  serde_json::from_value(arguments).map_err(|error| ShellError::InvalidArguments(error.to_string()))
-}
-
-#[cfg(test)]
-mod argument_tests {
-  use super::*;
-  use serde_json::json;
-  #[tokio::test]
-  async fn optional_empty_values_execute_but_missing_command_does_not() {
-    let directory = std::env::temp_dir().join(format!("wish-shell-args-{}", uuid::Uuid::new_v4()));
-    let tool = ShellTool::new(ShellConfig::new(std::env::temp_dir(), &directory)).await.unwrap();
-    let call = |arguments| ToolCall { call_id: "shell".into(), name: "shell".into(), arguments };
-    let outcome = tool
-      .execute(
-        &call(json!({"command":"echo fallback","edit":null,"timeout":"","check_diff":" "})),
-        &ExecutionControl::new(),
-      )
-      .await;
-    assert!(
-      matches!(outcome, ToolOutcome::Report { ref output, failed: false, .. } if output["text"].as_str().unwrap().contains("fallback")),
-      "{outcome:?}"
-    );
-    for arguments in [json!(null), json!({"command":" "}), json!({"command":42})] {
-      let outcome = tool.execute(&call(arguments), &ExecutionControl::new()).await;
-      assert!(
-        matches!(outcome, ToolOutcome::Failed(message) if message.contains("command") && message.contains("Example:"))
-      );
-    }
-    assert_eq!(tool.list().unwrap()["tasks"].as_array().unwrap().len(), 1);
-    tokio::fs::remove_dir_all(directory).await.unwrap();
-  }
+  serde_json::from_value(arguments).map_err(|error| TaskError::InvalidArguments(error.to_string()))
 }

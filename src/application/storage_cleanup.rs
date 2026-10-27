@@ -6,7 +6,6 @@ use crate::{
     error::{ApplicationError, blocking},
   },
   session::SessionError,
-  tool::shell::ShellTool,
   utils::time::Timestamp,
 };
 use crate::{
@@ -107,10 +106,17 @@ pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, Applicat
     let result = blocking(move || {
       let mut session = session;
       slot.require_live()?;
-      if slot.tools.background.is_active() { return Ok(None); }
-      if let Some(shell) = slot.tools.shell() {
+      if slot.tools.background.is_active() {
+        return Ok(None);
+      }
+      if let Some(shell) = slot.tools.tasks() {
         let tasks = shell.list().map_err(ApplicationError::internal)?;
-        if tasks["tasks"].as_array().into_iter().flatten().any(|task| task["process"]["status"] == "running") {
+        if tasks["tasks"]
+          .as_array()
+          .into_iter()
+          .flatten()
+          .any(|task| task["process"]["status"] == "running")
+        {
           return Ok(None);
         }
       }
@@ -123,7 +129,7 @@ pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, Applicat
         &data_dir,
         &target,
         &history.resources,
-        slot.tools.shell(),
+        slot.tools.tasks(),
         apply,
       )
       .map_err(ApplicationError::internal)?;
@@ -166,7 +172,7 @@ fn release_unreferenced_files(
   data_dir: &DataDir,
   id: &str,
   names: &HashSet<String>,
-  shell: Option<&ShellTool>,
+  shell: Option<&crate::task::TaskManager>,
   apply: bool,
 ) -> std::io::Result<(u64, u64)> {
   let blobs = data_dir.blobs(id);

@@ -47,7 +47,9 @@ pub async fn input(
 }
 
 pub async fn upload_draft(
-  State(app): State<Arc<App>>, Path(id): Path<String>, body: Bytes,
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  body: Bytes,
 ) -> Result<Json<Blob>, ApiError> {
   Ok(Json(attachments::upload_draft(&app, &id, &body).await?))
 }

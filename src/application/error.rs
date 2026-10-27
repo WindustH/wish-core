@@ -37,6 +37,14 @@ impl ApplicationError {
   pub fn internal(error: impl std::fmt::Display) -> Self {
     Self { kind: ErrorKind::Internal, message: error.to_string(), details: None }
   }
+  /// An external operation may have taken effect; callers must inspect state before retrying.
+  pub fn unknown(message: impl Into<String>) -> Self {
+    Self {
+      kind: ErrorKind::Internal,
+      message: message.into(),
+      details: Some(json!({"kind":"unknown"})),
+    }
+  }
   /// Shutdown has begun: nothing new starts, and waits in progress end.
   pub fn shutting_down() -> Self {
     Self::conflict("server is shutting down")
@@ -86,11 +94,11 @@ impl From<crate::tool::ask_user::AnswerError> for ApplicationError {
     }
   }
 }
-impl From<crate::Error> for ApplicationError {
-  fn from(error: crate::Error) -> Self {
+impl From<crate::protocol::error::Error> for ApplicationError {
+  fn from(error: crate::protocol::error::Error) -> Self {
     let kind = match &error {
-      crate::Error::Build(_) => ErrorKind::InvalidInput,
-      crate::Error::Unsupported { .. } => ErrorKind::Unsupported,
+      crate::protocol::error::Error::Build(_) => ErrorKind::InvalidInput,
+      crate::protocol::error::Error::Unsupported { .. } => ErrorKind::Unsupported,
       _ => ErrorKind::Upstream,
     };
     Self { kind, message: error.to_string(), details: Some(json!(error)) }
@@ -117,6 +125,21 @@ impl From<crate::storage::repository_error::RepositoryError> for ApplicationErro
       RepositoryError::Invalid(message) => Self::invalid(message),
       RepositoryError::Missing => Self::not_found(),
       other => Self::internal(other),
+    }
+  }
+}
+
+impl From<crate::task::TaskError> for ApplicationError {
+  fn from(error: crate::task::TaskError) -> Self {
+    use crate::task::TaskError;
+    match error {
+      TaskError::InvalidArguments(message) => Self::invalid(message),
+      TaskError::ExecutionNotFound(_) => {
+        Self { kind: ErrorKind::NotFound, message: error.to_string(), details: None }
+      }
+      TaskError::Interrupted | TaskError::Closed => Self::conflict(error.to_string()),
+      TaskError::Unknown(message) => Self::unknown(message),
+      TaskError::Io(error) => Self::internal(error),
     }
   }
 }

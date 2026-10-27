@@ -163,7 +163,7 @@ pub async fn delete(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
   })?;
   slot.require_live()?;
   slot.tools.background.shutdown().await;
-  if let Some(shell) = slot.tools.shell() {
+  if let Some(shell) = slot.tools.tasks() {
     shell.shutdown().await.map_err(ApplicationError::internal)?;
   }
   app.mcp.close_session(id);
@@ -176,7 +176,8 @@ pub async fn delete(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
   })
   .await?;
   app.sessions.lock().await.remove(id);
-  app.leave_groups(id)?;
+  let (owner, target) = (app.clone(), id.to_owned());
+  blocking(move || owner.leave_groups(&target)).await?;
   for directory in [app.data_dir.shell(id), app.data_dir.blobs(id)] {
     match tokio::fs::remove_dir_all(directory).await {
       Ok(()) => {}

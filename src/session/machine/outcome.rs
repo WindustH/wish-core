@@ -1,5 +1,5 @@
 use crate::{
-  Error,
+  protocol::error::Error,
   protocol::{Response, model_use::stream::PartialResponse},
 };
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]

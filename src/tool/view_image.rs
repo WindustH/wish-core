@@ -1,8 +1,9 @@
 //! Read a local image as native model input, without modifying the source file.
 use crate::{
-  executor::{ExecutionControl, tool::ToolExecutor},
   protocol::{ContentBlock, Tool},
   session::{ToolCall, ToolOutcome},
+  tool::contract::ToolExecutor,
+  utils::control::ExecutionControl,
 };
 use base64::Engine;
 use serde::Deserialize;

@@ -15,7 +15,7 @@ use super::{
 };
 use crate::storage::StorageError;
 use crate::{
-  Error,
+  protocol::error::Error,
   protocol::{
     Message, Response,
     model_use::{response::StopReason, stream::PartialResponse},

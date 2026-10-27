@@ -1,166 +1,37 @@
 //! The built-in tools of a session: which optional ones it has (its switches), the executor that
 //! runs them, and the shell its commands run under.
-use super::SessionSlot;
+use super::{SessionSlot, ToolChanges, ToolSwitches};
 use crate::application::{
-  blobs,
   config::ShellSettings,
   error::{ApplicationError, blocking},
 };
+use crate::capability::Capability;
+use crate::storage::blobs;
 use crate::{
   executor::{ExecutionControl, tool::ToolExecutor},
   protocol::ContentBlock,
   session::{Session, SessionConfig, ToolCall, ToolOutcome},
+  task::{ShellCommand, TaskConfig},
   tool::{
     ask_user::AskUserTool,
     history::HistoryTools,
-    shell::{ShellCommand, ShellConfig, ShellTool},
+    shell::ShellTool,
     view_image::ViewImageTool,
-    web_search::{Answer, SearchBackend, WebSearchTool},
+    web_search::{SearchBackend, WebSearchTool},
   },
 };
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::{
   Arc, Weak,
   atomic::{AtomicBool, Ordering},
 };
 
-const HISTORY_TOOLS: [&str; 3] = ["history_search", "history_read", "history_query"];
-const SHELL_TOOLS: [&str; 6] =
-  ["shell", "shell_start", "shell_edit", "shell_poll", "shell_write", "shell_kill"];
-
-/// How an enabled capability is presented to the model.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolDelivery {
-  // Compatibility for stored sessions without a delivery field; new-session defaults live in config.
-  #[default]
-  Tool,
-  Command,
-}
-fn enabled_by_default() -> bool { true }
-fn command_delivery() -> ToolDelivery {
-  ToolDelivery::Command
-}
-
-/// The optional built-in tools of a session. `view_image` is always available.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolSwitches {
-  #[serde(default = "enabled_by_default")]
-  pub history_search: bool,
-  #[serde(default)]
-  pub history_search_delivery: ToolDelivery,
-  /// The simple `shell` tool and session task commands.
-  pub shell: bool,
-  #[serde(default = "command_delivery")]
-  pub task_delivery: ToolDelivery,
-  #[serde(default)]
-  pub web_fetch_delivery: ToolDelivery,
-  #[serde(default)]
-  pub web_search_delivery: ToolDelivery,
-  #[serde(default)]
-  pub ask_user_delivery: ToolDelivery,
-  /// Questions to the user: `ask_user`.
-  pub ask_user: bool,
-  /// Whether `wish mcp` in the session's shell may reach the MCP servers. The model's request is
-  /// the same either way, so switching it keeps the prompt cache.
-  pub mcp: bool,
-  /// Searches of the web: `web_search`, answered by the configured search providers.
-  pub web_search: bool,
-  #[serde(default)]
-  pub web_fetch: bool,
-  /// Whether `wish skill` in the session's shell may read skills. Like `mcp`, it changes neither
-  /// the tools nor the instructions, so switching it keeps the prompt cache.
-  pub skills: bool,
-  /// Whether `wish session` in the session's shell may see, make and message other sessions and
-  /// groups, or use the equivalent direct session tool.
-  pub sessions: bool,
-  #[serde(default = "command_delivery")]
-  pub sessions_delivery: ToolDelivery,
-}
-impl ToolSwitches {
-  /// These switches with a request's changes; what it leaves out stays as it is.
-  pub fn apply_changes(self, changes: ToolChanges) -> Self {
-    Self {
-      history_search: changes.history_search.unwrap_or(self.history_search),
-      history_search_delivery: changes.history_search_delivery.unwrap_or(self.history_search_delivery),
-      shell: changes.shell.unwrap_or(self.shell),
-      task_delivery: changes.task_delivery.unwrap_or(self.task_delivery),
-      web_fetch_delivery: changes.web_fetch_delivery.unwrap_or(self.web_fetch_delivery),
-      web_search_delivery: changes.web_search_delivery.unwrap_or(self.web_search_delivery),
-      ask_user_delivery: changes.ask_user_delivery.unwrap_or(self.ask_user_delivery),
-      ask_user: changes.ask_user.unwrap_or(self.ask_user),
-      mcp: changes.mcp.unwrap_or(self.mcp),
-      web_search: changes.web_search.unwrap_or(self.web_search),
-      web_fetch: changes.web_fetch.unwrap_or(self.web_fetch),
-      skills: changes.skills.unwrap_or(self.skills),
-      sessions: changes.sessions.unwrap_or(self.sessions),
-      sessions_delivery: changes.sessions_delivery.unwrap_or(self.sessions_delivery),
-    }
-  }
-  /// Whether a tool of this name runs under these switches.
-  fn allow(self, name: &str) -> bool {
-    match name {
-      "view_image" => true,
-      "task" => self.shell,
-      "session" => self.sessions,
-      "ask_user" => self.ask_user,
-      "web_search" => self.web_search,
-      "web_fetch" => self.web_fetch,
-      name if HISTORY_TOOLS.contains(&name) => self.history_search,
-      name if SHELL_TOOLS.contains(&name) => self.shell,
-      _ => false,
-    }
-  }
-}
-/// Switches a request sets, each optional.
-#[derive(Clone, Copy, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolChanges {
-  pub history_search: Option<bool>,
-  pub history_search_delivery: Option<ToolDelivery>,
-  pub shell: Option<bool>,
-  pub task_delivery: Option<ToolDelivery>,
-  pub web_fetch_delivery: Option<ToolDelivery>,
-  pub web_search_delivery: Option<ToolDelivery>,
-  pub ask_user_delivery: Option<ToolDelivery>,
-  pub ask_user: Option<bool>,
-  pub mcp: Option<bool>,
-  pub web_search: Option<bool>,
-  pub web_fetch: Option<bool>,
-  pub skills: Option<bool>,
-  pub sessions: Option<bool>,
-  pub sessions_delivery: Option<ToolDelivery>,
-}
-impl From<ToolSwitches> for ToolChanges {
-  /// Every switch set as these are.
-  fn from(switches: ToolSwitches) -> Self {
-    Self {
-      history_search: Some(switches.history_search),
-      history_search_delivery: Some(switches.history_search_delivery),
-      shell: Some(switches.shell),
-      task_delivery: Some(switches.task_delivery),
-      web_fetch_delivery: Some(switches.web_fetch_delivery),
-      web_search_delivery: Some(switches.web_search_delivery),
-      ask_user_delivery: Some(switches.ask_user_delivery),
-      ask_user: Some(switches.ask_user),
-      mcp: Some(switches.mcp),
-      web_search: Some(switches.web_search),
-      web_fetch: Some(switches.web_fetch),
-      skills: Some(switches.skills),
-      sessions: Some(switches.sessions),
-      sessions_delivery: Some(switches.sessions_delivery),
-    }
-  }
-}
-
 pub struct SessionTools {
   pub background: crate::application::background_tools::BackgroundTools,
   /// Started the first time the shell is switched on, and kept while it is off so background
   /// commands finish and report as usual.
-  shell: tokio::sync::OnceCell<ShellTool>,
-  shell_config: ShellConfig,
+  tasks: tokio::sync::OnceCell<crate::task::TaskManager>,
+  shell_config: TaskConfig,
   shell_on: AtomicBool,
   ask_user_on: AtomicBool,
   pub ask_user: AskUserTool,
@@ -173,9 +44,22 @@ pub struct SessionTools {
   slot: Weak<SessionSlot>,
 }
 impl SessionTools {
+  pub(crate) fn specifications(&self, capability: Capability) -> Vec<crate::protocol::Tool> {
+    match capability {
+      Capability::History => self.history.get_specifications(),
+      Capability::Image => vec![ViewImageTool.get_specification()],
+      Capability::Sessions => vec![crate::application::session_access::specification()],
+      Capability::Task => vec![crate::application::task_access::specification()],
+      Capability::Shell => self.shell().map(|shell| shell.get_specifications()).unwrap_or_default(),
+      Capability::AskUser => vec![self.ask_user.get_specification()],
+      Capability::WebFetch => vec![self.web_fetch.get_specification()],
+      Capability::WebSearch => vec![self.web_search.get_specification()],
+    }
+  }
+
   pub fn new(
     slot: Weak<SessionSlot>,
-    shell_config: ShellConfig,
+    shell_config: TaskConfig,
     session: &Session,
     session_id: &str,
   ) -> Self {
@@ -183,7 +67,7 @@ impl SessionTools {
       make_fetch(slot.clone(), session_id, shell_config.capture_dir.join("web-fetch"));
     Self {
       background: Default::default(),
-      shell: tokio::sync::OnceCell::new(),
+      tasks: tokio::sync::OnceCell::new(),
       shell_config,
       shell_on: AtomicBool::new(false),
       ask_user_on: AtomicBool::new(false),
@@ -197,23 +81,30 @@ impl SessionTools {
       slot,
     }
   }
-  /// The shell tool, once it has been switched on.
-  pub fn shell(&self) -> Option<&ShellTool> {
-    self.shell.get()
+  pub fn tasks(&self) -> Option<&crate::task::TaskManager> {
+    self.tasks.get()
   }
-  pub async fn task_manager(&self) -> Result<&ShellTool, ApplicationError> {
+  /// The shell tool, once it has been switched on.
+  pub fn shell(&self) -> Option<ShellTool> {
+    self.tasks.get().cloned().map(ShellTool::from_tasks)
+  }
+  pub async fn task_manager(&self) -> Result<&crate::task::TaskManager, ApplicationError> {
     self
-      .shell
-      .get_or_try_init(|| ShellTool::new(self.shell_config.clone()))
+      .tasks
+      .get_or_try_init(|| crate::task::TaskManager::new(self.shell_config.clone()))
       .await
       .map_err(|error| ApplicationError::invalid(format!("could not open tasks: {error}")))
   }
   /// Applies the session's switches, starting the shell tool the first time it is on.
   pub async fn switch(&self, switches: ToolSwitches) -> Result<(), ApplicationError> {
     if switches.shell {
-      self.shell.get_or_try_init(|| ShellTool::new(self.shell_config.clone())).await.map_err(
-        |error| ApplicationError::invalid(format!("could not start the shell: {error}")),
-      )?;
+      self
+        .tasks
+        .get_or_try_init(|| crate::task::TaskManager::new(self.shell_config.clone()))
+        .await
+        .map_err(|error| {
+          ApplicationError::invalid(format!("could not start the shell: {error}"))
+        })?;
     }
     self.history_on.store(switches.history_search, Ordering::Release);
     self.shell_on.store(switches.shell, Ordering::Release);
@@ -245,7 +136,7 @@ impl SessionTools {
     if output["process"]["status"] != "running" {
       return;
     }
-    let Some(shell) = self.shell() else { return };
+    let Some(shell) = self.tasks.get() else { return };
     let Some(id) = output["execution_id"].as_str() else { return };
     if !shell.claim_notification(id) {
       return;
@@ -274,8 +165,14 @@ impl SessionTools {
       let Some(slot) = slot.upgrade().filter(|slot| slot.require_live().is_ok()) else { return };
       let edits = shell.show(&id).ok().map(|task| task["edits"].clone());
       if let Err(error) = crate::application::background_tools::finish_shell(
-        &slot.sender, &id, command, result, edits,
-      ).await {
+        &slot.sender,
+        &id,
+        command,
+        result,
+        edits,
+      )
+      .await
+      {
         eprintln!("background notification: {error}");
         return;
       }
@@ -322,7 +219,7 @@ fn search_backend(slot: Weak<SessionSlot>) -> SearchBackend {
     Box::pin(async move {
       let app = app.ok_or_else(|| vec!["the server is shutting down".to_owned()])?;
       let found = app.search.search(&app.get_service_accounts(), &query, observer).await?;
-      Ok(Answer { provider: found.provider, name: found.name, results: found.results })
+      Ok(found)
     })
   })
 }
@@ -333,19 +230,27 @@ fn questions_changed(slot: Weak<SessionSlot>) -> impl Fn() + Send + Sync + 'stat
     let Some(slot) = slot.upgrade() else { return };
     let tasks = slot.tasks.clone();
     tasks.spawn(async move {
-      let _ = slot.persist_index();
+      if let Err(error) = blocking(move || slot.persist_index()).await {
+        eprintln!("persisting question status failed: {error}");
+      }
     });
   }
 }
 impl ToolExecutor for SessionTools {
   fn accepts_unadvertised_call(&self, name: &str) -> bool {
     // Recognize the route here; execute checks permissions and gives a specific disabled error.
-    matches!(name, "session" | "task" | "web_fetch" | "web_search" | "ask_user") || HISTORY_TOOLS.contains(&name)
+    Capability::from_tool(name).is_some_and(Capability::command_backed)
   }
 
-  async fn execute_with_input(&self, call: &ToolCall, control: &ExecutionControl,
-    input: Option<crate::executor::tool::ToolInput>) -> ToolOutcome {
-    let Some(input) = input else { return self.execute(call, control).await; };
+  async fn execute_with_input(
+    &self,
+    call: &ToolCall,
+    control: &ExecutionControl,
+    input: Option<crate::executor::tool::ToolInput>,
+  ) -> ToolOutcome {
+    let Some(input) = input else {
+      return self.execute(call, control).await;
+    };
     if matches!(call.name.as_str(), "shell" | "shell_edit") {
       let Some(shell) = self.shell().filter(|_| self.shell_on.load(Ordering::Acquire)) else {
         return ToolOutcome::Failed("shell is not enabled for this session".into());
@@ -357,27 +262,36 @@ impl ToolExecutor for SessionTools {
       }
       return outcome;
     }
-    let Some(slot) = self.slot.upgrade() else { return ToolOutcome::Failed("session is closed".into()); };
+    let Some(slot) = self.slot.upgrade() else {
+      return ToolOutcome::Failed("session is closed".into());
+    };
     self.background.execute(slot, call, control, input).await
   }
 
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
-    match call.name.as_str() {
-      "view_image" => self.view_image(call, control).await,
-      "session" => {
-        let Some(slot) = self.slot.upgrade() else { return ToolOutcome::Failed("session is closed".into()); };
-        let Some(app) = slot.app.upgrade() else { return ToolOutcome::Failed("server is closed".into()); };
+    match Capability::from_tool(&call.name) {
+      Some(Capability::Image) => self.view_image(call, control).await,
+      Some(Capability::Sessions) => {
+        let Some(slot) = self.slot.upgrade() else {
+          return ToolOutcome::Failed("session is closed".into());
+        };
+        let Some(app) = slot.app.upgrade() else {
+          return ToolOutcome::Failed("server is closed".into());
+        };
         let request = match crate::application::session_access::parse_request(&call.arguments) {
           Ok(request) => request,
           Err(error) => return ToolOutcome::Failed(error.to_string()),
         };
-        match control.run_until_cancelled(crate::application::session_access::execute(app, slot, request)).await {
+        match control
+          .run_until_cancelled(crate::application::session_access::execute(app, slot, request))
+          .await
+        {
           Some(Ok(output)) => ToolOutcome::Success(output),
           Some(Err(error)) => ToolOutcome::Failed(error.to_string()),
           None => ToolOutcome::Cancelled,
         }
       }
-      "task" => {
+      Some(Capability::Task) => {
         let Some(slot) = self.slot.upgrade() else {
           return ToolOutcome::Failed("session is closed".into());
         };
@@ -393,7 +307,7 @@ impl ToolExecutor for SessionTools {
           .await
         {
           Some(Ok(output)) => ToolOutcome::Report {
-            text: crate::task::output::render(&output, false),
+            text: crate::tool::task_output::render(&output, false),
             output,
             metadata: serde_json::Value::Null,
             failed: false,
@@ -402,31 +316,31 @@ impl ToolExecutor for SessionTools {
           None => ToolOutcome::Cancelled,
         }
       }
-      "ask_user" => {
+      Some(Capability::AskUser) => {
         if !self.ask_user_on.load(Ordering::Acquire) {
           return ToolOutcome::Failed("ask_user is not enabled for this session".into());
         }
         self.ask_user.execute(call, control).await
       }
-      "web_fetch" => {
+      Some(Capability::WebFetch) => {
         if !self.web_fetch_on.load(Ordering::Acquire) {
           return ToolOutcome::Failed("web_fetch is not enabled for this session".into());
         }
         self.web_fetch.execute(call, control).await
       }
-      "web_search" => {
+      Some(Capability::WebSearch) => {
         if !self.web_search_on.load(Ordering::Acquire) {
           return ToolOutcome::Failed("web_search is not enabled for this session".into());
         }
         self.web_search.execute(call, control).await
       }
-      name if HISTORY_TOOLS.contains(&name) => {
+      Some(Capability::History) => {
         if !self.history_on.load(Ordering::Acquire) {
           return ToolOutcome::Failed("history search is disabled for this session".into());
         }
         self.history.execute(call, control).await
-      },
-      name if SHELL_TOOLS.contains(&name) => self.execute_shell(call, control).await,
+      }
+      Some(Capability::Shell) => self.execute_shell(call, control).await,
       _ => ToolOutcome::Failed(format!("unknown tool: {}", call.name)),
     }
   }
@@ -444,32 +358,10 @@ impl SessionSlot {
       return Err(ApplicationError::invalid(format!("no executor for tool {}", tool.name)));
     }
     let previous_tools = std::mem::take(&mut config.tools);
-    if switches.history_search && (!switches.shell || switches.history_search_delivery == ToolDelivery::Tool) {
-      config.tools.extend(self.tools.history.get_specifications());
-    }
-    config.tools.push(ViewImageTool.get_specification());
-    if switches.sessions && (!switches.shell || switches.sessions_delivery == ToolDelivery::Tool) {
-      config.tools.push(crate::application::session_access::specification());
-    }
-    if switches.shell
-      && let Some(shell) = self.tools.shell()
-    {
-      config.tools.extend(shell.get_specifications());
-    }
-    if switches.shell && switches.task_delivery == ToolDelivery::Tool {
-      config.tools.push(crate::application::task_access::specification());
-    }
-    if switches.ask_user && (!switches.shell || switches.ask_user_delivery == ToolDelivery::Tool) {
-      config.tools.push(self.tools.ask_user.get_specification());
-    }
-    if switches.web_fetch && (!switches.shell || switches.web_fetch_delivery == ToolDelivery::Tool)
-    {
-      config.tools.push(self.tools.web_fetch.get_specification());
-    }
-    if switches.web_search
-      && (!switches.shell || switches.web_search_delivery == ToolDelivery::Tool)
-    {
-      config.tools.push(self.tools.web_search.get_specification());
+    for capability in Capability::ALL {
+      if switches.advertised(capability) {
+        config.tools.extend(self.tools.specifications(capability));
+      }
     }
     // Preserve the active definition order and command-backed definitions until a generation
     // switch. Disabled capabilities are removed immediately by the caller's cleared target list.
@@ -477,7 +369,7 @@ impl SessionSlot {
     for previous in previous_tools {
       if let Some(index) = config.tools.iter().position(|tool| tool.name == previous.name) {
         ordered.push(config.tools.remove(index));
-      } else if (matches!(previous.name.as_str(), "session" | "task" | "web_fetch" | "web_search" | "ask_user") || HISTORY_TOOLS.contains(&previous.name.as_str()))
+      } else if Capability::from_tool(&previous.name).is_some_and(Capability::command_backed)
         && switches.allow(&previous.name)
       {
         ordered.push(previous);
@@ -584,14 +476,7 @@ fn make_fetch(
       Box::pin(async move {
         let app = app.ok_or("server is shutting down")?;
         let accounts = app.get_service_accounts();
-        let p = app.fetch.fetch(&url, refresh, &conversation, &accounts, observer, None).await?;
-        Ok(crate::tool::web_fetch::FetchPage {
-          url: p.url,
-          title: p.title,
-          content: p.content,
-          provider: p.provider,
-          fetched_at: p.fetched_at,
-        })
+        app.fetch.fetch(&url, refresh, &conversation, &accounts, observer, None).await
       })
     }),
     directory,

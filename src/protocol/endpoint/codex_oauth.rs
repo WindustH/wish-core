@@ -27,9 +27,9 @@
 
 use serde_json::{Value, json};
 
-use crate::Error;
 use crate::protocol::attempt::{Reply, Transport};
 use crate::protocol::endpoint::{AuthScheme, Credentials, Draft, Endpoint, Tokens};
+use crate::protocol::error::Error;
 use crate::protocol::http_error;
 use crate::protocol::json_read::read_string_member;
 use crate::utils::time::unix_seconds;

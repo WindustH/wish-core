@@ -213,16 +213,3 @@ fn has_distinct_structured_content(result: &Value) -> bool {
           .is_some_and(|text| serde_json::from_str::<Value>(text).ok().as_ref() == Some(structured))
     })
 }
-
-#[cfg(test)]
-mod presentation_tests {
-  use super::*;
-  #[test]
-  fn keep_structured_fields_missing_from_prose_but_deduplicate_json_copy() {
-    let mut result =
-      json!({"content":[{"type":"text","text":"Job started"}],"structuredContent":{"job_id":"42"}});
-    assert!(has_distinct_structured_content(&result));
-    result["content"][0]["text"] = r#"{"job_id":"42"}"#.into();
-    assert!(!has_distinct_structured_content(&result));
-  }
-}

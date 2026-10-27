@@ -5,8 +5,8 @@ use super::{
   platform::{self, ProcessTree},
   process::{self, Execution, Snapshot, Status},
 };
-use crate::executor::ExecutionControl;
-use crate::session::ToolOutcome;
+use super::{ForegroundResult, InputArrival};
+use crate::utils::control::ExecutionControl;
 use base64::Engine;
 use serde_json::{Value, json};
 use std::{
@@ -83,7 +83,7 @@ impl TaskManager {
     let mut registry = Registry::default();
     for record in crate::storage::task_records::load(&config.capture_dir).await? {
       let Some(id) = record["task_id"].as_str() else { continue };
-      if !crate::session::resources::is_execution_id(id) {
+      if !super::is_execution_id(id) {
         continue;
       }
       let mut snapshot: Snapshot = serde_json::from_value(record["process"].clone())
@@ -167,11 +167,16 @@ impl TaskManager {
     output["edits_path"] = json!(execution.output_path.with_file_name("task.json"));
     Ok(output)
   }
-  pub async fn run(&self, operation: TaskOperation, control: &ExecutionControl) -> ToolOutcome {
+  pub async fn run(
+    &self,
+    operation: TaskOperation,
+    control: &ExecutionControl,
+  ) -> Result<Value, TaskError> {
     if control.is_cancelled() {
-      return ToolOutcome::Cancelled;
+      return Err(TaskError::Interrupted);
     }
-    let result = match operation {
+
+    match operation {
       TaskOperation::Start { command, timeout, data, encoding, interactive } => {
         let timeout = match timeout {
           None | Some(-1.0) => Ok(self.inner.config.soft_timeout),
@@ -211,15 +216,7 @@ impl TaskManager {
           .map(|snapshot| json!({"execution_id": execution_id, "process": snapshot})),
         Err(error) => Err(error),
       },
-    };
-    result
-      .map(|output| ToolOutcome::Report {
-        text: super::output::render(&output, false),
-        output,
-        metadata: Value::Null,
-        failed: false,
-      })
-      .unwrap_or_else(Into::into)
+    }
   }
   pub fn list(&self) -> Result<Value, TaskError> {
     let mut tasks: Vec<_> =
@@ -269,13 +266,18 @@ impl TaskManager {
     paths: Vec<std::path::PathBuf>,
     check_diff: bool,
     control: &ExecutionControl,
-  ) -> Result<ToolOutcome, TaskError> {
+  ) -> Result<ForegroundResult, TaskError> {
     self.foreground_responsive(command, timeout, paths, check_diff, control, None).await
   }
   pub async fn foreground_responsive(
-    &self, command: String, timeout: Option<f64>, paths: Vec<std::path::PathBuf>,
-    check_diff: bool, control: &ExecutionControl, mut input: Option<crate::executor::tool::ToolInput>,
-  ) -> Result<ToolOutcome, TaskError> {
+    &self,
+    command: String,
+    timeout: Option<f64>,
+    paths: Vec<std::path::PathBuf>,
+    check_diff: bool,
+    control: &ExecutionControl,
+    mut input: Option<InputArrival>,
+  ) -> Result<ForegroundResult, TaskError> {
     let deadline = match timeout {
       Some(seconds) if seconds.is_finite() && seconds > 0.0 => Some(resolve_deadline(
         Duration::try_from_secs_f64(seconds)
@@ -323,7 +325,7 @@ impl TaskManager {
         }
         _ = async { let _ = detached.wait_for(|value| *value).await; } => break "backgrounded",
         arrived = async {
-          match input.as_mut() { Some(input) => input.wait().await, None => std::future::pending().await }
+          match input.as_mut() { Some(input) => input.await, None => std::future::pending().await }
         } => {
           match arrived {
             Ok(()) => { self.background(&task.id).await?; yielded_for_input = true; break "backgrounded"; }
@@ -368,12 +370,7 @@ impl TaskManager {
       output["edits_path"] = json!(task.output_path.with_file_name("task.json"));
     }
     let failed = output["success"] != true;
-    Ok(ToolOutcome::Report {
-      text: super::output::render(&output, check_diff),
-      output,
-      metadata: json!({"edits":edits}),
-      failed,
-    })
+    Ok(ForegroundResult { output, edits, failed })
   }
   async fn spawn(
     &self,
@@ -600,16 +597,4 @@ async fn read_output(
     output["output_notice"] = "Output limited. Read only the needed range or search output_path. Use poll with next_offset to continue; avoid reading the entire file or repeating broad commands.".into();
   }
   Ok(output)
-}
-
-/// The outcome a shell error reports: an interruption cancels, and a lost process leaves the
-/// outcome unknown.
-impl From<TaskError> for ToolOutcome {
-  fn from(error: TaskError) -> Self {
-    match error {
-      TaskError::Interrupted => ToolOutcome::Cancelled,
-      TaskError::Unknown(message) => ToolOutcome::Unknown(message),
-      error => ToolOutcome::Failed(error.to_string()),
-    }
-  }
 }

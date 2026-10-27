@@ -17,6 +17,10 @@ pub fn render(
     ModelUseProtocol::OpenAiResponses(mode) => openai_responses::render(request, mode),
     ModelUseProtocol::AnthropicMessages(_) => anthropic_messages::render(request),
     ModelUseProtocol::GoogleGenerateContent => google_generate_content::render(request),
-    _ => unreachable!("validated token-count protocol pairing"),
+    _ => Err(Error::Unsupported {
+      feature: "token count".into(),
+      subject: format!("{model_use:?}"),
+      reason: "no token-count renderer for this model protocol".into(),
+    }),
   }
 }

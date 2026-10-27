@@ -22,10 +22,10 @@ impl ConfigFile {
     Ok(Self { path, config, revision: hash(&bytes) })
   }
   /// The configuration with its secrets redacted, and its revision.
-  pub fn redacted(&self) -> Value {
-    let mut config = serde_json::to_value(&self.config).unwrap();
+  pub fn redacted(&self) -> Result<Value, ApplicationError> {
+    let mut config = serde_json::to_value(&self.config).map_err(ApplicationError::internal)?;
     redact(&mut config);
-    json!({"revision":self.revision,"config":config})
+    Ok(json!({"revision":self.revision,"config":config}))
   }
   /// The configuration a save sends, with its redacted secrets put back from this one. The save
   /// must name the current revision, which the file on disk must still have.
@@ -38,7 +38,7 @@ impl ConfigFile {
     if revision != self.revision || hash(&source) != revision {
       return Err(ApplicationError::conflict("configuration changed; reload before saving"));
     }
-    restore(&mut value, &serde_json::to_value(&self.config).unwrap())?;
+    restore(&mut value, &serde_json::to_value(&self.config).map_err(ApplicationError::internal)?)?;
     let mut config: Config =
       serde_json::from_value(value).map_err(|e| ApplicationError::invalid(e.to_string()))?;
     config.migrate_accounts()?;
@@ -56,7 +56,7 @@ impl ConfigFile {
     if let Some(accounts) = accounts {
       value["accounts"] = accounts;
     }
-    restore(&mut value, &serde_json::to_value(&self.config).unwrap())?;
+    restore(&mut value, &serde_json::to_value(&self.config).map_err(ApplicationError::internal)?)?;
     let provider = serde_json::from_value(value["providers"][id].take())
       .map_err(|e| ApplicationError::invalid(e.to_string()))?;
     let mut config = self.config.clone();

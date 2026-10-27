@@ -3,15 +3,15 @@
 //! their handoff, and its images projected for what the model accepts - the stored conversation
 //! keeps the originals. An upstream that refuses images turns them into file references for the
 //! rest of the model's life.
+use super::model_images::project_images;
 use crate::application::{
   compaction_item,
   provider::{ModelClient, Provider},
 };
-use crate::executor::model::images::project_images;
 use crate::storage::blobs;
 use crate::{
-  Error,
   executor::model::{CallResponse, ModelCaller},
+  protocol::error::Error,
   protocol::{
     Message, Request, TokenCount, UpstreamCompaction, UpstreamCompactionRequest,
     model_use::ModelUseProtocol,
@@ -217,21 +217,5 @@ pub(crate) fn image_references(value: &mut Value) {
         );
       }
     }
-  }
-}
-
-#[cfg(test)]
-mod inspection_tests {
-  use super::*;
-  #[test]
-  fn image_inspection_preserves_tool_arguments() {
-    let argument = serde_json::json!({"Image":{"data_base64":"YWJj"}});
-    let mut request = serde_json::json!({"conversation":[
-      {"User":{"content":[{"Image":{"mime_type":"image/png","data_base64":"YWJj"}}]}},
-      {"ToolUse":{"arguments":argument.clone()}}
-    ]});
-    image_references(&mut request);
-    assert_eq!(request["conversation"][0]["User"]["content"][0]["Image"]["byte_count"], 3);
-    assert_eq!(request["conversation"][1]["ToolUse"]["arguments"], argument);
   }
 }

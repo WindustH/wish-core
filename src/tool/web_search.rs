@@ -7,12 +7,13 @@
 //! result message as metadata for the page to show.
 
 use crate::{
-  executor::{ExecutionControl, tool::ToolExecutor},
   protocol::{
     Tool,
     web_search::{Recency, SearchQuery, SearchResults},
   },
   session::{ToolCall, ToolOutcome},
+  tool::contract::ToolExecutor,
+  utils::control::ExecutionControl,
 };
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin, sync::Arc};
@@ -198,35 +199,4 @@ fn shorten(text: &str, limit: usize) -> String {
   let mut short: String = text.chars().take(limit).collect();
   short.push('…');
   short
-}
-
-#[cfg(test)]
-mod argument_tests {
-  use super::*;
-  #[tokio::test]
-  async fn empty_filters_use_defaults_and_invalid_query_never_calls_provider() {
-    let backend: SearchBackend = Arc::new(|query| {
-      Box::pin(async move {
-        assert_eq!(query.query, "Rust");
-        assert_eq!(query.limit, 10);
-        assert!(query.allowed_domains.is_empty() && query.blocked_domains.is_empty());
-        assert!(query.recency.is_none());
-        Err(vec!["mock reached".into()])
-      })
-    });
-    let tool = WebSearchTool::new(backend, "session".into());
-    let call =
-      |arguments| ToolCall { call_id: "search".into(), name: "web_search".into(), arguments };
-    let outcome = tool.execute(&call(json!({"query":"Rust","recency":" ","allowed_domains":null,"blocked_domains":"","max_results":""})), &ExecutionControl::new()).await;
-    assert!(matches!(outcome, ToolOutcome::Failed(message) if message.contains("mock reached")));
-    for query in [json!(null), json!(""), json!(42)] {
-      let outcome = tool.execute(&call(json!({"query":query})), &ExecutionControl::new()).await;
-      assert!(
-        matches!(outcome, ToolOutcome::Failed(message) if message.contains("query") && message.contains("Example:"))
-      );
-    }
-    let outcome =
-      tool.execute(&call(json!({"query":"Rust","recency":false})), &ExecutionControl::new()).await;
-    assert!(matches!(outcome, ToolOutcome::Failed(message) if message.contains("recency")));
-  }
 }

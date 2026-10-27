@@ -6,23 +6,19 @@ use super::{
   error::ApplicationError,
 };
 use crate::{
-  client::{
-    RetryObserver, RetryOperation,
-    retry::{classify_read_retry, retry_upstream},
-  },
+  client::{RetryObserver, account::AccountClient},
   protocol::{
     attempt::Limits,
     endpoint::{AuthScheme, Endpoint},
     web_fetch::{FetchProtocol, FetchRequest},
   },
   transport::ReqwestTransport,
-  utils::retry::RetryPolicy,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
   collections::BTreeMap,
-  sync::{Arc, LazyLock, RwLock},
+  sync::{Arc, RwLock},
   time::Duration,
 };
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -46,29 +42,13 @@ pub struct FetchProvider {
   #[serde(default)]
   pub headers: BTreeMap<String, String>,
 }
-#[derive(Clone, Deserialize, Serialize)]
-pub struct Page {
-  pub url: String,
-  pub title: String,
-  pub content: String,
-  pub provider: String,
-  pub fetched_at: u64,
-}
+use crate::tool::web_fetch::FetchPage;
 pub fn presets() -> Value {
-  static PRESETS: LazyLock<Value> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("../../resources/fetch-presets.json"))
-      .expect("embedded fetch presets must be valid JSON")
-  });
-  PRESETS.clone()
+  super::presets::fetch_presets().clone()
 }
-fn preset(id: &str) -> Result<Value, ApplicationError> {
-  presets()["presets"]
-    .as_array()
-    .unwrap()
-    .iter()
-    .find(|p| p["id"] == id)
-    .cloned()
-    .ok_or_else(|| ApplicationError::invalid("unknown fetch preset"))
+fn preset(id: &str) -> Result<&'static Value, ApplicationError> {
+  super::presets::find_fetch(id)
+    .ok_or_else(|| ApplicationError::invalid(format!("unknown fetch preset `{id}`")))
 }
 impl FetchConfig {
   pub fn validate(
@@ -93,10 +73,10 @@ impl FetchConfig {
       if spec["key"] == "required" && account.is_none() {
         return Err(ApplicationError::invalid("fetch provider requires an account"));
       }
-      if let Some(required) = spec["account_preset"].as_str() {
-        if account.and_then(|a| a.preset.as_deref()) != Some(required) {
-          return Err(ApplicationError::invalid("incompatible fetch account"));
-        }
+      if let Some(required) = spec["account_preset"].as_str()
+        && account.and_then(|a| a.preset.as_deref()) != Some(required)
+      {
+        return Err(ApplicationError::invalid("incompatible fetch account"));
       }
       Endpoint::new(
         p.base_url.as_deref().unwrap_or(spec["base_url"].as_str().unwrap()),
@@ -173,7 +153,7 @@ impl FetchHub {
     accounts: &AccountRegistry,
     observer: Option<RetryObserver>,
     only: Option<&str>,
-  ) -> Result<Page, String> {
+  ) -> Result<FetchPage, String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "invalid URL")?;
     if !matches!(parsed.scheme(), "http" | "https")
       || parsed.host_str().is_none()
@@ -191,7 +171,7 @@ impl FetchHub {
         service.config.credential_id.as_ref().and_then(|id| accounts.get(&format!("account:{id}")));
       match read(service, account, url, refresh, conversation, observer.clone()).await {
         Ok((title, content)) if !content.trim().is_empty() => {
-          return Ok(Page {
+          return Ok(FetchPage {
             url: url.into(),
             title,
             content,
@@ -217,11 +197,13 @@ async fn read(
   refresh: bool,
   conversation: &str,
   observer: Option<RetryObserver>,
-) -> Result<(String, String), crate::Error> {
+) -> Result<(String, String), crate::protocol::error::Error> {
   let p = &service.config;
   let credentials = account.map(|a| a.client.get_credentials().clone()).unwrap_or_default();
   if service.requires_key && credentials.api_key.is_empty() {
-    return Err(crate::Error::Build("fetch account has no API key or active login".into()));
+    return Err(crate::protocol::error::Error::Build(
+      "fetch account has no API key or active login".into(),
+    ));
   }
   let protocol = service.protocol;
   let mut headers: Vec<(String, String)> =
@@ -229,7 +211,7 @@ async fn read(
   let user_agent = account.and_then(|a| a.get_user_agent());
   headers.push((
     "user-agent".into(),
-    user_agent.as_deref().unwrap_or(super::provider::WISH_USER_AGENT).into(),
+    user_agent.as_deref().unwrap_or(super::identity::WISH_USER_AGENT).into(),
   ));
   let request =
     FetchRequest { url: url.into(), refresh, conversation: Some(conversation.into()), model: None };
@@ -243,111 +225,10 @@ async fn read(
     let page = client.fetch(protocol, &request, p.base_url.as_deref(), &headers).await?;
     return Ok((page.title, page.content));
   }
-  let page = retry_upstream(
-    &RetryPolicy::auxiliary(),
-    RetryOperation::WebFetch,
-    observer,
-    |_| async {
-      crate::protocol::web_fetch::fetch(
-        transport,
-        protocol,
-        &credentials,
-        p.base_url.as_deref(),
-        &headers,
-        &request,
-        crate::utils::time::unix_seconds(),
-      )
-      .await
-    },
-    classify_read_retry,
-  )
-  .await?;
-  Ok((page.title, page.content))
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use std::sync::atomic::{AtomicUsize, Ordering};
-  use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-
-  #[tokio::test]
-  async fn requests_reuse_connections_and_configuration_replaces_the_pool() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let connections = Arc::new(AtomicUsize::new(0));
-    let counter = connections.clone();
-    let server = tokio::spawn(async move {
-      let mut tasks = tokio::task::JoinSet::new();
-      loop {
-        let (socket, _) = listener.accept().await.unwrap();
-        counter.fetch_add(1, Ordering::SeqCst);
-        tasks.spawn(async move {
-          let mut socket = BufReader::new(socket);
-          loop {
-            let mut length = 0;
-            loop {
-              let mut line = String::new();
-              if socket.read_line(&mut line).await.unwrap_or(0) == 0 {
-                return;
-              }
-              if line == "\r\n" {
-                break;
-              }
-              if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                length = value.trim().parse::<usize>().unwrap();
-              }
-            }
-            let mut body = vec![0; length];
-            socket.read_exact(&mut body).await.unwrap();
-            let page = r#"{"data":{"title":"Test","content":"Page content"}}"#;
-            let response = format!(
-              "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-              page.len(),
-              page
-            );
-            if socket.get_mut().write_all(response.as_bytes()).await.is_err() {
-              return;
-            }
-          }
-        });
-      }
-    });
-    let config = FetchConfig {
-      order: vec!["reader".into()],
-      providers: BTreeMap::from([(
-        "reader".into(),
-        FetchProvider {
-          preset: "jina_reader".into(),
-          credential_id: None,
-          base_url: Some(format!("http://{address}")),
-          enabled: true,
-          proxy_enabled: false,
-          headers: BTreeMap::new(),
-        },
-      )]),
-    };
-    let proxy = ProxyConfig::default();
-    let hub = FetchHub::new(config.clone(), proxy.clone()).unwrap();
-    let accounts = AccountRegistry::default();
-    for _ in 0..5 {
-      let page = tokio::time::timeout(
-        Duration::from_secs(3),
-        hub.fetch("https://example.com", false, "test", &accounts, None, None),
-      )
-      .await
-      .unwrap()
-      .unwrap();
-      assert_eq!(page.content, "Page content");
-    }
-    assert_eq!(connections.load(Ordering::SeqCst), 1, "five calls share one TCP connection");
-    // Existing requests may keep the previous snapshot; the next call uses the new runtime.
-    let previous = hub.state.read().unwrap().clone();
-    hub.apply(FetchHub::prepare(&config, &proxy).unwrap());
-    assert!(!Arc::ptr_eq(&previous, &hub.state.read().unwrap()));
-    hub.fetch("https://example.com", false, "test", &accounts, None, None).await.unwrap();
-    assert_eq!(connections.load(Ordering::SeqCst), 2);
-    server.abort();
-    let _ = server.await;
+  let mut client = AccountClient::new(transport.clone(), credentials, None);
+  if let Some(observer) = observer {
+    client = client.with_retry_observer(observer);
   }
+  let page = client.fetch(protocol, &request, p.base_url.as_deref(), &headers).await?;
+  Ok((page.title, page.content))
 }

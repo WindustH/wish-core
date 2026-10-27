@@ -71,16 +71,24 @@ impl Session {
     &mut self,
     apply: impl FnOnce(&mut SessionTransaction<'_, '_>) -> Result<R, SessionError> + Send + 'static,
   ) -> Result<R, SessionError> {
+    let _queue_mutation = self
+      .queue_size
+      .mutation
+      .lock()
+      .map_err(|_| StorageError::Corrupt("queue publication lock poisoned".into()))?;
     let mut record = self.record.clone();
     let key = self.key.clone();
     let recorded_at = Timestamp::now();
-    let (result, record) = self.storage.transaction(move |store| -> Result<_, SessionError> {
-      let result =
-        apply(&mut SessionTransaction { record: &mut record, store, key: &key, recorded_at })?;
-      store.save_object(&key, &record)?;
-      Ok((result, record))
-    })?;
+    let (result, record, queued) =
+      self.storage.transaction(move |store| -> Result<_, SessionError> {
+        let result =
+          apply(&mut SessionTransaction { record: &mut record, store, key: &key, recorded_at })?;
+        store.save_object(&key, &record)?;
+        let queued = store.list_len::<EntryId>(&record.queue)?;
+        Ok((result, record, queued))
+      })?;
     self.record = record;
+    self.queue_size.publish(queued);
     Ok(result)
   }
   /// Runs `read` on the session as committed. The transaction is rolled back, so reading never
@@ -106,9 +114,14 @@ impl SessionSender {
     &self,
     apply: impl FnOnce(&mut SessionTransaction<'_, '_>) -> Result<R, SessionError> + Send + 'static,
   ) -> Result<R, SessionError> {
+    let _queue_mutation = self
+      .queue_size
+      .mutation
+      .lock()
+      .map_err(|_| StorageError::Corrupt("queue publication lock poisoned".into()))?;
     let key = self.key.clone();
     let recorded_at = Timestamp::now();
-    self.storage.transaction(move |store| {
+    let (result, queued) = self.storage.transaction(move |store| -> Result<_, SessionError> {
       let stored = store.load_object::<SessionRecord>(&key)?;
       let mut record = (*stored).clone();
       let result =
@@ -118,8 +131,10 @@ impl SessionSender {
       {
         return Err(StorageError::Corrupt("a sender changed the session record".into()).into());
       }
-      Ok(result)
-    })
+      Ok((result, store.list_len::<EntryId>(&record.queue)?))
+    })?;
+    self.queue_size.publish(queued);
+    Ok(result)
   }
 }
 impl SessionTransaction<'_, '_> {

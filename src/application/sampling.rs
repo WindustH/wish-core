@@ -1,5 +1,5 @@
 //! One-second observations of received output, separate from provider-reported billing usage.
-use crate::application::{management::ManagementStore, provider::ModelClient};
+use crate::{application::provider::ModelClient, storage::management::ManagementStore};
 use crate::{client::AttemptObserver, protocol::StreamEvent, utils::time::Timestamp};
 use std::sync::{
   Arc,

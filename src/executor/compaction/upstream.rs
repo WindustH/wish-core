@@ -3,8 +3,8 @@
 //! internal continuation notice quoting (not replaying) the latest user message.
 use super::{Failure, call_status, check_cancelled, measure, trigger::CutoverPlan};
 use crate::{
-  Error,
   executor::{ExecutionControl, model::ModelCaller, observe::record_and_deliver},
+  protocol::error::Error,
   protocol::{ContentBlock, Message, upstream_compaction::UpstreamCompactionRequest},
   session::{
     RunOutcome, Session, SessionEvent,

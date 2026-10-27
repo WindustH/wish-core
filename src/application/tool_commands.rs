@@ -2,7 +2,6 @@
 use super::{app::App, bridge_access, error::ApplicationError};
 use crate::{
   executor::{ExecutionControl, tool::ToolExecutor},
-  protocol::Tool,
   session::{ToolCall, ToolOutcome},
 };
 use serde_json::Value;
@@ -21,15 +20,22 @@ pub async fn execute(
   if !switches.shell {
     return Err(ApplicationError::conflict("shell is disabled for this session"));
   }
-  let (enabled, specification): (bool, Tool) = match name.as_str() {
-    "history_search" | "history_read" | "history_query" => (switches.history_search,
-      slot.tools.history.get_specifications().into_iter().find(|tool| tool.name == name)
-        .ok_or_else(ApplicationError::not_found)?),
-    "webfetch" => (switches.web_fetch, slot.tools.web_fetch.get_specification()),
-    "websearch" => (switches.web_search, slot.tools.web_search.get_specification()),
-    "askuser" => (switches.ask_user, slot.tools.ask_user.get_specification()),
-    _ => return Err(ApplicationError::not_found()),
-  };
+  use crate::capability::Capability;
+  let capability = Capability::from_command(&name)
+    .filter(|capability| {
+      matches!(
+        capability,
+        Capability::History | Capability::WebFetch | Capability::WebSearch | Capability::AskUser
+      )
+    })
+    .ok_or_else(ApplicationError::not_found)?;
+  let enabled = switches.enabled(capability);
+  let specification = slot
+    .tools
+    .specifications(capability)
+    .into_iter()
+    .find(|tool| capability != Capability::History || tool.name == name)
+    .ok_or_else(ApplicationError::not_found)?;
   if !enabled {
     return Err(ApplicationError::conflict(format!("{name} is disabled for this session")));
   }
@@ -51,7 +57,7 @@ pub async fn execute(
     ToolOutcome::Success(output) | ToolOutcome::SuccessWithMetadata { output, .. } => Ok(output),
     ToolOutcome::Failed(message) => Err(ApplicationError::invalid(message)),
     ToolOutcome::Cancelled => Err(ApplicationError::conflict("command cancelled")),
-    ToolOutcome::Unknown(message) => Err(ApplicationError::internal(message)),
+    ToolOutcome::Unknown(message) => Err(ApplicationError::unknown(message)),
     _ => Err(ApplicationError::internal("unsupported command result")),
   }
 }

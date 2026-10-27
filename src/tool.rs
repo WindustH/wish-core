@@ -9,3 +9,6 @@ pub mod web_search;
 pub mod web_fetch;
 
 pub(crate) mod arguments;
+
+pub mod contract;
+pub mod task_output;

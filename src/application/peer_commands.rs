@@ -1,5 +1,5 @@
 //! Session-authorized peer operations and ownership checks.
-use crate::application::error::ApplicationError;
+use crate::application::error::{ApplicationError, blocking};
 use crate::application::{
   app::App,
   config::Defaults,
@@ -15,7 +15,9 @@ use std::{collections::BTreeMap, sync::Arc};
 fn authorized(slot: &Arc<SessionSlot>) -> Result<Arc<SessionSlot>, ApplicationError> {
   slot.require_live()?;
   if !slot.get_descriptor().tools.sessions {
-    return Err(ApplicationError::conflict("Session management is disabled for this session. The user can enable it in the session's settings."));
+    return Err(ApplicationError::conflict(
+      "Session management is disabled for this session. The user can enable it in the session's settings.",
+    ));
   }
   Ok(slot.clone())
 }
@@ -38,19 +40,22 @@ enum Target {
 }
 /// The session or group `target` names: by id, or by a name only one of them bears.
 async fn resolve(app: &Arc<App>, target: &str) -> Result<Target, ApplicationError> {
-  if let Some(group) = app.management.group(target)? {
+  let (store, key) = (app.management.clone(), target.to_owned());
+  if let Some(group) = blocking(move || Ok(store.group(&key)?)).await? {
     return Ok(Target::Group(group));
   }
   if let Ok(slot) = app.get_session(target).await {
     return Ok(Target::Session(slot));
   }
   let mut named: Vec<Target> = Vec::new();
-  for (descriptor, _) in sessions(app)? {
+  let owner = app.clone();
+  for (descriptor, _) in blocking(move || sessions(&owner)).await? {
     if descriptor.name.eq_ignore_ascii_case(target) {
       named.push(Target::Session(app.get_session(&descriptor.id).await?));
     }
   }
-  for group in app.management.groups()? {
+  let store = app.management.clone();
+  for group in blocking(move || Ok(store.groups()?)).await? {
     if group.name.eq_ignore_ascii_case(target) {
       named.push(Target::Group(group));
     }
@@ -141,26 +146,29 @@ pub(super) async fn list_inner(
   slot: Arc<SessionSlot>,
 ) -> Result<Value, ApplicationError> {
   authorized(&slot)?;
-  let sessions = sessions(&app)?;
-  let groups = app.management.groups()?;
-  let summaries: Vec<Value> = sessions
-    .iter()
-    .map(|(descriptor, status)| {
-      let own: Vec<&GroupRecord> =
-        groups.iter().filter(|group| group.members.contains(&descriptor.id)).collect();
-      session_summary(&id, descriptor, status, &own)
-    })
-    .collect();
-  let by_id: BTreeMap<&str, &Descriptor> =
-    sessions.iter().map(|(descriptor, _)| (descriptor.id.as_str(), descriptor)).collect();
-  let groups: Vec<Value> = groups
-    .iter()
-    .map(|group| {
-      let members = group.members.iter().filter_map(|id| by_id.get(id.as_str()));
-      group_summary(group, members.map(|descriptor| named(descriptor)).collect())
-    })
-    .collect();
-  Ok(json!({"me": id, "sessions": summaries, "groups": groups}))
+  blocking(move || {
+    let sessions = sessions(&app)?;
+    let groups = app.management.groups()?;
+    let summaries: Vec<Value> = sessions
+      .iter()
+      .map(|(descriptor, status)| {
+        let own: Vec<&GroupRecord> =
+          groups.iter().filter(|group| group.members.contains(&descriptor.id)).collect();
+        session_summary(&id, descriptor, status, &own)
+      })
+      .collect();
+    let by_id: BTreeMap<&str, &Descriptor> =
+      sessions.iter().map(|(descriptor, _)| (descriptor.id.as_str(), descriptor)).collect();
+    let groups: Vec<Value> = groups
+      .iter()
+      .map(|group| {
+        let members = group.members.iter().filter_map(|id| by_id.get(id.as_str()));
+        group_summary(group, members.map(|descriptor| named(descriptor)).collect())
+      })
+      .collect();
+    Ok(json!({"me": id, "sessions": summaries, "groups": groups}))
+  })
+  .await
 }
 
 /// How many of a group's messages `show` gives.
@@ -171,7 +179,8 @@ pub(super) async fn show_inner(
   slot: Arc<SessionSlot>,
 ) -> Result<Value, ApplicationError> {
   authorized(&slot)?;
-  match resolve(&app, &target).await? {
+  let target = resolve(&app, &target).await?;
+  blocking(move || match target {
     Target::Group(group) => {
       let mut summary = group_summary(&group, named_ids(&app, &group.members));
       let mut messages = app.management.group_messages(&group.id, None, RECENT, "")?;
@@ -186,7 +195,8 @@ pub(super) async fn show_inner(
       let groups = app.management.groups_of(&descriptor.id)?;
       Ok(session_summary(&id, &descriptor, &status, &groups.iter().collect::<Vec<_>>()))
     }
-  }
+  })
+  .await
 }
 
 #[derive(Deserialize, Serialize)]
@@ -249,7 +259,11 @@ pub(super) async fn create_inner(
       first_input: None,
       created_by: Some(mine.id.clone()),
       // Beside the session that makes it, as a file is made in the directory one works in.
-      folder: app.management.folder_of(&mine.id)?,
+      folder: {
+        let store = app.management.clone();
+        let id = mine.id.clone();
+        blocking(move || Ok(store.folder_of(&id)?)).await?
+      },
       initial_messages,
       initial_origins: Vec::new(),
       name: input.name,
@@ -288,7 +302,9 @@ pub(super) async fn configure_inner(
 ) -> Result<Value, ApplicationError> {
   let me = authorized(&slot)?;
   let slot = match resolve(&app, &target).await? {
-    Target::Group(group) => return rename_group(&app, &id, &group, changes),
+    Target::Group(group) => {
+      return blocking(move || rename_group(&app, &id, &group, changes)).await;
+    }
     Target::Session(slot) => slot,
   };
   if !may_manage(&me.get_descriptor(), &slot.get_descriptor()) {
@@ -423,7 +439,7 @@ pub(super) async fn send_inner(
   Ok(json!({
     "group": {"id": group.id, "name": group.name},
     "seq": posted.message.seq,
-    "woken": named_ids(&app, &posted.woken),
+    "woken": ({ let owner = app.clone(); let ids = posted.woken.clone(); blocking(move || Ok(named_ids(&owner, &ids))).await? }),
   }))
 }
 
@@ -446,9 +462,11 @@ pub(super) async fn create_group_inner(
   for member in &input.members {
     members.push(resolve_session(&app, member).await?.get_descriptor().id);
   }
-  let folder = app.management.folder_of(&id)?;
+  let store = app.management.clone();
+  let key = id.clone();
+  let folder = blocking(move || Ok(store.folder_of(&key)?)).await?;
   let group = app.create_group(input.name, members, Some(id), folder).await?;
-  Ok(group_summary(&group, named_ids(&app, &group.members)))
+  blocking(move || Ok(group_summary(&group, named_ids(&app, &group.members)))).await
 }
 
 #[derive(Deserialize, Serialize)]
@@ -472,8 +490,9 @@ pub(super) async fn add_members_inner(
   for member in &input.add {
     members.push(resolve_session(&app, member).await?.get_descriptor().id);
   }
-  let group = app.update_group(&group.id, None, Some(members))?;
-  Ok(group_summary(&group, named_ids(&app, &group.members)))
+  let owner = app.clone();
+  let group = blocking(move || owner.update_group(&group.id, None, Some(members))).await?;
+  blocking(move || Ok(group_summary(&group, named_ids(&app, &group.members)))).await
 }
 pub(super) async fn leave_inner(
   app: Arc<App>,
@@ -483,6 +502,6 @@ pub(super) async fn leave_inner(
   authorized(&slot)?;
   let group = resolve_group(&app, &target).await?;
   let members = group.members.iter().filter(|member| **member != id).cloned().collect();
-  app.update_group(&group.id, None, Some(members))?;
+  blocking(move || app.update_group(&group.id, None, Some(members))).await?;
   Ok(())
 }

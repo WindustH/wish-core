@@ -42,23 +42,20 @@ pub async fn session_events(
 pub async fn application_events(app: Arc<App>) -> impl futures_util::Stream<Item = Value> {
   let receiver = app.events.subscribe();
   let stop = app.lifecycle.stop.clone();
-  let stream = futures_util::stream::unfold(
-    (receiver, stop, true),
-    |(mut receiver, stop, first)| async move {
-      let value = if first {
-        json!({"type":"snapshot"})
-      } else {
-        tokio::select! {
-          _ = stop.cancelled() => return None,
-          result = receiver.recv() => match result {
-            Ok(value) => value,
-            Err(RecvError::Lagged(_)) => json!({"type":"gap"}),
-            Err(_) => return None,
-          }
+
+  futures_util::stream::unfold((receiver, stop, true), |(mut receiver, stop, first)| async move {
+    let value = if first {
+      json!({"type":"snapshot"})
+    } else {
+      tokio::select! {
+        _ = stop.cancelled() => return None,
+        result = receiver.recv() => match result {
+          Ok(value) => value,
+          Err(RecvError::Lagged(_)) => json!({"type":"gap"}),
+          Err(_) => return None,
         }
-      };
-      Some((value, (receiver, stop, false)))
-    },
-  );
-  stream
+      }
+    };
+    Some((value, (receiver, stop, false)))
+  })
 }

@@ -24,7 +24,7 @@ pub use history::{Entry, EntryId, EntryOrigin, EventId, HistoryItem, HistoryReco
 pub(crate) use machine::SessionAction;
 pub use machine::{RunOutcome, SessionPhase, SessionState};
 pub use queue::SessionSender;
-pub use reader::SessionReader;
+pub use reader::{GenerationStructure, SessionReader};
 pub use tool::{ToolCall, ToolOutcome};
 
 use crate::storage::{OwnerGuard, Storage};
@@ -37,6 +37,10 @@ pub struct Session {
   key: String,
   _owner: OwnerGuard,
   arrivals: queue::InputArrivals,
+  queue_size: std::sync::Arc<queue::QueueSize>,
   reader: SessionReader,
   record: SessionRecord,
 }
+
+mod tool_input;
+pub use tool_input::ToolInput;

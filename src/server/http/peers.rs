@@ -1,7 +1,7 @@
 //! HTTP adapters; domain operations live in the application layer.
 use crate::application::app::App;
-use crate::application::session_access as peer_commands;
 use crate::application::peer_commands::{AddMembers, Changes, NewGroup, NewSession, Send};
+use crate::application::session_access as peer_commands;
 use crate::server::error::ApiError;
 use axum::{
   Json,

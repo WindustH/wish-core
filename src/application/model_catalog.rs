@@ -74,7 +74,7 @@ impl ModelCatalogCache {
     &self,
     client: &ModelClient,
     query: &ModelListQuery,
-  ) -> Result<ModelListPage, crate::Error> {
+  ) -> Result<ModelListPage, crate::protocol::error::Error> {
     let key = Key::of(query);
     if let Some(page) = self.fresh(&key, Instant::now()) {
       return Ok(page);

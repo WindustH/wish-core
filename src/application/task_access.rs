@@ -33,17 +33,18 @@ pub fn parse_request(arguments: &Value) -> Result<TaskRequest, ApplicationError>
   }) {
     value["action"] = "list".into();
   }
-  if value["action"] == "execute" && value["operation"]["operation"] == "start" {
-    if value["operation"].get("timeout").is_none() {
-      value["operation"]["timeout"] = 0.into();
-    }
+  if value["action"] == "execute"
+    && value["operation"]["operation"] == "start"
+    && value["operation"].get("timeout").is_none()
+  {
+    value["operation"]["timeout"] = 0.into();
   }
   serde_json::from_value(value)
     .map_err(|error| invalid(format!("{error}; run `wish task --help` for action-specific fields")))
 }
 
 fn failure(error: TaskError) -> ApplicationError {
-  ApplicationError::invalid(error.to_string())
+  error.into()
 }
 pub async fn as_session(
   app: Arc<App>,
@@ -94,7 +95,9 @@ pub(crate) async fn execute(
       let mut detached = Vec::new();
       for task in shell.list().map_err(failure)?["tasks"].as_array().into_iter().flatten() {
         if task["process"]["status"] == "running" && task["background"] == false {
-          let id = task["task_id"].as_str().unwrap();
+          let id = task["task_id"]
+            .as_str()
+            .ok_or_else(|| ApplicationError::internal("task snapshot is missing task_id"))?;
           // A task can finish between the snapshot and this operation.
           if let Ok(result) = shell.background(id).await {
             slot.tools.notify_background(&result, task["command"].clone(), Some(epoch)).await;
@@ -113,26 +116,15 @@ pub(crate) async fn execute(
       let guard = control.cancel_on_drop();
       let result = app.lifecycle.until_shutdown(shell.run(operation, &control)).await?;
       drop(guard);
-      match result {
-        ToolOutcome::Report { output, failed: false, .. } => output,
-        ToolOutcome::Report { text, .. } => return Err(ApplicationError::invalid(text)),
-        ToolOutcome::Success(output) => output,
-        ToolOutcome::SuccessWithMetadata { output, .. } => output,
-        ToolOutcome::Failed(message) => return Err(ApplicationError::invalid(message)),
-        ToolOutcome::Unknown(message) => return Err(ApplicationError::internal(message)),
-        ToolOutcome::Cancelled => {
-          return Err(ApplicationError::conflict("task operation cancelled"));
-        }
-        _ => return Err(ApplicationError::internal("unexpected task result")),
-      }
+      result.map_err(failure)?
     }
   };
-  if result["process"]["status"] == "running" {
-    if let Some(id) = result["execution_id"].as_str() {
-      let task = shell.show(id).map_err(failure)?;
-      if task["background"] == true {
-        slot.tools.notify_background(&result, task["command"].clone(), Some(epoch)).await;
-      }
+  if result["process"]["status"] == "running"
+    && let Some(id) = result["execution_id"].as_str()
+  {
+    let task = shell.show(id).map_err(failure)?;
+    if task["background"] == true {
+      slot.tools.notify_background(&result, task["command"].clone(), Some(epoch)).await;
     }
   }
   Ok(result)

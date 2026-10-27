@@ -25,8 +25,8 @@
 
 use serde_json::{Value, json};
 
-use crate::Error;
 use crate::protocol::attempt::find_header;
+use crate::protocol::error::Error;
 
 pub mod codex;
 pub mod copilot;

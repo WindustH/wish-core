@@ -9,7 +9,7 @@ pub fn search_status(app: &App) -> Value {
 pub async fn check_search(app: &App, id: &str) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
   let accounts = app.get_service_accounts();
-  Ok(app.lifecycle.until_shutdown(app.search.check(id, &accounts)).await??)
+  app.lifecycle.until_shutdown(app.search.check(id, &accounts)).await?
 }
 pub fn fetch_status(app: &App) -> Value {
   app.fetch.describe()

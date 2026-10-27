@@ -9,19 +9,18 @@ use crate::application::{
   config_file::ConfigFile,
   copilot_login::CopilotLoginManager,
   error::{ApplicationError, blocking},
-  instructions::apply_agent_instructions,
-  management::ManagementStore,
+  identity::read_secret,
   mcp::McpHub,
-  provider::{self, Provider, Providers, read_secret},
+  provider::{self, Provider, Providers},
   search::{PreparedSearch, SearchHub},
-  session::{CreateSession, Descriptor, SessionSlot, ToolSwitches},
+  session::{Descriptor, SessionSlot},
 };
 use crate::storage::data_dir::DataDir;
+use crate::storage::management::ManagementStore;
 use crate::{
-  session::{EntryOrigin, Session},
+  session::Session,
   storage::{Storage, StorageOptions},
-  tool::shell::ShellCommand,
-  utils::time::Timestamp,
+  task::ShellCommand,
 };
 use serde_json::{Value, json};
 use std::{
@@ -33,36 +32,37 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub struct App {
-  pub storage: Storage,
-  pub management: Arc<ManagementStore>,
-  pub config_file: AsyncMutex<ConfigFile>,
+  pub(super) storage: Storage,
+  pub(super) management: Arc<ManagementStore>,
+  pub(super) config_file: AsyncMutex<ConfigFile>,
   pub codex_login: LoginManager,
-  pub copilot_login: CopilotLoginManager,
+  pub(super) copilot_login: CopilotLoginManager,
   /// Changes to the session list and the configuration, for `GET /events`.
-  pub events: tokio::sync::broadcast::Sender<Value>,
-  pub started: std::time::Instant,
+  pub(super) events: tokio::sync::broadcast::Sender<Value>,
+  pub(super) started: std::time::Instant,
   providers: RwLock<Providers>,
   /// The shell sessions without their own run commands under. A configuration save replaces it
   /// and hands the new one to those sessions (`SessionSlot::follow_global_shell`).
-  pub shell: RwLock<ShellCommand>,
+  pub(super) shell: RwLock<ShellCommand>,
   /// Serializes creation with first-input retries, including requests whose response was lost.
-  creation_lock: AsyncMutex<()>,
+  pub(super) creation_lock: AsyncMutex<()>,
+  session_open_locks: Mutex<BTreeMap<String, std::sync::Weak<AsyncMutex<()>>>>,
   /// The sessions opened since startup, by id. A session is opened on first use and stays open
   /// until it is deleted.
-  pub sessions: AsyncMutex<BTreeMap<String, Arc<SessionSlot>>>,
-  pub data_dir: DataDir,
+  pub(super) sessions: AsyncMutex<BTreeMap<String, Arc<SessionSlot>>>,
+  pub(super) data_dir: DataDir,
   pub bearer_token: Option<String>,
   pub lifecycle: Lifecycle,
   /// How sessions' shells reach this server: `wish mcp` and `wish skill` go through it.
   pub bridge: Bridge,
   /// Wish's own skills: `skills` beside the configuration file.
-  pub skills_dir: PathBuf,
+  pub(super) skills_dir: PathBuf,
   /// MCP servers and their live connections.
-  pub mcp: McpHub,
+  pub(super) mcp: McpHub,
   /// The search providers `web_search` asks.
-  pub search: SearchHub,
-  pub fetch: super::fetch::FetchHub,
-  pub accounts: RwLock<AccountRegistry>,
+  pub(super) search: SearchHub,
+  pub(super) fetch: super::fetch::FetchHub,
+  pub(super) accounts: RwLock<AccountRegistry>,
 }
 
 /// Startup to shutdown. Shutdown begins by refusing new work and cancelling long waits, then waits
@@ -145,7 +145,7 @@ impl App {
       .map_err(ApplicationError::internal)?
       .with_file_name("skills");
     // Made at once, so there is a place to put skills in.
-    let _ = std::fs::create_dir_all(&skills_dir);
+    tokio::fs::create_dir_all(&skills_dir).await.map_err(ApplicationError::internal)?;
     let accounts = config.build_accounts()?;
     let mut config_file = ConfigFile::open(config_path, config.clone())?;
     if migrated {
@@ -171,6 +171,7 @@ impl App {
       accounts: RwLock::new(accounts),
       shell: RwLock::new(shell),
       creation_lock: AsyncMutex::new(()),
+      session_open_locks: Mutex::new(BTreeMap::new()),
       sessions: AsyncMutex::new(BTreeMap::new()),
       data_dir,
       bearer_token,
@@ -181,7 +182,7 @@ impl App {
       search,
       fetch: super::fetch::FetchHub::new(config.fetch.clone(), config.proxy.clone())?,
     });
-    crate::application::codex_login::start_refresh_worker(&app);
+    crate::application::credentials::start_refresh_worker(&app);
     let reaper = app.clone();
     app.lifecycle.tasks.spawn(async move {
       loop {
@@ -227,150 +228,34 @@ impl App {
   pub fn get_providers(&self) -> Providers {
     self.providers.read().unwrap().clone()
   }
-  pub async fn create_session(
-    self: &Arc<Self>,
-    mut input: CreateSession,
-  ) -> Result<Arc<SessionSlot>, ApplicationError> {
-    self.lifecycle.require_open()?;
-    // Serialize creation/replay so a retry after a lost response cannot enqueue the first input twice.
-    let _creation = self.creation_lock.lock().await;
-    let initial_input_digest = input.first_input.as_ref().map(|first| {
-      serde_json::to_vec(first).map(|bytes| crate::storage::blobs::blob_id(&bytes))
-        .map_err(ApplicationError::internal)
-    }).transpose()?;
-    let id = match input.first_input.as_ref() {
-      Some(first) => uuid::Uuid::parse_str(&first.request_id)
-        .map_err(|_| ApplicationError::invalid("first_input.request_id must be a UUID"))?.to_string(),
-      None => uuid::Uuid::new_v4().to_string(),
-    };
-    if input.first_input.is_some() {
-      match self.get_session(&id).await {
-        Ok(slot) if slot.get_descriptor().initial_input_digest == initial_input_digest => return Ok(slot),
-        Ok(_) => return Err(ApplicationError::conflict("request_id was already used for different input")),
-        Err(error) if error.kind == super::error::ErrorKind::NotFound => {},
-        Err(error) => return Err(error),
-      }
-    }
-    self.get_provider(&input.provider)?;
-    if !input.cwd.is_absolute() {
-      return Err(ApplicationError::invalid("cwd must be absolute"));
-    }
-    if !tokio::fs::metadata(&input.cwd)
-      .await
-      .map_err(|e| ApplicationError::invalid(e.to_string()))?
-      .is_dir()
-    {
-      return Err(ApplicationError::invalid("cwd must be a directory"));
-    }
-    if !input.config.tools.is_empty() {
-      return Err(ApplicationError::invalid(
-        "tools are installed by the server; pass an empty tools array",
-      ));
-    }
-    // Without a word from the request: no shell and no web search, and questions to the user and
-    // MCP allowed. Web search stays off while no search provider could answer it.
-    // Delivery defaults are copied once. Existing descriptors never follow global changes.
-    let delivery_defaults = self.config_file.lock().await.config.defaults.tools;
-    let mut tools = ToolSwitches {
-      history_search: delivery_defaults.history_search,
-      history_search_delivery: delivery_defaults.history_search_delivery,
-      task_delivery: delivery_defaults.task_delivery,
-      web_fetch_delivery: delivery_defaults.web_fetch_delivery,
-      web_search_delivery: delivery_defaults.web_search_delivery,
-      ask_user_delivery: delivery_defaults.ask_user_delivery,
-      shell: false,
-      ask_user: true,
-      mcp: true,
-      web_search: false,
-      web_fetch: false,
-      skills: true,
-      sessions: delivery_defaults.sessions,
-      sessions_delivery: delivery_defaults.sessions_delivery,
-    }
-    .apply_changes(input.tools);
-    tools.web_search &= self.search.is_available(&self.get_service_accounts());
-    tools.web_fetch &= self.fetch.available();
-    let folder = input.folder.take();
-    if let Some(folder) = &folder
-      && self.management.folder(folder)?.is_none()
-    {
-      return Err(ApplicationError::invalid(format!("no folder `{folder}`")));
-    }
-    let descriptor = Descriptor {
-      initial_input_digest,
-      pending_selection: None,
-      created_by: input.created_by,
-      id,
-      provider: input.provider,
-      cwd: input.cwd,
-      tools,
-      shell_override: None,
-      created_at: Timestamp::now().0,
-      updated_at: Timestamp::now().0,
-      name: input.name,
-      revision: 0,
-    };
-    let first_message = if let Some(first_input) = input.first_input {
-      let directory = self.data_dir.blobs(&descriptor.id);
-      match first_input.prepare(&directory).await {
-        Ok(message) => Some(message),
-        Err(error) => {
-          let _ = tokio::fs::remove_dir_all(&directory).await;
-          return Err(error);
-        }
-      }
-    } else { None };
-    let start_run = first_message.is_some();
-    for message in &mut input.initial_messages {
-      message.normalize_new_input();
-    }
-    // Agent instructions may be inserted at the front; origins line up from the back.
-    apply_agent_instructions(&mut input.initial_messages, tools);
-    let environment = crate::protocol::Message::System {
-      metadata: json!({"source":"wish_environment"}),
-      content: vec![crate::protocol::ContentBlock::Text {
-        text: super::instructions::environment_instruction(
-          &self.shell.read().unwrap(),
-          &descriptor.cwd,
-        ),
-      }],
-    };
-    if let Some(existing) = input.initial_messages.iter_mut().find(|message| matches!(message,crate::protocol::Message::System{metadata,..} if metadata["source"]=="wish_environment")) {
-      *existing=environment;
-    } else { input.initial_messages.insert(1,environment); }
-    let inserted = input.initial_messages.len().saturating_sub(input.initial_origins.len());
-    let origins = std::iter::repeat_n(EntryOrigin::Imported, inserted).chain(input.initial_origins);
-    let initial: Vec<_> = input.initial_messages.into_iter().zip(origins).collect();
-    let storage = self.storage.clone();
-    let id = descriptor.id.clone();
-    let session = blocking(move || {
-      let mut session = Session::create(storage, &id, input.config)?;
-      session.set_metadata(input.metadata)?;
-      session.import_history(initial)?;
-      if let Some(message) = first_message {
-        session.create_sender().enqueue_message(message)?;
-      }
-      Ok(session)
-    })
-    .await?;
-    let slot = self.open_slot(descriptor, session).await?;
-    if let Some(folder) = folder {
-      self.management.place(&[slot.get_descriptor().id], Some(&folder))?;
-    }
-    self.sessions.lock().await.insert(slot.get_descriptor().id.clone(), slot.clone());
-    if start_run { slot.schedule(self); }
-    Ok(slot)
-  }
   /// An open session, opened from storage when it is not open yet.
   pub async fn get_session(
     self: &Arc<Self>,
     id: &str,
   ) -> Result<Arc<SessionSlot>, ApplicationError> {
-    let mut sessions = self.sessions.lock().await;
-    if let Some(slot) = sessions.get(id) {
+    if let Some(slot) = self.sessions.lock().await.get(id) {
       slot.require_live()?;
       return Ok(slot.clone());
     }
+    let opening = {
+      let mut locks = self.session_open_locks.lock().unwrap();
+      locks.retain(|_, lock| lock.strong_count() > 0);
+      let entry = locks.entry(id.to_owned()).or_default();
+      match entry.upgrade() {
+        Some(lock) => lock,
+        None => {
+          let lock = Arc::new(AsyncMutex::new(()));
+          *entry = Arc::downgrade(&lock);
+          lock
+        }
+      }
+    };
+    let _opening = opening.lock().await;
+    if let Some(slot) = self.sessions.lock().await.get(id) {
+      slot.require_live()?;
+      return Ok(slot.clone());
+    }
+    self.lifecycle.require_open()?;
     let storage = self.storage.clone();
     let management = self.management.clone();
     let id = id.to_owned();
@@ -383,12 +268,12 @@ impl App {
     })
     .await?;
     let slot = self.open_slot(descriptor, session).await?;
-    sessions.insert(slot.get_descriptor().id.clone(), slot.clone());
+    self.sessions.lock().await.insert(slot.get_descriptor().id.clone(), slot.clone());
     Ok(slot)
   }
   /// Opens a slot for a session and installs the tools its switches give it, then saves its index
   /// record.
-  async fn open_slot(
+  pub(super) async fn open_slot(
     self: &Arc<Self>,
     descriptor: Descriptor,
     session: Session,
@@ -424,7 +309,7 @@ impl App {
     file.write(next).await?;
     self.apply_config(prepared, &file.config).await;
     let _ = self.events.send(json!({"type":"configuration_changed"}));
-    Ok(file.redacted())
+    file.redacted()
   }
   /// Checks a configuration a save sends against the current one, and builds what it describes.
   fn prepare_config(
@@ -501,7 +386,7 @@ impl App {
     self.lifecycle.tasks.wait().await;
     self.mcp.close_all().await;
     for slot in self.sessions.lock().await.values() {
-      if let Some(shell) = slot.tools.shell() {
+      if let Some(shell) = slot.tools.tasks() {
         shell.shutdown().await.map_err(ApplicationError::internal)?;
       }
     }

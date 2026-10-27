@@ -97,10 +97,10 @@ pub async fn timeline(
         }
       } else {
         let mut value = json!(item);
-        if value["content"]["value"]["id"] == 0 {
-          if let Some(generation) = reader.get_generations().get(0)? {
-            value["initial_tools"] = json!(generation.config.tools);
-          }
+        if value["content"]["value"]["id"] == 0
+          && let Some(generation) = reader.get_generations().get(0)?
+        {
+          value["initial_tools"] = json!(generation.config.tools);
         }
         items.push(value);
       }

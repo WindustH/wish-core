@@ -24,10 +24,10 @@
 //! - Anthropic's input and output budgets stay apart rather than being summed, because the service
 //!   limits them apart.
 
-use crate::Error;
 use crate::protocol::account_state::{
   AccountState, AccountStateProtocol, QuotaWindow, read_header,
 };
+use crate::protocol::error::Error;
 
 /// One window a dialect reads out of a reply's headers.
 struct HeaderWindow {

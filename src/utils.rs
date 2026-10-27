@@ -5,3 +5,7 @@ pub mod time;
 pub mod image_format;
 
 pub mod blocking;
+
+pub mod control;
+
+pub mod resource_id;

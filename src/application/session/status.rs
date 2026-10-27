@@ -91,7 +91,7 @@ impl SessionSlot {
   /// The status as the API shows it for this descriptor.
   pub(super) fn view_status(&self, descriptor: &Descriptor) -> StatusView {
     let mut status = self.status.lock().unwrap().clone();
-    let queued = self.reader.get_message_queue().len().unwrap_or(0);
+    let queued = self.sender.queued_total();
     let queue_count = queued.saturating_sub(status.queue_head);
     let pending_questions = self.tools.ask_user.snapshot();
     let selection_pending = match &descriptor.pending_selection {
@@ -101,7 +101,13 @@ impl SessionSlot {
       }
       None => false,
     };
-    StatusView { status, queue_count, pending_questions, background_tools: self.tools.background.snapshot(), selection_pending }
+    StatusView {
+      status,
+      queue_count,
+      pending_questions,
+      background_tools: self.tools.background.snapshot(),
+      selection_pending,
+    }
   }
   /// Follows an engine event: the status, the live preview, and the event's web form to live
   /// clients. A phase change is saved to the index.

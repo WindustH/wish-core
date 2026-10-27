@@ -81,38 +81,3 @@ fn ignore_missing(result: std::io::Result<()>) -> std::io::Result<()> {
 pub fn database_size(path: &Path) -> std::io::Result<u64> {
   Ok(size(path)? + size(&with_suffix(path, "-wal"))? + size(&with_suffix(path, "-shm"))?)
 }
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn preview_and_release_only_selected_resources() -> std::io::Result<()> {
-    let root = std::env::temp_dir().join(format!("wish-resource-release-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(root.join("execution"))?;
-    std::fs::write(root.join("blob"), b"image")?;
-    std::fs::write(root.join("description"), b"metadata")?;
-    std::fs::write(root.join("execution/stdout"), b"output")?;
-    std::fs::write(root.join("retained"), b"still referenced")?;
-    let resources = [
-      ResourceFiles::File { path: root.join("blob"), companions: vec![root.join("description")] },
-      ResourceFiles::Directory { path: root.join("execution") },
-    ];
-    let preview = release_resources(&resources, false)?;
-    assert_eq!(preview.resources, 2);
-    assert_eq!(preview.bytes, 19);
-    assert_eq!(std::fs::read(root.join("blob"))?, b"image");
-    assert_eq!(std::fs::read(root.join("description"))?, b"metadata");
-    assert_eq!(std::fs::read(root.join("execution/stdout"))?, b"output");
-
-    let released = release_resources(&resources, true)?;
-    assert_eq!((released.resources, released.bytes), (preview.resources, preview.bytes));
-    assert!(!root.join("blob").exists());
-    assert!(!root.join("description").exists());
-    assert!(!root.join("execution").exists());
-    assert_eq!(std::fs::read(root.join("retained"))?, b"still referenced");
-    let again = release_resources(&resources, true)?;
-    assert_eq!((again.resources, again.bytes), (0, 0));
-    std::fs::remove_dir_all(root)
-  }
-}

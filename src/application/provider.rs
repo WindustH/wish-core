@@ -1,9 +1,9 @@
 //! Model providers: their configuration as the file holds it, and the client each one is built
 //! into. A configuration save rebuilds them all.
 use crate::application::{
-  config::ProxyConfig, error::ApplicationError, management::ManagementStore,
-  model_catalog::ModelCatalogCache, presets, sampling,
+  config::ProxyConfig, error::ApplicationError, model_catalog::ModelCatalogCache, presets, sampling,
 };
+use crate::storage::management::ManagementStore;
 use crate::{
   client::{Client, CodeAgentIdentity},
   protocol::{
@@ -25,9 +25,9 @@ pub type Providers = BTreeMap<String, Arc<Provider>>;
 
 // Keep these defaults in step with the official stable CLI releases. Provider headers can
 // override either value without changing the request-body identity fields.
-pub(crate) use crate::protocol::model_use::identity::CODEX_USER_AGENT;
 /// How Wish names itself to a service that wants a client name.
-pub const WISH_USER_AGENT: &str = concat!("wish/", env!("CARGO_PKG_VERSION"));
+use super::identity::{WISH_USER_AGENT, read_secret};
+pub(crate) use crate::protocol::model_use::identity::CODEX_USER_AGENT;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -72,11 +72,7 @@ pub struct ProviderConfig {
 impl ProviderConfig {
   /// How a subscription preset's bearer token renews; `None` for a key that never runs out.
   pub fn get_renewal(&self) -> Option<CredentialRenewal> {
-    match self.preset.as_deref() {
-      Some("openai_codex") => Some(CredentialRenewal::CodexOAuth),
-      Some("github_copilot") => Some(CredentialRenewal::CopilotToken),
-      _ => None,
-    }
+    super::presets::renewal(self.preset.as_deref())
   }
 }
 #[derive(Clone, Default, Deserialize, Serialize)]
@@ -162,7 +158,7 @@ impl Provider {
         },
         proxy.policy(config.proxy_enabled),
       )?
-        .with_stream_total(std::time::Duration::from_secs(30 * 60)),
+      .with_stream_total(std::time::Duration::from_secs(30 * 60)),
     )
     .with_credentials(credentials);
     match config.preset.as_deref() {
@@ -234,12 +230,4 @@ pub fn build_all(
     providers.insert(id.clone(), Arc::new(provider));
   }
   Ok(providers)
-}
-/// A secret the configuration names by environment variable.
-pub fn read_secret(name: &str) -> Result<String, String> {
-  let value = std::env::var(name).map_err(|_| format!("environment variable {name} is missing"))?;
-  if value.is_empty() {
-    return Err(format!("environment variable {name} is empty"));
-  }
-  Ok(value)
 }

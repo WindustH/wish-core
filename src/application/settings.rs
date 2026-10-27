@@ -3,12 +3,12 @@
 //! the server runs with.
 use crate::application::app::App;
 use crate::application::error::ApplicationError;
-use crate::tool::shell::ShellCommand;
+use crate::task::ShellCommand;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub async fn get(app: Arc<App>) -> Value {
+pub async fn get(app: Arc<App>) -> Result<Value, ApplicationError> {
   app.config_file.lock().await.redacted()
 }
 #[derive(Deserialize)]
@@ -19,7 +19,7 @@ pub struct SaveConfig {
 }
 pub async fn save(app: Arc<App>, input: SaveConfig) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
-  Ok(app.save_config(input.revision, input.config).await?)
+  app.save_config(input.revision, input.config).await
 }
 pub async fn defaults(app: Arc<App>) -> Value {
   let file = app.config_file.lock().await;
@@ -28,18 +28,21 @@ pub async fn defaults(app: Arc<App>) -> Value {
 }
 /// The shell used when none is configured and the shells installed on this machine, each with
 /// the arguments it would run with, for choosing one.
-pub async fn shells() -> Value {
-  let describe = |command: ShellCommand| {
-    json!({
-      "name": command.program.file_stem().map(|name| name.to_string_lossy().into_owned()),
-      "program": command.program,
-      "args": command.args,
-    })
-  };
-  json!({
-    "default": describe(ShellCommand::platform_default()),
-    "installed": ShellCommand::installed().into_iter().map(describe).collect::<Vec<_>>(),
+pub async fn shells() -> Result<Value, ApplicationError> {
+  super::error::blocking(move || {
+    let describe = |command: ShellCommand| {
+      json!({
+        "name": command.program.file_stem().map(|name| name.to_string_lossy().into_owned()),
+        "program": command.program,
+        "args": command.args,
+      })
+    };
+    Ok(json!({
+      "default": describe(ShellCommand::platform_default()),
+      "installed": ShellCommand::installed().into_iter().map(describe).collect::<Vec<_>>(),
+    }))
   })
+  .await
 }
 
 /// The proxy variables visible to this server process, with URL details that may carry secrets

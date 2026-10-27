@@ -31,6 +31,19 @@ impl MessageType {
       Message::UpstreamCompaction { .. } => Self::UpstreamCompaction,
     }
   }
+  /// Legacy context-inspector spelling, stable independently of Rust variant names.
+  pub(crate) fn structure_name(self) -> &'static str {
+    match self {
+      Self::System => "System",
+      Self::Developer => "Developer",
+      Self::User => "User",
+      Self::Assistant => "Assistant",
+      Self::Reasoning => "Reasoning",
+      Self::ToolUse => "ToolUse",
+      Self::ToolResult => "ToolResult",
+      Self::UpstreamCompaction => "UpstreamCompaction",
+    }
+  }
   /// The type as it is indexed, and named in a filter.
   pub(super) fn as_str(self) -> &'static str {
     match self {

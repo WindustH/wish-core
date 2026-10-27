@@ -4,6 +4,7 @@ use crate::application::{
   app::App,
   provider::{Auth, Provider},
 };
+pub use crate::executor::model::{CallResponse as ModelReply, ModelStream as ModelReplyStream};
 use crate::protocol::{Request, UpstreamCompactionRequest, model_list::ModelListQuery};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -139,10 +140,7 @@ pub async fn call(
   app: Arc<App>,
   id: String,
   request: Request,
-) -> Result<
-  crate::executor::model::CallResponse<impl crate::executor::model::ModelStream>,
-  ApplicationError,
-> {
+) -> Result<ModelReply<impl ModelReplyStream>, ApplicationError> {
   app.lifecycle.require_open()?;
   let provider = app.get_provider(&id)?;
   let response = app.lifecycle.until_shutdown(provider.client.call(&request)).await??;

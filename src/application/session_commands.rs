@@ -99,7 +99,7 @@ pub async fn clear_context(app: Arc<App>, id: String) -> Result<Value, Applicati
     }
     session.prepare_standby_generation(prefix)?;
     session.activate_standby_generation()?;
-    Ok(slot.publish(&session)?)
+    slot.publish(&session)
   })
   .await
 }
@@ -119,9 +119,13 @@ pub async fn fork(app: Arc<App>, id: String) -> Result<Value, ApplicationError> 
     initial_origins.push(entry.origin);
   }
   let input = CreateSession {
-      first_input: None,
+    first_input: None,
     created_by: None,
-    folder: app.management.folder_of(&descriptor.id)?,
+    folder: {
+      let store = app.management.clone();
+      let id = descriptor.id.clone();
+      blocking(move || Ok(store.folder_of(&id)?)).await?
+    },
     name: format!("{} (copy)", descriptor.name),
     provider: descriptor.provider,
     cwd: descriptor.cwd,
@@ -165,7 +169,8 @@ pub async fn enqueue(
   message.normalize_new_input();
   let slot = app.get_session(&id).await?;
   let entry = slot.enqueue(message).await?;
-  slot.touch()?;
+  let touched = slot.clone();
+  blocking(move || touched.touch()).await?;
   Ok(json!({"entry":entry}))
 }
 pub async fn set_config(
@@ -184,7 +189,7 @@ pub async fn set_config(
       config,
       slot.get_descriptor().tools,
     )?;
-    Ok(slot.publish(&session)?)
+    slot.publish(&session)
   })
   .await
 }
@@ -211,15 +216,9 @@ pub async fn set_tools(
   // generation. Disabling permission removes its definition immediately.
   immediate.tools.retain(|tool| {
     target.tools.iter().any(|wanted| wanted.name == tool.name)
-      || match tool.name.as_str() {
-        "history_search" | "history_read" | "history_query" => next.history_search,
-        "task" => next.shell,
-        "session" => next.sessions,
-        "web_fetch" => next.web_fetch,
-        "web_search" => next.web_search,
-        "ask_user" => next.ask_user,
-        _ => false,
-      }
+      || (crate::capability::Capability::from_tool(&tool.name)
+        .is_some_and(crate::capability::Capability::command_backed)
+        && next.allow(&tool.name))
   });
   for tool in &target.tools {
     if !immediate.tools.iter().any(|existing| existing.name == tool.name) {
@@ -234,7 +233,7 @@ pub async fn set_tools(
       immediate,
       target.tools,
     )?;
-    Ok(slot.publish(&session)?)
+    slot.publish(&session)
   })
   .await
 }
@@ -253,7 +252,8 @@ pub async fn answer(app: Arc<App>, id: String, input: Answer) -> Result<Value, A
         "later"
       }
     };
-  slot.touch()?;
+  let touched = slot.clone();
+  blocking(move || touched.touch()).await?;
   Ok(json!({"delivered": delivered}))
 }
 pub async fn set_shell(
@@ -303,7 +303,7 @@ pub async fn set_metadata(
   blocking(move || {
     slot.require_live()?;
     session.set_metadata(metadata)?;
-    Ok(slot.publish(&session)?)
+    slot.publish(&session)
   })
   .await
 }
@@ -336,7 +336,8 @@ pub async fn submit_input(
   let message = input::message(&app.data_dir.blobs(&id), input).await?;
   // Queue the message before releasing the foreground wait, so the next model step sees it.
   let entry = slot.enqueue(message).await?;
-  slot.touch()?;
+  let touched = slot.clone();
+  blocking(move || touched.touch()).await?;
   slot.schedule(&app);
   let reader = slot.reader.clone();
   let first_user_message = crate::application::error::blocking(move || {

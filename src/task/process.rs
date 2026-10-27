@@ -2,7 +2,7 @@
 //! supervisor task that waits for the process, kills its group on request and records how it ended.
 use super::edit::{EditCapture, EditResult};
 use super::{KillMode, TaskError, platform::ProcessTree};
-use crate::executor::ExecutionControl;
+use crate::utils::control::ExecutionControl;
 use serde::{Deserialize, Serialize};
 use std::{io, path::PathBuf, sync::Arc, time::Duration};
 use tokio::{

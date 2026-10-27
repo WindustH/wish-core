@@ -11,17 +11,13 @@ use crate::application::{
   accounts::{AccountConfig, AccountRegistry},
   config::ProxyConfig,
   error::ApplicationError,
+  identity::{WISH_USER_AGENT, read_secret},
   presets,
-  provider::{WISH_USER_AGENT, read_secret},
 };
-use crate::client::{
-  RetryObserver, RetryOperation,
-  retry::{classify_read_retry, retry_upstream},
-};
+use crate::client::{RetryObserver, account::AccountClient};
 use crate::protocol::endpoint::Credentials;
 use crate::protocol::web_search::{SearchProtocol, SearchQuery, SearchResults};
 use crate::transport::ReqwestTransport;
-use crate::utils::retry::RetryPolicy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -177,12 +173,7 @@ struct State {
   providers: BTreeMap<String, Built>,
 }
 
-/// A search that found something, and who found it.
-pub struct Found {
-  pub provider: String,
-  pub name: String,
-  pub results: SearchResults,
-}
+use crate::tool::web_search::Answer;
 
 /// The configured search providers, rebuilt whole on every configuration save.
 pub struct SearchHub {
@@ -248,7 +239,7 @@ impl SearchHub {
     accounts: &AccountRegistry,
     query: &SearchQuery,
     observer: Option<RetryObserver>,
-  ) -> Result<Found, Vec<String>> {
+  ) -> Result<Answer, Vec<String>> {
     let state = self.get_state();
     let mut failures = Vec::new();
     for id in &state.order {
@@ -258,7 +249,7 @@ impl SearchHub {
       }
       match search_with(built, accounts, query, observer.clone()).await {
         Ok(results) => {
-          return Ok(Found {
+          return Ok(Answer {
             provider: id.clone(),
             name: built.preset["name"].as_str().unwrap_or(id).to_owned(),
             results,
@@ -313,7 +304,7 @@ fn parse_protocol(preset: &Value) -> Result<SearchProtocol, ApplicationError> {
     .as_str()
     .unwrap_or_default()
     .parse()
-    .map_err(|error: crate::Error| ApplicationError::invalid(error.to_string()))
+    .map_err(|error: crate::protocol::error::Error| ApplicationError::invalid(error.to_string()))
 }
 
 fn build(config: &SearchConfig, proxy: &ProxyConfig) -> Result<State, ApplicationError> {
@@ -425,25 +416,14 @@ async fn search_with(
       if crate::protocol::attempt::find_header(&headers, "user-agent").is_none() {
         headers.push(("user-agent".to_owned(), WISH_USER_AGENT.to_owned()));
       }
-      retry_upstream(
-        &RetryPolicy::auxiliary(),
-        RetryOperation::WebSearch,
-        observer,
-        |_| {
-          crate::protocol::web_search::search(
-            transport,
-            built.protocol,
-            credentials,
-            base_url,
-            &headers,
-            query,
-            crate::utils::time::unix_seconds(),
-          )
-        },
-        classify_read_retry,
-      )
-      .await
-      .map_err(|error| error.to_string())
+      let mut client = AccountClient::new(transport.clone(), credentials.clone(), None);
+      if let Some(observer) = observer {
+        client = client.with_retry_observer(observer);
+      }
+      client
+        .search(built.protocol, query, base_url, &headers)
+        .await
+        .map_err(|error| error.to_string())
     }
   }
 }

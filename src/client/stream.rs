@@ -1,8 +1,8 @@
 //! One streamed call in flight: the body's records decoded into the protocol's normalized events.
 use super::AttemptObserver;
 use crate::{
-  Error,
   executor::model::ModelStream,
+  protocol::error::Error,
   protocol::{
     StreamAccumulator, StreamEvent,
     account_state::AccountState,

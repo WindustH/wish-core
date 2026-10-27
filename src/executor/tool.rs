@@ -1,70 +1,8 @@
-//! The contract a tool implementation fulfils, and the execution of one tool batch in the session's
-//! tool mode: calls are started, carried out and settled in the session, each step delivered.
+//! Execute and settle one batch of tool calls.
 use super::{ExecutionControl, observe::deliver_new_events};
 use crate::session::{Session, SessionError, SessionEvent, ToolCall, ToolMode, ToolOutcome};
-use futures_util::{stream::FuturesUnordered, StreamExt};
-use crate::session::SessionReader;
-use tokio::sync::watch;
-use std::future::Future;
-
-/// An event subscription installed before checking the durable queue. No timer or polling.
-/// Background completions wake idle sessions, but do not preempt unrelated foreground work.
-#[derive(Clone)]
-pub struct ToolInput {
-  reader: SessionReader,
-  head: u64,
-  arrivals: watch::Receiver<()>,
-}
-impl ToolInput {
-  fn new(session: &Session) -> Self {
-    let arrivals = session.watch_input_arrivals();
-    Self { reader: session.reader().clone(), head: session.get_queue_head(), arrivals }
-  }
-  pub fn pending(&self) -> Result<bool, SessionError> {
-    for page in self.reader.get_message_queue().pages(self.head) {
-      for id in page?.items {
-        if let Some(entry) = self.reader.get_entry(*id)? {
-          let source = entry.message.get_metadata()["source"].as_str().unwrap_or_default();
-          if !matches!(source, "background_execution_finished" | "background_tool_finished") {
-            return Ok(true);
-          }
-        }
-      }
-    }
-    Ok(false)
-  }
-  pub async fn wait(&mut self) -> Result<(), SessionError> {
-    loop {
-      if self.pending()? { return Ok(()); }
-      // A closed session will never receive new input. It is cancelled by its owner instead.
-      if self.arrivals.changed().await.is_err() { std::future::pending::<()>().await; }
-    }
-  }
-}
-
-/// Executors must observe cancellation and return after their work has stopped or its outcome
-/// is known to be unknown. The loop never drops a started execution to pretend it was cancelled.
-/// Futures must not panic. Parallel mode requires tools safe to execute concurrently.
-pub trait ToolExecutor: Sync {
-  /// Applications may accept enabled capabilities through an alternative, unadvertised
-  /// route. Generic executors retain strict registration unless they opt in explicitly.
-  fn accepts_unadvertised_call(&self, _name: &str) -> bool {
-    false
-  }
-
-  /// Opt-in application hook. Generic engine fixtures retain the ordinary execution contract.
-  fn execute_with_input(
-    &self, call: &ToolCall, control: &ExecutionControl, _input: Option<ToolInput>,
-  ) -> impl Future<Output = ToolOutcome> + Send {
-    self.execute(call, control)
-  }
-
-  fn execute(
-    &self,
-    call: &ToolCall,
-    control: &ExecutionControl,
-  ) -> impl Future<Output = ToolOutcome> + Send;
-}
+pub use crate::tool::contract::{ToolExecutor, ToolInput};
+use futures_util::{StreamExt, stream::FuturesUnordered};
 
 pub(super) async fn execute_tools(
   executor: &impl ToolExecutor,

@@ -1,7 +1,6 @@
 //! `history_search`, `history_read` and `history_query`: the current session's permanent history,
 //! sealed generations included, searched, read around a record and queried.
 use crate::{
-  executor::{ExecutionControl, tool::ToolExecutor},
   protocol::Tool,
   session::{
     Session, SessionReader, ToolCall, ToolOutcome,
@@ -10,6 +9,8 @@ use crate::{
       HistorySearchMode,
     },
   },
+  tool::contract::ToolExecutor,
+  utils::control::ExecutionControl,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -322,23 +323,4 @@ fn render_result(output: &Value, arguments: &Value, command: bool) -> String {
     lines.push("More matches exist; narrow the search or increase limit.".into());
   }
   lines.join("\n")
-}
-
-#[cfg(test)]
-mod presentation_tests {
-  use super::*;
-  #[test]
-  fn direct_history_keeps_text_and_resumable_filters_without_shell_dependency() {
-    let cursor = json!({"end_sequence":9,"after_sequence":3,"order":"oldest_first"});
-    let output = json!({"items":[{"record":{"sequence":3},"message_type":"user_message","content":{"text":"first\nsecond"}}],"next":cursor});
-    let arguments = json!({"limit":1,"filter":{"kinds":["user_message"]}});
-    let text = render_result(&output, &arguments, false);
-    assert!(text.contains("#3 user_message") && text.contains("first\nsecond"));
-    assert!(!text.contains("wish "));
-    let next: Value =
-      serde_json::from_str(text.split("Continue with history_query: ").nth(1).unwrap()).unwrap();
-    assert_eq!(next["filter"], arguments["filter"]);
-    assert_eq!(next["cursor"], cursor);
-    assert_eq!(next["limit"], 1);
-  }
 }

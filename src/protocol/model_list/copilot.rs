@@ -21,7 +21,7 @@
 
 use serde_json::Value;
 
-use crate::Error;
+use crate::protocol::error::Error;
 use crate::protocol::model_list::{Model, ModelListPage, ModelListProtocol, read_entries};
 
 /// Reads the list body.

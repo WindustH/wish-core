@@ -8,13 +8,13 @@
 //! `wish session send` in its shell (`peer_commands::send`), as often as it has something to say. A
 //! message to a session is a post in the group of the two and the user, made when needed
 //! (`App::group_of_two`).
-pub use crate::application::management::{Author, GroupMessage, GroupRecord};
+use crate::storage::management::NewGroupMessage;
+pub use crate::storage::management::{Author, GroupMessage, GroupRecord};
 
 use crate::application::{
   app::App,
   error::{ApplicationError, blocking},
   input::{self, Input},
-  management::NewGroupMessage,
   session::{Descriptor, SessionSlot},
 };
 use crate::{
@@ -33,25 +33,29 @@ pub struct Posted {
 impl App {
   /// Makes a group of `members`, existing sessions, and the user, in `folder` (none for the root).
   pub async fn create_group(
-    &self,
+    self: &Arc<Self>,
     name: String,
     members: Vec<String>,
     created_by: Option<String>,
     folder: Option<String>,
   ) -> Result<GroupRecord, ApplicationError> {
     self.lifecycle.require_open()?;
-    let now = Timestamp::now().0;
-    let group = GroupRecord {
-      id: uuid::Uuid::new_v4().to_string(),
-      name,
-      members: self.check_members(members)?,
-      created_by,
-      created_at: now,
-      updated_at: now,
-    };
-    self.management.create_group(&group, folder.as_deref())?;
-    self.announce_group(&group.id);
-    Ok(group)
+    let app = self.clone();
+    blocking(move || {
+      let now = Timestamp::now().0;
+      let group = GroupRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        members: app.check_members(members)?,
+        created_by,
+        created_at: now,
+        updated_at: now,
+      };
+      app.management.create_group(&group, folder.as_deref())?;
+      app.announce_group(&group.id);
+      Ok(group)
+    })
+    .await
   }
   pub fn get_group(&self, id: &str) -> Result<GroupRecord, ApplicationError> {
     self.management.group(id)?.ok_or_else(ApplicationError::not_found)
@@ -76,8 +80,14 @@ impl App {
   }
   /// Deletes a group: its transcript and the files posted to it. Its members stay.
   pub async fn delete_group(&self, id: &str) -> Result<(), ApplicationError> {
-    self.get_group(id)?;
-    self.management.delete_group(id)?;
+    let management = self.management.clone();
+    let target = id.to_owned();
+    blocking(move || {
+      management.group(&target)?.ok_or_else(ApplicationError::not_found)?;
+      management.delete_group(&target)?;
+      Ok(())
+    })
+    .await?;
     match tokio::fs::remove_dir_all(self.data_dir.blobs(id)).await {
       Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
         return Err(ApplicationError::internal(error));
@@ -97,15 +107,22 @@ impl App {
   /// The group of two sessions and the user, for a message from one to the other: the one they
   /// have, or a new one named after them.
   pub async fn group_of_two(
-    &self,
+    self: &Arc<Self>,
     from: &Descriptor,
     to: &Descriptor,
   ) -> Result<GroupRecord, ApplicationError> {
-    if let Some(id) = self.management.group_of_two(&from.id, &to.id)? {
-      return self.get_group(&id);
+    let app = self.clone();
+    let (from_id, to_id) = (from.id.clone(), to.id.clone());
+    let (existing, folder) = blocking(move || {
+      let existing =
+        app.management.group_of_two(&from_id, &to_id)?.map(|id| app.get_group(&id)).transpose()?;
+      Ok((existing, app.management.folder_of(&from_id)?))
+    })
+    .await?;
+    if let Some(group) = existing {
+      return Ok(group);
     }
     let name = format!("{} & {}", display_name(from), display_name(to));
-    let folder = self.management.folder_of(&from.id)?;
     self
       .create_group(name, vec![from.id.clone(), to.id.clone()], Some(from.id.clone()), folder)
       .await
@@ -172,7 +189,10 @@ impl App {
     };
     let now = Timestamp::now().0;
     let message = NewGroupMessage { author: author.clone(), text, attachments };
-    let message = self.management.append_group_message(&group.id, message, now)?;
+    let management = self.management.clone();
+    let group_id = group.id.clone();
+    let message =
+      blocking(move || Ok(management.append_group_message(&group_id, message, now)?)).await?;
     self.announce_group(&group.id);
     let told = json!({
       "source": "group",
@@ -182,7 +202,8 @@ impl App {
     let mut woken = Vec::new();
     for member in &members {
       member.enqueue(Message::User { metadata: told.clone(), content: content.clone() }).await?;
-      member.touch()?;
+      let touched = member.clone();
+      blocking(move || touched.touch()).await?;
       member.schedule(self);
       woken.push(member.get_descriptor().id);
     }

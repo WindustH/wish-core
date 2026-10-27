@@ -1,0 +1,58 @@
+name: Quality
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      test_repository:
+        description: Optional repository containing the external wish-test suite
+        type: string
+      test_ref:
+        description: Compatible wish-test revision
+        type: string
+        default: main
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: wish-core
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: wish-core
+      - name: Architecture boundaries
+        working-directory: wish-core
+        run: python3 tools/check_architecture.py
+      - name: Format
+        working-directory: wish-core
+        run: cargo fmt --check
+      - name: Lints
+        working-directory: wish-core
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build
+        working-directory: wish-core
+        run: cargo build --locked
+      - uses: actions/checkout@v4
+        if: ${{ inputs.test_repository != '' || vars.WISH_TEST_REPOSITORY != '' }}
+        with:
+          repository: ${{ inputs.test_repository || vars.WISH_TEST_REPOSITORY }}
+          ref: ${{ inputs.test_ref || 'main' }}
+          path: wish-test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: External integration and black-box checks
+        if: ${{ inputs.test_repository != '' || vars.WISH_TEST_REPOSITORY != '' }}
+        working-directory: wish-test
+        env:
+          WISH_CORE_REPO: ${{ github.workspace }}/wish-core
+        run: python3 -m unittest tests.test_wish_server tests.test_wish_core_history tests.test_wish_core_shell tests.test_wish_core_agent -q

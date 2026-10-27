@@ -1,7 +1,7 @@
 //! One model operation outside the session state machine; no history or tool execution.
 use super::{CallResponse, ModelCaller, ModelStream};
 use crate::{
-  Error,
+  protocol::error::Error,
   protocol::{Request, Response},
 };
 pub async fn call_once(caller: &impl ModelCaller, request: &Request) -> Result<Response, Error> {

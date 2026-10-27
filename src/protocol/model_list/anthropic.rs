@@ -21,7 +21,7 @@
 
 use serde_json::Value;
 
-use crate::Error;
+use crate::protocol::error::Error;
 use crate::protocol::json_read::read_scalar_text;
 use crate::protocol::model_list::{
   Model, ModelListPage, ModelListProtocol, read_entries, read_forward_cursor,

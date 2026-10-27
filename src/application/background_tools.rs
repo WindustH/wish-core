@@ -307,7 +307,7 @@ pub async fn finish_shell(
       text: format!(
         "Background task {id} finished.\nCommand: {}\n{}",
         command.as_str().unwrap_or_default(),
-        crate::task::output::render(&result, false)
+        crate::tool::task_output::render(&result, false)
       ),
     }],
   };

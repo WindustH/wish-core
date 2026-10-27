@@ -22,7 +22,7 @@
 
 use serde_json::Value;
 
-use crate::Error;
+use crate::protocol::error::Error;
 
 pub mod anthropic;
 pub mod bedrock;

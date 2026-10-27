@@ -9,7 +9,7 @@ use crate::storage::repository_error::RepositoryError;
 use rusqlite::{OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
 
-/// A folder as the API shows it.
+/// A persisted folder and its placement.
 #[derive(Clone, Debug, Serialize)]
 pub struct FolderRecord {
   pub id: String,
@@ -26,7 +26,7 @@ const ENTRIES: [(&str, &str); 3] =
 
 impl ManagementStore {
   pub fn create_folder(&self, folder: &FolderRecord) -> Result<(), RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     if let Some(parent) = &folder.parent {
       require_folder(&db, parent)?;
     }
@@ -39,9 +39,7 @@ impl ManagementStore {
   pub fn folder(&self, id: &str) -> Result<Option<FolderRecord>, RepositoryError> {
     Ok(
       self
-        .db
-        .lock()
-        .unwrap()
+        .lock()?
         .query_row(
           "SELECT id,name,parent,pinned,created_at FROM folders WHERE id=?1",
           [id],
@@ -52,15 +50,14 @@ impl ManagementStore {
   }
   /// Every folder, by name: few enough to choose a place from.
   pub fn folders(&self) -> Result<Vec<FolderRecord>, RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     let mut statement = db.prepare(
       "SELECT id,name,parent,pinned,created_at FROM folders ORDER BY name COLLATE NOCASE, id",
     )?;
     Ok(statement.query_map([], folder_row)?.collect::<Result<_, _>>()?)
   }
   pub fn rename_folder(&self, id: &str, name: &str) -> Result<(), RepositoryError> {
-    let changed =
-      self.db.lock().unwrap().execute("UPDATE folders SET name=?2 WHERE id=?1", [id, name])?;
+    let changed = self.lock()?.execute("UPDATE folders SET name=?2 WHERE id=?1", [id, name])?;
     if changed == 0 {
       return Err(RepositoryError::not_found());
     }
@@ -68,7 +65,7 @@ impl ManagementStore {
   }
   /// Deletes a folder; what it held goes to the folder it was in.
   pub fn delete_folder(&self, id: &str) -> Result<(), RepositoryError> {
-    let mut db = self.db.lock().unwrap();
+    let mut db = self.lock()?;
     let tx = db.transaction()?;
     let parent: Option<String> = tx
       .query_row("SELECT parent FROM folders WHERE id=?1", [id], |row| row.get(0))
@@ -88,7 +85,7 @@ impl ManagementStore {
   /// Moves sessions, groups and folders, by id, into `folder` (none for the root), together or
   /// not at all. A folder cannot go into itself or into one inside it.
   pub fn place(&self, ids: &[String], folder: Option<&str>) -> Result<(), RepositoryError> {
-    let mut db = self.db.lock().unwrap();
+    let mut db = self.lock()?;
     let tx = db.transaction()?;
     if let Some(folder) = folder {
       require_folder(&tx, folder)?;
@@ -113,7 +110,7 @@ impl ManagementStore {
   }
   /// Pins sessions, groups and folders, by id, to the top of their folders, or unpins them.
   pub fn pin(&self, ids: &[String], pinned: bool) -> Result<(), RepositoryError> {
-    let mut db = self.db.lock().unwrap();
+    let mut db = self.lock()?;
     let tx = db.transaction()?;
     for id in ids {
       let changed = ENTRIES.iter().try_fold(0, |changed, (table, _)| {
@@ -129,7 +126,7 @@ impl ManagementStore {
   }
   /// The folder a session or group is in; none for the root, or for what is not there.
   pub fn folder_of(&self, id: &str) -> Result<Option<String>, RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     let found: Option<Option<String>> = db
       .query_row(
         "SELECT folder FROM sessions WHERE id=?1 UNION ALL SELECT folder FROM groups WHERE id=?1",

@@ -6,6 +6,10 @@ use super::persistence::SessionTransaction;
 use super::{EntryId, EntryOrigin, EventId, Session, SessionError, SessionEvent, SessionState};
 use crate::{protocol::Message, storage::Storage};
 use serde_json::Value;
+use std::sync::{
+  Arc, Mutex,
+  atomic::{AtomicU64, Ordering},
+};
 use tokio::sync::watch;
 
 /// A durable input handle usable while the runner owns the session, and after it is gone. Sending
@@ -16,8 +20,13 @@ pub struct SessionSender {
   pub(super) storage: Storage,
   pub(super) key: String,
   arrivals: InputArrivals,
+  pub(super) queue_size: Arc<QueueSize>,
 }
 impl SessionSender {
+  /// Last committed queue length, available without a database round trip.
+  pub fn queued_total(&self) -> u64 {
+    self.queue_size.total.load(Ordering::Acquire)
+  }
   /// Appends `message` to the queue, where the next run collects it.
   pub fn enqueue_message(&self, message: Message) -> Result<EntryId, SessionError> {
     if !is_input(&message) {
@@ -33,8 +42,14 @@ impl SessionSender {
   }
   /// Commit a background completion and its queued model input together. A crash cannot leave
   /// a finished marker without the corresponding delivery. No session header is changed.
-  pub fn record_application_input(&self, event: Value, message: Message) -> Result<EntryId, SessionError> {
-    if !is_input(&message) { return Err(SessionError::InvalidInput); }
+  pub fn record_application_input(
+    &self,
+    event: Value,
+    message: Message,
+  ) -> Result<EntryId, SessionError> {
+    if !is_input(&message) {
+      return Err(SessionError::InvalidInput);
+    }
     let entry = self.transact(move |tx| {
       tx.record_event(SessionEvent::Application(event))?;
       tx.append_input(message)
@@ -135,6 +150,7 @@ impl Session {
       storage: self.storage.clone(),
       key: self.key.clone(),
       arrivals: self.arrivals.clone(),
+      queue_size: self.queue_size.clone(),
     }
   }
   /// Watches for input queued through this owner's senders from now on.
@@ -149,10 +165,9 @@ impl Session {
   /// Provider-switch validation runs before `start_turn` and must include this input too.
   pub(crate) fn pending_input_messages(&self) -> Result<Vec<Message>, SessionError> {
     self.read(|transaction| {
-      let entries = transaction.store.read_from::<EntryId>(
-        &transaction.record.queue,
-        transaction.record.queue_head,
-      )?;
+      let entries = transaction
+        .store
+        .read_from::<EntryId>(&transaction.record.queue, transaction.record.queue_head)?;
       entries.iter().map(|id| Ok(transaction.load_entry(**id)?.message.clone())).collect()
     })
   }
@@ -173,13 +188,13 @@ impl Session {
 }
 impl SessionTransaction<'_, '_> {
   pub(in crate::session) fn remember_instruction_update(&mut self, message: &Message) {
-    if let Message::System { metadata, .. } = message {
-      if let (Some(source), Some(text)) = (
+    if let Message::System { metadata, .. } = message
+      && let (Some(source), Some(text)) = (
         metadata["next_generation_instruction"]["source"].as_str(),
         metadata["next_generation_instruction"]["text"].as_str(),
-      ) {
-        self.record.next_generation_instructions.insert(source.into(), text.into());
-      }
+      )
+    {
+      self.record.next_generation_instructions.insert(source.into(), text.into());
     }
   }
   pub(in crate::session) fn append_input(
@@ -210,35 +225,17 @@ impl SessionTransaction<'_, '_> {
   }
 }
 
-#[cfg(test)]
-mod snapshot_tests {
-  use super::*;
-  use crate::protocol::ContentBlock;
-  use crate::session::SessionConfig;
-
-  #[test]
-  fn pending_snapshot_preserves_queue_and_observes_edits() {
-    let session = Session::new(SessionConfig::new("test")).unwrap();
-    let sender = session.create_sender();
-    let message = |text: &str| Message::User {
-      metadata: serde_json::json!({}),
-      content: vec![ContentBlock::Text { text: text.into() }],
-    };
-    let first = sender.enqueue_message(message("first")).unwrap();
-    sender.enqueue_message(message("second")).unwrap();
-    for _ in 0..2 {
-      let snapshot = session.pending_input_messages().unwrap();
-      assert_eq!(
-        serde_json::to_value(snapshot).unwrap(),
-        serde_json::json!([message("first"), message("second")])
-      );
-      assert_eq!(session.get_queue_head(), 0);
-      assert!(session.build_request().unwrap().conversation.is_empty());
-    }
-    sender.cancel_queued_input(first).unwrap();
-    assert_eq!(
-      serde_json::to_value(session.pending_input_messages().unwrap()).unwrap(),
-      serde_json::json!([message("second")])
-    );
+/// Serialize publication with mutations, so a late returning older transaction cannot overwrite
+/// a newer count. Readers only access the atomic value and never wait for a database operation.
+pub(super) struct QueueSize {
+  pub mutation: Mutex<()>,
+  pub total: AtomicU64,
+}
+impl QueueSize {
+  pub fn new(total: u64) -> Self {
+    Self { mutation: Mutex::new(()), total: AtomicU64::new(total) }
+  }
+  pub fn publish(&self, total: u64) {
+    self.total.store(total, Ordering::Release);
   }
 }

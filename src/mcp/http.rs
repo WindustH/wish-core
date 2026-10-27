@@ -35,11 +35,11 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
-  pub fn new(proxy: Proxy) -> Result<Self, crate::Error> {
+  pub fn new(proxy: Proxy) -> Result<Self, crate::protocol::error::Error> {
     let builder = pooled_client_builder().connect_timeout(Duration::from_secs(10));
-    let client = apply_proxy(builder, proxy)?
-      .build()
-      .map_err(|error| crate::Error::Build(format!("client build failed: {error}")))?;
+    let client = apply_proxy(builder, proxy)?.build().map_err(|error| {
+      crate::protocol::error::Error::Build(format!("client build failed: {error}"))
+    })?;
     Ok(Self { client })
   }
 

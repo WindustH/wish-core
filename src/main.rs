@@ -14,9 +14,9 @@ mod tool;
 mod transport;
 mod utils;
 
-use protocol::error::Error;
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
   server::run().await
 }
+
+mod capability;

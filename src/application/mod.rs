@@ -2,6 +2,7 @@
 pub(crate) mod accounts;
 pub(crate) mod app;
 pub(crate) mod attachments;
+pub(crate) mod background_tools;
 pub(crate) mod bridge;
 pub(crate) mod bridge_access;
 pub(crate) mod codex_login;
@@ -32,6 +33,7 @@ pub(crate) mod runtime_status;
 pub(crate) mod sampling;
 pub(crate) mod search;
 pub(crate) mod session;
+pub(crate) mod session_access;
 pub(crate) mod session_commands;
 pub(crate) mod session_edit;
 pub(crate) mod session_model;
@@ -42,13 +44,22 @@ pub(crate) mod skill_access;
 pub(crate) mod skills;
 pub(crate) mod storage_cleanup;
 pub(crate) mod storage_usage;
+pub(crate) mod task_access;
 pub(crate) mod usage_queries;
 pub(crate) mod web_services;
-pub(crate) use crate::storage::{blobs, management};
-pub(crate) mod background_tools;
-pub(crate) mod session_access;
-pub(crate) mod task_access;
 
 pub mod tool_commands;
 
 pub mod command_trace;
+
+mod pagination;
+
+mod session_creation;
+
+pub(crate) mod credentials;
+
+mod model_images;
+
+mod capabilities;
+
+mod identity;

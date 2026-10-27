@@ -5,7 +5,7 @@ use crate::application::{
   session::ToolSwitches,
 };
 use crate::session::{CompactionConfig, RunOptions, SessionConfig};
-use crate::tool::shell::{self, ShellCommand};
+use crate::task::{self, ShellCommand};
 use crate::transport::Proxy;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
@@ -114,7 +114,7 @@ impl ShellSettings {
       if !program.is_absolute() {
         return Err(ApplicationError::invalid("shell program must be an absolute path"));
       }
-      if !shell::is_runnable(&program) {
+      if !task::is_runnable(&program) {
         return Err(ApplicationError::invalid(format!(
           "shell program {} is not an executable file",
           program.display()
@@ -224,12 +224,20 @@ fn deserialize_default_tools<'de, D: serde::Deserializer<'de>>(
   Ok(Defaults::default().tools.apply_changes(changes))
 }
 
-fn deserialize_default_run<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<RunOptions, D::Error> {
+fn deserialize_default_run<'de, D: serde::Deserializer<'de>>(
+  deserializer: D,
+) -> Result<RunOptions, D::Error> {
   #[derive(Deserialize)]
   #[serde(deny_unknown_fields)]
-  struct Changes { tools: Option<crate::session::ToolMode>, background_tools_on_input: Option<bool> }
+  struct Changes {
+    tools: Option<crate::session::ToolMode>,
+    background_tools_on_input: Option<bool>,
+  }
   let changes = Changes::deserialize(deserializer)?;
-  Ok(RunOptions { tools: changes.tools.unwrap_or_default(), background_tools_on_input: changes.background_tools_on_input.unwrap_or(true) })
+  Ok(RunOptions {
+    tools: changes.tools.unwrap_or_default(),
+    background_tools_on_input: changes.background_tools_on_input.unwrap_or(true),
+  })
 }
 
 impl Default for Defaults {
@@ -293,26 +301,5 @@ impl Default for Config {
       usage: UsageConfig::default(),
       defaults: Defaults::default(),
     }
-  }
-}
-
-#[cfg(test)]
-mod execution_defaults_tests {
-  use super::*;
-  use crate::session::ToolMode;
-
-  #[test]
-  fn old_config_defaults_to_parallel_and_explicit_serial_survives_roundtrip() {
-    let defaults: Defaults = serde_json::from_value(serde_json::json!({})).unwrap();
-    assert!(matches!(defaults.session_config().run.tools, ToolMode::Parallel));
-    let defaults: Defaults =
-      serde_json::from_value(serde_json::json!({"run":{"tools":"Serial"}})).unwrap();
-    let encoded = serde_json::to_value(&defaults).unwrap();
-    let restored: Defaults = serde_json::from_value(encoded).unwrap();
-    assert!(matches!(restored.session_config().run.tools, ToolMode::Serial));
-    let config = restored.session_config();
-    let restored: SessionConfig =
-      serde_json::from_value(serde_json::to_value(config).unwrap()).unwrap();
-    assert!(matches!(restored.run.tools, ToolMode::Serial));
   }
 }

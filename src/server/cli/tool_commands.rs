@@ -18,10 +18,10 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
   if args.is_empty() || args.iter().any(|arg| matches!(arg.as_str(), "--help" | "-h")) {
     println!(
       "{}",
-      match name {
-        "history_search" | "history_read" | "history_query" => include_str!("help/history.txt"),
-        "webfetch" => include_str!("help/webfetch.txt"),
-        "websearch" => include_str!("help/websearch.txt"),
+      match crate::capability::Capability::from_command(name) {
+        Some(crate::capability::Capability::History) => include_str!("help/history.txt"),
+        Some(crate::capability::Capability::WebFetch) => include_str!("help/webfetch.txt"),
+        Some(crate::capability::Capability::WebSearch) => include_str!("help/websearch.txt"),
         _ => include_str!("help/askuser.txt"),
       }
     );
@@ -46,7 +46,9 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
       Some(value) if !value.starts_with("--") => match name {
         "webfetch" if args.len() == 1 => json!({"url":value}),
         "history_search" => json!({"text":args.join(" ")}),
-        "history_read" if args.len() == 1 => json!({"sequence":value.parse::<u64>().map_err(|_| (2, "sequence must be a non-negative integer; use wish history --help".into()))?}),
+        "history_read" if args.len() == 1 => {
+          json!({"sequence":value.parse::<u64>().map_err(|_| (2, "sequence must be a non-negative integer; use wish history --help".into()))?})
+        }
         "websearch" => json!({"query":args.join(" ")}),
         "askuser" if args.len() == 1 => {
           serde_json::from_str(value).map_err(|e| (2, e.to_string()))?

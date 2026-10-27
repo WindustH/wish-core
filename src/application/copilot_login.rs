@@ -1,5 +1,9 @@
 //! Copilot login lifecycle, independent of HTTP requests.
-use crate::application::{app::App, codex_login::save_credentials, error::ApplicationError};
+use crate::application::{
+  app::App,
+  credentials::{LoginStatus, save_credentials},
+  error::ApplicationError,
+};
 use crate::protocol::endpoint::{
   Credentials,
   copilot_oauth::{self, DeviceCode, DevicePoll},
@@ -18,7 +22,7 @@ pub struct CopilotLoginManager {
 pub(crate) struct LoginAttempt {
   pub(crate) id: String,
   pub(crate) provider: String,
-  pub(crate) status: &'static str,
+  pub(crate) status: LoginStatus,
   pub(crate) error: Option<String>,
   pub(crate) end: CancellationToken,
 }
@@ -31,7 +35,7 @@ pub(crate) async fn wait_for_approval(
   transport: &ReqwestTransport,
   code: &DeviceCode,
   end: &CancellationToken,
-) -> Option<Result<String, (&'static str, Option<String>)>> {
+) -> Option<Result<String, (LoginStatus, Option<String>)>> {
   let deadline = Instant::now() + Duration::from_secs(code.expires_in);
   let mut interval = Duration::from_secs(code.interval.max(1));
   loop {
@@ -41,12 +45,12 @@ pub(crate) async fn wait_for_approval(
       _ = tokio::time::sleep(interval) => {},
     }
     if Instant::now() >= deadline {
-      return Some(Err(("expired", None)));
+      return Some(Err((LoginStatus::Expired, None)));
     }
     match copilot_oauth::poll_device_code(transport, &code.device_code).await {
       Ok(DevicePoll::Approved(token)) => return Some(Ok(token)),
       Ok(DevicePoll::SlowDown) => interval += Duration::from_secs(5),
-      Ok(DevicePoll::Refused(reason)) => return Some(Err(("failed", Some(reason)))),
+      Ok(DevicePoll::Refused(reason)) => return Some(Err((LoginStatus::Failed, Some(reason)))),
       // A poll that did not get through is asked again; the code's expiry bounds the wait.
       Ok(DevicePoll::Pending) | Err(_) => {}
     }
@@ -67,16 +71,18 @@ pub(crate) async fn redeem(
     ApplicationError::invalid(format!("GitHub signed in, but Copilot refused the account: {error}"))
   })?;
   let attempt = app.copilot_login.attempt.lock().await;
-  if !attempt.as_ref().is_some_and(|a| a.id == id && a.status == "pending") {
+  if !attempt.as_ref().is_some_and(|a| a.id == id && a.status == LoginStatus::Pending) {
     return Err(ApplicationError::conflict("sign-in attempt was replaced"));
   }
   save_credentials(app, provider, &credentials.renew(&tokens)).await
 }
 
 impl CopilotLoginManager {
-  pub(crate) async fn finish(&self, id: &str, status: &'static str, error: Option<String>) {
+  pub(crate) async fn finish(&self, id: &str, status: LoginStatus, error: Option<String>) {
     let mut attempt = self.attempt.lock().await;
-    if let Some(current) = attempt.as_mut().filter(|a| a.id == id && a.status == "pending") {
+    if let Some(current) =
+      attempt.as_mut().filter(|a| a.id == id && a.status == LoginStatus::Pending)
+    {
       current.status = status;
       current.error = error;
     }
@@ -104,7 +110,7 @@ pub async fn start(app: Arc<App>, provider_id: String) -> Result<Value, Applicat
     *current = Some(LoginAttempt {
       id: id.clone(),
       provider: provider_id.clone(),
-      status: "pending",
+      status: LoginStatus::Pending,
       error: None,
       end: end.clone(),
     });
@@ -115,8 +121,8 @@ pub async fn start(app: Arc<App>, provider_id: String) -> Result<Value, Applicat
   app.lifecycle.tasks.spawn(async move {
     let (status, error) = match wait_for_approval(&worker, &transport, &code, &end).await {
       Some(Ok(github)) => match redeem(&worker, &transport, &id, &provider_id, github).await {
-        Ok(()) => ("complete", None),
-        Err(error) => ("failed", Some(error.to_string())),
+        Ok(()) => (LoginStatus::Complete, None),
+        Err(error) => (LoginStatus::Failed, Some(error.to_string())),
       },
       Some(Err((status, error))) => (status, error),
       // Replaced, or the server is stopping: nothing is left to tell.

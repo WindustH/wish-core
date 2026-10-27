@@ -20,10 +20,10 @@
 
 use serde_json::Value;
 
-use crate::Error;
 use crate::protocol::account_state::{
   AccountState, AccountStateProtocol, Balance, Failure, FailureKind,
 };
+use crate::protocol::error::Error;
 use crate::protocol::json_read::read_scalar_text;
 
 /// Reads the balance body.

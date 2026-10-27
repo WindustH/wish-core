@@ -12,7 +12,7 @@ pub fn provider_presets() -> &'static Value {
   })
 }
 pub fn find_provider(id: &str) -> Option<&'static Value> {
-  provider_presets()["presets"].as_array().unwrap().iter().find(|p| p["id"] == id)
+  provider_presets()["presets"].as_array()?.iter().find(|p| p["id"] == id)
 }
 pub fn search_presets() -> &'static Value {
   static PRESETS: OnceLock<Value> = OnceLock::new();
@@ -22,5 +22,25 @@ pub fn search_presets() -> &'static Value {
   })
 }
 pub fn find_search(id: &str) -> Option<&'static Value> {
-  search_presets()["presets"].as_array().unwrap().iter().find(|p| p["id"] == id)
+  search_presets()["presets"].as_array()?.iter().find(|p| p["id"] == id)
+}
+
+pub fn fetch_presets() -> &'static Value {
+  static PRESETS: OnceLock<Value> = OnceLock::new();
+  PRESETS.get_or_init(|| {
+    serde_json::from_str(include_str!("../../resources/fetch-presets.json"))
+      .expect("valid built-in fetch presets")
+  })
+}
+pub fn find_fetch(id: &str) -> Option<&'static Value> {
+  fetch_presets()["presets"].as_array()?.iter().find(|p| p["id"] == id)
+}
+
+pub fn renewal(preset: Option<&str>) -> Option<crate::protocol::endpoint::CredentialRenewal> {
+  use crate::protocol::endpoint::CredentialRenewal;
+  match preset {
+    Some("openai_codex") => Some(CredentialRenewal::CodexOAuth),
+    Some("github_copilot") => Some(CredentialRenewal::CopilotToken),
+    _ => None,
+  }
 }

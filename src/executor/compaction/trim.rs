@@ -3,7 +3,7 @@
 use super::{Failure, check_cancelled, count_kept_prefix, measure, trigger::CutoverPlan};
 use crate::executor::{ExecutionControl, model::ModelCaller};
 use crate::{
-  Error,
+  protocol::error::Error,
   protocol::{Request, model_use::context::find_replay_unit_boundaries},
   session::{CompactionReason, EntryId, GenerationId, Session, SessionError},
 };

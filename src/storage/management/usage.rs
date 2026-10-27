@@ -82,7 +82,7 @@ pub struct IndexedModelCall {
 impl ManagementStore {
   /// Last indexed call; callers replay it because an in-flight call may have completed.
   pub fn last_call_position(&self, session: &str) -> Result<u64, RepositoryError> {
-    let position: Option<i64> = self.db.lock().unwrap().query_row(
+    let position: Option<i64> = self.lock()?.query_row(
       "SELECT max(position) FROM calls WHERE session=?1",
       [session],
       |row| row.get(0),
@@ -96,7 +96,7 @@ impl ManagementStore {
     provider: &str,
     records: &[IndexedModelCall],
   ) -> Result<(), RepositoryError> {
-    let mut database = self.db.lock().unwrap();
+    let mut database = self.lock()?;
     let transaction = database.transaction()?;
     for record in records {
       transaction.execute(
@@ -122,7 +122,7 @@ impl ManagementStore {
     to: i64,
     bucket: i64,
   ) -> Result<Vec<UsageBucket>, RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     let mut statement = db.prepare("SELECT provider,model,?2+((started_at-?2)/?4)*?4, count(*),sum(json_extract(record,'$.status')='Completed'), sum(json_extract(record,'$.usage.input_tokens') IS NOT NULL OR json_extract(record,'$.usage.output_tokens') IS NOT NULL),sum(coalesce(json_extract(record,'$.usage.input_tokens'),0)),sum(coalesce(json_extract(record,'$.usage.output_tokens'),0)),sum(coalesce(json_extract(record,'$.usage.total_tokens'),json_extract(record,'$.usage.input_tokens')+json_extract(record,'$.usage.output_tokens'),0)),sum(coalesce(json_extract(record,'$.usage.cached_input_tokens'),0)),sum(coalesce(json_extract(record,'$.usage.cache_write_input_tokens'),0)),sum(coalesce(json_extract(record,'$.usage.reasoning_tokens'),0)) FROM calls WHERE (?1 IS NULL OR session=?1) AND started_at>=?2 AND started_at<?3 GROUP BY provider,model,3 ORDER BY 3")?;
     let rows = statement.query_map(params![session, from, to, bucket], |row| {
       Ok(UsageBucket {
@@ -146,7 +146,7 @@ impl ManagementStore {
   }
 
   pub fn save_stream_sample(&self, sample: &sampling::Sample) -> Result<(), RepositoryError> {
-    self.db.lock().unwrap().execute(
+    self.lock()? .execute(
       "INSERT INTO stream_samples(attempt_id,session,provider,model,at_ms,duration_ms,output_bytes) VALUES(?1,?2,?3,?4,?5,?6,?7)",
       params![
         sample.attempt_id,
@@ -168,7 +168,7 @@ impl ManagementStore {
     to: i64,
     step: i64,
   ) -> Result<Vec<StreamAggregate>, RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     let mut statement = db.prepare("SELECT provider,model,?2+(at_ms-?2)/?4*?4,SUM(output_bytes),SUM(duration_ms),COUNT(*) FROM stream_samples WHERE (?1 IS NULL OR session=?1) AND at_ms>=?2 AND at_ms<?3 GROUP BY provider,model,3")?;
     let rows = statement.query_map(params![session, from, to, step], |row| {
       Ok(StreamAggregate {
@@ -189,7 +189,7 @@ impl ManagementStore {
     from: i64,
     to: i64,
   ) -> Result<Vec<StreamSample>, RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     let mut statement = db.prepare("SELECT attempt_id,provider,model,at_ms,duration_ms,output_bytes FROM stream_samples WHERE (?1 IS NULL OR session=?1) AND at_ms>=?2 AND at_ms<?3 ORDER BY at_ms DESC,attempt_id DESC LIMIT ?4")?;
     let limit = sampling::LIST_LIMIT as i64;
     let rows = statement.query_map(params![session, from, to, limit], stream_sample)?;
@@ -202,7 +202,7 @@ impl ManagementStore {
   }
   /// How many stream samples there are.
   pub fn stream_sample_count(&self) -> Result<u64, RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     Ok(db.query_row("SELECT count(*) FROM stream_samples", [], |row| row.get::<_, i64>(0))? as u64)
   }
   /// Past the limit, merges neighbouring stream samples until nine-tenths of it remain, so a merge
@@ -214,7 +214,7 @@ impl ManagementStore {
   /// samples keep their detail longest. Returns how many samples merged away.
   pub fn merge_stream_samples(&self) -> Result<u64, RepositoryError> {
     let limit = self.sample_limit.load(Ordering::Relaxed);
-    let mut db = self.db.lock().unwrap();
+    let mut db = self.lock()?;
     let count =
       db.query_row("SELECT count(*) FROM stream_samples", [], |row| row.get::<_, i64>(0))?;
     if limit == 0 || count as u64 <= limit {
@@ -323,7 +323,7 @@ impl ManagementStore {
   /// What deleted sessions left in the usage records: their calls and stream samples. They stay
   /// in the usage statistics until [`Self::prune_usage`] clears them.
   pub fn leftover_usage(&self) -> Result<LeftoverUsage, RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     let count = |table: &str| {
       db.query_row(
         &format!("SELECT count(*) FROM {table} WHERE session NOT IN (SELECT id FROM sessions)"),
@@ -339,7 +339,7 @@ impl ManagementStore {
   /// Deletes what deleted sessions left in the usage records, and hands its room back to the file
   /// system. Returns what went.
   pub fn prune_usage(&self) -> Result<LeftoverUsage, RepositoryError> {
-    let mut db = self.db.lock().unwrap();
+    let mut db = self.lock()?;
     let tx = db.transaction()?;
     let delete = |table: &str| {
       tx.execute(&format!("DELETE FROM {table} WHERE session NOT IN (SELECT id FROM sessions)"), [])

@@ -1,6 +1,6 @@
 //! Projects stored images for a model call without changing the original context.
 use crate::{
-  Error,
+  protocol::error::Error,
   protocol::{ContentBlock, Message},
   storage::blobs,
 };

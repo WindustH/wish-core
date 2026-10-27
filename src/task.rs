@@ -1,7 +1,6 @@
 //! Supervised session tasks: process lifecycle, output, stdin and file-edit capture.
 mod edit;
 mod operation;
-pub mod output;
 mod platform;
 mod process;
 mod runtime;
@@ -91,3 +90,14 @@ pub enum TaskError {
 }
 
 pub const SHELL_DESCRIPTION_NOTE: &str = platform::DESCRIPTION_NOTE;
+
+/// Data captured by a foreground command. Presentation is the caller's responsibility.
+pub struct ForegroundResult {
+  pub output: serde_json::Value,
+  pub edits: serde_json::Value,
+  pub failed: bool,
+}
+/// One-shot arrival signal supplied by the owner; the process supervisor has no session dependency.
+pub type InputArrival = std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+
+pub use crate::utils::resource_id::is_execution_id;

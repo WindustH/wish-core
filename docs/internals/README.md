@@ -122,3 +122,13 @@ filesystem jobs are not governed by these application admission limits.
 - [groups](groups.md): groups of sessions and the user, and what a session sees of other sessions
 - [folders](folders.md): how the list is arranged in folders, as a file system arranges files
   through `wish session`.
+
+## Architecture maintenance and validation
+
+See [the audit follow-up](architecture-audit-followup.md) for capability registration, explicit
+process-runtime ownership, typed list read models, queue-size publication and compatibility
+choices. The serialized session/protocol IR belongs to the storage format contract; incompatible
+changes require migration, even when the Rust type is under `protocol/`.
+
+Validation uses formatting, Clippy, builds, dependency-boundary checks and the separate `wish-test`
+black-box/integration suites. This project deliberately has no inline Rust unit tests.

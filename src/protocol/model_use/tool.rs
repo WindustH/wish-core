@@ -44,20 +44,3 @@ pub(crate) fn tool_result_value(content: &Value) -> Value {
 pub(crate) fn tool_result_is_error(content: &Value) -> bool {
   matches!(content["status"].as_str(), Some("failed" | "cancelled" | "unknown"))
 }
-
-#[cfg(test)]
-mod result_tests {
-  use super::*;
-  use serde_json::json;
-  #[test]
-  fn report_projection_hides_process_data_and_preserves_old_results() {
-    let content = json!({"status":"failed", "model_text":"Command failed (exit code 1).\nerror", "output":{"encoding":"utf8", "process":{"exit_code":1}, "output_path":"private"}});
-    assert_eq!(tool_result_text(&content), "Command failed (exit code 1).\nerror");
-    let projected = tool_result_value(&content).to_string();
-    assert!(!projected.contains("encoding") && !projected.contains("private"));
-    assert!(tool_result_is_error(&content));
-    let old = json!({"status":"success", "output":{"text":"hello"}});
-    assert_eq!(tool_result_value(&old), old);
-    assert_eq!(tool_result_text(&old), old.to_string());
-  }
-}

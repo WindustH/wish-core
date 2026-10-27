@@ -45,7 +45,7 @@ async fn execute(mut args: Vec<String>) -> Result<i32, Failure> {
     if structured {
       print(value);
     } else {
-      println!("{}", crate::task::output::render(value, false));
+      println!("{}", crate::tool::task_output::render(value, false));
     }
   };
   let Some(command) = args.first().map(String::as_str) else {
@@ -63,10 +63,10 @@ async fn execute(mut args: Vec<String>) -> Result<i32, Failure> {
       return Err(invalid(USAGE));
     }
     let mut result = send(&bridge, json!({"action":"list"})).await?;
-    if args.iter().any(|arg| arg == "--running") {
-      if let Some(tasks) = result["tasks"].as_array_mut() {
-        tasks.retain(|task| task["process"]["status"] == "running");
-      }
+    if args.iter().any(|arg| arg == "--running")
+      && let Some(tasks) = result["tasks"].as_array_mut()
+    {
+      tasks.retain(|task| task["process"]["status"] == "running");
     }
     if structured || args.iter().any(|arg| arg == "--json") {
       print(&result);

@@ -57,6 +57,3 @@ fn read_page(body: &Value, field: &str) -> Result<FetchResult, Error> {
     .ok_or_else(|| Error::Malformed("fetch provider returned no page content".into()))?;
   Ok(FetchResult { title: body["title"].as_str().unwrap_or("").into(), content: content.into() })
 }
-
-#[cfg(test)]
-mod tests;

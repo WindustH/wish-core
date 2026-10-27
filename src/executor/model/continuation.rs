@@ -1,7 +1,7 @@
 //! Request-local output continuation. No synthetic instructions or intermediate responses enter Session.
 use crate::session::statistics::CallObservation;
 use crate::{
-  Error,
+  protocol::error::Error,
   protocol::{ContentBlock, Message, Request, StopReason, StreamEvent, Usage},
 };
 

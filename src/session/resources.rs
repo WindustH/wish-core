@@ -39,9 +39,4 @@ fn collect(value: &Value, found: &mut HashSet<String>) {
     _ => {}
   }
 }
-/// A shell execution id: `<pid>-<nanoseconds>-<counter>`.
-pub fn is_execution_id(word: &str) -> bool {
-  let parts: Vec<_> = word.split('-').collect();
-  parts.len() == 3
-    && parts.iter().all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
-}
+pub use crate::utils::resource_id::is_execution_id;

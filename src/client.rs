@@ -12,6 +12,7 @@
 //! and its first event, so a streamed call is only replaced until that event is in hand - after
 //! that a replay would splice a second copy of the answer into what the caller has already seen.
 pub mod account;
+mod auxiliary;
 mod observer;
 pub(crate) mod retry;
 mod stream;
@@ -388,32 +389,21 @@ impl<T: Transport> Client<T> {
     base_url: Option<&str>,
     headers: &[(String, String)],
   ) -> Result<crate::protocol::web_search::SearchResults, Error> {
-    retry_upstream(
+    auxiliary::read(
       &self.auxiliary_retry,
       RetryOperation::WebSearch,
       self.retry_observer.clone(),
-      |_| async {
-        tokio::time::timeout(
-          std::time::Duration::from_secs(60),
-          crate::protocol::web_search::search(
-            &self.transport,
-            protocol,
-            &self.credentials,
-            base_url,
-            headers,
-            query,
-            unix_seconds(),
-          ),
+      || {
+        crate::protocol::web_search::search(
+          &self.transport,
+          protocol,
+          &self.credentials,
+          base_url,
+          headers,
+          query,
+          unix_seconds(),
         )
-        .await
-        .unwrap_or_else(|_| {
-          Err(Error::Transport(crate::protocol::error::TransportFailure {
-            retryable: false,
-            message: "web search: no answer within 60 seconds".into(),
-          }))
-        })
       },
-      classify_read_retry,
     )
     .await
   }

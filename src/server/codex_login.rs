@@ -2,6 +2,7 @@
 
 use crate::application::app::App;
 use crate::application::codex_login::{LOGIN_LIFETIME, LoginGrant};
+use crate::application::credentials::LoginStatus;
 use crate::server::error::ApiError;
 use axum::{
   Json, Router,
@@ -61,7 +62,7 @@ pub async fn start(
         }
       })
       .await;
-    worker_app.codex_login.finish(&attempt_id, "expired", None).await;
+    worker_app.codex_login.finish(&attempt_id, LoginStatus::Expired, None).await;
   });
   Ok(Json(json!({"authorization_url": url.as_str(), "expires_in": LOGIN_LIFETIME.as_secs()})))
 }

@@ -57,14 +57,14 @@ pub enum ToolExecutionState {
 pub enum StreamEnd {
   Complete,
   Interrupted { tools: ToolExecutionState },
-  Failed(crate::Error),
+  Failed(crate::protocol::error::Error),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub enum IncompleteReason {
   OutputLimit,
   Interrupted { tools: ToolExecutionState },
-  Failed(crate::Error),
+  Failed(crate::protocol::error::Error),
 }
 
 /// Protocol-owned result of closing a model stream.
@@ -93,9 +93,11 @@ impl PartialResponse {
   pub fn from_output_limit(
     response: super::Response,
     protocol: Option<ModelUseProtocol>,
-  ) -> Result<Self, crate::Error> {
+  ) -> Result<Self, crate::protocol::error::Error> {
     if response.stop_reason != StopReason::MaxOutputLengthExceeded {
-      return Err(crate::Error::Build("expected an output-limited response".into()));
+      return Err(crate::protocol::error::Error::Build(
+        "expected an output-limited response".into(),
+      ));
     }
     let rules = protocol.map(ModelUseProtocol::get_reasoning_replay).unwrap_or_default();
     let blocks: Vec<_> = response
@@ -213,7 +215,10 @@ fn parse_arguments(arguments: &str) -> Option<Value> {
 impl StreamAccumulator {
   /// Normal completion stays strict. Explicit interruption preserves eligible content and pairs
   /// tools using execution facts; failed reading retains diagnostics but accepts no messages.
-  pub fn finalize(self, end: StreamEnd) -> Result<StreamFinalization, crate::Error> {
+  pub fn finalize(
+    self,
+    end: StreamEnd,
+  ) -> Result<StreamFinalization, crate::protocol::error::Error> {
     match end {
       StreamEnd::Complete => {
         self.finish().map(|response| StreamFinalization::Complete(Box::new(response)))
@@ -234,9 +239,9 @@ impl StreamAccumulator {
   }
 
   /// Finalize an upstream output limit using the same block-level replay rules as interruption.
-  pub fn finish_output_limit(self) -> Result<PartialResponse, crate::Error> {
+  pub fn finish_output_limit(self) -> Result<PartialResponse, crate::protocol::error::Error> {
     if self.stop_reason != Some(StopReason::MaxOutputLengthExceeded) {
-      return Err(crate::Error::Build(
+      return Err(crate::protocol::error::Error::Build(
         "output-limit finalization requires an upstream output limit".into(),
       ));
     }

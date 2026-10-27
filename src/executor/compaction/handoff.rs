@@ -7,12 +7,12 @@
 //! and builds the copy of the item that carries the handoff.
 use super::{call_status, collect_assistant_content};
 use crate::{
-  Error,
   executor::{
     ExecutionControl,
     model::{CallResponse, ModelCaller, ModelStream},
     observe::record_and_deliver,
   },
+  protocol::error::Error,
   protocol::{
     ContentBlock, Message, Request, Response, StopReason, StreamEvent, Usage,
     model_use::stream::{StreamEnd, StreamFinalization},

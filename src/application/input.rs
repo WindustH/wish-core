@@ -1,11 +1,9 @@
 //! Ordered user content. Editor tokens refer to session-local uploaded blobs;
 //! original text and the display order remain in metadata for queue editing.
 use crate::{
-  application::{
-    blobs::{self, is_blob_id},
-    error::ApplicationError,
-  },
+  application::error::ApplicationError,
   protocol::{ContentBlock, Message},
+  storage::blobs::{self, is_blob_id},
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -95,7 +93,9 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
     let block = match attachment.kind.as_str() {
       "image" => {
         if !blob.mime_type.starts_with("image/") {
-          return Err(ApplicationError::invalid("attachment is not PNG, JPEG, GIF or WebP; convert HEIF/HEIC or other formats before sending (renaming the extension does not convert an image)"));
+          return Err(ApplicationError::invalid(
+            "attachment is not PNG, JPEG, GIF or WebP; convert HEIF/HEIC or other formats before sending (renaming the extension does not convert an image)",
+          ));
         }
         let bytes = tokio::fs::read(&blob.path).await.map_err(ApplicationError::internal)?;
         ContentBlock::Image {
@@ -156,15 +156,29 @@ impl InitialInput {
       let blob = match (item.id, item.data_base64) {
         (Some(id), None) if is_blob_id(&id) => blobs::read_description(directory, &id).await?,
         (None, Some(data)) => {
-          let bytes = base64::engine::general_purpose::STANDARD.decode(&data)
+          let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&data)
             .map_err(|_| ApplicationError::invalid("attachment data is not valid base64"))?;
           blobs::save_upload(directory, &bytes).await?
         }
-        _ => return Err(ApplicationError::invalid("attachment requires exactly one valid id or data_base64")),
+        _ => {
+          return Err(ApplicationError::invalid(
+            "attachment requires exactly one valid id or data_base64",
+          ));
+        }
       };
-      attachments.push(Attachment { id: blob.id, kind: item.kind, name: item.name,
-        placeholder: item.placeholder, byte_count: Some(blob.byte_count) });
+      attachments.push(Attachment {
+        id: blob.id,
+        kind: item.kind,
+        name: item.name,
+        placeholder: item.placeholder,
+        byte_count: Some(blob.byte_count),
+      });
     }
-    message(directory, Input { text: self.text, attachments, metadata: Value::Null, _background_shell: false }).await
+    message(
+      directory,
+      Input { text: self.text, attachments, metadata: Value::Null, _background_shell: false },
+    )
+    .await
   }
 }

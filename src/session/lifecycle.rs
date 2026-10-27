@@ -16,6 +16,22 @@ impl Session {
     Self::create(Storage::open_in_memory(StorageOptions::default())?, "default", config)
   }
   pub fn create(storage: Storage, id: &str, config: SessionConfig) -> Result<Self, SessionError> {
+    Self::create_initialized(storage, id, config, None, Vec::new(), None)
+  }
+  /// Create the header, initial history and first queued message in one durable transaction.
+  pub fn create_initialized(
+    storage: Storage,
+    id: &str,
+    config: SessionConfig,
+    metadata: Option<Value>,
+    history: Vec<(Message, EntryOrigin)>,
+    first_input: Option<Message>,
+  ) -> Result<Self, SessionError> {
+    validate_tool_pairs(history.iter().map(|(message, _)| message))?;
+    if first_input.as_ref().is_some_and(|message| !super::context::is_input(message)) {
+      return Err(SessionError::InvalidInput);
+    }
+
     config.validate()?;
     let key = Self::build_key(id);
     let owner = storage.claim_owner(&key)?;
@@ -26,7 +42,7 @@ impl Session {
       let mut record = SessionRecord {
         next_generation_tools: None,
         next_generation_instructions: Default::default(),
-        metadata: Value::Null,
+        metadata: metadata.clone().unwrap_or(Value::Null),
         config: config.clone(),
         state: SessionState::Idle,
         // Both are set below, as the generations are appended.
@@ -55,10 +71,17 @@ impl Session {
         transaction.append_generation(GenerationStatus::Active, entries, 0, None)?;
       transaction.append_standby(&[], 0, None)?;
       transaction.record_event(SessionEvent::Created(Box::new(config)))?;
+      if let Some(metadata) = metadata {
+        transaction.record_event(SessionEvent::MetadataUpdated(metadata))?;
+      }
+      transaction.import_messages(history)?;
+      if let Some(message) = first_input {
+        transaction.append_input(message)?;
+      }
       store.create_object(&key, &record)?;
       Ok(record)
     })?;
-    Ok(Self::from_record(storage, key, owner, record))
+    Self::from_record(storage, key, owner, record)
   }
   pub fn load(storage: Storage, id: &str) -> Result<Self, SessionError> {
     let key = Self::build_key(id);
@@ -67,20 +90,29 @@ impl Session {
     let record = storage.transaction(move |store| -> Result<_, SessionError> {
       Ok((*store.load_object::<SessionRecord>(&target)?).clone())
     })?;
-    Ok(Self::from_record(storage, key, owner, record))
+    Self::from_record(storage, key, owner, record)
   }
   fn build_key(id: &str) -> String {
     format!("session/{}", hex::encode(id.as_bytes()))
   }
-  fn from_record(storage: Storage, key: String, owner: OwnerGuard, record: SessionRecord) -> Self {
-    Self {
-      reader: SessionReader::new(storage.clone(), &record),
+  fn from_record(
+    storage: Storage,
+    key: String,
+    owner: OwnerGuard,
+    record: SessionRecord,
+  ) -> Result<Self, SessionError> {
+    let reader = SessionReader::new(storage.clone(), &record);
+    let queue_size =
+      std::sync::Arc::new(super::queue::QueueSize::new(reader.get_message_queue().len()?));
+    Ok(Self {
+      reader,
+      queue_size,
       storage,
       key,
       _owner: owner,
       record,
       arrivals: Default::default(),
-    }
+    })
   }
 }
 
@@ -99,30 +131,35 @@ impl Session {
   /// active context and its history as `Imported`; those that were summaries or other context-only
   /// entries where they came from (`Summary`, `Context`) keep that origin and join the context but
   /// no history, as they did there, and later summaries start after them.
+  #[allow(dead_code)] // standalone engine integration fixtures
   pub fn import_history(
     &mut self,
     messages: Vec<(Message, EntryOrigin)>,
   ) -> Result<(), SessionError> {
     self.require_stable()?;
     validate_tool_pairs(messages.iter().map(|(message, _)| message))?;
-    self.update(move |transaction| {
-      let mut generation = transaction.load_generation(transaction.record.active)?;
-      let start = transaction.store.list_len::<EntryId>(&generation.entries)?;
-      let mut cursor = None;
-      for (position, (message, origin)) in messages.into_iter().enumerate() {
-        if matches!(origin, EntryOrigin::Summary | EntryOrigin::Context) {
-          let entry = transaction.store_entry(message, origin)?;
-          transaction.store.append_item(&generation.entries, &entry)?;
-          cursor = Some(start + position as u64 + 1);
-        } else {
-          transaction.append_message(message, EntryOrigin::Imported)?;
-        }
+    self.update(move |transaction| transaction.import_messages(messages))
+  }
+}
+
+impl SessionTransaction<'_, '_> {
+  fn import_messages(&mut self, messages: Vec<(Message, EntryOrigin)>) -> Result<(), SessionError> {
+    let mut generation = self.load_generation(self.record.active)?;
+    let start = self.store.list_len::<EntryId>(&generation.entries)?;
+    let mut cursor = None;
+    for (position, (message, origin)) in messages.into_iter().enumerate() {
+      if matches!(origin, EntryOrigin::Summary | EntryOrigin::Context) {
+        let entry = self.store_entry(message, origin)?;
+        self.store.append_item(&generation.entries, &entry)?;
+        cursor = Some(start + position as u64 + 1);
+      } else {
+        self.append_message(message, EntryOrigin::Imported)?;
       }
-      if let Some(cursor) = cursor {
-        generation.compaction_cursor = generation.compaction_cursor.max(cursor);
-        transaction.save_generation(&generation)?;
-      }
-      Ok(())
-    })
+    }
+    if let Some(cursor) = cursor {
+      generation.compaction_cursor = generation.compaction_cursor.max(cursor);
+      self.save_generation(&generation)?;
+    }
+    Ok(())
   }
 }

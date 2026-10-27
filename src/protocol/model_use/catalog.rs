@@ -6,7 +6,7 @@ use super::{
     ResponsesApiMode, ResponsesDeployment,
   },
 };
-pub fn parse_protocol(name: &str) -> Result<ModelUseProtocol, crate::Error> {
+pub fn parse_protocol(name: &str) -> Result<ModelUseProtocol, crate::protocol::error::Error> {
   Ok(match name {
     "openai_chat" => ModelUseProtocol::OpenAiChat(Chat::Official),
     "compatible_chat" => ModelUseProtocol::OpenAiChat(Chat::Compatible),
@@ -41,6 +41,10 @@ pub fn parse_protocol(name: &str) -> Result<ModelUseProtocol, crate::Error> {
     "google_interactions" => ModelUseProtocol::GoogleInteractions,
     "bedrock_converse" => ModelUseProtocol::BedrockConverse,
     "mistral_conversations" => ModelUseProtocol::MistralConversations,
-    _ => return Err(crate::Error::Build(format!("unknown model-use protocol: {name}"))),
+    _ => {
+      return Err(crate::protocol::error::Error::Build(format!(
+        "unknown model-use protocol: {name}"
+      )));
+    }
   })
 }

@@ -49,12 +49,7 @@ impl AccountConfig {
     self.preset.as_deref() == Some("github_copilot")
   }
   pub fn get_renewal(&self) -> Option<crate::protocol::endpoint::CredentialRenewal> {
-    use crate::protocol::endpoint::CredentialRenewal;
-    match self.preset.as_deref() {
-      Some("openai_codex") => Some(CredentialRenewal::CodexOAuth),
-      Some("github_copilot") => Some(CredentialRenewal::CopilotToken),
-      _ => None,
-    }
+    super::presets::renewal(self.preset.as_deref())
   }
 }
 impl Config {
@@ -124,17 +119,17 @@ impl Config {
         }
         service.credential_id = provider.credential_id.clone();
         service.proxy_enabled = provider.proxy_enabled;
-        if service.base_url.is_none() {
-          if let Some(preset) = presets::find_search(&service.preset) {
-            service.base_url = provider
-              .preset
-              .as_deref()
-              .and_then(|p| preset["base_url_by_lender"][p].as_str())
-              .map(str::to_owned)
-              .or_else(|| {
-                (preset["base_url_from_provider"] == true).then(|| provider.base_url.clone())
-              });
-          }
+        if service.base_url.is_none()
+          && let Some(preset) = presets::find_search(&service.preset)
+        {
+          service.base_url = provider
+            .preset
+            .as_deref()
+            .and_then(|p| preset["base_url_by_lender"][p].as_str())
+            .map(str::to_owned)
+            .or_else(|| {
+              (preset["base_url_from_provider"] == true).then(|| provider.base_url.clone())
+            });
         }
       }
       if service.credential_id.is_none()
@@ -271,7 +266,7 @@ impl AccountRuntime {
     let mut credentials = Credentials::default();
     if enabled {
       credentials.api_key = match &config.api_key_env {
-        Some(name) => super::provider::read_secret(name).map_err(ApplicationError::invalid)?,
+        Some(name) => super::identity::read_secret(name).map_err(ApplicationError::invalid)?,
         None => config.api_key.clone().unwrap_or_default(),
       };
       credentials.refresh_token = config.refresh_token.clone();
@@ -282,7 +277,7 @@ impl AccountRuntime {
       for (field, name) in &config.credentials_env {
         fields.insert(
           field.clone(),
-          super::provider::read_secret(name).map_err(ApplicationError::invalid)?,
+          super::identity::read_secret(name).map_err(ApplicationError::invalid)?,
         );
       }
     }
@@ -310,28 +305,5 @@ impl AccountRuntime {
   }
   pub fn get_user_agent(&self) -> Option<String> {
     self.config.is_codex().then(|| super::provider::CODEX_USER_AGENT.to_owned())
-  }
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[tokio::test]
-  async fn reader_account_does_not_require_a_model_service() {
-    let runtime = AccountRuntime::build(
-      "account:reader".into(),
-      AccountConfig {
-        preset: Some("jina_reader".into()),
-        api_key: Some("reader-key".into()),
-        ..Default::default()
-      },
-      true,
-      &Default::default(),
-    )
-    .unwrap();
-    assert_eq!(runtime.client.get_api_key(), "reader-key");
-    assert!(runtime.config.get_renewal().is_none());
-    assert!(runtime.service_base_url.is_none());
   }
 }

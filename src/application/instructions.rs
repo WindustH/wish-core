@@ -8,27 +8,22 @@ pub fn agent_instructions(switches: super::session::ToolSwitches) -> String {
   use super::session::ToolDelivery;
   let mut text = AGENT_INSTRUCTIONS.to_owned();
   if switches.shell {
-    let mut commands = vec![
-      "`wish mcp` — MCP services",
-      "`wish skill` — discover/read skills",
-    ];
-    if switches.sessions && switches.sessions_delivery == ToolDelivery::Command {
-      commands.push("`wish session` — sessions and groups");
-    }
-    if switches.task_delivery == ToolDelivery::Command {
-      commands.push("`wish task` — task management");
-    }
-    if switches.web_fetch && switches.web_fetch_delivery == ToolDelivery::Command {
-      commands.push("`wish webfetch` — read webpages");
-    }
-    if switches.web_search && switches.web_search_delivery == ToolDelivery::Command {
-      commands.push("`wish websearch` — web search");
-    }
-    if switches.history_search && switches.history_search_delivery == ToolDelivery::Command {
-      commands.push("`wish history` — search/read session history");
-    }
-    if switches.ask_user && switches.ask_user_delivery == ToolDelivery::Command {
-      commands.push("`wish askuser` — ask the user");
+    let mut commands = vec!["`wish mcp` — MCP services", "`wish skill` — discover/read skills"];
+    use crate::capability::Capability;
+    for capability in [
+      Capability::Sessions,
+      Capability::Task,
+      Capability::WebFetch,
+      Capability::WebSearch,
+      Capability::History,
+      Capability::AskUser,
+    ] {
+      if switches.enabled(capability)
+        && switches.delivery(capability) == ToolDelivery::Command
+        && let Some(instruction) = capability.command_instruction()
+      {
+        commands.push(instruction);
+      }
     }
     text.push_str("\n\n# Wish commands\n");
     text.push_str(&commands.join("\n"));
@@ -110,9 +105,20 @@ pub fn delivery_notice(
   };
   let mut changes = Vec::new();
   for (name, was, enabled, old_delivery, delivery) in [
-    ("history / wish history", previous.history_search, next.history_search,
-      previous.history_search_delivery, next.history_search_delivery),
-    ("session / wish session", previous.sessions, next.sessions, previous.sessions_delivery, next.sessions_delivery),
+    (
+      "history / wish history",
+      previous.history_search,
+      next.history_search,
+      previous.history_search_delivery,
+      next.history_search_delivery,
+    ),
+    (
+      "session / wish session",
+      previous.sessions,
+      next.sessions,
+      previous.sessions_delivery,
+      next.sessions_delivery,
+    ),
     ("task", previous.shell, next.shell, previous.task_delivery, next.task_delivery),
     (
       "web_fetch / wish webfetch",

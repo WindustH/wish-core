@@ -176,24 +176,24 @@ impl SessionTransaction<'_, '_> {
           if metadata.get("next_generation_instruction").is_some() {
             continue;
           }
-          if let Some(source) = metadata["source"].as_str() {
-            if let Some(text) = replacements.get(source) {
-              if !installed.insert(source.to_owned()) {
-                continue;
-              }
-              let replacement = self.store_entry(
-                crate::protocol::Message::System {
-                  metadata: serde_json::json!({"source":source}),
-                  content: vec![crate::protocol::ContentBlock::Text { text: text.clone() }],
-                },
-                EntryOrigin::Context,
-              )?;
-              entries.push(replacement);
-              if (position as u64) < activated.compaction_cursor {
-                cursor += 1;
-              }
+          if let Some(source) = metadata["source"].as_str()
+            && let Some(text) = replacements.get(source)
+          {
+            if !installed.insert(source.to_owned()) {
               continue;
             }
+            let replacement = self.store_entry(
+              crate::protocol::Message::System {
+                metadata: serde_json::json!({"source":source}),
+                content: vec![crate::protocol::ContentBlock::Text { text: text.clone() }],
+              },
+              EntryOrigin::Context,
+            )?;
+            entries.push(replacement);
+            if (position as u64) < activated.compaction_cursor {
+              cursor += 1;
+            }
+            continue;
           }
         }
         entries.push(**id);

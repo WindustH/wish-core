@@ -67,7 +67,9 @@ integers; a count the provider did not report is `null`, never `0`.
 
 **Pages.** Lists read with `?start=0&limit=50` return
 `{"start", "items", "next"}`, where `next` is the next `start` or `null`.
-`limit` must be positive. History endpoints use cursors instead; see
+`limit` must be positive. Session/conversation lists, session entry/queue/generation/call
+pages and group transcript pages accept 1–1000; context structure pages accept 1–100.
+Continue using the returned `next` cursor instead of requesting an unbounded page. History endpoints use cursors instead; see
 [History and records](#history-and-records).
 
 **Revisions.** The configuration carries a `revision` (a hash of the file). A

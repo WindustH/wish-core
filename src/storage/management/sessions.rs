@@ -4,12 +4,9 @@
 use super::{ManagementStore, folders::folder_size};
 use crate::storage::repository_error::RepositoryError;
 use rusqlite::{OptionalExtension, params};
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct SessionQuery {
+pub struct SessionFilter {
   pub start: usize,
   pub limit: usize,
   pub query: String,
@@ -21,21 +18,7 @@ pub struct SessionQuery {
   /// Every session and group, wherever it is, instead of a folder's listing.
   pub flat: bool,
 }
-impl Default for SessionQuery {
-  fn default() -> Self {
-    Self {
-      start: 0,
-      limit: 50,
-      query: String::new(),
-      phase: String::new(),
-      tag: String::new(),
-      order: "desc".into(),
-      folder: None,
-      flat: false,
-    }
-  }
-}
-impl SessionQuery {
+impl SessionFilter {
   fn direction(&self) -> Result<&'static str, RepositoryError> {
     if self.limit == 0 {
       return Err(RepositoryError::invalid("limit must be positive"));
@@ -53,7 +36,7 @@ const SESSION_FILTER: &str = "(?1='' OR instr(lower(json_extract(record,'$.sessi
 
 impl ManagementStore {
   pub fn save(&self, record: &Value) -> Result<(), RepositoryError> {
-    self.db.lock().unwrap().execute(
+    self.lock()? .execute(
       "INSERT INTO sessions(id,updated_at,record) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at,record=excluded.record",
       params![
         record["session"]["id"].as_str(),
@@ -68,29 +51,23 @@ impl ManagementStore {
   }
   fn record(&self, id: &str) -> Result<Option<Value>, RepositoryError> {
     let value: Option<String> = self
-      .db
-      .lock()
-      .unwrap()
+      .lock()?
       .query_row("SELECT record FROM sessions WHERE id=?1", [id], |r| r.get(0))
       .optional()?;
     value.map(|value| serde_json::from_str(&value).map_err(RepositoryError::internal)).transpose()
   }
   pub fn exists(&self, id: &str) -> Result<bool, RepositoryError> {
-    let found = self
-      .db
-      .lock()
-      .unwrap()
-      .query_row("SELECT 1 FROM sessions WHERE id=?1", [id], |_| Ok(()))
-      .optional()?;
+    let found =
+      self.lock()?.query_row("SELECT 1 FROM sessions WHERE id=?1", [id], |_| Ok(())).optional()?;
     Ok(found.is_some())
   }
-  /// A page of the session list, each session as the API shows it.
-  pub fn list(&self, q: SessionQuery) -> Result<Value, RepositoryError> {
+  /// A bounded page of persisted session index records.
+  pub fn list(&self, q: SessionFilter) -> Result<RecordPage<Value>, RepositoryError> {
     let direction = q.direction()?;
     let sql = format!(
       "SELECT record FROM sessions WHERE {SESSION_FILTER} ORDER BY updated_at {direction},id {direction} LIMIT ?4 OFFSET ?5"
     );
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     let mut statement = db.prepare(&sql)?;
     let rows = statement.query_map(
       params![
@@ -98,7 +75,7 @@ impl ManagementStore {
         q.phase,
         q.tag,
         i64::try_from(q.limit.saturating_add(1)).map_err(RepositoryError::internal)?,
-        q.start as i64
+        i64::try_from(q.start).map_err(RepositoryError::internal)?
       ],
       |r| r.get::<_, String>(0),
     )?;
@@ -109,15 +86,15 @@ impl ManagementStore {
     }
     let more = items.len() > q.limit;
     items.truncate(q.limit);
-    Ok(json!({"items":items,"next":more.then_some(q.start+q.limit)}))
+    Ok(RecordPage { items, next: more.then_some(q.start.saturating_add(q.limit)) })
   }
   pub fn delete(&self, id: &str) -> Result<(), RepositoryError> {
-    self.db.lock().unwrap().execute("DELETE FROM sessions WHERE id=?1", [id])?;
+    self.lock()?.execute("DELETE FROM sessions WHERE id=?1", [id])?;
     Ok(())
   }
   /// Every session's record, newest first.
   pub fn list_all(&self) -> Result<Vec<Value>, RepositoryError> {
-    let db = self.db.lock().unwrap();
+    let db = self.lock()?;
     let mut statement =
       db.prepare("SELECT record FROM sessions ORDER BY updated_at DESC, id DESC")?;
     let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
@@ -128,7 +105,7 @@ impl ManagementStore {
     Ok(records)
   }
   pub fn count(&self) -> Result<i64, RepositoryError> {
-    Ok(self.db.lock().unwrap().query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))?)
+    Ok(self.lock()?.query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))?)
   }
 
   /// A page of what a user browses. Without words, a phase or a tag to look for, it is one
@@ -136,12 +113,15 @@ impl ManagementStore {
   /// in each - read along the folder indexes, so it costs what that folder holds. With them, or
   /// `flat`, it is every session and group that matches, wherever it is, newest first. The page is chosen by
   /// these columns alone, and only its own records are read. A phase or tag selects sessions only.
-  pub fn conversations(&self, q: SessionQuery) -> Result<Value, RepositoryError> {
+  pub fn conversations(
+    &self,
+    q: SessionFilter,
+  ) -> Result<RecordPage<ConversationRow>, RepositoryError> {
     let direction = q.direction()?;
     let limit = i64::try_from(q.limit.saturating_add(1)).map_err(RepositoryError::internal)?;
     let searching = q.flat || !(q.query.is_empty() && q.phase.is_empty() && q.tag.is_empty());
     let rows: Vec<(String, String, Option<String>, bool)> = {
-      let db = self.db.lock().unwrap();
+      let db = self.lock()?;
       let read = |row: &rusqlite::Row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
       if searching {
         let mut statement = db.prepare(&format!(
@@ -151,7 +131,16 @@ impl ManagementStore {
            ORDER BY 5 {direction},2 {direction} LIMIT ?4 OFFSET ?5"
         ))?;
         statement
-          .query_map(params![q.query, q.phase, q.tag, limit, q.start as i64], read)?
+          .query_map(
+            params![
+              q.query,
+              q.phase,
+              q.tag,
+              limit,
+              i64::try_from(q.start).map_err(RepositoryError::internal)?
+            ],
+            read,
+          )?
           .collect::<Result<_, _>>()?
       } else {
         let mut statement = db.prepare(&format!(
@@ -162,37 +151,51 @@ impl ManagementStore {
            ORDER BY rank,pinned DESC,name COLLATE NOCASE,updated_at {direction},id LIMIT ?2 OFFSET ?3"
         ))?;
         statement
-          .query_map(params![q.folder, limit, q.start as i64], read)?
+          .query_map(
+            params![q.folder, limit, i64::try_from(q.start).map_err(RepositoryError::internal)?],
+            read,
+          )?
           .collect::<Result<_, _>>()?
       }
     };
     // One deleted since the page was chosen is left out.
     let mut items = Vec::new();
     for (kind, id, parent, pinned) in rows {
-      let mut item = match kind.as_str() {
+      let entry = match kind.as_str() {
         "folder" => {
           let Some(folder) = self.folder(&id)? else { continue };
-          let size = folder_size(&self.db.lock().unwrap(), &id)?;
-          let mut folder = json!(folder);
-          folder["items"] = json!(size);
-          json!({"kind": "folder", "folder": folder})
+          let size = folder_size(&*self.lock()?, &id)?;
+          ConversationEntry::Folder { record: folder, size }
         }
         "group" => {
           let Some(group) = self.group(&id)? else { continue };
-          json!({"kind": "group", "group": group})
+          ConversationEntry::Group(group)
         }
         _ => {
-          let Some(mut record) = self.record(&id)? else { continue };
-          record["kind"] = json!("session");
-          record
+          let Some(record) = self.record(&id)? else { continue };
+          ConversationEntry::Session(record)
         }
       };
-      item["parent"] = json!(parent);
-      item["pinned"] = json!(pinned);
-      items.push(item);
+      items.push(ConversationRow { entry, parent, pinned });
     }
     let more = items.len() > q.limit;
     items.truncate(q.limit);
-    Ok(json!({"items":items,"next":more.then_some(q.start+q.limit)}))
+    Ok(RecordPage { items, next: more.then_some(q.start.saturating_add(q.limit)) })
   }
+}
+
+/// Query results, with no HTTP serialization contract.
+pub struct RecordPage<T> {
+  pub items: Vec<T>,
+  pub next: Option<usize>,
+}
+pub struct ConversationRow {
+  pub entry: ConversationEntry,
+  pub parent: Option<String>,
+  pub pinned: bool,
+}
+pub enum ConversationEntry {
+  Folder { record: super::FolderRecord, size: u64 },
+  Group(super::GroupRecord),
+  Session(Value),
 }

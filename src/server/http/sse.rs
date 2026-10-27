@@ -1,7 +1,9 @@
 //! A model call's answer over HTTP: JSON when it came whole, else its stream relayed as server-sent
 //! events - `model_event` for each stream event, then `done`, or `error` when the stream fails or
 //! shutdown begins.
-use crate::executor::model::{CallResponse, ModelStream};
+use crate::application::provider_operations::{
+  ModelReply as CallResponse, ModelReplyStream as ModelStream,
+};
 use crate::server::error::ApiError;
 use axum::{
   Json,
@@ -32,10 +34,15 @@ pub fn model_response<S: ModelStream + 'static>(
         result = stream.next() => result.map_err(|e| e.to_string()),
       };
       let (event, done) = match result {
-        Ok(Some(event)) => (
-          Event::default().event("model_event").data(serde_json::to_string(&event).unwrap()),
-          false,
-        ),
+        Ok(Some(event)) => match serde_json::to_string(&event) {
+          Ok(data) => (Event::default().event("model_event").data(data), false),
+          Err(error) => (
+            Event::default()
+              .event("error")
+              .data(json!({"message":format!("encoding model event: {error}")}).to_string()),
+            true,
+          ),
+        },
         Ok(None) => (Event::default().event("done").data("{}"), true),
         Err(error) => {
           (Event::default().event("error").data(json!({"message":error}).to_string()), true)

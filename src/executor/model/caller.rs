@@ -1,7 +1,7 @@
 //! What the executor asks of a model provider: calls, and the optional counting, compaction and
 //! validation that context compaction uses.
 use crate::{
-  Error,
+  protocol::error::Error,
   protocol::{
     Request, Response, StreamAccumulator, StreamEvent, TokenCount,
     model_use::{ModelUseProtocol, context::find_replay_unit_boundaries},

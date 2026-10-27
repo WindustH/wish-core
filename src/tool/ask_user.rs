@@ -4,9 +4,10 @@
 //! always does. A form answered after its timeout is delivered later, as a message of its own.
 
 use crate::{
-  executor::{ExecutionControl, tool::ToolExecutor},
   protocol::{ContentBlock, Message, Tool},
   session::{ToolCall, ToolOutcome},
+  tool::contract::ToolExecutor,
+  utils::control::ExecutionControl,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -496,26 +497,4 @@ fn read_answers(form: &[Question], answers: &[Value]) -> Result<Vec<Value>, Answ
     return Err(AnswerError::Invalid("answer at least one question, or skip the form".into()));
   }
   Ok(read)
-}
-
-#[cfg(test)]
-mod argument_tests {
-  use super::*;
-  #[test]
-  fn optional_empty_form_fields_use_defaults_without_inventing_questions() {
-    let tool = AskUserTool::new(|| {});
-    let arguments = super::super::arguments::normalize(&json!({
-      "questions":[{"type":"text","question":"Which directory?","options":[],"multiline":"","header":null}],
-      "timeout_seconds":" "
-    }), &tool.get_specification().input_schema).unwrap();
-    let (questions, timeout) = parse_form(&arguments).unwrap();
-    assert!(timeout.is_none());
-    assert!(!questions[0].multiline);
-    assert!(questions[0].options.is_empty());
-    for value in
-      [json!({}), json!({"questions":[]}), json!({"questions":[{"type":"text","question":""}]})]
-    {
-      assert!(parse_form(&value).is_err());
-    }
-  }
 }

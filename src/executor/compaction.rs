@@ -17,7 +17,7 @@ pub(super) use trigger::{CutoverPlan, find_cutover, force_cutover};
 
 use super::{ExecutionControl, model::ModelCaller, observe::deliver_new_events, run::run_scoped};
 use crate::{
-  Error,
+  protocol::error::Error,
   protocol::{ContentBlock, Message, Request, Response, StopReason},
   session::{
     CompactionConfig, CompactionReason, RunOutcome, Session, SessionError, SessionEvent,

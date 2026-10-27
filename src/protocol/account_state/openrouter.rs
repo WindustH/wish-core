@@ -22,8 +22,8 @@
 
 use serde_json::{Value, json};
 
-use crate::Error;
 use crate::protocol::account_state::{AccountState, AccountStateProtocol, QuotaWindow};
+use crate::protocol::error::Error;
 use crate::protocol::json_read::read_scalar_text;
 
 /// Reads the credits body.

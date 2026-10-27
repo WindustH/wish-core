@@ -6,10 +6,15 @@ use serde::Serialize;
 use std::sync::Arc;
 /// Refuses an id that names neither a session nor a group: the owners of `blobs/<id>`.
 async fn require_owner(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
-  if app.management.group(id)?.is_none() {
-    app.get_session(id).await?;
-  }
-  Ok(())
+  let management = app.management.clone();
+  let id = id.to_owned();
+  super::error::blocking(move || {
+    if management.group(&id)?.is_none() && !management.exists(&id)? {
+      return Err(ApplicationError::not_found());
+    }
+    Ok(())
+  })
+  .await
 }
 #[derive(Serialize)]
 pub struct BlobMetadata {
@@ -49,9 +54,14 @@ pub async fn metadata(
 
 /// Stage bytes under a submission UUID without creating or publishing an empty session.
 /// Content-addressed names make retries reuse the same file; acceptance adopts this directory.
-pub async fn upload_draft(app: &Arc<App>, request_id: &str, body: &[u8]) -> Result<Blob, ApplicationError> {
+pub async fn upload_draft(
+  app: &Arc<App>,
+  request_id: &str,
+  body: &[u8],
+) -> Result<Blob, ApplicationError> {
   app.lifecycle.require_open()?;
   let id = uuid::Uuid::parse_str(request_id)
-    .map_err(|_| ApplicationError::invalid("draft request_id must be a UUID"))?.to_string();
+    .map_err(|_| ApplicationError::invalid("draft request_id must be a UUID"))?
+    .to_string();
   Ok(blobs::save_upload(&app.data_dir.blobs(&id), body).await?)
 }

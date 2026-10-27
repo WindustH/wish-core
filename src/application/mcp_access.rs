@@ -5,11 +5,7 @@
 //! checked in `bridge`.
 use super::bridge_access as bridge;
 use crate::application::error::ApplicationError;
-use crate::application::{
-  app::App,
-  mcp::{Caller, store_binary_content},
-  provider::Providers,
-};
+use crate::application::{app::App, mcp::Caller, provider::Providers};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -84,8 +80,15 @@ pub async fn call(
   let mut result = app.lifecycle.until_shutdown(call).await??;
   let directory =
     std::path::absolute(app.data_dir.mcp_files(&id)).map_err(ApplicationError::internal)?;
-  store_binary_content(&mut result, &directory);
-  Ok(result)
+  super::error::blocking(move || {
+    crate::storage::mcp_files::store_binary_content(&mut result, &directory).map_err(|error| {
+      ApplicationError::unknown(format!(
+        "MCP call completed but its binary result could not be saved: {error}"
+      ))
+    })?;
+    Ok(result)
+  })
+  .await
 }
 
 /// Every configured server with what is known of it: tools, the last error, recent stderr.

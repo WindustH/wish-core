@@ -97,8 +97,7 @@ fn options(
 /// A refusal is reported with status 1, since it is the model's request that was wrong.
 fn refused(failure: Failure) -> Failure {
   match failure {
-    (2, message) if message != "not found" => (1, message),
-    (2, _) => (1, "no such session or group; `wish session list` shows them".into()),
+    (2, message) => (1, message),
     other => other,
   }
 }

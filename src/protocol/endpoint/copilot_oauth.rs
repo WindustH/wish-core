@@ -27,11 +27,11 @@
 
 use serde_json::Value;
 
-use crate::Error;
 use crate::protocol::attempt::Transport;
 use crate::protocol::endpoint::{
   AuthScheme, Credentials, Draft, Endpoint, Source, SourceHeader, Tokens,
 };
+use crate::protocol::error::Error;
 use crate::protocol::http_error;
 use crate::protocol::json_read::read_string_member;
 

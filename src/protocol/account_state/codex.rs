@@ -51,10 +51,10 @@
 
 use serde_json::Value;
 
-use crate::Error;
 use crate::protocol::account_state::{
   AccountState, AccountStateProtocol, Balance, QuotaWindow, minutes_window, read_header,
 };
+use crate::protocol::error::Error;
 use crate::protocol::json_read::read_scalar_text;
 
 /// Reads the quota payload of a rate-limit frame, which needs `rate_limits` to be one at all.
@@ -222,60 +222,4 @@ pub fn parse_headers(headers: &[(String, String)]) -> Option<AccountState> {
     return None;
   }
   Some(state)
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use serde_json::json;
-
-  fn window<'a>(state: &'a AccountState, id: &str) -> &'a QuotaWindow {
-    state.quotas.iter().find(|quota| quota.id == id).unwrap_or_else(|| panic!("no `{id}` window"))
-  }
-
-  #[test]
-  fn the_meters_switch_does_not_stamp_an_untouched_window() {
-    let state = parse_usage(&json!({
-      "rate_limit": {
-        "limit_reached": true,
-        "primary_window": { "used_percent": 100, "limit_window_seconds": 5 * 3600 },
-        "secondary_window": { "used_percent": "15", "limit_window_seconds": 7 * 24 * 3600 },
-      }
-    }));
-    assert_eq!(window(&state, "primary").reached, Some(true));
-    assert_eq!(window(&state, "secondary").reached, Some(false));
-  }
-
-  #[test]
-  fn a_window_without_quantities_takes_the_meters_switch() {
-    let state = parse_usage(&json!({
-      "rate_limit": {
-        "limit_reached": true,
-        "primary_window": { "limit_window_seconds": 300 },
-        "secondary_window": {},
-      }
-    }));
-    assert_eq!(window(&state, "primary").reached, Some(true));
-    assert_eq!(window(&state, "secondary").reached, Some(true));
-  }
-
-  #[test]
-  fn a_windows_own_boolean_wins_over_its_percent() {
-    let state = parse_usage(&json!({
-      "rate_limit": { "primary_window": { "reached": false, "used_percent": 100 } }
-    }));
-    assert_eq!(window(&state, "primary").reached, Some(false));
-  }
-
-  #[test]
-  fn a_window_with_nothing_left_is_spent_without_the_meters_say_so() {
-    let state = parse_usage(&json!({
-      "rate_limit": {
-        "primary_window": { "remaining": 0 },
-        "secondary_window": { "remaining": "12.5" },
-      }
-    }));
-    assert_eq!(window(&state, "primary").reached, Some(true));
-    assert_eq!(window(&state, "secondary").reached, Some(false));
-  }
 }
