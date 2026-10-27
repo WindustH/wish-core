@@ -41,7 +41,8 @@
 //! - Call/result pairing is validated in both directions, so a dangling `ToolUse` or an orphan
 //!   result is an error instead of a malformed request.
 //! - A `Developer` message has no role of its own on this wire, so in the leading run its text joins
-//!   the same `system` field, and past it the model reads it as user input.
+//!   the same `system` field, and past it the model reads it as user input. If every message is
+//!   an instruction, the last one becomes a user turn so the required conversation is nonempty.
 //! - `PromptCache::key` has no spelling on this wire, so it is not sent.
 //! - Foreign signed thinking is omitted; its proof cannot authenticate an Anthropic block.
 //!   Unsigned plaintext thinking remains available for compatible endpoints.
@@ -94,10 +95,17 @@ fn render_body(
     ));
   }
 
-  let (system, rest) = split_leading_instructions(
+  let (mut system, mut rest) = split_leading_instructions(
     &request.conversation,
     "a system instruction can only carry text blocks on the anthropic messages wire",
   )?;
+  // Anthropic requires a conversation turn. For instruction-only context, keep the
+  // earlier instructions in system and render the last one verbatim as user input.
+  // This is a wire projection; the stored message and its role remain unchanged.
+  if rest.is_empty() && !system.is_empty() {
+    system.pop();
+    rest = &request.conversation[request.conversation.len() - 1..];
+  }
   let messages = render_messages(rest)?;
   if messages.is_empty() {
     return Err(Error::Build("request has no messages".to_owned()));
@@ -534,5 +542,74 @@ mod report_tests {
         .get("is_error")
         .is_none()
     );
+  }
+}
+
+#[cfg(test)]
+mod instruction_tests {
+  use super::*;
+
+  fn request(conversation: Vec<Message>) -> Request {
+    Request {
+      model: "test".into(),
+      stream: false,
+      conversation,
+      tools: vec![],
+      tool_choice: None,
+      max_output_tokens: Some(1024),
+      reasoning: None,
+      cache: None,
+    }
+  }
+  fn instruction(text: &str, developer: bool) -> Message {
+    let content = vec![ContentBlock::Text { text: text.into() }];
+    if developer {
+      Message::Developer { metadata: json!({}), fixed: Some(false), content }
+    } else {
+      Message::System { metadata: json!({}), content }
+    }
+  }
+  #[test]
+  fn instruction_only_context_projects_last_role_without_changing_text_or_storage() {
+    for developer in [false, true] {
+      let request =
+        request(vec![instruction("earlier", false), instruction("latest\nverbatim", developer)]);
+      let original = serde_json::to_value(&request).unwrap();
+      let body = render(&request, MessagesApiCompatMode::Official).unwrap();
+      assert_eq!(body["system"], "earlier");
+      assert_eq!(
+        body["messages"],
+        json!([{"role":"user", "content":[{"type":"text", "text":"latest\nverbatim"}]}])
+      );
+      let counted = render_for_token_count(&request).unwrap();
+      assert_eq!(counted["system"], body["system"]);
+      assert_eq!(counted["messages"], body["messages"]);
+      assert_eq!(serde_json::to_value(&request).unwrap(), original);
+    }
+  }
+  #[test]
+  fn single_instruction_is_supported_but_empty_context_is_not() {
+    let body =
+      render(&request(vec![instruction("only", false)]), MessagesApiCompatMode::Official).unwrap();
+    assert!(body.get("system").is_none());
+    assert_eq!(body["messages"][0]["content"][0]["text"], "only");
+    assert!(render(&request(vec![]), MessagesApiCompatMode::Official).is_err());
+  }
+  #[test]
+  fn ordinary_conversation_keeps_all_leading_instructions_in_system() {
+    let body = render(
+      &request(vec![
+        instruction("policy", false),
+        instruction("guidance", true),
+        Message::User {
+          metadata: json!({}),
+          content: vec![ContentBlock::Text { text: "question".into() }],
+        },
+      ]),
+      MessagesApiCompatMode::Official,
+    )
+    .unwrap();
+    assert_eq!(body["system"], "policy\nguidance");
+    assert_eq!(body["messages"][0]["content"][0]["text"], "question");
   }
 }

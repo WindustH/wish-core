@@ -59,7 +59,11 @@ live) but take `system` anywhere, so both roles become `system`. The rest take o
 | `Codex` | the ChatGPT-subscription backend. Streamed calls only, no `max_output_tokens` (both refused locally with `Error::Build`), extra routing headers, quota on the reply |
 
 The Messages wire, in every compat mode, requires `max_output_tokens` and refuses
-`ToolChoice::None`.
+`ToolChoice::None`. When a conversation contains only `System`/`Developer` instructions,
+the last instruction is sent verbatim as a `user` turn and earlier instructions remain in
+`system`. No source marker is required and no explanatory prefix is added. This projection
+is shared by request validation, sending and token counting; it does not mutate stored roles.
+An actually empty conversation is still rejected.
 
 ## Message metadata
 
