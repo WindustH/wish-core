@@ -14,3 +14,5 @@ pub mod contract;
 pub mod task_output;
 
 pub mod image_generate;
+
+pub mod providers;

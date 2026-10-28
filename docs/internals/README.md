@@ -137,6 +137,3 @@ black-box/integration suites. This project deliberately has no inline Rust unit 
 
 See [image generation](image-generation.md) for provider protocols, subscription authentication,
 blob storage, configuration and integration verification.
-
-See [video and audio provider research](video-audio-provider-research.md) for the dated supplier
-survey, API lifecycle findings and proposed media-job/blob architecture (not implemented).

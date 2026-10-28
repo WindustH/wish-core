@@ -18,21 +18,26 @@ pub struct ImageRequest {
 pub type Backend = Arc<
   dyn Fn(ImageRequest) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> + Send + Sync,
 >;
-pub struct ImageGenerateTool(pub Backend);
+pub struct ImageGenerateTool(pub Backend, pub super::providers::Listing);
 impl ImageGenerateTool {
   pub fn specification() -> Tool {
-    Tool{name:"image_generate".into(),description:"Generate images using the configured image service. Describe the desired image in prompt. Returns images saved in this session's Wish blob store, including absolute local path, blob id and MIME type. Use the returned paths for further processing; do not claim to have visually inspected the images unless you read them. Generation may incur charges. If a request is interrupted or times out, do not automatically repeat it: upstream may have completed it.".into(),input_schema:json!({"type":"object","additionalProperties":false,"required":["prompt"],"properties":{"prompt":{"type":"string"},"provider":{"type":"string","description":"Optional configured image service ID; omit to use the first enabled service."}}})}
+    super::providers::specification(Tool{name:"image_generate".into(),description:"Generate images using the configured image service. Describe the desired image in prompt. Returns images saved in this session's Wish blob store, including absolute local path, blob id and MIME type. Use the returned paths for further processing; do not claim to have visually inspected the images unless you read them. Generation may incur charges. If a request is interrupted or times out, do not automatically repeat it: upstream may have completed it.".into(),input_schema:json!({"type":"object","additionalProperties":false,"required":["prompt"],"properties":{"prompt":{"type":"string"},"provider":{"type":"string","description":"Optional configured image service ID; omit to use the first enabled service."}}})})
   }
 }
 impl ToolExecutor for ImageGenerateTool {
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
-    let args =
-      match super::arguments::normalize(&call.arguments, &Self::specification().input_schema)
-        .and_then(|v| serde_json::from_value::<ImageRequest>(v).map_err(|e| e.to_string()))
-      {
-        Ok(v) => v,
-        Err(e) => return ToolOutcome::Failed(e),
+    let arguments =
+      match super::providers::prepare(&call.arguments, &Self::specification().input_schema) {
+        Ok(arguments) => arguments,
+        Err(error) => return ToolOutcome::Failed(error),
       };
+    if let Some(outcome) = super::providers::listing(&arguments, &self.1) {
+      return outcome;
+    }
+    let args = match serde_json::from_value::<ImageRequest>(arguments) {
+      Ok(args) => args,
+      Err(error) => return ToolOutcome::Failed(error.to_string()),
+    };
     match control.run_until_cancelled((self.0)(args)).await {
       None => ToolOutcome::Unknown(
         "Image request cancelled; upstream may still complete it. Do not automatically resubmit."

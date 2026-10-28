@@ -233,16 +233,47 @@ impl SearchHub {
       .collect()
   }
 
+  pub fn provider_catalog(&self, accounts: &AccountRegistry) -> crate::tool::providers::Catalog {
+    let state = self.get_state();
+    crate::tool::providers::Catalog {
+      default_order: state.order.clone(),
+      failure_policy: "try_in_order_unless_provider_is_explicit",
+      providers: state
+        .providers
+        .iter()
+        .map(|(id, built)| crate::tool::providers::Provider {
+          id: id.clone(),
+          name: built.preset["name"].as_str().unwrap_or(id).into(),
+          preset: built.config.preset.clone(),
+          model: built.preset["model"].as_str().map(str::to_owned),
+          enabled: built.config.enabled,
+          available: usable(built, accounts).is_ok(),
+        })
+        .collect(),
+    }
+  }
+
   /// Asks the providers in order until one answers. On failure, every provider's reason.
   pub async fn search(
     &self,
     accounts: &AccountRegistry,
     query: &SearchQuery,
     observer: Option<RetryObserver>,
+    only: Option<&str>,
   ) -> Result<Answer, Vec<String>> {
     let state = self.get_state();
+    if let Some(id) = only {
+      match state.providers.get(id) {
+        None => return Err(vec![format!("unknown search provider `{id}`")]),
+        Some(provider) if !provider.config.enabled => {
+          return Err(vec![format!("search provider `{id}` is disabled")]);
+        }
+        _ => {}
+      }
+    }
+    let order = only.map(|id| vec![id.to_owned()]).unwrap_or_else(|| state.order.clone());
     let mut failures = Vec::new();
-    for id in &state.order {
+    for id in &order {
       let Some(built) = state.providers.get(id) else { continue };
       if !built.config.enabled {
         continue;

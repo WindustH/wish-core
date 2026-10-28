@@ -6,3 +6,10 @@ wish imagegen --schema
 
 Returns session-local blob IDs, absolute paths, MIME types and byte counts.
 Generation may incur charges. Interrupted submissions are not automatically retried.
+
+Provider selection:
+  wish imagegen --list-providers
+  Use --json with an optional "provider" field containing an exact configured ID.
+  Omit provider to use configuration order. Explicit selection never switches services.
+  Discovery returns current IDs, models, enabled/readiness flags and default_order,
+  without contacting providers or exposing credentials.

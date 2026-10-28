@@ -37,3 +37,10 @@ REQUIREMENTS / EXIT STATUS
   in command arguments. Calls and results also appear in the session timeline.
   Exit 0: completed. Exit 2: invalid arguments, disabled capability, or request
   failed. Exit 3: response was interrupted and its outcome is unknown.
+
+Provider selection:
+  wish webfetch --list-providers
+  Use --json with an optional "provider" field containing an exact configured ID.
+  Omit provider to use configuration order. Explicit selection never switches services.
+  Discovery returns current IDs, models, enabled/readiness flags and default_order,
+  without contacting providers or exposing credentials.

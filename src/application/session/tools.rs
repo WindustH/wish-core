@@ -82,7 +82,11 @@ impl SessionTools {
       image_generate_on: AtomicBool::new(false),
       image_generate: make_image_generate(slot.clone()),
       web_fetch,
-      web_search: WebSearchTool::new(search_backend(slot.clone()), session_id.to_owned()),
+      web_search: WebSearchTool::new(
+        search_backend(slot.clone()),
+        session_id.to_owned(),
+        provider_listing(slot.clone(), Capability::WebSearch),
+      ),
       history: HistoryTools::new(session),
       history_on: AtomicBool::new(true),
       slot,
@@ -220,13 +224,16 @@ impl SessionTools {
 }
 /// Searches with the application's search providers as they stand at the moment of the search.
 fn search_backend(slot: Weak<SessionSlot>) -> SearchBackend {
-  Arc::new(move |query| {
+  Arc::new(move |query, provider| {
     let owner = slot.upgrade();
     let app = owner.as_ref().and_then(|slot| slot.app.upgrade());
     let observer = owner.map(|slot| slot.retry_observer());
     Box::pin(async move {
       let app = app.ok_or_else(|| vec!["the server is shutting down".to_owned()])?;
-      let found = app.search.search(&app.get_service_accounts(), &query, observer).await?;
+      let found = app
+        .search
+        .search(&app.get_service_accounts(), &query, observer, provider.as_deref())
+        .await?;
       Ok(found)
     })
   })
@@ -480,9 +487,10 @@ fn make_fetch(
   session_id: &str,
   directory: std::path::PathBuf,
 ) -> crate::tool::web_fetch::WebFetchTool {
+  let providers = provider_listing(slot.clone(), Capability::WebFetch);
   let conversation = session_id.to_owned();
   crate::tool::web_fetch::WebFetchTool::new(
-    Arc::new(move |url, refresh| {
+    Arc::new(move |url, refresh, provider| {
       let owner = slot.upgrade();
       let app = owner.as_ref().and_then(|s| s.app.upgrade());
       let observer = owner.map(|s| s.retry_observer());
@@ -490,28 +498,55 @@ fn make_fetch(
       Box::pin(async move {
         let app = app.ok_or("server is shutting down")?;
         let accounts = app.get_service_accounts();
-        app.fetch.fetch(&url, refresh, &conversation, &accounts, observer, None).await
+        app
+          .fetch
+          .fetch(&url, refresh, &conversation, &accounts, observer, provider.as_deref())
+          .await
       })
     }),
     directory,
+    providers,
   )
 }
 
 fn make_image_generate(slot: Weak<SessionSlot>) -> crate::tool::image_generate::ImageGenerateTool {
-  crate::tool::image_generate::ImageGenerateTool(Arc::new(move |request| {
-    let owner = slot.upgrade();
-    Box::pin(async move {
-      let owner = owner.ok_or("session is closed")?;
-      let app = owner.app.upgrade().ok_or("server is shutting down")?;
-      app
-        .images
-        .generate(
-          &request.prompt,
-          request.provider.as_deref(),
-          &app.get_service_accounts(),
-          &owner.image_dir,
-        )
-        .await
-    })
-  }))
+  let providers = provider_listing(slot.clone(), Capability::ImageGenerate);
+  crate::tool::image_generate::ImageGenerateTool(
+    Arc::new(move |request| {
+      let owner = slot.upgrade();
+      Box::pin(async move {
+        let owner = owner.ok_or("session is closed")?;
+        let app = owner.app.upgrade().ok_or("server is shutting down")?;
+        app
+          .images
+          .generate(
+            &request.prompt,
+            request.provider.as_deref(),
+            &app.get_service_accounts(),
+            &owner.image_dir,
+          )
+          .await
+      })
+    }),
+    providers,
+  )
+}
+
+/// Read current service state on each discovery call; never embed credentials or
+/// mutable provider lists in cached model tool definitions.
+fn provider_listing(
+  slot: Weak<SessionSlot>,
+  capability: Capability,
+) -> crate::tool::providers::Listing {
+  Arc::new(move || {
+    let owner = slot.upgrade().ok_or("session is closed")?;
+    let app = owner.app.upgrade().ok_or("server is shutting down")?;
+    let accounts = app.get_service_accounts();
+    match capability {
+      Capability::WebSearch => Ok(app.search.provider_catalog(&accounts)),
+      Capability::WebFetch => Ok(app.fetch.provider_catalog(&accounts)),
+      Capability::ImageGenerate => Ok(app.images.provider_catalog(&accounts)),
+      _ => Err("tool does not support provider discovery".into()),
+    }
+  })
 }

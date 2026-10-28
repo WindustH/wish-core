@@ -35,6 +35,11 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
     bridge.send(bridge.client.get(url)).await?
   } else {
     let arguments: Value = match args.first().map(String::as_str) {
+      Some("--list-providers")
+        if args.len() == 1 && matches!(name, "websearch" | "webfetch" | "imagegen") =>
+      {
+        json!({"action":"list_providers"})
+      }
       Some("--stdin") if args.len() == 1 => {
         let mut text = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)

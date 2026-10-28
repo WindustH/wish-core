@@ -176,6 +176,28 @@ impl ImageHub {
   pub fn apply(&self, prepared: PreparedImages) {
     *self.state.write().unwrap() = Arc::new(prepared.0);
   }
+  pub fn provider_catalog(&self, accounts: &AccountRegistry) -> crate::tool::providers::Catalog {
+    let state = self.state.read().unwrap();
+    crate::tool::providers::Catalog {
+      default_order: state.order.clone(),
+      failure_policy: "first_enabled_only_no_paid_submission_failover",
+      providers: state
+        .providers
+        .iter()
+        .map(|(id, built)| crate::tool::providers::Provider {
+          id: id.clone(),
+          name: built.spec.name.clone(),
+          preset: built.config.preset.clone(),
+          model: Some(built.config.model.clone()),
+          enabled: built.config.enabled,
+          available: built.config.enabled
+            && accounts
+              .get(&format!("account:{}", built.config.credential_id))
+              .is_some_and(|a| !a.client.get_credentials().api_key.is_empty()),
+        })
+        .collect(),
+    }
+  }
   pub async fn generate(
     &self,
     prompt: &str,

@@ -34,3 +34,10 @@ REQUIREMENTS / EXIT STATUS
 
 SCRIPT OUTPUT
   Prefix --output-json to serialize the search text as a JSON string.
+
+Provider selection:
+  wish websearch --list-providers
+  Use --json with an optional "provider" field containing an exact configured ID.
+  Omit provider to use configuration order. Explicit selection never switches services.
+  Discovery returns current IDs, models, enabled/readiness flags and default_order,
+  without contacting providers or exposing credentials.

@@ -145,6 +145,38 @@ impl FetchHub {
     let state = self.state.read().unwrap();
     json!({"providers":state.providers.iter().map(|(id,b)| {let p = &b.config; json!({"id":id,"preset":p.preset,"enabled":p.enabled,"credential_id":p.credential_id})}).collect::<Vec<_>>(),"available":state.order.iter().any(|id|state.providers.get(id).is_some_and(|p|p.config.enabled))})
   }
+  pub fn provider_catalog(&self, accounts: &AccountRegistry) -> crate::tool::providers::Catalog {
+    let state = self.state.read().unwrap();
+    crate::tool::providers::Catalog {
+      default_order: state.order.clone(),
+      failure_policy: "try_in_order_unless_provider_is_explicit",
+      providers: state
+        .providers
+        .iter()
+        .map(|(id, built)| {
+          let credential = built
+            .config
+            .credential_id
+            .as_ref()
+            .and_then(|id| accounts.get(&format!("account:{id}")));
+          crate::tool::providers::Provider {
+            id: id.clone(),
+            name: preset(&built.config.preset)
+              .ok()
+              .and_then(|p| p["name"].as_str())
+              .unwrap_or(id)
+              .into(),
+            preset: built.config.preset.clone(),
+            model: None,
+            enabled: built.config.enabled,
+            available: built.config.enabled
+              && (!built.requires_key
+                || credential.is_some_and(|a| !a.client.get_credentials().api_key.is_empty())),
+          }
+        })
+        .collect(),
+    }
+  }
   pub async fn fetch(
     &self,
     url: &str,
@@ -163,6 +195,15 @@ impl FetchHub {
       return Err("URL must use HTTP/HTTPS without embedded credentials".into());
     }
     let state = self.state.read().unwrap().clone();
+    if let Some(id) = only {
+      match state.providers.get(id) {
+        None => return Err(format!("unknown fetch provider `{id}`")),
+        Some(provider) if !provider.config.enabled => {
+          return Err(format!("fetch provider `{id}` is disabled"));
+        }
+        _ => {}
+      }
+    }
     let order = only.map(|id| vec![id.to_owned()]).unwrap_or_else(|| state.order.clone());
     let mut failures = Vec::new();
     for id in order {

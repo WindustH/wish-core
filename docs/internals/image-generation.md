@@ -120,3 +120,17 @@ of automatic resubmission. No unit tests or billable upstream calls are added.
 The frontend's existing accounts browser regression covers mobile/desktop image
 settings and nested account creation. These checks establish integration behavior;
 they do not establish live billing, entitlement or model availability.
+
+## Provider discovery and routing
+
+`image_generate`, `web_search` and `web_fetch` accept `{"action":"list_providers"}`
+without execution arguments. The result contains live configured IDs, display names, models,
+local credential readiness and `default_order`. It excludes credentials and connection details.
+CLI equivalents are `wish imagegen --list-providers`, `wish websearch --list-providers`
+and `wish webfetch --list-providers`. Discovery observes the session capability switch.
+
+For execution, an optional `provider` pins the configured ID, including an enabled service
+outside the default order. A pinned failure never selects a different service. Without it,
+search/fetch try enabled providers in configuration order; image generation submits only to
+the first enabled provider, since an ambiguous paid request cannot safely fail over. Fetch
+cursors keep their original snapshot and reject a mismatched explicit provider.
