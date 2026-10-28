@@ -102,9 +102,13 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
       .iter()
       .filter(|part| matches!(part, Part::Attachment { index } if *index == attachments.len()))
       .count();
-    expanded_bytes = expanded_bytes.saturating_add(blob.byte_count.saturating_mul(uses));
-    if expanded_bytes > 32 * 1024 * 1024 {
-      return Err(ApplicationError::invalid("expanded input attachments exceed 32 MiB"));
+    // Ordinary files stay as path references; only images are materialized into the request.
+    // Count one retained copy even when a removed editor token no longer references the image.
+    if attachment.kind == "image" {
+      expanded_bytes = expanded_bytes.saturating_add(blob.byte_count.saturating_mul(uses.max(1)));
+      if expanded_bytes > 32 * 1024 * 1024 {
+        return Err(ApplicationError::invalid("expanded input images exceed 32 MiB"));
+      }
     }
     attachment.byte_count = Some(blob.byte_count);
     let block = match attachment.kind.as_str() {
