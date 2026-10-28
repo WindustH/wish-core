@@ -58,7 +58,7 @@ history as `Imported`, and one that was a summary or other context-only entry wh
 after it. The server imports a new session's initial messages this way, a fork's included.
 `delete()` removes the session's whole storage namespace, including its history index. Session
 requests always use `ToolChoice::Auto`. `RunOptions` only controls tool execution mode
-(`ToolMode::Serial` by default, or `Parallel`); there is no maximum turn count. Unknown config
+(`ToolMode::Parallel` by default (up to eight concurrent tools, with at most 64 calls in one model response), or `Parallel`); there is no maximum turn count. Unknown config
 fields are rejected.
 
 `Session::reader()` is the session's `SessionReader`: a cloneable, read-only view of its lists that

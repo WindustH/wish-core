@@ -92,3 +92,11 @@ cancellation.
 `wish mcp` (`server::cli::mcp`) runs before any configuration is read: `server::run` hands it the
 arguments after `mcp`. It reaches the bridge with proxies disabled, since a proxy from the shell's
 environment must not stand between it and the loopback address.
+
+## Resource bounds
+
+Tool discovery has a 60-second deadline and permits at most 128 distinct cursor pages,
+4096 tools and 32 MiB of catalog JSON. Repeated cursors fail rather than loop. HTTP JSON
+responses and individual raw SSE frames are limited to 32 MiB. Progress resets the idle
+call timeout, but total call time is capped at four times that timeout (at most 30 minutes).
+Connection shutdown waits at most five seconds.

@@ -1,6 +1,6 @@
 //! Standby summaries: closed spans of the active context summarized ahead of a cutover, into the
 //! standby generation the cutover then builds on. A run keeps at most one in flight beside its work
-//! ([`StandbySummarizer`]); a cutover summarizes every remaining span at once ([`catch_up`]).
+//! ([`StandbySummarizer`]); a cutover summarizes remaining spans in bounded batches ([`catch_up`]).
 use super::{
   Failure, check_cancelled, collect_assistant_content, count_kept_prefix, measure,
   trigger::{UsageReading, read_usage},
@@ -207,8 +207,8 @@ fn settle_standby_summary(
   }
 }
 
-/// Summarizes every remaining span at once, for a cutover. Each request repeats the same prefix
-/// and names its own span, so none waits for another. They commit in order, since each continues
+/// Summarizes remaining spans two at a time, for a cutover. Each request repeats the same prefix
+/// and names its own span. They commit in order, since each continues
 /// the standby where the one before it ended; a failure keeps the spans committed before it.
 pub(super) async fn catch_up(
   caller: &impl ModelCaller,
@@ -217,14 +217,19 @@ pub(super) async fn catch_up(
   delivered: &mut u64,
   observe: &mut (impl FnMut(&SessionEvent) + Send),
 ) -> Result<(), Failure> {
-  let plans = plan_standby_summaries(caller, session, control, usize::MAX).await?;
-  let started_at = Timestamp::now();
-  session.record_events(plans.iter().map(|plan| (started_at, plan.started_event())).collect())?;
-  deliver_new_events(session, delivered, observe)?;
-  let results =
-    join_all(plans.into_iter().map(|plan| execute_standby_summary(caller, control, plan))).await;
-  for result in results {
-    commit_standby_summary(session, result?, delivered, observe)?;
+  loop {
+    let plans = plan_standby_summaries(caller, session, control, 2).await?;
+    if plans.is_empty() {
+      break;
+    }
+    let started_at = Timestamp::now();
+    session.record_events(plans.iter().map(|plan| (started_at, plan.started_event())).collect())?;
+    deliver_new_events(session, delivered, observe)?;
+    let results =
+      join_all(plans.into_iter().map(|plan| execute_standby_summary(caller, control, plan))).await;
+    for result in results {
+      commit_standby_summary(session, result?, delivered, observe)?;
+    }
   }
   Ok(())
 }

@@ -85,11 +85,15 @@ impl ModelCatalogCache {
     }
     match client.get_model_list(query).await {
       Ok(page) => {
-        self
-          .pages
-          .lock()
-          .unwrap()
-          .insert(key, Entry { page: page.clone(), fetched_at: Instant::now() });
+        let mut pages = self.pages.lock().unwrap();
+        if pages.len() >= 128
+          && !pages.contains_key(&key)
+          && let Some(oldest) =
+            pages.iter().min_by_key(|(_, entry)| entry.fetched_at).map(|(key, _)| key.clone())
+        {
+          pages.remove(&oldest);
+        }
+        pages.insert(key, Entry { page: page.clone(), fetched_at: Instant::now() });
         Ok(page)
       }
       Err(error) => match self.stale(&key) {

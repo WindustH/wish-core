@@ -17,8 +17,11 @@ pub async fn status(
   let request: Request =
     serde_json::from_value(serde_json::json!({"action":"status","job_id":job}))
       .map_err(ApplicationError::internal)?;
-  hub
-    .execute(request, "", &app.data_dir.blobs(&session), &app.get_service_accounts(), video)
-    .await
+  let directory = app.data_dir.blobs(&session);
+  let accounts = app.get_service_accounts();
+  app
+    .lifecycle
+    .until_shutdown(hub.execute(request, "", &directory, &accounts, video))
+    .await?
     .map_err(ApplicationError::invalid)
 }

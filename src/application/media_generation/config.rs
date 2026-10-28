@@ -83,7 +83,7 @@ impl MediaConfig {
         ));
       }
       let base = p.base_url.as_deref().filter(|v| !v.is_empty()).unwrap_or(&spec.base_url);
-      crate::protocol::image_generation::validate_url(base)?;
+      crate::protocol::image_generation::validate_base_url(base)?;
       if p.model.is_empty() || p.model.len() > 200 {
         return Err(ApplicationError::invalid("invalid media model ID"));
       }

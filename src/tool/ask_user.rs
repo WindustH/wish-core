@@ -160,6 +160,9 @@ impl AskUserTool {
 
   /// Puts the form to the user and waits.
   async fn ask(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
+    if call.arguments.to_string().len() > 64 * 1024 {
+      return ToolOutcome::Failed("question form exceeds 64 KiB".into());
+    }
     let parsed =
       super::arguments::normalize(&call.arguments, &self.get_specification().input_schema)
         .and_then(|arguments| parse_form(&arguments));
@@ -173,17 +176,35 @@ impl AskUserTool {
         ));
       }
     };
-    let (sender, receiver) = oneshot::channel();
-    self.forms.lock().unwrap().insert(
-      call.call_id.clone(),
-      OpenForm {
-        questions,
-        asked_at: crate::utils::time::Timestamp::now().0,
-        timeout_seconds: timeout,
-        reply: Some(sender),
-        timed_out: false,
-      },
-    );
+    let (sender, mut receiver) = oneshot::channel();
+    {
+      let mut forms = self.forms.lock().unwrap();
+      if forms.contains_key(&call.call_id) {
+        return ToolOutcome::Failed("question call ID is already open".into());
+      }
+      while forms.len() >= 128 {
+        let oldest = forms
+          .iter()
+          .filter(|(_, form)| form.timed_out)
+          .min_by_key(|(_, form)| form.asked_at)
+          .map(|(id, _)| id.clone());
+        if let Some(id) = oldest {
+          forms.remove(&id);
+        } else {
+          return ToolOutcome::Failed("too many open question forms (128)".into());
+        }
+      }
+      forms.insert(
+        call.call_id.clone(),
+        OpenForm {
+          questions,
+          asked_at: crate::utils::time::Timestamp::now().0,
+          timeout_seconds: timeout,
+          reply: Some(sender),
+          timed_out: false,
+        },
+      );
+    }
     // Whatever ends the wait - even the run's future being dropped - closes the form, except a
     // timeout, which leaves it open for a later answer.
     let mut open = CloseOnDrop { tool: self, call_id: &call.call_id, keep: false };
@@ -195,20 +216,32 @@ impl AskUserTool {
       }
     };
     let outcome = tokio::select! {
-      reply = receiver => match reply {
+      biased;
+      reply = &mut receiver => match reply {
         Ok(Reply::Answered(answers)) => ToolOutcome::Success(json!({"status": "answered", "answers": answers})),
         Ok(Reply::Skipped) => ToolOutcome::Success(json!({"status": "skipped",
           "note": "The user chose not to answer. Continue with your best judgement."})),
         Err(_) => ToolOutcome::Cancelled,
       },
       _ = expire => {
+        let expired = {
+          let mut forms = self.forms.lock().unwrap();
+          if let Some(form) = forms.get_mut(&call.call_id) {
+            if form.reply.take().is_some() { form.timed_out = true; true } else { false }
+          } else { false }
+        };
+        if !expired {
+          // answer() took the sender and sent while holding the same lock: its answer wins.
+          match receiver.await {
+            Ok(Reply::Answered(answers)) => ToolOutcome::Success(json!({"status":"answered","answers":answers})),
+            Ok(Reply::Skipped) => ToolOutcome::Success(json!({"status":"skipped"})),
+            Err(_) => ToolOutcome::Cancelled,
+          }
+        } else {
         open.keep = true;
-        if let Some(form) = self.forms.lock().unwrap().get_mut(&call.call_id) {
-          form.timed_out = true;
-          form.reply = None;
-        }
         ToolOutcome::Success(json!({"status": "timed_out", "waited_seconds": timeout,
           "note": "No answer came in time. The questions stay open to the user; if they answer later, the answers arrive as a separate message. Continue with your best judgement and say what you assumed."}))
+        }
       }
       _ = control.wait_for_cancellation() => ToolOutcome::Cancelled,
     };

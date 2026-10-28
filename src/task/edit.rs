@@ -31,19 +31,10 @@ impl EditCapture {
         path.display()
       )));
     }
-    let before = match tokio::fs::read(&path).await {
-      Ok(bytes) => bytes,
-      Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-      Err(error) => {
-        return Err(
-          io::Error::new(
-            error.kind(),
-            format!("cannot read diff file {}: {error}", path.display()),
-          )
-          .into(),
-        );
-      }
-    };
+    let target = path.clone();
+    let before = crate::utils::blocking::io(move || read_file(&target))
+      .await
+      .map_err(|e| TaskError::Unknown(e.to_string()))??;
     Ok(Self { path, before })
   }
 
@@ -137,9 +128,31 @@ impl UnifiedDiffPrinter for LineDiffPrinter<'_> {
   }
 }
 
+const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
 fn read_file(path: &Path) -> io::Result<Vec<u8>> {
-  match std::fs::read(path) {
-    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-    result => result,
+  use std::io::Read;
+  let mut options = std::fs::OpenOptions::new();
+  options.read(true);
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::OpenOptionsExt;
+    options.custom_flags(libc::O_NONBLOCK);
   }
+  let file = match options.open(path) {
+    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+    result => result?,
+  };
+  let metadata = file.metadata()?;
+  if !metadata.is_file() || metadata.len() > MAX_EDIT_BYTES {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "edit capture requires a regular file no larger than 2 MiB",
+    ));
+  }
+  let mut bytes = Vec::new();
+  file.take(MAX_EDIT_BYTES + 1).read_to_end(&mut bytes)?;
+  if bytes.len() as u64 > MAX_EDIT_BYTES {
+    return Err(io::Error::new(io::ErrorKind::InvalidInput, "edit capture exceeds 2 MiB"));
+  }
+  Ok(bytes)
 }

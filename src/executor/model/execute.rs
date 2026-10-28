@@ -36,7 +36,9 @@ pub(in crate::executor) async fn execute_model(
   let mut first_event_at = None;
   let mut last_request_input_tokens = None;
   let mut last_request_estimated_tokens = None;
+  let mut segments = 0;
   loop {
+    segments += 1;
     let mut observation = continuation.observe_next_segment();
     let mut result =
       call_segment(model_caller, &continuation.request, control, &mut observation, observe).await;
@@ -48,10 +50,15 @@ pub(in crate::executor) async fn execute_model(
       last_request_estimated_tokens =
         estimator.map(|estimator| estimator.estimate_request(&continuation.request));
     }
-    if let SegmentResult::OutputLimited(partial) = result {
-      continuation.append_cut_output(partial.get_continuation_messages());
-      continuation.usage = Some(usage);
-      continue;
+    if let SegmentResult::OutputLimited(mut partial) = result {
+      if segments >= 8 || usage.output_tokens.unwrap_or_default() >= 262_144 {
+        partial.prepend_replay_messages(std::mem::take(&mut continuation.messages));
+        result = SegmentResult::Failed(RunOutcome::StreamFailed(Box::new(partial)));
+      } else {
+        continuation.append_cut_output(partial.get_continuation_messages());
+        continuation.usage = Some(usage);
+        continue;
+      }
     }
 
     match &mut result {

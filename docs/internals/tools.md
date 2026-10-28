@@ -49,7 +49,11 @@ shell.shutdown().await?;
 The model sees `shell({command, timeout?, edit?, check_diff?})`. It runs a new shell in the session's working
 directory and waits until exit. Omitted timeout means no limit; a positive timeout is a hard
 runtime limit and terminates the process tree. Large output does not background the command:
-the structured result retains the last 2000 lines / 50 KiB and points to the complete capture.
+the structured result retains the last 2000 lines / 50 KiB and points to the capture.
+A command capture is limited to 256 MiB; exceeding it terminates the process group and records
+an output-capture error. Each session permits at most 16 running tasks. Polls read at most 1 MiB
+and wait at most 60 seconds. Edit capture accepts at most 16 regular files, each at most 2 MiB
+before and after the command; device files and FIFOs are refused without waiting for data.
 The model sees ordinary command output without encoding, empty process fields or task identifiers.
 Failure, timeout, background execution and truncation add only necessary diagnostics or next steps.
 Model text reserves room within its 50 KiB budget for notices and up to 8 KiB of requested diff;
@@ -91,8 +95,9 @@ existing tasks with the session's shell switch off; starting a new command is re
 ### Process configuration
 
 Linux, macOS and BSD supervise commands with Unix process groups; Windows uses Job Objects. Other
-platforms are refused by `ShellTool::new`, which also canonicalizes `cwd` (it must be an existing
-directory) and creates the capture directory. Command text is passed as one final argument after
+platforms are refused by the task manager. Opening history does not require the old working
+directory to exist; command launch validates it, so a removed checkout does not prevent repairing
+the session. Unreadable task JSON is skipped with a diagnostic; valid neighboring records remain available. Command text is passed as one final argument after
 the shell's leading arguments. Commands inherit the server's environment (plus `ShellConfig.env`
 overrides) and OS permissions. No PTY is allocated.
 

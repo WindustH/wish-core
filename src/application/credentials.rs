@@ -74,7 +74,10 @@ pub fn start_refresh_worker(app: &Arc<App>) {
   let worker = Arc::clone(app);
   app.lifecycle.tasks.spawn(async move {
     loop {
-      refresh_due(&worker).await;
+      tokio::select! {
+        _ = worker.lifecycle.stop.cancelled() => break,
+        _ = refresh_due(&worker) => {}
+      }
       tokio::select! {
         _ = worker.lifecycle.stop.cancelled() => break,
         _ = tokio::time::sleep(Duration::from_secs(60)) => {},

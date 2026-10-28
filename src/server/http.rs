@@ -149,7 +149,6 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/skills", get(skills::list))
     .route("/skills/{name}", get(skills::show))
     .route("/mcp/servers/{id}/check", post(mcp::check))
-    .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024))
     .route_layer(middleware::from_fn_with_state(app.clone(), authorize))
     // The bridge a session's shell reaches its MCP servers through checks that session's own token
     // instead of the application's.
@@ -171,7 +170,8 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     )
     .route("/sessions/{id}/peers/{target}/send", post(peers::send))
     .route("/sessions/{id}/peers/{target}/members", post(peers::add_members))
-    .route("/sessions/{id}/peers/{target}/leave", post(peers::leave));
+    .route("/sessions/{id}/peers/{target}/leave", post(peers::leave))
+    .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024));
   Router::new()
     .nest("/api", api)
     .route("/health", get(|| async { Json(json!({"status":"ok"})) }))

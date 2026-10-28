@@ -14,7 +14,12 @@ pub async fn load(root: &Path) -> std::io::Result<Vec<Value>> {
       continue;
     }
     match tokio::fs::read(entry.path().join("task.json")).await {
-      Ok(bytes) => records.push(serde_json::from_slice(&bytes)?),
+      Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+        Ok(record) if record["task_id"].as_str().is_some_and(|id| entry.file_name() == id) => {
+          records.push(record)
+        }
+        _ => eprintln!("ignoring invalid task record: {}", entry.path().display()),
+      },
       Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
       Err(error) => return Err(error),
     }

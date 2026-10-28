@@ -162,9 +162,21 @@ pub(super) async fn supervise(
   execution: Arc<Execution>,
   mut kills: mpsc::UnboundedReceiver<KillMode>,
   grace: Duration,
-  initial_input: Option<tokio::task::JoinHandle<()>>,
+  io: (Option<tokio::task::JoinHandle<()>>, tokio::fs::File),
   edits: Vec<EditCapture>,
 ) {
+  let (initial_input, file) = io;
+  let stdout = child.stdout.take().expect("stdout is piped");
+  let stderr = child.stderr.take().expect("stderr is piped");
+  let output_execution = execution.clone();
+  let mut output = tokio::spawn(async move {
+    if let Err(error) = capture_output(file, stdout, stderr).await {
+      output_execution
+        .state
+        .send_modify(|state| state.error = Some(format!("output capture: {error}")));
+      let _ = output_execution.kills.send(KillMode::Force);
+    }
+  });
   if let Err(error) = execution.persist().await {
     eprintln!("task record: {error}");
   }
@@ -202,6 +214,14 @@ pub(super) async fn supervise(
     let _ = initial_input.await;
   }
   execution.stdin.lock().await.take();
+  // Descendants are killed above; drain their remaining pipe bytes before publishing exit.
+  if tokio::time::timeout(Duration::from_secs(5), &mut output).await.is_err() {
+    output.abort();
+    let _ = output.await;
+    execution.state.send_modify(|state| {
+      state.error = Some("output capture did not close after process exit".into())
+    });
+  }
   let edits = futures_util::future::join_all(edits.into_iter().map(EditCapture::finish)).await;
   let mut snapshot = execution.get_snapshot();
   {
@@ -234,4 +254,39 @@ pub(super) async fn supervise(
     }
     execution.state.send_replace(snapshot);
   }
+}
+
+/// A single writer preserves arrival order and enforces a hard per-command disk bound.
+async fn capture_output(
+  mut file: tokio::fs::File,
+  mut stdout: tokio::process::ChildStdout,
+  mut stderr: tokio::process::ChildStderr,
+) -> io::Result<()> {
+  use tokio::io::AsyncReadExt;
+  const LIMIT: usize = 256 * 1024 * 1024;
+  let mut out = [0u8; 16 * 1024];
+  let mut err = [0u8; 16 * 1024];
+  let (mut out_open, mut err_open, mut written) = (true, true, 0usize);
+  while out_open || err_open {
+    let (is_out, count) = tokio::select! {
+      count = stdout.read(&mut out), if out_open => (true, count?),
+      count = stderr.read(&mut err), if err_open => (false, count?),
+    };
+    if count == 0 {
+      if is_out {
+        out_open = false;
+      } else {
+        err_open = false;
+      }
+      continue;
+    }
+    let allowed = count.min(LIMIT - written);
+    file.write_all(if is_out { &out[..allowed] } else { &err[..allowed] }).await?;
+    written += allowed;
+    if allowed < count {
+      file.flush().await?;
+      return Err(io::Error::other("command output exceeded 256 MiB; process group terminated"));
+    }
+  }
+  file.flush().await
 }

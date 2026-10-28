@@ -203,7 +203,10 @@ impl MediaHub {
     let mut count = 0;
     while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
       if entry.path().extension().is_some_and(|s| s == "json") {
-        let old: Job = read_job(&entry.path()).await?;
+        let Ok(old) = read_job::<Job>(&entry.path()).await else {
+          count += 1;
+          continue;
+        };
         if matches!(old.phase, Phase::Submitting | Phase::Running | Phase::Downloading) {
           count += 1;
         }
@@ -246,7 +249,13 @@ impl MediaHub {
       job.phase = Phase::OutcomeUnknown;
       job.error = Some(error);
     }
-    save_job(&path, &mut job).await?;
+    if let Err(error) = save_job(&path, &mut job).await {
+      job.phase = Phase::OutcomeUnknown;
+      job.error = Some(format!(
+        "Submission may have completed, but recording its result failed: {error}. Do not resubmit; reconcile job {}.",
+        job.id
+      ));
+    }
     Ok(job.view())
   }
   async fn advance(

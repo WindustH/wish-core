@@ -117,6 +117,9 @@ async fn update_idle(
     .transpose()?;
   let config = config.map(|config| slot.configure_tools(config)).transpose()?;
   let metadata = input.get("metadata").cloned();
+  if metadata.as_ref().is_some_and(|value| value.to_string().len() > 64 * 1024) {
+    return Err(ApplicationError::invalid("session metadata exceeds 64 KiB"));
+  }
   blocking(move || {
     let mut selection = None;
     if let Some(config) = config {

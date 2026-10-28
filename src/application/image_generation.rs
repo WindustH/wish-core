@@ -103,7 +103,7 @@ impl ImageConfig {
       {
         return Err(ApplicationError::invalid("invalid image model ID"));
       }
-      wire::validate_url(
+      wire::validate_base_url(
         &p.base_url
           .as_deref()
           .filter(|s| !s.trim().is_empty())

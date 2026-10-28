@@ -48,6 +48,7 @@ pub(super) async fn execute_tools(
       }
     }
     ToolMode::Parallel => {
+      let permits = tokio::sync::Semaphore::new(8);
       let mut futures = FuturesUnordered::new();
       for call in calls {
         let registered =
@@ -57,7 +58,9 @@ pub(super) async fn execute_tools(
           deliver_new_events(session, delivered, observe)?;
         }
         let input = input.clone();
+        let permits = &permits;
         futures.push(async move {
+          let _permit = permits.acquire().await.expect("tool semaphore is never closed");
           let outcome = if control.is_cancelled() {
             ToolOutcome::Cancelled
           } else if !registered {

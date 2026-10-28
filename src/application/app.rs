@@ -406,7 +406,8 @@ impl App {
     self.lifecycle.tasks.close();
     self.lifecycle.tasks.wait().await;
     self.mcp.close_all().await;
-    for slot in self.sessions.lock().await.values() {
+    let slots: Vec<_> = self.sessions.lock().await.values().cloned().collect();
+    for slot in slots {
       if let Some(shell) = slot.tools.tasks() {
         shell.shutdown().await.map_err(ApplicationError::internal)?;
       }

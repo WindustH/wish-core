@@ -47,7 +47,13 @@ pub(crate) async fn wait_for_approval(
     if Instant::now() >= deadline {
       return Some(Err((LoginStatus::Expired, None)));
     }
-    match copilot_oauth::poll_device_code(transport, &code.device_code).await {
+    let reply = tokio::select! {
+      _ = end.cancelled() => return None,
+      _ = app.lifecycle.stop.cancelled() => return None,
+      _ = tokio::time::sleep_until(deadline.into()) => return Some(Err((LoginStatus::Expired, None))),
+      reply = copilot_oauth::poll_device_code(transport, &code.device_code) => reply,
+    };
+    match reply {
       Ok(DevicePoll::Approved(token)) => return Some(Ok(token)),
       Ok(DevicePoll::SlowDown) => interval += Duration::from_secs(5),
       Ok(DevicePoll::Refused(reason)) => return Some(Err((LoginStatus::Failed, Some(reason)))),

@@ -54,6 +54,18 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     _ => return Err(format!("usage: {name} [--config <config.json>]").into()),
   };
+  let raw: serde_json::Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
+  let data_root = std::path::Path::new(raw["data_dir"].as_str().unwrap_or("data"));
+  tokio::fs::create_dir_all(data_root).await?;
+  let _data_lock = std::fs::OpenOptions::new()
+    .read(true)
+    .write(true)
+    .create(true)
+    .truncate(false)
+    .open(data_root.join(".wish.lock"))?;
+  _data_lock.try_lock().map_err(|error| {
+    format!("cannot exclusively lock data directory {}: {error}", data_root.display())
+  })?;
   crate::migration::run(&path)?;
   #[cfg(windows)]
   console::install();

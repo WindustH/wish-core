@@ -208,3 +208,11 @@ generations on actual usage thresholds, explicit context rejection or a manual r
 is `Compacting` only during cutover; tools are settled before that phase starts.
 
 Built-in tool implementations live under `tool`; see [built-in tools](tools.md).
+
+## Execution bounds
+
+A model response may contain at most 64 tool calls. Parallel batches run at most eight tools
+at once. Automatic continuation of a length-limited response stops after eight segments or
+262,144 accumulated output tokens, whichever threshold is reached first; partial text is retained
+in the suspended stream outcome. Cutover summaries are planned and committed in batches of two
+to avoid allocating one full-context request per pending segment simultaneously.

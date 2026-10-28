@@ -197,8 +197,42 @@ impl Connection {
 
   /// Every tool the server offers, as the protocol describes them.
   pub async fn list_tools(&self) -> Result<Vec<Value>, McpError> {
-    let tools = self.service.peer().list_all_tools().await.map_err(to_mcp_error)?;
-    Ok(tools.iter().filter_map(|tool| serde_json::to_value(tool).ok()).collect())
+    let discovery = async {
+      let mut tools = Vec::new();
+      let mut cursor = None;
+      let mut seen = std::collections::HashSet::new();
+      let mut bytes = 0usize;
+      for _ in 0..128 {
+        let page = self
+          .service
+          .peer()
+          .list_tools(Some(rmcp::model::PaginatedRequestParams::default().with_cursor(cursor)))
+          .await
+          .map_err(to_mcp_error)?;
+        if tools.len() + page.tools.len() > 4096 {
+          return Err(McpError::Rejected("MCP catalog exceeds 4096 tools".into()));
+        }
+        for tool in page.tools {
+          let value = serde_json::to_value(tool).map_err(|e| McpError::Rejected(e.to_string()))?;
+          bytes = bytes.saturating_add(value.to_string().len());
+          if bytes > 32 * 1024 * 1024 {
+            return Err(McpError::Rejected("MCP catalog exceeds 32 MiB".into()));
+          }
+          tools.push(value);
+        }
+        cursor = page.next_cursor;
+        let Some(next) = &cursor else {
+          return Ok(tools);
+        };
+        if !seen.insert(next.clone()) {
+          return Err(McpError::Rejected("MCP tool discovery repeated a cursor".into()));
+        }
+      }
+      Err(McpError::Rejected("MCP tool discovery exceeds 128 pages".into()))
+    };
+    tokio::time::timeout(Duration::from_secs(60), discovery)
+      .await
+      .map_err(|_| McpError::Rejected("MCP tool discovery exceeded 60 seconds".into()))?
   }
 
   /// Calls a tool and returns its result as the protocol describes it. A call dropped before its
@@ -215,6 +249,7 @@ impl Connection {
     ));
     let mut options = PeerRequestOptions::with_timeout(timeout);
     options.reset_timeout_on_progress = true;
+    options.max_total_timeout = Some(timeout.saturating_mul(4).min(Duration::from_secs(1800)));
     let handle =
       self.service.peer().send_cancellable_request(request, options).await.map_err(to_mcp_error)?;
     let mut pending = PendingCall { peer: handle.peer.clone(), id: Some(handle.id.clone()) };
@@ -236,7 +271,7 @@ impl Connection {
 
   /// Ends the connection; a local server's whole process group goes with it.
   pub async fn close(self) {
-    let _ = self.service.cancel().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), self.service.cancel()).await;
   }
 }
 

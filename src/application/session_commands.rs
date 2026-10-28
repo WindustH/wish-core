@@ -170,7 +170,9 @@ pub async fn enqueue(
   let slot = app.get_session(&id).await?;
   let entry = slot.enqueue(message).await?;
   let touched = slot.clone();
-  blocking(move || touched.touch()).await?;
+  if let Err(error) = blocking(move || touched.touch()).await {
+    eprintln!("indexing queued input: {error}");
+  }
   Ok(json!({"entry":entry}))
 }
 pub async fn set_config(
@@ -180,8 +182,8 @@ pub async fn set_config(
 ) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
-  let config = slot.configure_tools(config)?;
   let mut session = slot.lock_idle_or_conflict().await?;
+  let config = slot.configure_tools(config)?;
   blocking(move || {
     slot.require_live()?;
     crate::application::instructions::persist_agent_instructions(
@@ -253,7 +255,9 @@ pub async fn answer(app: Arc<App>, id: String, input: Answer) -> Result<Value, A
       }
     };
   let touched = slot.clone();
-  blocking(move || touched.touch()).await?;
+  if let Err(error) = blocking(move || touched.touch()).await {
+    eprintln!("indexing queued input: {error}");
+  }
   Ok(json!({"delivered": delivered}))
 }
 pub async fn set_shell(
@@ -297,6 +301,9 @@ pub async fn set_metadata(
   id: String,
   metadata: Value,
 ) -> Result<Value, ApplicationError> {
+  if metadata.to_string().len() > 64 * 1024 {
+    return Err(ApplicationError::invalid("session metadata exceeds 64 KiB"));
+  }
   app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
   let mut session = slot.lock_idle_or_conflict().await?;
@@ -337,12 +344,15 @@ pub async fn submit_input(
   // Queue the message before releasing the foreground wait, so the next model step sees it.
   let entry = slot.enqueue(message).await?;
   let touched = slot.clone();
-  blocking(move || touched.touch()).await?;
+  if let Err(error) = blocking(move || touched.touch()).await {
+    eprintln!("indexing queued input: {error}");
+  }
   slot.schedule(&app);
   let reader = slot.reader.clone();
   let first_user_message = crate::application::error::blocking(move || {
     Ok(super::naming::first_user(&reader)? == Some(entry))
   })
-  .await?;
+  .await
+  .unwrap_or(false);
   Ok(json!({"entry":entry,"first_user_message":first_user_message}))
 }

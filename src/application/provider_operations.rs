@@ -101,6 +101,7 @@ async fn catalog_page(
   page.unauthenticated = matches!(provider.config.auth, Auth::None);
   page.cursor = query.cursor;
   if let Some(limit) = query.limit {
+    super::pagination::validate_limit(limit as usize, 1000)?;
     page.page_size = limit;
   }
   // Cached while fresh, and one fetch in flight at a time; see the model_catalog module.

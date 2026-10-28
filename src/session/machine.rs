@@ -310,7 +310,8 @@ fn tool_calls(response: &Response) -> Vec<ToolCall> {
 /// writes.
 fn is_acceptable(response: &Response, calls: &[ToolCall]) -> bool {
   let mut ids = HashSet::new();
-  (response.stop_reason == StopReason::ToolUse) != calls.is_empty()
+  calls.len() <= 64
+    && (response.stop_reason == StopReason::ToolUse) != calls.is_empty()
     && calls.iter().all(|call| {
       is_valid_tool_use(&call.call_id, &call.name, &call.arguments) && ids.insert(&call.call_id)
     })

@@ -74,7 +74,28 @@ fn read_header(
 }
 
 fn read_events(response: reqwest::Response) -> BoxStream<'static, Result<Sse, SseError>> {
-  SseStream::from_bytes_stream(response.bytes_stream()).boxed()
+  // Bound each raw SSE frame before its parser allocates an unbounded line/data buffer.
+  let mut frame_bytes = 0usize;
+  let mut line_empty = true;
+  let chunks = response.bytes_stream().map(move |chunk| {
+    let chunk = chunk.map_err(std::io::Error::other)?;
+    for byte in &chunk {
+      frame_bytes += 1;
+      if frame_bytes > 32 * 1024 * 1024 {
+        return Err(std::io::Error::other("MCP SSE frame exceeds 32 MiB"));
+      }
+      if *byte == b'\n' {
+        if line_empty {
+          frame_bytes = 0;
+        }
+        line_empty = true;
+      } else if *byte != b'\r' {
+        line_empty = false;
+      }
+    }
+    Ok(chunk)
+  });
+  SseStream::from_bytes_stream(chunks).boxed()
 }
 
 /// A body kept in an error: short, and readable whatever it held.
@@ -99,7 +120,7 @@ impl StreamableHttpClient for HttpClient {
   ) -> Result<StreamableHttpPostResponse, Failure> {
     let attached = session_id.is_some();
     let body = serde_json::to_vec(&message)?;
-    let response = self
+    let mut response = self
       .with_common_headers(
         self.client.post(uri.as_ref()),
         session_id.as_deref(),
@@ -124,7 +145,15 @@ impl StreamableHttpClient for HttpClient {
     if content_type.starts_with(EVENT_STREAM) && status.is_success() {
       return Ok(StreamableHttpPostResponse::Sse(read_events(response), session));
     }
-    let body = response.bytes().await.map_err(StreamableHttpError::Client)?;
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(StreamableHttpError::Client)? {
+      if body.len().saturating_add(chunk.len()) > 32 * 1024 * 1024 {
+        return Err(StreamableHttpError::UnexpectedServerResponse(
+          "MCP response exceeds 32 MiB".into(),
+        ));
+      }
+      body.extend_from_slice(&chunk);
+    }
     if !status.is_success() {
       // A server that predates `server/discover` rejects it; the rejection, answered with the
       // request's own id, is what sends the handshake back to `initialize`.

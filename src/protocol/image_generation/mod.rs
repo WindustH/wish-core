@@ -45,6 +45,10 @@ pub fn validate_url(url: &str) -> Result<reqwest::Url, Error> {
   }
   Ok(parsed)
 }
+/// Service bases use Endpoint's stricter contract; artifact URLs may carry signed queries.
+pub fn validate_base_url(url: &str) -> Result<(), Error> {
+  Endpoint::new(url, "", AuthScheme::None).map(|_| ())
+}
 impl ImageProtocol {
   pub fn call(
     self,

@@ -115,7 +115,24 @@ impl SessionReader {
       // At most `before` records precede the sequence, so this cannot overflow.
       let count = (sequence - start) as usize + after + 1;
       let page = tx.read_page::<HistoryRecord>(&reader.history, start, count)?;
-      page.items.into_iter().map(|record| reader.expand(tx, record)).collect()
+      let mut items = Vec::new();
+      let mut bytes = 0usize;
+      for record in page.items {
+        let item = reader.expand(tx, record)?;
+        bytes = bytes.saturating_add(
+          serde_json::to_vec(&item)
+            .map_err(|e| SessionError::InvalidHistoryQuery(e.to_string()))?
+            .len(),
+        );
+        if bytes > 4 * 1024 * 1024 {
+          return Err(SessionError::InvalidHistoryQuery(
+            "history read exceeds 4 MiB; narrow before/after or read the resource file directly"
+              .into(),
+          ));
+        }
+        items.push(item);
+      }
+      Ok(items)
     })
   }
   /// `record` with what it records.

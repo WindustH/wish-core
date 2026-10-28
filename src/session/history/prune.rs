@@ -121,14 +121,27 @@ impl SessionTransaction<'_, '_> {
     let released_entries: HashSet<u64> = entries.iter().copied().collect();
     let (mut events, mut sequences) = (Vec::new(), Vec::new());
     let list = self.record.history.clone();
-    self.store.for_each_item::<HistoryRecord, SessionError>(&list, 0, |_, record| {
+    let event_list = self.record.events.clone();
+    self.store.for_each_item::<HistoryRecord, SessionError>(&list, 0, |store, record| {
       match record.item {
         HistoryItem::Message(id) if released_entries.contains(&(id.0 as u64)) => {
           sequences.push(record.sequence);
         }
         HistoryItem::Event(id) if old(record.recorded_at) && Some(id) != kept_outcome => {
+          if let Some(event) = store.get_item::<SessionEvent>(&event_list, id.0)?
+            && let Ok(value) = serde_json::to_value(event)
+          {
+            super::super::resources::collect(&value, &mut released);
+          }
           events.push(id.0);
           sequences.push(record.sequence);
+        }
+        HistoryItem::Event(id) => {
+          if let Some(event) = store.get_item::<SessionEvent>(&event_list, id.0)?
+            && let Ok(value) = serde_json::to_value(event)
+          {
+            super::super::resources::collect(&value, &mut kept);
+          }
         }
         _ => {}
       }

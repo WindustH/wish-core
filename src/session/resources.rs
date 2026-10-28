@@ -14,7 +14,7 @@ pub fn collect_references(message: &Message, found: &mut HashSet<String>) {
     collect(&value, found);
   }
 }
-fn collect(value: &Value, found: &mut HashSet<String>) {
+pub(crate) fn collect(value: &Value, found: &mut HashSet<String>) {
   match value {
     Value::String(text) => {
       for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {

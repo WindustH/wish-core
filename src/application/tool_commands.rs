@@ -57,7 +57,9 @@ pub async fn execute(
   let control = ExecutionControl::new();
   let _cancel = control.cancel_on_drop();
   let outcome = app.lifecycle.until_shutdown(slot.tools.execute(&call, &control)).await?;
-  trace.finish(&outcome).await?;
+  if let Err(error) = trace.finish(&outcome).await {
+    eprintln!("recording completed command: {error}");
+  }
   match outcome {
     ToolOutcome::Report { output, failed: false, .. } => Ok(output),
     ToolOutcome::Report { text, .. } => Err(ApplicationError::invalid(text)),

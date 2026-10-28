@@ -69,12 +69,8 @@ impl TaskManager {
           .into(),
       );
     }
-    let cwd = config.cwd.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let cwd = tokio::fs::canonicalize(cwd).await?;
-    if !tokio::fs::metadata(&cwd).await?.is_dir() {
-      return Err(TaskError::InvalidArguments("cwd must be a directory".into()));
-    }
-    *config.cwd.write().unwrap_or_else(|e| e.into_inner()) = cwd;
+    // Validate the working directory when starting a command, not when opening its history.
+    // Otherwise a deleted checkout makes the session impossible to repair through the API.
     for duration in [config.soft_timeout, config.kill_grace, config.stdin_write_timeout] {
       resolve_deadline(duration)?;
     }
@@ -86,11 +82,14 @@ impl TaskManager {
       if !super::is_execution_id(id) {
         continue;
       }
-      let mut snapshot: Snapshot = serde_json::from_value(record["process"].clone())
-        .map_err(|error| TaskError::Unknown(error.to_string()))?;
+      let Ok(mut snapshot) = serde_json::from_value::<Snapshot>(record["process"].clone()) else {
+        eprintln!("ignoring invalid task process record: {id}");
+        continue;
+      };
       snapshot.edits =
         Arc::new(serde_json::from_value(record["edits"].clone()).unwrap_or_default());
-      if snapshot.status == Status::Running {
+      let recovered = snapshot.status == Status::Running;
+      if recovered {
         snapshot.status = Status::Interrupted;
         snapshot.error = Some("Wish restarted before task completion was recorded".into());
       }
@@ -112,7 +111,9 @@ impl TaskManager {
         kills,
         write_timeout: config.stdin_write_timeout,
       });
-      execution.persist().await?;
+      if recovered {
+        execution.persist().await?;
+      }
       registry.executions.insert(id.to_owned(), execution);
     }
     Ok(Self { inner: Arc::new(Runtime { config, registry: Mutex::new(registry) }) })
@@ -136,6 +137,13 @@ impl TaskManager {
   /// Whether the execution `id` is still running, so its capture is still being written.
   pub fn is_running(&self, id: &str) -> bool {
     self.get_execution(id).is_ok_and(|execution| execution.get_snapshot().status == Status::Running)
+  }
+  pub fn forget_removed(&self) {
+    if let Ok(mut registry) = self.lock_registry() {
+      registry.executions.retain(|_, task| {
+        task.get_snapshot().status == Status::Running || task.output_path.exists()
+      });
+    }
   }
   /// Stop all owned process groups and await reaping. Captures and completed handles are retained.
   pub async fn shutdown(&self) -> Result<(), TaskError> {
@@ -290,6 +298,9 @@ impl TaskManager {
       }
       None => None,
     };
+    if paths.len() > 16 {
+      return Err(TaskError::InvalidArguments("at most 16 edit paths are allowed".into()));
+    }
     let mut edits = Vec::with_capacity(paths.len());
     for path in paths {
       edits.push(EditCapture::capture(path).await?);
@@ -362,7 +373,10 @@ impl TaskManager {
     output["edits"] = summaries;
     // Preserve captured diagnostics and the task identifier even when the command fails.
     output["success"] = json!(
-      reason == "backgrounded" || (reason == "exited" && task.get_snapshot().exit_code == Some(0))
+      reason == "backgrounded"
+        || (reason == "exited"
+          && task.get_snapshot().exit_code == Some(0)
+          && task.get_snapshot().error.is_none())
     );
     if !edits.as_array().is_none_or(Vec::is_empty) {
       // The supervisor persists final edits here before publishing completion.
@@ -392,13 +406,8 @@ impl TaskManager {
     let directory = self.inner.config.capture_dir.join(&id);
     tokio::fs::create_dir(&directory).await?;
     let output_path = directory.join("output.log");
-    let file = tokio::fs::OpenOptions::new()
-      .write(true)
-      .create_new(true)
-      .open(&output_path)
-      .await?
-      .into_std()
-      .await;
+    let file =
+      tokio::fs::OpenOptions::new().write(true).create_new(true).open(&output_path).await?;
     let shell =
       self.inner.config.command.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
     let mut builder = Command::new(&shell.program);
@@ -406,8 +415,8 @@ impl TaskManager {
       .args(&shell.args)
       .current_dir(self.inner.config.cwd.read().unwrap_or_else(|e| e.into_inner()).clone())
       .envs(&self.inner.config.env)
-      .stdout(Stdio::from(file.try_clone()?))
-      .stderr(Stdio::from(file))
+      .stdout(Stdio::piped())
+      .stderr(Stdio::piped())
       .stdin(if interactive || data.is_some() { Stdio::piped() } else { Stdio::null() })
       .kill_on_drop(true);
     builder.env("WISH_TASK_ID", &id);
@@ -419,6 +428,15 @@ impl TaskManager {
     }
     if control.is_cancelled() {
       return Err(TaskError::Interrupted);
+    }
+    if registry
+      .executions
+      .values()
+      .filter(|task| task.get_snapshot().status == Status::Running)
+      .count()
+      >= 16
+    {
+      return Err(TaskError::InvalidArguments("session running task limit (16) reached".into()));
     }
     let mut child = builder.spawn()?;
     let group = ProcessTree::attach(&child)?;
@@ -468,7 +486,7 @@ impl TaskManager {
       execution.clone(),
       receiver,
       self.inner.config.kill_grace,
-      initial_input,
+      (initial_input, file),
       edits,
     ));
     Ok(execution)
@@ -547,6 +565,9 @@ impl TaskManager {
     encoding: DataEncoding,
     control: &ExecutionControl,
   ) -> Result<Value, TaskError> {
+    if max_bytes > 1024 * 1024 || wait > Duration::from_secs(60) {
+      return Err(TaskError::InvalidArguments("poll permits at most 1 MiB and 60 seconds".into()));
+    }
     let execution = self.get_execution(id)?;
     let deadline = resolve_deadline(wait)?;
     loop {
@@ -565,7 +586,7 @@ impl TaskManager {
 }
 /// Waits one polling tick, ended early by `deadline` or by cancellation.
 async fn wait_tick(deadline: tokio::time::Instant, control: &ExecutionControl) {
-  let tick = deadline.min(tokio::time::Instant::now() + Duration::from_millis(20));
+  let tick = deadline.min(tokio::time::Instant::now() + Duration::from_millis(100));
   control.run_until_cancelled(tokio::time::sleep_until(tick)).await;
 }
 fn resolve_deadline(duration: Duration) -> Result<tokio::time::Instant, TaskError> {
@@ -579,6 +600,9 @@ async fn read_output(
   max_bytes: usize,
   encoding: DataEncoding,
 ) -> Result<Value, TaskError> {
+  if max_bytes > 1024 * 1024 {
+    return Err(TaskError::InvalidArguments("output read exceeds 1 MiB".into()));
+  }
   let mut file = tokio::fs::File::open(&execution.output_path).await?;
   file.seek(io::SeekFrom::Start(offset)).await?;
   let mut bytes = Vec::new();

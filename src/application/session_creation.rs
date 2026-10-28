@@ -48,6 +48,9 @@ impl App {
         Err(error) => return Err(error),
       }
     }
+    if input.metadata.to_string().len() > 64 * 1024 {
+      return Err(ApplicationError::invalid("session metadata exceeds 64 KiB"));
+    }
     self.get_provider(&input.provider)?;
     input.config.validate()?;
     if !input.cwd.is_absolute() {

@@ -82,13 +82,30 @@ fn ordered_parts(input: &Input) -> Result<Vec<Part>, ApplicationError> {
 
 /// The message an input makes, its attachments read from the session's blobs.
 pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, ApplicationError> {
+  if input.text.len() > 2 * 1024 * 1024
+    || input.metadata.to_string().len() > 64 * 1024
+    || input.attachments.len() > 32
+  {
+    return Err(ApplicationError::invalid(
+      "input exceeds limits: text 2 MiB, metadata 64 KiB, attachments 32",
+    ));
+  }
   let parts = ordered_parts(&input)?;
+  let mut expanded_bytes = 0usize;
   let mut attachments = Vec::new();
   for attachment in &mut input.attachments {
     if !is_blob_id(&attachment.id) {
       return Err(ApplicationError::invalid("invalid attachment id"));
     }
     let blob = blobs::read_description(blob_dir, &attachment.id).await?;
+    let uses = parts
+      .iter()
+      .filter(|part| matches!(part, Part::Attachment { index } if *index == attachments.len()))
+      .count();
+    expanded_bytes = expanded_bytes.saturating_add(blob.byte_count.saturating_mul(uses));
+    if expanded_bytes > 32 * 1024 * 1024 {
+      return Err(ApplicationError::invalid("expanded input attachments exceed 32 MiB"));
+    }
     attachment.byte_count = Some(blob.byte_count);
     let block = match attachment.kind.as_str() {
       "image" => {

@@ -194,6 +194,7 @@ impl SessionSlot {
     edit: impl FnOnce(&mut Descriptor) -> Result<(), ApplicationError>,
   ) -> Result<(), ApplicationError> {
     let mut descriptor = self.descriptor.write().unwrap();
+    self.require_live()?;
     expect_revision(if_match, descriptor.revision)?;
     let mut next = descriptor.clone();
     edit(&mut next)?;
@@ -229,8 +230,10 @@ impl SessionSlot {
   }
   /// Saves the index record, and tells the session list.
   pub fn persist_index(&self) -> Result<(), ApplicationError> {
+    let descriptor = self.descriptor.read().unwrap();
     self.require_live()?;
-    self.management.save(&self.index_record(&self.get_descriptor()))?;
+    self.management.save(&self.index_record(&descriptor))?;
+    drop(descriptor);
     self.announce_change();
     Ok(())
   }
@@ -255,6 +258,8 @@ impl SessionSlot {
   }
   /// Marks the session deleted: from now on it is not found.
   pub fn mark_deleted(&self) {
+    // Serialize with descriptor/index writers so none can resurrect the deleted index.
+    let _descriptor = self.descriptor.write().unwrap();
     self.deleted.store(true, Ordering::Release);
   }
 }

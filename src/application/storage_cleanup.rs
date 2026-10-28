@@ -237,5 +237,8 @@ fn release_unreferenced_files(
     .collect();
   resources.extend(job_resources);
   let released = release_resources(&resources, apply)?;
+  if apply && let Some(shell) = shell {
+    shell.forget_removed();
+  }
   Ok((released.resources, released.bytes))
 }
