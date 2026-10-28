@@ -21,6 +21,7 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
       match crate::capability::Capability::from_command(name) {
         Some(crate::capability::Capability::History) => include_str!("help/history.txt"),
         Some(crate::capability::Capability::WebFetch) => include_str!("help/webfetch.txt"),
+        Some(crate::capability::Capability::ImageGenerate) => include_str!("help/imagegen.txt"),
         Some(crate::capability::Capability::WebSearch) => include_str!("help/websearch.txt"),
         _ => include_str!("help/askuser.txt"),
       }
@@ -50,6 +51,7 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
           json!({"sequence":value.parse::<u64>().map_err(|_| (2, "sequence must be a non-negative integer; use wish history --help".into()))?})
         }
         "websearch" => json!({"query":args.join(" ")}),
+        "imagegen" => json!({"prompt":args.join(" ")}),
         "askuser" if args.len() == 1 => {
           serde_json::from_str(value).map_err(|e| (2, e.to_string()))?
         }

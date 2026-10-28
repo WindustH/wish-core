@@ -88,3 +88,5 @@ pub use model_use::stream::{BlockKind, StreamAccumulator, StreamEvent};
 pub use model_use::tool::Tool;
 pub use token_count::{TokenCount, TokenCountProtocol};
 pub use upstream_compaction::{UpstreamCompaction, UpstreamCompactionRequest};
+
+pub mod image_generation;

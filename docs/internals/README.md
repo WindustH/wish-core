@@ -132,3 +132,8 @@ changes require migration, even when the Rust type is under `protocol/`.
 
 Validation uses formatting, Clippy, builds, dependency-boundary checks and the separate `wish-test`
 black-box/integration suites. This project deliberately has no inline Rust unit tests.
+
+## Image services
+
+See [image generation](image-generation.md) for provider protocols, subscription authentication,
+blob storage, configuration and integration verification.

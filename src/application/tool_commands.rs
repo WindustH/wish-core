@@ -25,7 +25,11 @@ pub async fn execute(
     .filter(|capability| {
       matches!(
         capability,
-        Capability::History | Capability::WebFetch | Capability::WebSearch | Capability::AskUser
+        Capability::History
+          | Capability::WebFetch
+          | Capability::WebSearch
+          | Capability::AskUser
+          | Capability::ImageGenerate
       )
     })
     .ok_or_else(ApplicationError::not_found)?;

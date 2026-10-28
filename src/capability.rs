@@ -10,10 +10,11 @@ pub enum Capability {
   AskUser,
   WebFetch,
   WebSearch,
+  ImageGenerate,
 }
 impl Capability {
   /// Stable advertisement order for a newly built generation.
-  pub const ALL: [Self; 8] = [
+  pub const ALL: [Self; 9] = [
     Self::History,
     Self::Image,
     Self::Sessions,
@@ -22,6 +23,7 @@ impl Capability {
     Self::AskUser,
     Self::WebFetch,
     Self::WebSearch,
+    Self::ImageGenerate,
   ];
   pub fn from_tool(name: &str) -> Option<Self> {
     Some(match name {
@@ -35,6 +37,7 @@ impl Capability {
       "ask_user" => Self::AskUser,
       "web_fetch" => Self::WebFetch,
       "web_search" => Self::WebSearch,
+      "image_generate" => Self::ImageGenerate,
       _ => return None,
     })
   }
@@ -42,6 +45,7 @@ impl Capability {
     match name {
       "webfetch" => Some(Self::WebFetch),
       "websearch" => Some(Self::WebSearch),
+      "imagegen" => Some(Self::ImageGenerate),
       "askuser" => Some(Self::AskUser),
       _ => Self::from_tool(name),
     }
@@ -55,6 +59,7 @@ impl Capability {
       Self::Task => "`wish task` — task management",
       Self::WebFetch => "`wish webfetch` — read webpages",
       Self::WebSearch => "`wish websearch` — web search",
+      Self::ImageGenerate => "`wish imagegen` — generate images into session blob storage",
       Self::History => "`wish history` — search/read session history",
       Self::AskUser => "`wish askuser` — ask the user",
       _ => return None,

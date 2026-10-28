@@ -62,6 +62,12 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/directories", get(directories::list))
     .route("/provider-presets", get(|| async { Json(presets::provider_presets()) }))
     .route("/search-presets", get(|| async { Json(presets::search_presets()) }))
+    .route(
+      "/image-presets",
+      get(|| async {
+        Json(serde_json::json!({"presets": crate::application::image_generation::presets()}))
+      }),
+    )
     .route("/fetch-presets", get(|| async { Json(crate::application::fetch::presets()) }))
     .route("/fetch/providers", get(search::fetch_list))
     .route("/fetch/providers/{id}/check", post(search::fetch_check))

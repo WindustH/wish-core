@@ -37,6 +37,8 @@ pub struct SessionTools {
   pub ask_user: AskUserTool,
   web_search_on: AtomicBool,
   web_fetch_on: AtomicBool,
+  image_generate_on: AtomicBool,
+  image_generate: crate::tool::image_generate::ImageGenerateTool,
   pub web_fetch: crate::tool::web_fetch::WebFetchTool,
   pub web_search: WebSearchTool,
   pub history: HistoryTools,
@@ -53,6 +55,9 @@ impl SessionTools {
       Capability::Shell => self.shell().map(|shell| shell.get_specifications()).unwrap_or_default(),
       Capability::AskUser => vec![self.ask_user.get_specification()],
       Capability::WebFetch => vec![self.web_fetch.get_specification()],
+      Capability::ImageGenerate => {
+        vec![crate::tool::image_generate::ImageGenerateTool::specification()]
+      }
       Capability::WebSearch => vec![self.web_search.get_specification()],
     }
   }
@@ -74,6 +79,8 @@ impl SessionTools {
       ask_user: AskUserTool::new(questions_changed(slot.clone())),
       web_search_on: AtomicBool::new(false),
       web_fetch_on: AtomicBool::new(false),
+      image_generate_on: AtomicBool::new(false),
+      image_generate: make_image_generate(slot.clone()),
       web_fetch,
       web_search: WebSearchTool::new(search_backend(slot.clone()), session_id.to_owned()),
       history: HistoryTools::new(session),
@@ -111,6 +118,7 @@ impl SessionTools {
     self.ask_user_on.store(switches.ask_user, Ordering::Release);
     self.web_search_on.store(switches.web_search, Ordering::Release);
     self.web_fetch_on.store(switches.web_fetch, Ordering::Release);
+    self.image_generate_on.store(switches.image_generate, Ordering::Release);
     Ok(())
   }
   async fn execute_shell(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
@@ -322,6 +330,12 @@ impl ToolExecutor for SessionTools {
         }
         self.ask_user.execute(call, control).await
       }
+      Some(Capability::ImageGenerate) => {
+        if !self.image_generate_on.load(Ordering::Acquire) {
+          return ToolOutcome::Failed("image_generate is disabled for this session".into());
+        }
+        self.image_generate.execute(call, control).await
+      }
       Some(Capability::WebFetch) => {
         if !self.web_fetch_on.load(Ordering::Acquire) {
           return ToolOutcome::Failed("web_fetch is not enabled for this session".into());
@@ -481,4 +495,23 @@ fn make_fetch(
     }),
     directory,
   )
+}
+
+fn make_image_generate(slot: Weak<SessionSlot>) -> crate::tool::image_generate::ImageGenerateTool {
+  crate::tool::image_generate::ImageGenerateTool(Arc::new(move |request| {
+    let owner = slot.upgrade();
+    Box::pin(async move {
+      let owner = owner.ok_or("session is closed")?;
+      let app = owner.app.upgrade().ok_or("server is shutting down")?;
+      app
+        .images
+        .generate(
+          &request.prompt,
+          request.provider.as_deref(),
+          &app.get_service_accounts(),
+          &owner.image_dir,
+        )
+        .await
+    })
+  }))
 }

@@ -30,6 +30,7 @@ pub struct Config {
   /// The services `web_search` asks, and in what order.
   pub search: SearchConfig,
   pub fetch: super::fetch::FetchConfig,
+  pub image_generation: super::image_generation::ImageConfig,
   /// Where `wish skill` finds skills besides Wish's own directory, and which are off.
   pub skills: SkillsConfig,
   /// How much of the usage records is kept.
@@ -48,6 +49,7 @@ impl Config {
       .collect();
     self.resolved_search()?.validate(&providers)?;
     self.fetch.validate(&self.accounts)?;
+    self.image_generation.validate(&self.accounts)?;
     self.usage.validate()
   }
 }
@@ -258,6 +260,8 @@ impl Default for Defaults {
         mcp: true,
         web_search: true,
         web_fetch: true,
+        image_generate: false,
+        image_generate_delivery: super::session::ToolDelivery::Tool,
         skills: true,
         sessions: true,
         sessions_delivery: super::session::ToolDelivery::Command,
@@ -297,6 +301,7 @@ impl Default for Config {
       mcp: Default::default(),
       search: Default::default(),
       fetch: Default::default(),
+      image_generation: Default::default(),
       skills: SkillsConfig::default(),
       usage: UsageConfig::default(),
       defaults: Defaults::default(),

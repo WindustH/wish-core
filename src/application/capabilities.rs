@@ -63,6 +63,10 @@ tool_settings! {
   pub web_search: bool,
   #[serde(default)]
   pub web_fetch: bool,
+  #[serde(default)]
+  pub image_generate: bool,
+  #[serde(default)]
+  pub image_generate_delivery: ToolDelivery,
   /// Whether `wish skill` in the session's shell may read skills. Like `mcp`, it changes neither
   /// the tools nor the instructions, so switching it keeps the prompt cache.
   pub skills: bool,
@@ -85,6 +89,7 @@ impl ToolSwitches {
       Capability::Sessions => self.sessions,
       Capability::AskUser => self.ask_user,
       Capability::WebFetch => self.web_fetch,
+      Capability::ImageGenerate => self.image_generate,
       Capability::WebSearch => self.web_search,
     }
   }
@@ -95,6 +100,7 @@ impl ToolSwitches {
       Capability::Task => self.task_delivery,
       Capability::AskUser => self.ask_user_delivery,
       Capability::WebFetch => self.web_fetch_delivery,
+      Capability::ImageGenerate => self.image_generate_delivery,
       Capability::WebSearch => self.web_search_delivery,
       Capability::Image | Capability::Shell => ToolDelivery::Tool,
     }

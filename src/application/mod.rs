@@ -63,3 +63,5 @@ mod model_images;
 mod capabilities;
 
 mod identity;
+
+pub mod image_generation;

@@ -14,6 +14,7 @@ pub fn agent_instructions(switches: super::session::ToolSwitches) -> String {
       Capability::Sessions,
       Capability::Task,
       Capability::WebFetch,
+      Capability::ImageGenerate,
       Capability::WebSearch,
       Capability::History,
       Capability::AskUser,
@@ -120,6 +121,13 @@ pub fn delivery_notice(
       next.sessions_delivery,
     ),
     ("task", previous.shell, next.shell, previous.task_delivery, next.task_delivery),
+    (
+      "image_generate / wish imagegen",
+      previous.image_generate,
+      next.image_generate,
+      previous.image_generate_delivery,
+      next.image_generate_delivery,
+    ),
     (
       "web_fetch / wish webfetch",
       previous.web_fetch,

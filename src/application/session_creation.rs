@@ -80,6 +80,8 @@ impl App {
       mcp: true,
       web_search: false,
       web_fetch: false,
+      image_generate: delivery_defaults.image_generate,
+      image_generate_delivery: delivery_defaults.image_generate_delivery,
       skills: true,
       sessions: delivery_defaults.sessions,
       sessions_delivery: delivery_defaults.sessions_delivery,

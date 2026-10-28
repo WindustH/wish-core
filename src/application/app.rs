@@ -62,6 +62,7 @@ pub struct App {
   /// The search providers `web_search` asks.
   pub(super) search: SearchHub,
   pub(super) fetch: super::fetch::FetchHub,
+  pub(super) images: super::image_generation::ImageHub,
   pub(super) accounts: RwLock<AccountRegistry>,
 }
 
@@ -107,6 +108,7 @@ struct PreparedConfig {
   providers: Providers,
   search: PreparedSearch,
   fetch: super::fetch::PreparedFetch,
+  images: super::image_generation::PreparedImages,
   shell: ShellCommand,
 }
 
@@ -181,6 +183,7 @@ impl App {
       mcp,
       search,
       fetch: super::fetch::FetchHub::new(config.fetch.clone(), config.proxy.clone())?,
+      images: super::image_generation::ImageHub::new(&config.image_generation, &config.proxy)?,
     });
     crate::application::credentials::start_refresh_worker(&app);
     let reaper = app.clone();
@@ -320,6 +323,7 @@ impl App {
     next.validate()?;
     let search = SearchHub::prepare(&next.resolved_search()?, &next.proxy)?;
     let fetch = super::fetch::FetchHub::prepare(&next.fetch, &next.proxy)?;
+    let images = super::image_generation::ImageHub::prepare(&next.image_generation, &next.proxy)?;
     let shell = next.shell.resolve()?;
     if next.listen != current.listen
       || next.data_dir != current.data_dir
@@ -347,10 +351,10 @@ impl App {
     // Validate core budgets without creating a persistent session.
     let _ = Session::new(next.defaults.session_config())?;
     let accounts = next.build_accounts()?;
-    Ok(PreparedConfig { accounts, providers, search, fetch, shell })
+    Ok(PreparedConfig { accounts, providers, search, fetch, images, shell })
   }
   async fn apply_config(&self, prepared: PreparedConfig, config: &Config) {
-    let PreparedConfig { accounts, providers, search, fetch, shell } = prepared;
+    let PreparedConfig { accounts, providers, search, fetch, images, shell } = prepared;
     self.mcp.apply(
       config.mcp.clone(),
       config.proxy.clone(),
@@ -359,6 +363,7 @@ impl App {
     );
     self.search.apply(search);
     self.fetch.apply(fetch);
+    self.images.apply(images);
     self.management.set_stream_sample_limit(config.usage.stream_sample_limit);
     let management = self.management.clone();
     self.lifecycle.tasks.spawn(async move {

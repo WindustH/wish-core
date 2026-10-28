@@ -1,0 +1,233 @@
+[
+  {
+    "id": "openai_images",
+    "name": "OpenAI API",
+    "brand": "OpenAI",
+    "protocol": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "path": "/images/generations",
+    "model": "gpt-image-2.5-sunburst",
+    "account_presets": [
+      "openai"
+    ],
+    "parameters": {},
+    "docs_url": "https://developers.openai.com/api/docs/guides/image-generation"
+  },
+  {
+    "id": "codex_images",
+    "name": "ChatGPT / Codex",
+    "brand": "OpenAI",
+    "protocol": "codex",
+    "base_url": "https://chatgpt.com/backend-api/codex",
+    "path": "/images/generations",
+    "model": "gpt-image-2",
+    "account_presets": [
+      "openai_codex"
+    ],
+    "parameters": {},
+    "docs_url": "https://learn.chatgpt.com/docs/image-generation"
+  },
+  {
+    "id": "gemini_images",
+    "name": "Google Gemini",
+    "brand": "Google Gemini",
+    "protocol": "gemini",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta",
+    "path": "/models/{model}:generateContent",
+    "model": "gemini-3.1-flash-image-preview",
+    "account_presets": [
+      "google_gemini"
+    ],
+    "parameters": {
+      "responseModalities": [
+        "TEXT",
+        "IMAGE"
+      ]
+    },
+    "docs_url": "https://ai.google.dev/api/generate-content"
+  },
+  {
+    "id": "gemini_interactions_images",
+    "name": "Google Nano Banana",
+    "brand": "Google Gemini",
+    "protocol": "gemini_interactions",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta",
+    "path": "/interactions",
+    "model": "gemini-nano-banana-2.1",
+    "account_presets": [
+      "google_gemini"
+    ],
+    "parameters": {},
+    "docs_url": "https://ai.google.dev/gemini-api/docs/image-generation"
+  },
+  {
+    "id": "xai_images",
+    "name": "xAI Grok Imagine",
+    "brand": "xAI",
+    "protocol": "openai",
+    "base_url": "https://api.x.ai/v1",
+    "path": "/images/generations",
+    "model": "grok-imagine-image-2.0",
+    "account_presets": [
+      "xai"
+    ],
+    "parameters": {},
+    "docs_url": "https://docs.x.ai/developers/model-capabilities/images/generation"
+  },
+  {
+    "id": "together_images",
+    "name": "Together AI",
+    "brand": "Together AI",
+    "protocol": "together",
+    "base_url": "https://api.together.xyz/v1",
+    "path": "/images/generations",
+    "model": "black-forest-labs/FLUX.2-dev",
+    "account_presets": [
+      "together"
+    ],
+    "parameters": {
+      "response_format": "base64"
+    },
+    "docs_url": "https://docs.together.ai/docs/inference/images/overview"
+  },
+  {
+    "id": "siliconflow_images",
+    "name": "硅基流动 / SiliconFlow",
+    "brand": "SiliconFlow",
+    "protocol": "siliconflow",
+    "base_url": "https://api.siliconflow.cn/v1",
+    "path": "/images/generations",
+    "model": "Kwai-Kolors/Kolors",
+    "account_presets": [
+      "siliconflow_cn"
+    ],
+    "parameters": {},
+    "docs_url": "https://docs.siliconflow.cn/docs/userguide/capabilities/images"
+  },
+  {
+    "id": "seedream_images",
+    "name": "火山引擎 Seedream (LAS)",
+    "brand": "Volcengine Ark",
+    "protocol": "seedream",
+    "base_url": "https://operator.las.ap-southeast-1.volces.com/api/v1",
+    "path": "/images/generations",
+    "model": "doubao-seedream-4-5-251128",
+    "account_presets": [
+      "seedream_las"
+    ],
+    "parameters": {
+      "size": "2048x2048",
+      "response_format": "url"
+    },
+    "docs_url": "https://docs.volcengine.com/docs/lake-ai-service/image-generation-seed-ream-series-models?lang=en"
+  },
+  {
+    "id": "bfl_images",
+    "name": "Black Forest Labs",
+    "brand": "BFL",
+    "protocol": "bfl",
+    "base_url": "https://api.bfl.ai/v1",
+    "path": "/{model}",
+    "model": "flux-2-pro",
+    "account_presets": [
+      "bfl"
+    ],
+    "parameters": {},
+    "docs_url": "https://docs.bfl.ai/quick_start/generating_images"
+  },
+  {
+    "id": "fal_images",
+    "name": "fal.ai",
+    "brand": "fal",
+    "protocol": "fal",
+    "base_url": "https://queue.fal.run",
+    "path": "/{model}",
+    "model": "fal-ai/flux/schnell",
+    "account_presets": [
+      "fal"
+    ],
+    "parameters": {},
+    "docs_url": "https://fal.ai/docs/documentation/model-apis/inference/queue"
+  },
+  {
+    "id": "replicate_images",
+    "name": "Replicate",
+    "brand": "Replicate",
+    "protocol": "replicate",
+    "base_url": "https://api.replicate.com/v1",
+    "path": "/models/{model}/predictions",
+    "model": "black-forest-labs/flux-schnell",
+    "account_presets": [
+      "replicate"
+    ],
+    "parameters": {},
+    "docs_url": "https://replicate.com/docs/reference/http"
+  },
+  {
+    "id": "stability_images",
+    "name": "Stability AI",
+    "brand": "Stability",
+    "protocol": "stability",
+    "base_url": "https://api.stability.ai/v2beta",
+    "path": "/stable-image/generate/{model}",
+    "model": "core",
+    "account_presets": [
+      "stability"
+    ],
+    "parameters": {
+      "output_format": "png"
+    },
+    "docs_url": "https://docs.stability.ai/api-reference"
+  },
+  {
+    "id": "seedream_ark_images",
+    "name": "火山方舟 Seedream",
+    "brand": "Volcengine Ark",
+    "protocol": "seedream",
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "path": "/images/generations",
+    "model": "doubao-seedream-5-0-lite-260128",
+    "account_presets": [
+      "volcengine_cn"
+    ],
+    "parameters": {
+      "size": "2K",
+      "response_format": "url"
+    },
+    "docs_url": "https://docs.volcengine.com/docs/ark/image-generation-tutorial?lang=en"
+  },
+  {
+    "id": "wan_images_cn",
+    "name": "阿里云 Wan · 北京",
+    "brand": "Qwen",
+    "protocol": "wan",
+    "base_url": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/api/v1",
+    "path": "/services/aigc/multimodal-generation/generation",
+    "model": "wan2.7-image",
+    "account_presets": [
+      "qwen_workspace_cn"
+    ],
+    "parameters": {
+      "size": "2K",
+      "n": 1
+    },
+    "docs_url": "https://www.alibabacloud.com/help/en/model-studio/wan-image-generation-and-editing-api-reference"
+  },
+  {
+    "id": "wan_images_singapore",
+    "name": "阿里云 Wan · 新加坡",
+    "brand": "Qwen",
+    "protocol": "wan",
+    "base_url": "https://{workspace_id}.ap-southeast-1.maas.aliyuncs.com/api/v1",
+    "path": "/services/aigc/multimodal-generation/generation",
+    "model": "wan2.7-image",
+    "account_presets": [
+      "qwen_workspace_singapore"
+    ],
+    "parameters": {
+      "size": "2K",
+      "n": 1
+    },
+    "docs_url": "https://www.alibabacloud.com/help/en/model-studio/wan-image-generation-and-editing-api-reference"
+  }
+]
