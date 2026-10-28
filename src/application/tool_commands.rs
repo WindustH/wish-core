@@ -30,6 +30,9 @@ pub async fn execute(
           | Capability::WebSearch
           | Capability::AskUser
           | Capability::ImageGenerate
+          | Capability::VideoGenerate
+          | Capability::AudioGenerate
+          | Capability::AudioTranscribe
       )
     })
     .ok_or_else(ApplicationError::not_found)?;

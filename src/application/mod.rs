@@ -65,3 +65,9 @@ mod capabilities;
 mod identity;
 
 pub mod image_generation;
+
+pub mod media_generation;
+
+pub mod media_access;
+
+pub mod audio_transcription;

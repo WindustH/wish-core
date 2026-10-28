@@ -167,6 +167,7 @@ impl FetchHub {
               .unwrap_or(id)
               .into(),
             preset: built.config.preset.clone(),
+            kind: None,
             model: None,
             enabled: built.config.enabled,
             available: built.config.enabled

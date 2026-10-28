@@ -22,6 +22,11 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
         Some(crate::capability::Capability::History) => include_str!("help/history.txt"),
         Some(crate::capability::Capability::WebFetch) => include_str!("help/webfetch.txt"),
         Some(crate::capability::Capability::ImageGenerate) => include_str!("help/imagegen.txt"),
+        Some(
+          crate::capability::Capability::VideoGenerate
+          | crate::capability::Capability::AudioGenerate,
+        ) => include_str!("help/mediagen.txt"),
+        Some(crate::capability::Capability::AudioTranscribe) => include_str!("help/asr.txt"),
         Some(crate::capability::Capability::WebSearch) => include_str!("help/websearch.txt"),
         _ => include_str!("help/askuser.txt"),
       }
@@ -36,7 +41,11 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
   } else {
     let arguments: Value = match args.first().map(String::as_str) {
       Some("--list-providers")
-        if args.len() == 1 && matches!(name, "websearch" | "webfetch" | "imagegen") =>
+        if args.len() == 1
+          && matches!(
+            name,
+            "websearch" | "webfetch" | "imagegen" | "videogen" | "audiogen" | "asr"
+          ) =>
       {
         json!({"action":"list_providers"})
       }
@@ -56,7 +65,7 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
           json!({"sequence":value.parse::<u64>().map_err(|_| (2, "sequence must be a non-negative integer; use wish history --help".into()))?})
         }
         "websearch" => json!({"query":args.join(" ")}),
-        "imagegen" => json!({"prompt":args.join(" ")}),
+        "imagegen" | "videogen" => json!({"prompt":args.join(" ")}),
         "askuser" if args.len() == 1 => {
           serde_json::from_str(value).map_err(|e| (2, e.to_string()))?
         }

@@ -11,10 +11,13 @@ pub enum Capability {
   WebFetch,
   WebSearch,
   ImageGenerate,
+  VideoGenerate,
+  AudioGenerate,
+  AudioTranscribe,
 }
 impl Capability {
   /// Stable advertisement order for a newly built generation.
-  pub const ALL: [Self; 9] = [
+  pub const ALL: [Self; 12] = [
     Self::History,
     Self::Image,
     Self::Sessions,
@@ -24,6 +27,9 @@ impl Capability {
     Self::WebFetch,
     Self::WebSearch,
     Self::ImageGenerate,
+    Self::VideoGenerate,
+    Self::AudioGenerate,
+    Self::AudioTranscribe,
   ];
   pub fn from_tool(name: &str) -> Option<Self> {
     Some(match name {
@@ -38,6 +44,9 @@ impl Capability {
       "web_fetch" => Self::WebFetch,
       "web_search" => Self::WebSearch,
       "image_generate" => Self::ImageGenerate,
+      "video_generate" => Self::VideoGenerate,
+      "audio_generate" => Self::AudioGenerate,
+      "audio_transcribe" => Self::AudioTranscribe,
       _ => return None,
     })
   }
@@ -46,6 +55,9 @@ impl Capability {
       "webfetch" => Some(Self::WebFetch),
       "websearch" => Some(Self::WebSearch),
       "imagegen" => Some(Self::ImageGenerate),
+      "videogen" => Some(Self::VideoGenerate),
+      "audiogen" => Some(Self::AudioGenerate),
+      "asr" => Some(Self::AudioTranscribe),
       "askuser" => Some(Self::AskUser),
       _ => Self::from_tool(name),
     }
@@ -60,6 +72,13 @@ impl Capability {
       Self::WebFetch => "`wish webfetch` — read webpages",
       Self::WebSearch => "`wish websearch` — web search",
       Self::ImageGenerate => "`wish imagegen` — generate images into session blob storage",
+      Self::VideoGenerate => {
+        "`wish videogen` — generate video; discover providers and recover jobs"
+      }
+      Self::AudioGenerate => {
+        "`wish audiogen` — generate speech, music or sound effects; discover providers"
+      }
+      Self::AudioTranscribe => "`wish asr` — transcribe session audio/video files",
       Self::History => "`wish history` — search/read session history",
       Self::AskUser => "`wish askuser` — ask the user",
       _ => return None,

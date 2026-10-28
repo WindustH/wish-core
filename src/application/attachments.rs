@@ -28,16 +28,34 @@ pub async fn upload(app: &Arc<App>, owner: &str, body: &[u8]) -> Result<Blob, Ap
   require_owner(app, owner).await?;
   Ok(blobs::save_upload(&app.data_dir.blobs(owner), body).await?)
 }
-pub async fn download(
-  app: &Arc<App>,
-  owner: &str,
-  blob: &str,
-) -> Result<Vec<u8>, ApplicationError> {
+pub struct BlobReader {
+  pub file: tokio::fs::File,
+  pub length: u64,
+  pub mime_type: String,
+}
+pub async fn open(app: &Arc<App>, owner: &str, blob: &str) -> Result<BlobReader, ApplicationError> {
+  use tokio::io::{AsyncReadExt, AsyncSeekExt};
   require_owner(app, owner).await?;
   if !blobs::is_blob_id(blob) {
     return Err(ApplicationError::not_found());
   }
-  Ok(blobs::read(&app.data_dir.blobs(owner), blob).await?)
+  let mut file =
+    tokio::fs::File::open(app.data_dir.blobs(owner).join(blob)).await.map_err(|error| {
+      if error.kind() == std::io::ErrorKind::NotFound {
+        ApplicationError::not_found()
+      } else {
+        ApplicationError::internal(error)
+      }
+    })?;
+  let length = file.metadata().await.map_err(ApplicationError::internal)?.len();
+  let mut prefix = [0; 512];
+  let count = file.read(&mut prefix).await.map_err(ApplicationError::internal)?;
+  file.rewind().await.map_err(ApplicationError::internal)?;
+  let mime_type = crate::utils::image_format::supported_mime(&prefix[..count])
+    .or_else(|| crate::storage::media::mime(&prefix[..count]))
+    .unwrap_or("application/octet-stream")
+    .into();
+  Ok(BlobReader { file, length, mime_type })
 }
 pub async fn metadata(
   app: &Arc<App>,

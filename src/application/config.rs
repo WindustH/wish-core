@@ -31,6 +31,9 @@ pub struct Config {
   pub search: SearchConfig,
   pub fetch: super::fetch::FetchConfig,
   pub image_generation: super::image_generation::ImageConfig,
+  pub video_generation: super::media_generation::MediaConfig,
+  pub audio_generation: super::media_generation::MediaConfig,
+  pub audio_transcription: super::media_generation::MediaConfig,
   /// Where `wish skill` finds skills besides Wish's own directory, and which are off.
   pub skills: SkillsConfig,
   /// How much of the usage records is kept.
@@ -50,6 +53,9 @@ impl Config {
     self.resolved_search()?.validate(&providers)?;
     self.fetch.validate(&self.accounts)?;
     self.image_generation.validate(&self.accounts)?;
+    self.video_generation.validate(&self.accounts, "video")?;
+    self.audio_generation.validate(&self.accounts, "audio")?;
+    self.audio_transcription.validate(&self.accounts, "transcription")?;
     self.usage.validate()
   }
 }
@@ -260,6 +266,12 @@ impl Default for Defaults {
         mcp: true,
         web_search: true,
         web_fetch: true,
+        video_generate: false,
+        video_generate_delivery: super::session::ToolDelivery::Tool,
+        audio_transcribe: false,
+        audio_transcribe_delivery: super::session::ToolDelivery::Tool,
+        audio_generate: false,
+        audio_generate_delivery: super::session::ToolDelivery::Tool,
         image_generate: false,
         image_generate_delivery: super::session::ToolDelivery::Tool,
         skills: true,
@@ -302,6 +314,9 @@ impl Default for Config {
       search: Default::default(),
       fetch: Default::default(),
       image_generation: Default::default(),
+      video_generation: Default::default(),
+      audio_generation: Default::default(),
+      audio_transcription: Default::default(),
       skills: SkillsConfig::default(),
       usage: UsageConfig::default(),
       defaults: Defaults::default(),

@@ -1,0 +1,8 @@
+Transcribe session audio/video files (32 MiB maximum).
+
+  wish asr --list-providers
+  wish asr --json '{"blob_id":"64-character-blob-id","language":"zh","diarize":true}'
+
+Optional provider pins a configured service; omit it to use configuration order.
+Returns text and full transcript JSON path with word timestamps when available.
+Interrupted requests are not automatically repeated or sent to another service.

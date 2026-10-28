@@ -16,3 +16,7 @@ pub mod task_output;
 pub mod image_generate;
 
 pub mod providers;
+
+pub mod media_generate;
+
+pub mod audio_transcribe;

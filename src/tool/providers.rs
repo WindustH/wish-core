@@ -10,6 +10,8 @@ pub struct Provider {
   pub name: String,
   pub preset: String,
   pub model: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub kind: Option<String>,
   pub enabled: bool,
   /// Local configuration/credential readiness, not a remote health or quota check.
   pub available: bool,
@@ -47,7 +49,14 @@ pub fn prepare(arguments: &Value, schema: &Value) -> Result<Value, String> {
       return Err("list_providers accepts only action; omit execution arguments".into());
     }
     "run" => {}
-    _ => return Err("action must be run or list_providers".into()),
+    action
+      if schema["properties"]["action"]["enum"]
+        .as_array()
+        .is_some_and(|values| values.iter().any(|v| v == action)) =>
+    {
+      return Ok(args);
+    }
+    _ => return Err("unsupported action; use the tool action enum".into()),
   }
   object.remove("action");
   Ok(args)

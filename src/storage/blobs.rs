@@ -56,18 +56,9 @@ pub async fn save_upload(directory: &Path, body: &[u8]) -> Result<Blob, Reposito
 
 /// The image formats a model reads, by their magic bytes; anything else is octet-stream.
 fn sniff_mime_type(bytes: &[u8]) -> &'static str {
-  crate::utils::image_format::supported_mime(bytes).unwrap_or("application/octet-stream")
-}
-
-/// A blob's bytes.
-pub async fn read(directory: &Path, id: &str) -> Result<Vec<u8>, RepositoryError> {
-  tokio::fs::read(directory.join(id)).await.map_err(|error| {
-    if error.kind() == std::io::ErrorKind::NotFound {
-      RepositoryError::not_found()
-    } else {
-      RepositoryError::internal(error)
-    }
-  })
+  crate::utils::image_format::supported_mime(bytes)
+    .or_else(|| super::media::mime(bytes))
+    .unwrap_or("application/octet-stream")
 }
 
 /// An upload's description; one without a readable description is not found.

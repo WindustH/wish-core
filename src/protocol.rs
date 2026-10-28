@@ -90,3 +90,5 @@ pub use token_count::{TokenCount, TokenCountProtocol};
 pub use upstream_compaction::{UpstreamCompaction, UpstreamCompactionRequest};
 
 pub mod image_generation;
+
+pub mod media_generation;

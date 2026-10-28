@@ -71,3 +71,5 @@ pub enum StorageError {
 }
 
 pub mod mcp_files;
+
+pub mod media;

@@ -245,6 +245,7 @@ impl SearchHub {
           id: id.clone(),
           name: built.preset["name"].as_str().unwrap_or(id).into(),
           preset: built.config.preset.clone(),
+          kind: None,
           model: built.preset["model"].as_str().map(str::to_owned),
           enabled: built.config.enabled,
           available: usable(built, accounts).is_ok(),

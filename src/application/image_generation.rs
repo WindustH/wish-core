@@ -188,6 +188,7 @@ impl ImageHub {
           id: id.clone(),
           name: built.spec.name.clone(),
           preset: built.config.preset.clone(),
+          kind: None,
           model: Some(built.config.model.clone()),
           enabled: built.config.enabled,
           available: built.config.enabled

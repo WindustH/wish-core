@@ -67,6 +67,12 @@ tool_settings! {
   pub image_generate: bool,
   #[serde(default)]
   pub image_generate_delivery: ToolDelivery,
+  #[serde(default)] pub video_generate: bool,
+  #[serde(default)] pub video_generate_delivery: ToolDelivery,
+  #[serde(default)] pub audio_generate: bool,
+  #[serde(default)] pub audio_transcribe: bool,
+  #[serde(default)] pub audio_transcribe_delivery: ToolDelivery,
+  #[serde(default)] pub audio_generate_delivery: ToolDelivery,
   /// Whether `wish skill` in the session's shell may read skills. Like `mcp`, it changes neither
   /// the tools nor the instructions, so switching it keeps the prompt cache.
   pub skills: bool,
@@ -90,6 +96,9 @@ impl ToolSwitches {
       Capability::AskUser => self.ask_user,
       Capability::WebFetch => self.web_fetch,
       Capability::ImageGenerate => self.image_generate,
+      Capability::VideoGenerate => self.video_generate,
+      Capability::AudioGenerate => self.audio_generate,
+      Capability::AudioTranscribe => self.audio_transcribe,
       Capability::WebSearch => self.web_search,
     }
   }
@@ -101,6 +110,9 @@ impl ToolSwitches {
       Capability::AskUser => self.ask_user_delivery,
       Capability::WebFetch => self.web_fetch_delivery,
       Capability::ImageGenerate => self.image_generate_delivery,
+      Capability::VideoGenerate => self.video_generate_delivery,
+      Capability::AudioGenerate => self.audio_generate_delivery,
+      Capability::AudioTranscribe => self.audio_transcribe_delivery,
       Capability::WebSearch => self.web_search_delivery,
       Capability::Image | Capability::Shell => ToolDelivery::Tool,
     }
