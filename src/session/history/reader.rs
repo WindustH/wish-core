@@ -105,6 +105,7 @@ impl SessionReader {
     if before.checked_add(after).and_then(|count| count.checked_add(1)).is_none() {
       return Err(StorageError::InvalidRange.into());
     }
+    validate_limit(before + after + 1)?;
     let reader = self.clone();
     self.storage.transaction(move |tx| {
       if sequence >= tx.list_len::<HistoryRecord>(&reader.history)? {
@@ -156,9 +157,9 @@ impl SessionReader {
   }
 }
 fn validate_limit(limit: usize) -> Result<(), SessionError> {
-  if limit == 0 || limit >= i64::MAX as usize {
+  if limit == 0 || limit > 1000 {
     return Err(SessionError::InvalidHistoryQuery(
-      "limit must be positive and fit a SQLite range".into(),
+      "history limit must be between 1 and 1000".into(),
     ));
   }
   Ok(())

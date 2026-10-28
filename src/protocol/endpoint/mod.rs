@@ -161,10 +161,19 @@ impl Endpoint {
   /// fails that call rather than a request sent half-addressed.
   pub fn new(base_url: &str, path: &str, auth: AuthScheme) -> Result<Self, Error> {
     let base_url = base_url.trim();
-    if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
-      return Err(Error::Build(format!(
-        "outbound base URL `{base_url}` is not an absolute http(s) URL"
-      )));
+    let url = reqwest::Url::parse(base_url)
+      .map_err(|_| Error::Build("invalid outbound base URL".into()))?;
+    if !matches!(url.scheme(), "http" | "https")
+      || url.host_str().is_none()
+      || !url.username().is_empty()
+      || url.password().is_some()
+      || url.fragment().is_some()
+      || url.query().is_some()
+    {
+      return Err(Error::Build(
+        "outbound base URL must be http(s) with a host and no credentials, query or fragment"
+          .into(),
+      ));
     }
     if path.is_empty() {
       return Err(Error::Build("outbound path is empty".to_owned()));

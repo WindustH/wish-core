@@ -20,3 +20,5 @@ pub mod providers;
 pub mod media_generate;
 
 pub mod audio_transcribe;
+
+pub mod paid_operation;

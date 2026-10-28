@@ -73,9 +73,13 @@ impl MediaConfig {
       let account = accounts
         .get(&p.credential_id)
         .ok_or_else(|| ApplicationError::invalid("media service requires an account"))?;
-      if account.is_codex() {
+      if account
+        .preset
+        .as_deref()
+        .is_some_and(|p| !spec.account_presets.iter().any(|allowed| allowed == p))
+      {
         return Err(ApplicationError::invalid(
-          "media API requires an API account, not ChatGPT subscription credentials",
+          "account type is incompatible with this media provider",
         ));
       }
       let base = p.base_url.as_deref().filter(|v| !v.is_empty()).unwrap_or(&spec.base_url);

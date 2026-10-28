@@ -37,7 +37,7 @@ pub async fn save_upload(directory: &Path, body: &[u8]) -> Result<Blob, Reposito
   let id = blob_id(body);
   tokio::fs::create_dir_all(directory).await.map_err(RepositoryError::internal)?;
   let path = directory.join(&id);
-  tokio::fs::write(&path, body).await.map_err(RepositoryError::internal)?;
+  atomic_write(&path, body).await.map_err(RepositoryError::internal)?;
   let blob = Blob {
     id: id.clone(),
     mime_type: sniff_mime_type(body).into(),
@@ -48,9 +48,12 @@ pub async fn save_upload(directory: &Path, body: &[u8]) -> Result<Blob, Reposito
       .to_string_lossy()
       .into_owned(),
   };
-  tokio::fs::write(description_path(directory, &id), serde_json::to_vec(&blob).unwrap())
-    .await
-    .map_err(RepositoryError::internal)?;
+  atomic_write(
+    &description_path(directory, &id),
+    &serde_json::to_vec(&blob).map_err(RepositoryError::internal)?,
+  )
+  .await
+  .map_err(RepositoryError::internal)?;
   Ok(blob)
 }
 
@@ -74,14 +77,41 @@ pub fn save_image(directory: &Path, data: &str) -> Result<PathBuf, RepositoryErr
   let bytes = base64::engine::general_purpose::STANDARD
     .decode(data)
     .map_err(|e| RepositoryError::Invalid(format!("invalid image: {e}")))?;
-  let path = directory.join(blob_id(&bytes));
+  save_image_bytes(directory, &bytes)
+}
+
+pub fn save_image_bytes(directory: &Path, bytes: &[u8]) -> Result<PathBuf, RepositoryError> {
+  let path = directory.join(blob_id(bytes));
+  // Content-addressed blobs are immutable; avoid rewriting every image on every model call.
+  if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == bytes.len() as u64) {
+    return Ok(path);
+  }
   let temporary = directory.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
   std::fs::create_dir_all(directory)
-    .and_then(|_| std::fs::write(&temporary, &bytes))
+    .and_then(|_| std::fs::write(&temporary, bytes))
     .and_then(|_| std::fs::rename(&temporary, &path))
     .map_err(|error| {
       let _ = std::fs::remove_file(&temporary);
       RepositoryError::Invalid(format!("save session image: {error}"))
     })?;
   Ok(path)
+}
+
+/// Publish complete bytes without truncating an existing content-addressed file.
+pub async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+  use tokio::io::AsyncWriteExt;
+  let temporary = path.with_file_name(format!(".{}.tmp", uuid::Uuid::new_v4()));
+  // Guard also removes abandoned files on ordinary cancellation.
+  struct Remove(std::path::PathBuf);
+  impl Drop for Remove {
+    fn drop(&mut self) {
+      let _ = std::fs::remove_file(&self.0);
+    }
+  }
+  let guard = Remove(temporary);
+  let mut file = tokio::fs::File::create(&guard.0).await?;
+  file.write_all(bytes).await?;
+  file.sync_all().await?;
+  drop(file);
+  tokio::fs::rename(&guard.0, path).await
 }

@@ -49,7 +49,7 @@ impl SessionConfig {
     }
   }
   /// Refuses settings no session can run with.
-  pub(in crate::session) fn validate(&self) -> Result<(), SessionError> {
+  pub(crate) fn validate(&self) -> Result<(), SessionError> {
     match &self.compaction {
       Some(compaction) => compaction.validate(),
       None => Ok(()),

@@ -49,6 +49,7 @@ impl App {
       }
     }
     self.get_provider(&input.provider)?;
+    input.config.validate()?;
     if !input.cwd.is_absolute() {
       return Err(ApplicationError::invalid("cwd must be absolute"));
     }
@@ -155,6 +156,8 @@ impl App {
     let initial: Vec<_> = input.initial_messages.into_iter().zip(origins).collect();
     let storage = self.storage.clone();
     let id = descriptor.id.clone();
+    let blob_directory = self.data_dir.blobs(&id);
+    let shell_directory = self.data_dir.shell(&id);
     let session = blocking(move || {
       Ok(Session::create_initialized(
         storage,
@@ -165,7 +168,14 @@ impl App {
         first_message,
       )?)
     })
-    .await?;
+    .await;
+    let session = match session {
+      Ok(session) => session,
+      Err(error) => {
+        let _ = tokio::fs::remove_dir_all(&blob_directory).await;
+        return Err(error);
+      }
+    };
     let id = descriptor.id.clone();
     let slot = match self.open_slot(descriptor, session).await {
       Ok(slot) => slot,
@@ -180,6 +190,9 @@ impl App {
         .await
         {
           eprintln!("rolling back session initialization: {cleanup}");
+        } else {
+          let _ = tokio::fs::remove_dir_all(&blob_directory).await;
+          let _ = tokio::fs::remove_dir_all(&shell_directory).await;
         }
         return Err(error);
       }
@@ -200,6 +213,9 @@ impl App {
         .await
         {
           eprintln!("rolling back session placement: {cleanup}");
+        } else {
+          let _ = tokio::fs::remove_dir_all(&blob_directory).await;
+          let _ = tokio::fs::remove_dir_all(&shell_directory).await;
         }
         return Err(error);
       }

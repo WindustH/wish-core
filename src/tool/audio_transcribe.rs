@@ -5,8 +5,20 @@ use crate::{
   utils::control::ExecutionControl,
 };
 use serde_json::json;
+pub type Backend = std::sync::Arc<
+  dyn Fn(
+      serde_json::Value,
+      String,
+    ) -> std::pin::Pin<
+      Box<
+        dyn std::future::Future<Output = Result<serde_json::Value, super::paid_operation::Failure>>
+          + Send,
+      >,
+    > + Send
+    + Sync,
+>;
 pub struct AudioTranscribeTool {
-  pub backend: super::media_generate::Backend,
+  pub backend: Backend,
   pub providers: super::providers::Listing,
 }
 impl AudioTranscribeTool {
@@ -29,7 +41,7 @@ impl ToolExecutor for AudioTranscribeTool {
         "ASR interrupted; upstream may have processed the file. Do not automatically repeat it."
           .into(),
       ),
-      Some(Err(e)) => ToolOutcome::Failed(e),
+      Some(Err(e)) => e.outcome(),
       Some(Ok(output)) => ToolOutcome::Report {
         text: output.to_string(),
         metadata: output.clone(),

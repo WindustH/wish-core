@@ -205,7 +205,7 @@ impl ImageHub {
     only: Option<&str>,
     accounts: &AccountRegistry,
     directory: &Path,
-  ) -> Result<Value, String> {
+  ) -> Result<Value, crate::tool::paid_operation::Failure> {
     if prompt.trim().is_empty() || prompt.len() > 32 * 1024 {
       return Err("prompt must contain 1–32768 bytes".into());
     }
@@ -233,6 +233,7 @@ impl ImageHub {
       return Err("image account has no API key or active login".into());
     }
     // Never retry/fail over a paid POST: a disconnected response does not prove generation failed.
+    let submitted = std::sync::atomic::AtomicBool::new(false);
     let job = async {
       let spec = &service.spec;
       let mut parameters = spec.parameters.clone();
@@ -263,6 +264,7 @@ impl ImageHub {
       let mut call = initial.clone();
       let mut result_url = None;
       let images = loop {
+        submitted.store(true, std::sync::atomic::Ordering::Relaxed);
         let reply=service.transport.execute(&call).await.map_err(|_|"Image request interrupted; upstream outcome may be unknown. Do not automatically submit it again.".to_string())?;
         let body = crate::protocol::http_error::read_provider_json(reply, "image_generation")
           .map_err(|e| e.to_string())?;
@@ -301,9 +303,16 @@ impl ImageHub {
         let blob = blobs::save_upload(directory, &bytes).await.map_err(|e| e.to_string())?;
         stored.push(blob);
       }
-      Ok(json!({"provider":id,"model":service.config.model,"images":stored}))
+      Ok::<Value, String>(json!({"provider":id,"model":service.config.model,"images":stored}))
     };
-    tokio::time::timeout(Duration::from_secs(600),job).await.map_err(|_|"Image generation timed out; upstream may still be running. Do not automatically submit it again.".to_string())?
+    match tokio::time::timeout(Duration::from_secs(600), job).await {
+      Ok(Ok(output)) => Ok(output),
+      Ok(Err(error)) if !submitted.load(std::sync::atomic::Ordering::Relaxed) => Err(error.into()),
+      Ok(Err(error)) => Err(crate::tool::paid_operation::Failure::Unknown(error)),
+      Err(_) => {
+        Err(crate::tool::paid_operation::Failure::Unknown("Image generation timed out".into()))
+      }
+    }
   }
 }
 async fn download(transport: &ReqwestTransport, url: &str) -> Result<Vec<u8>, String> {

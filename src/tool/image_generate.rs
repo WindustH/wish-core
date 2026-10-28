@@ -16,7 +16,11 @@ pub struct ImageRequest {
   pub provider: Option<String>,
 }
 pub type Backend = Arc<
-  dyn Fn(ImageRequest) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> + Send + Sync,
+  dyn Fn(
+      ImageRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, super::paid_operation::Failure>> + Send>>
+    + Send
+    + Sync,
 >;
 pub struct ImageGenerateTool(pub Backend, pub super::providers::Listing);
 impl ImageGenerateTool {
@@ -43,7 +47,7 @@ impl ToolExecutor for ImageGenerateTool {
         "Image request cancelled; upstream may still complete it. Do not automatically resubmit."
           .into(),
       ),
-      Some(Err(e)) => ToolOutcome::Failed(e),
+      Some(Err(e)) => e.outcome(),
       Some(Ok(output)) => ToolOutcome::Report {
         text: format!("Generated images saved in Wish blob storage:\n{output}"),
         metadata: output.clone(),

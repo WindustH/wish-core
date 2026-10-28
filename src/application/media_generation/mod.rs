@@ -7,7 +7,6 @@ use super::{
 use crate::{
   protocol::{
     attempt::{Call, Limits, Method, ReplyStream, Transport},
-    endpoint::Draft,
     media_generation::{MediaKind, MediaOptions, MediaProtocol},
   },
   storage::{blobs, media},
@@ -29,27 +28,43 @@ use config::preset;
 pub use config::{MediaConfig, MediaProvider, presets};
 pub use jobs::Request;
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum TransferProfile {
+  Status,
+  Artifact,
+  Transcription,
+}
+
 pub(super) struct State {
   pub(super) config: MediaConfig,
   pub(super) proxy: ProxyConfig,
+  transports: std::sync::Mutex<BTreeMap<(bool, TransferProfile), ReqwestTransport>>,
 }
 pub struct PreparedMedia(State);
 pub struct MediaHub {
   pub(super) state: RwLock<Arc<State>>,
   pub(super) permits: tokio::sync::Semaphore,
-  // Bounded striped locks prevent two status/run requests from mutating the same job.
-  locks: Vec<tokio::sync::Mutex<()>>,
+  // Only live requests retain a per-job lock; unrelated jobs never share a lock.
+  locks: std::sync::Mutex<BTreeMap<std::path::PathBuf, std::sync::Weak<tokio::sync::Mutex<()>>>>,
 }
 impl MediaHub {
   pub fn new(config: &MediaConfig, proxy: &ProxyConfig) -> Self {
     Self {
-      state: RwLock::new(Arc::new(State { config: config.clone(), proxy: proxy.clone() })),
+      state: RwLock::new(Arc::new(State {
+        config: config.clone(),
+        proxy: proxy.clone(),
+        transports: Default::default(),
+      })),
       permits: tokio::sync::Semaphore::new(2),
-      locks: (0..64).map(|_| tokio::sync::Mutex::new(())).collect(),
+      locks: Default::default(),
     }
   }
   pub fn prepare(config: &MediaConfig, proxy: &ProxyConfig) -> PreparedMedia {
-    PreparedMedia(State { config: config.clone(), proxy: proxy.clone() })
+    PreparedMedia(State {
+      config: config.clone(),
+      proxy: proxy.clone(),
+      transports: Default::default(),
+    })
   }
   pub fn apply(&self, prepared: PreparedMedia) {
     *self.state.write().unwrap() = Arc::new(prepared.0);
@@ -80,5 +95,41 @@ impl MediaHub {
         })
         .collect(),
     }
+  }
+}
+
+impl State {
+  pub(super) fn transport(
+    &self,
+    proxy_enabled: bool,
+    kind: TransferProfile,
+  ) -> Result<ReqwestTransport, String> {
+    let mut clients = self.transports.lock().unwrap();
+    if let Some(client) = clients.get(&(proxy_enabled, kind)) {
+      return Ok(client.clone());
+    }
+    let limits = match kind {
+      TransferProfile::Status => Limits {
+        total: Duration::from_secs(60),
+        max_response_bytes: 2 * 1024 * 1024,
+        ..Default::default()
+      },
+      TransferProfile::Artifact => Limits {
+        total: Duration::from_secs(600),
+        first_byte: Duration::from_secs(300),
+        max_response_bytes: 512 * 1024 * 1024,
+        ..Default::default()
+      },
+      TransferProfile::Transcription => Limits {
+        total: Duration::from_secs(600),
+        first_byte: Duration::from_secs(300),
+        max_response_bytes: 16 * 1024 * 1024,
+        ..Default::default()
+      },
+    };
+    let client =
+      ReqwestTransport::new(limits, self.proxy.policy(proxy_enabled)).map_err(|e| e.to_string())?;
+    clients.insert((proxy_enabled, kind), client.clone());
+    Ok(client)
   }
 }

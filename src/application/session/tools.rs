@@ -225,7 +225,7 @@ impl SessionTools {
     };
     for block in &input {
       if let ContentBlock::Image { data_base64, .. } = block {
-        let (directory, data) = (slot.image_dir.clone(), data_base64.clone());
+        let (directory, data) = (slot.blob_dir.clone(), data_base64.clone());
         let saved = blocking(move || {
           blobs::save_image(&directory, &data).map_err(ApplicationError::internal)
         })
@@ -559,7 +559,7 @@ fn make_image_generate(slot: Weak<SessionSlot>) -> crate::tool::image_generate::
             &request.prompt,
             request.provider.as_deref(),
             &app.get_service_accounts(),
-            &owner.image_dir,
+            &owner.blob_dir,
           )
           .await
       })
@@ -608,7 +608,7 @@ fn make_media_generate(
         let app = owner.app.upgrade().ok_or("server is shutting down")?;
         let request = serde_json::from_value(arguments).map_err(|e| e.to_string())?;
         let hub = if video { &app.videos } else { &app.audio };
-        hub.execute(request, &call_id, &owner.image_dir, &app.get_service_accounts(), video).await
+        hub.execute(request, &call_id, &owner.blob_dir, &app.get_service_accounts(), video).await
       })
     }),
   }
@@ -624,7 +624,7 @@ fn make_asr(slot: Weak<SessionSlot>) -> crate::tool::audio_transcribe::AudioTran
         let slot = slot.ok_or("session is closed")?;
         let app = slot.app.upgrade().ok_or("server is shutting down")?;
         let request = serde_json::from_value(arguments).map_err(|e| e.to_string())?;
-        app.asr.transcribe(request, &slot.image_dir, &app.get_service_accounts()).await
+        app.asr.transcribe(request, &slot.blob_dir, &app.get_service_accounts()).await
       })
     }),
   }

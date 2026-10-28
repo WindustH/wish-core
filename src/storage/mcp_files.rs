@@ -4,14 +4,16 @@ use std::path::Path;
 /// Saves a binary content block of a result - an image, audio, a resource's bytes - as a file, and
 /// puts its path where the data was, so neither the bridge nor the output carries base64.
 pub fn store_binary_content(result: &mut Value, directory: &Path) -> std::io::Result<()> {
-  let save = |item: &mut Map<String, Value>, field: &str| -> std::io::Result<()> {
+  let mut encoded_total = 0usize;
+  let mut save = |item: &mut Map<String, Value>, field: &str| -> std::io::Result<()> {
     let Some(data) = item.get(field).and_then(Value::as_str) else { return Ok(()) };
     use base64::Engine;
     const MAX_ENCODED_BYTES: usize = 128 * 1024 * 1024;
-    if data.len() > MAX_ENCODED_BYTES {
+    encoded_total = encoded_total.saturating_add(data.len());
+    if encoded_total > MAX_ENCODED_BYTES {
       return Err(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
-        "MCP binary block exceeds 128 MiB encoded limit",
+        "MCP binary result exceeds 128 MiB encoded limit",
       ));
     }
     let bytes = base64::engine::general_purpose::STANDARD
@@ -34,7 +36,13 @@ pub fn store_binary_content(result: &mut Value, directory: &Path) -> std::io::Re
     use sha2::Digest;
     let path = directory.join(format!("{:x}{extension}", sha2::Sha256::digest(&bytes)));
     std::fs::create_dir_all(directory)?;
-    std::fs::write(&path, &bytes)?;
+    let temporary = directory.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    if let Err(error) =
+      std::fs::write(&temporary, &bytes).and_then(|_| std::fs::rename(&temporary, &path))
+    {
+      let _ = std::fs::remove_file(temporary);
+      return Err(error);
+    }
     item.remove(field);
     item.insert("path".into(), json!(path));
     Ok(())

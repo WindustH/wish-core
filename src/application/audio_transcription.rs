@@ -1,20 +1,12 @@
 //! ASR uses the same configured media accounts/order, but a separate input and result contract.
 use super::{
   accounts::AccountRegistry,
-  config::ProxyConfig,
-  media_generation::{MediaConfig, MediaHub, presets},
+  media_generation::{MediaHub, State, TransferProfile, presets},
 };
-use crate::{
-  protocol::{
-    attempt::{Limits, Transport},
-    endpoint::{AuthScheme, Draft, Endpoint},
-  },
-  storage::blobs,
-  transport::ReqwestTransport,
-};
+use crate::{protocol::attempt::Transport, storage::blobs};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{path::Path, time::Duration};
+use std::path::Path;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
@@ -32,20 +24,20 @@ impl MediaHub {
     request: Request,
     directory: &Path,
     accounts: &AccountRegistry,
-  ) -> Result<Value, String> {
+  ) -> Result<Value, crate::tool::paid_operation::Failure> {
     let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
     let state = self.state.read().unwrap().clone();
-    execute(&state.config, &state.proxy, request, directory, accounts).await
+    execute(&state, request, directory, accounts).await
   }
 }
 async fn execute(
-  config: &MediaConfig,
-  proxy: &ProxyConfig,
+  state: &State,
   request: Request,
   directory: &Path,
   accounts: &AccountRegistry,
-) -> Result<Value, String> {
+) -> Result<Value, crate::tool::paid_operation::Failure> {
   use tokio::io::AsyncReadExt;
+  let config = &state.config;
   if !blobs::is_blob_id(&request.blob_id) {
     return Err("blob_id must identify an audio/video file in this session".into());
   }
@@ -101,53 +93,33 @@ async fn execute(
   }
   let mime = crate::storage::media::mime(&bytes)
     .ok_or("ASR input must be a supported audio/video container")?;
-  let boundary = format!("wish-{}", uuid::Uuid::new_v4());
-  let mut body = Vec::new();
-  let mut fields = vec![
-    ("model_id", service.model.clone()),
-    ("diarize", request.diarize.to_string()),
-    ("timestamps_granularity", "word".into()),
-  ];
-  if let Some(language) = request.language {
-    fields.push(("language_code", language));
-  }
-  for (name, value) in fields {
-    body.extend_from_slice(
-      format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n")
-        .as_bytes(),
-    );
-  }
-  body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"input\"\r\nContent-Type: {mime}\r\n\r\n").as_bytes());
-  body.extend_from_slice(&bytes);
-  drop(bytes);
-  body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-  let draft = Draft::post(
-    None,
-    vec![("content-type".into(), format!("multipart/form-data; boundary={boundary}"))],
-    body,
-  );
-  let base = service.base_url.as_deref().filter(|s| !s.is_empty()).unwrap_or(&spec.base_url);
-  let call = Endpoint::new(base, "/v1/speech-to-text", AuthScheme::Header("xi-api-key"))
-    .map_err(|e| e.to_string())?
-    .build_call(draft, credentials, crate::utils::time::unix_seconds())
+  let (route, draft) = spec
+    .protocol
+    .transcription(&service.model, &bytes, mime, request.language.as_deref(), request.diarize)
     .map_err(|e| e.to_string())?;
-  let transport = ReqwestTransport::new(
-    Limits {
-      first_byte: Duration::from_secs(300),
-      total: Duration::from_secs(600),
-      max_response_bytes: 16 * 1024 * 1024,
-      ..Default::default()
-    },
-    proxy.policy(service.proxy_enabled),
-  )
-  .map_err(|e| e.to_string())?;
-  let reply=transport.execute(&call).await.map_err(|_|"ASR connection failed; upstream may have processed the file. Do not automatically repeat the paid request.")?;
+  drop(bytes);
+  let base = service.base_url.as_deref().filter(|s| !s.is_empty()).unwrap_or(&spec.base_url);
+  let call = spec.protocol.call(base, &route, credentials, draft).map_err(|e| e.to_string())?;
+  let transport = state.transport(service.proxy_enabled, TransferProfile::Transcription)?;
+  use crate::tool::paid_operation::Failure;
+  let reply =
+    transport.execute(&call).await.map_err(|_| Failure::Unknown("ASR connection failed".into()))?;
   if !reply.is_success() {
-    return Err(format!("ASR HTTP {}; no other provider was tried", reply.status));
+    let message = format!("ASR HTTP {}; no other provider was tried", reply.status);
+    return Err(if reply.status >= 500 {
+      Failure::Unknown(message)
+    } else {
+      Failure::Rejected(message)
+    });
   }
-  let output: Value = serde_json::from_slice(&reply.body).map_err(|_| "invalid ASR reply")?;
-  let text = output["text"].as_str().ok_or("ASR reply has no transcript")?;
-  let artifact = blobs::save_upload(directory, &reply.body).await.map_err(|e| e.to_string())?;
+  let output: Value = serde_json::from_slice(&reply.body)
+    .map_err(|_| Failure::Unknown("invalid ASR reply".into()))?;
+  let text = output["text"]
+    .as_str()
+    .ok_or_else(|| Failure::Unknown("ASR reply has no transcript".into()))?;
+  let artifact = blobs::save_upload(directory, &reply.body)
+    .await
+    .map_err(|e| Failure::Unknown(e.to_string()))?;
   Ok(
     json!({"provider":selected,"model":service.model,"language":output["language_code"],"text":text.chars().take(32_000).collect::<String>(),"truncated":text.chars().count()>32_000,"transcript":artifact,"format":"json","word_timestamps":output["words"].as_array().is_some_and(|a|!a.is_empty())}),
   )

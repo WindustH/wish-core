@@ -177,13 +177,56 @@ fn release_unreferenced_files(
 ) -> std::io::Result<(u64, u64)> {
   let blobs = data_dir.blobs(id);
   let executions = data_dir.shell(id);
-  let resources: Vec<_> = names
+  let mut job_resources = Vec::new();
+  let mut retained_artifacts = HashSet::new();
+  if let Ok(entries) = std::fs::read_dir(blobs.join(".media-jobs")) {
+    for entry in entries.flatten() {
+      let path = entry.path();
+      if path.extension().is_none_or(|ext| ext != "json") {
+        continue;
+      }
+      let Ok(bytes) = std::fs::read(&path) else {
+        continue;
+      };
+      let Ok(job) = serde_json::from_slice::<Value>(&bytes) else {
+        continue;
+      };
+      let terminal =
+        matches!(job["phase"].as_str(), Some("succeeded" | "failed" | "outcome_unknown"));
+      if terminal && job["id"].as_str().is_some_and(|id| names.contains(id)) {
+        job_resources.push(ResourceFiles::File { path, companions: vec![] });
+      } else if let Some(artifacts) = job["artifacts"].as_array() {
+        for artifact in artifacts {
+          if let Some(id) = artifact["id"].as_str() {
+            retained_artifacts.insert(id.to_owned());
+          }
+        }
+      }
+    }
+  }
+  // MCP results use hash.ext rather than the regular blob directory.
+  if let Ok(entries) = std::fs::read_dir(data_dir.mcp_files(id)) {
+    for entry in entries.flatten() {
+      let path = entry.path();
+      if path.file_stem().and_then(|s| s.to_str()).is_some_and(|id| names.contains(id)) {
+        job_resources.push(ResourceFiles::File { path, companions: vec![] });
+      }
+    }
+  }
+  let mut resources: Vec<_> = names
     .iter()
     .filter_map(|name| {
-      if is_blob_id(name) {
+      if is_blob_id(name) && !retained_artifacts.contains(name) {
         Some(ResourceFiles::File {
           path: blobs.join(name),
           companions: vec![description_path(&blobs, name)],
+        })
+      } else if let Some(snapshot) =
+        name.strip_prefix("snapshot:").filter(|id| uuid::Uuid::parse_str(id).is_ok())
+      {
+        Some(ResourceFiles::File {
+          path: executions.join("web-fetch").join(format!("{snapshot}.json")),
+          companions: vec![],
         })
       } else if is_execution_id(name) && !shell.is_some_and(|shell| shell.is_running(name)) {
         Some(ResourceFiles::Directory { path: executions.join(name) })
@@ -192,6 +235,7 @@ fn release_unreferenced_files(
       }
     })
     .collect();
+  resources.extend(job_resources);
   let released = release_resources(&resources, apply)?;
   Ok((released.resources, released.bytes))
 }

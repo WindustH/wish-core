@@ -31,18 +31,18 @@ pub struct SessionModel {
   provider: Arc<Provider>,
   client: ModelClient,
   /// The session's blobs, where its images are saved for the model to be pointed at.
-  image_dir: PathBuf,
+  blob_dir: PathBuf,
   /// Set once the upstream refused an image.
   rejected: AtomicBool,
   instruction_observer: Option<super::model_observation::InstructionObserver>,
 }
 impl SessionModel {
   /// A model calling through `client`, the provider's own dressed for the session.
-  pub fn new(provider: Arc<Provider>, image_dir: PathBuf, client: ModelClient) -> Self {
+  pub fn new(provider: Arc<Provider>, blob_dir: PathBuf, client: ModelClient) -> Self {
     Self {
       provider,
       client,
-      image_dir,
+      blob_dir,
       rejected: AtomicBool::new(false),
       instruction_observer: None,
     }
@@ -73,16 +73,16 @@ impl SessionModel {
     let mut request = request.clone();
     compaction_item::project(&mut request.conversation, &self.provider.id);
     // File writes run outside the async runtime workers; validation below performs no I/O.
-    let (mut messages, model, provider, image_dir, rejected) = (
+    let (mut messages, model, provider, blob_dir, rejected) = (
       request.conversation,
       request.model.clone(),
       self.provider.clone(),
-      self.image_dir.clone(),
+      self.blob_dir.clone(),
       self.rejected.load(Ordering::Relaxed),
     );
     let (conversation, images) = crate::utils::blocking::io(move || {
       let models = &provider.config.models;
-      project_images(models, &model, &image_dir, rejected, &mut messages, save)
+      project_images(models, &model, &blob_dir, rejected, &mut messages, save)
         .map(|images| (messages, images))
     })
     .await
@@ -126,7 +126,7 @@ impl ModelCaller for SessionModel {
     project_images(
       models,
       &request.model,
-      &self.image_dir,
+      &self.blob_dir,
       rejected,
       &mut request.conversation,
       false,

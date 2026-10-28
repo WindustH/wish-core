@@ -205,7 +205,11 @@ impl Config {
             .fetch
             .providers
             .values()
-            .any(|service| service.enabled && service.credential_id.as_ref() == Some(id));
+            .any(|service| service.enabled && service.credential_id.as_ref() == Some(id))
+          || self.image_generation.providers.values().any(|s| s.enabled && &s.credential_id == id)
+          || [&self.video_generation, &self.audio_generation, &self.audio_transcription]
+            .iter()
+            .any(|group| group.providers.values().any(|s| s.enabled && &s.credential_id == id));
         let environment_ready = config
           .api_key_env
           .iter()

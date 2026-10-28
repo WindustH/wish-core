@@ -20,6 +20,8 @@ fn collect(value: &Value, found: &mut HashSet<String>) {
       for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
         if is_blob_id(word) || is_execution_id(word) {
           found.insert(word.to_owned());
+        } else if uuid::Uuid::parse_str(word).is_ok() {
+          found.insert(format!("snapshot:{word}"));
         }
       }
     }

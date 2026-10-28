@@ -118,8 +118,8 @@ pub struct SessionSlot {
   pub(super) tools: SessionTools,
   /// The command this session's shell tool starts, whether or not the tool is on.
   effective_shell: Arc<RwLock<ShellCommand>>,
-  /// The session's blobs, where its images are saved.
-  image_dir: PathBuf,
+  /// The session's blobs: attachments, generated media and transcripts.
+  blob_dir: PathBuf,
   /// What this session's shell shows the MCP bridge; made anew each time the session opens, since
   /// its shells do not outlive the process.
   pub(super) bridge_token: String,
@@ -153,7 +153,7 @@ impl SessionSlot {
       format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
     // Set whatever the switches say: the bridge checks them, and the environment stays as it is.
     shell_config.env.extend(app.bridge.shell_environment(&descriptor.id, &bridge_token));
-    let image_dir = std::path::absolute(app.data_dir.blobs(&descriptor.id))
+    let blob_dir = std::path::absolute(app.data_dir.blobs(&descriptor.id))
       .map_err(ApplicationError::internal)?;
     let switches = descriptor.tools;
     let status = Mutex::new(SessionStatus::read(&session));
@@ -170,7 +170,7 @@ impl SessionSlot {
       session: Arc::new(AsyncMutex::new(session)),
       update_lock: Arc::new(AsyncMutex::new(())),
       effective_shell,
-      image_dir,
+      blob_dir,
       bridge_token,
       tasks: app.lifecycle.tasks.clone(),
       app: Arc::downgrade(app),

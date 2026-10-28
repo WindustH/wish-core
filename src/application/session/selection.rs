@@ -151,7 +151,7 @@ impl SessionSlot {
     )
     .with_session_id(session_id)
     .with_retry_observer(self.retry_observer());
-    SessionModel::new(provider, self.image_dir.clone(), client)
+    SessionModel::new(provider, self.blob_dir.clone(), client)
       .with_history(self.sender.clone(), self.events.clone())
   }
   /// Stages a selection while an operation runs. Only the model, reasoning and output limit may

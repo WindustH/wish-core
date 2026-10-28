@@ -23,6 +23,8 @@ struct Job {
   created_at: u64,
   updated_at: u64,
   error: Option<String>,
+  #[serde(default)]
+  next_poll_at: u64,
 }
 impl Job {
   fn view(&self) -> Value {
@@ -55,14 +57,27 @@ impl MediaHub {
     video: bool,
   ) -> Result<Value, String> {
     let action = request.action.as_deref().unwrap_or("run");
+    if !matches!(action, "run" | "status" | "list_jobs") {
+      return Err("invalid media action".into());
+    }
+    if action == "run" && request.job_id.is_some() {
+      return Err("run does not accept job_id; use status to resume a job".into());
+    }
     let jobs = directory.join(".media-jobs");
     if action == "list_jobs" {
       let mut rows = Vec::new();
+      let mut unreadable_jobs = Vec::new();
       match tokio::fs::read_dir(&jobs).await {
         Ok(mut entries) => {
           while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
             if entry.path().extension().is_some_and(|s| s == "json") {
-              let job: Job = read_job(&entry.path()).await?;
+              let job: Job = match read_job(&entry.path()).await {
+                Ok(job) => job,
+                Err(_) => {
+                  unreadable_jobs.push(entry.file_name().to_string_lossy().into_owned());
+                  continue;
+                }
+              };
               if (job.kind == MediaKind::Video) == video {
                 rows.push(job.view());
               }
@@ -73,7 +88,7 @@ impl MediaHub {
         Err(e) => return Err(e.to_string()),
       }
       rows.sort_by_key(|v| std::cmp::Reverse(v["created_at"].as_u64().unwrap_or_default()));
-      return Ok(json!({"jobs":rows}));
+      return Ok(json!({"jobs":rows,"unreadable_jobs":unreadable_jobs}));
     }
     let id = if action == "run" {
       blobs::blob_id(format!("{video}:{call_id}").as_bytes())
@@ -83,16 +98,27 @@ impl MediaHub {
     if !blobs::is_blob_id(&id) {
       return Err("invalid job_id".into());
     }
-    let _lock = self.locks[id.as_bytes()[0] as usize % self.locks.len()].lock().await;
-    let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
     let path = jobs.join(format!("{id}.json"));
+    let lock = {
+      let mut locks = self.locks.lock().unwrap();
+      locks.retain(|_, lock| lock.strong_count() > 0);
+      match locks.get(&path).and_then(std::sync::Weak::upgrade) {
+        Some(lock) => lock,
+        None => {
+          let lock = Arc::new(tokio::sync::Mutex::new(()));
+          locks.insert(path.clone(), Arc::downgrade(&lock));
+          lock
+        }
+      }
+    };
+    let _lock = lock.lock().await;
     let state = self.state.read().unwrap().clone();
     if action == "status" || tokio::fs::try_exists(&path).await.map_err(|e| e.to_string())? {
       let mut job: Job = read_job(&path).await?;
       if (job.kind == MediaKind::Video) != video {
         return Err("job belongs to a different tool".into());
       }
-      self.advance(&mut job, &path, directory, accounts, &state.proxy).await?;
+      self.advance(&mut job, &path, directory, accounts, &state).await?;
       return Ok(job.view());
     }
     if action != "run" {
@@ -155,7 +181,8 @@ impl MediaHub {
     }
     let base = service.base_url.as_deref().filter(|v| !v.is_empty()).unwrap_or(&spec.base_url);
     let call = spec.protocol.call(base, &route, credentials, draft).map_err(|e| e.to_string())?;
-    let transport = transport(&service, &state.proxy)?;
+    let transport = state.transport(service.proxy_enabled, TransferProfile::Artifact)?;
+    let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
     let now = crate::utils::time::unix_seconds();
     let mut job = Job {
       id,
@@ -169,23 +196,28 @@ impl MediaHub {
       created_at: now,
       updated_at: now,
       error: None,
+      next_poll_at: 0,
     };
     tokio::fs::create_dir_all(&jobs).await.map_err(|e| e.to_string())?;
     let mut entries = tokio::fs::read_dir(&jobs).await.map_err(|e| e.to_string())?;
     let mut count = 0;
     while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
       if entry.path().extension().is_some_and(|s| s == "json") {
-        count += 1;
+        let old: Job = read_job(&entry.path()).await?;
+        if matches!(old.phase, Phase::Submitting | Phase::Running | Phase::Downloading) {
+          count += 1;
+        }
       }
     }
     if count >= 256 {
-      return Err("session media job limit (256) reached".into());
+      return Err("session active media job limit (256) reached".into());
     }
     save_job(&path, &mut job).await?;
     // Once recorded as submitting, cancellation/restart cannot cause automatic resubmission.
     let result = async {
       if video {
-        let reply = json_transport(&job.service, &state.proxy)?
+        let reply = state
+          .transport(job.service.proxy_enabled, TransferProfile::Status)?
           .execute(&call)
           .await
           .map_err(|_| "submission connection failed; outcome unknown".to_owned())?;
@@ -223,7 +255,7 @@ impl MediaHub {
     path: &Path,
     directory: &Path,
     accounts: &AccountRegistry,
-    proxy: &ProxyConfig,
+    state: &State,
   ) -> Result<(), String> {
     if job.phase == Phase::Submitting {
       job.phase = Phase::OutcomeUnknown;
@@ -234,8 +266,15 @@ impl MediaHub {
     if matches!(job.phase, Phase::Succeeded | Phase::Failed | Phase::OutcomeUnknown) {
       return Ok(());
     }
-    let transport = transport(&job.service, proxy)?;
-    if job.phase == Phase::Running {
+    let now = crate::utils::time::unix_seconds();
+    if now < job.next_poll_at {
+      return Ok(());
+    }
+    let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
+    job.next_poll_at = now + 5;
+    save_job(path, job).await?;
+    let transport = state.transport(job.service.proxy_enabled, TransferProfile::Artifact)?;
+    if job.phase == Phase::Running || (job.phase == Phase::Downloading && job.error.is_some()) {
       let spec = preset(&job.service.preset).map_err(|e| e.to_string())?;
       let credentials = accounts
         .get(&format!("account:{}", job.service.credential_id))
@@ -248,16 +287,10 @@ impl MediaHub {
       let base =
         job.service.base_url.as_deref().filter(|v| !v.is_empty()).unwrap_or(&spec.base_url);
       let task = job.task_id.as_deref().ok_or("missing upstream task ID")?;
-      let call = spec
-        .protocol
-        .call(
-          base,
-          &format!("/v2/query/video_generation/{task}"),
-          credentials,
-          Draft::get(Vec::new()),
-        )
-        .map_err(|e| e.to_string())?;
-      let reply = json_transport(&job.service, proxy)?
+      let (route, draft) = spec.protocol.status_request(task).map_err(|e| e.to_string())?;
+      let call = spec.protocol.call(base, &route, credentials, draft).map_err(|e| e.to_string())?;
+      let reply = state
+        .transport(job.service.proxy_enabled, TransferProfile::Status)?
         .execute(&call)
         .await
         .map_err(|_| "task query connection failed; retry status, not generation".to_owned())?;
@@ -265,35 +298,49 @@ impl MediaHub {
         return Err(format!("task query HTTP {}; retry status, not generation", reply.status));
       }
       let value: Value = serde_json::from_slice(&reply.body).map_err(|e| e.to_string())?;
-      match value["task"]["status"].as_str() {
-        Some("succeeded") => {
-          let url =
-            value["task"]["content"]["url"].as_str().ok_or("completed task has no artifact URL")?;
-          crate::protocol::image_generation::validate_url(url).map_err(|e| e.to_string())?;
-          job.asset_url = Some(url.into());
+      use crate::protocol::media_generation::VideoStatus;
+      match spec.protocol.decode_status(&value).map_err(|e| e.to_string())? {
+        VideoStatus::Complete(url) => {
+          job.asset_url = Some(url);
           job.phase = Phase::Downloading;
         }
-        Some("failed" | "cancelled" | "canceled") => {
+        VideoStatus::Failed => {
           job.phase = Phase::Failed;
           job.error = Some("upstream generation failed or was cancelled".into());
         }
-        Some("queued" | "pending" | "running" | "processing") => {}
-        _ => return Err("unrecognized upstream task status; existing task was retained".into()),
+        VideoStatus::Pending => {}
       }
       save_job(path, job).await?;
     }
     if job.phase == Phase::Downloading {
       let url = job.asset_url.as_deref().ok_or("missing artifact URL")?;
       crate::protocol::image_generation::validate_url(url).map_err(|e| e.to_string())?;
-      // CDN downloads carry no provider credentials; redirects are not followed by transport.
-      let call =
-        Call { method: Method::Get, url: url.into(), headers: Vec::new(), body: Vec::new() };
+      // Follow bounded CDN redirects without forwarding account credentials.
       let result = async {
-        let stream = transport
-          .execute_stream(&call)
-          .await
-          .map_err(|_| "artifact download connection failed".to_owned())?;
-        save_stream(stream, directory, job.kind).await
+        let mut target =
+          crate::protocol::image_generation::validate_url(url).map_err(|e| e.to_string())?;
+        for _ in 0..5 {
+          let call = Call {
+            method: Method::Get,
+            url: target.to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
+          };
+          let stream = transport
+            .execute_stream(&call)
+            .await
+            .map_err(|_| "artifact download connection failed".to_owned())?;
+          if matches!(stream.get_status(), 301 | 302 | 303 | 307 | 308) {
+            let location = crate::protocol::attempt::find_header(stream.get_headers(), "location")
+              .ok_or("artifact redirect has no location")?;
+            let next = target.join(location).map_err(|_| "invalid artifact redirect")?;
+            target = crate::protocol::image_generation::validate_url(next.as_str())
+              .map_err(|e| e.to_string())?;
+          } else {
+            return save_stream(stream, directory, job.kind).await;
+          }
+        }
+        Err("too many artifact redirects".into())
       }
       .await;
       match result {
@@ -310,18 +357,6 @@ impl MediaHub {
     }
     Ok(())
   }
-}
-fn transport(service: &MediaProvider, proxy: &ProxyConfig) -> Result<ReqwestTransport, String> {
-  ReqwestTransport::new(
-    Limits {
-      total: Duration::from_secs(600),
-      first_byte: Duration::from_secs(300),
-      max_response_bytes: 512 * 1024 * 1024,
-      ..Default::default()
-    },
-    proxy.policy(service.proxy_enabled),
-  )
-  .map_err(|e| e.to_string())
 }
 async fn save_stream<S: ReplyStream>(
   stream: S,
@@ -346,30 +381,9 @@ async fn save_stream<S: ReplyStream>(
 async fn save_job(path: &Path, job: &mut Job) -> Result<(), String> {
   job.updated_at = crate::utils::time::unix_seconds();
   let bytes = serde_json::to_vec(job).map_err(|e| e.to_string())?;
-  let temporary = path.with_extension("tmp");
-  use tokio::io::AsyncWriteExt;
-  let mut file = tokio::fs::File::create(&temporary).await.map_err(|e| e.to_string())?;
-  file.write_all(&bytes).await.map_err(|e| e.to_string())?;
-  file.sync_all().await.map_err(|e| e.to_string())?;
-  drop(file);
-  tokio::fs::rename(temporary, path).await.map_err(|e| e.to_string())
+  blobs::atomic_write(path, &bytes).await.map_err(|e| e.to_string())
 }
 async fn read_job<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
   let bytes = tokio::fs::read(path).await.map_err(|_| "media job not found".to_owned())?;
   serde_json::from_slice(&bytes).map_err(|e| e.to_string())
-}
-
-fn json_transport(
-  service: &MediaProvider,
-  proxy: &ProxyConfig,
-) -> Result<ReqwestTransport, String> {
-  ReqwestTransport::new(
-    Limits {
-      total: Duration::from_secs(60),
-      max_response_bytes: 2 * 1024 * 1024,
-      ..Default::default()
-    },
-    proxy.policy(service.proxy_enabled),
-  )
-  .map_err(|e| e.to_string())
 }

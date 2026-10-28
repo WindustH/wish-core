@@ -188,3 +188,78 @@ impl MediaProtocol {
     })
   }
 }
+
+/// Provider-specific status fields stay in the wire codec, outside job persistence.
+pub enum VideoStatus {
+  Pending,
+  Complete(String),
+  Failed,
+}
+impl MediaProtocol {
+  pub fn status_request(self, task: &str) -> Result<(String, Draft), Error> {
+    if self != Self::MinimaxH3 {
+      return Err(Error::Build("provider has no video status API".into()));
+    }
+    Ok((format!("/v2/query/video_generation/{task}"), Draft::get(Vec::new())))
+  }
+  pub fn decode_status(self, value: &Value) -> Result<VideoStatus, Error> {
+    if self != Self::MinimaxH3 {
+      return Err(Error::Build("provider has no video status API".into()));
+    }
+    match value["task"]["status"].as_str() {
+      Some("succeeded") => {
+        let url = value["task"]["content"]["url"]
+          .as_str()
+          .ok_or_else(|| Error::Build("completed task has no artifact URL".into()))?;
+        super::image_generation::validate_url(url)?;
+        Ok(VideoStatus::Complete(url.into()))
+      }
+      Some("failed" | "cancelled" | "canceled") => Ok(VideoStatus::Failed),
+      Some("queued" | "pending" | "running" | "processing") => Ok(VideoStatus::Pending),
+      _ => {
+        Err(Error::Build("unrecognized upstream task status; existing task was retained".into()))
+      }
+    }
+  }
+  pub fn transcription(
+    self,
+    model: &str,
+    bytes: &[u8],
+    mime: &str,
+    language: Option<&str>,
+    diarize: bool,
+  ) -> Result<(String, Draft), Error> {
+    if self != Self::ElevenTranscription {
+      return Err(Error::Build("provider has no transcription API".into()));
+    }
+    let boundary = format!("wish-{}", uuid::Uuid::new_v4());
+    let mut body = Vec::new();
+    let mut fields = vec![
+      ("model_id", model.to_owned()),
+      ("diarize", diarize.to_string()),
+      ("timestamps_granularity", "word".into()),
+    ];
+    if let Some(language) = language {
+      fields.push(("language_code", language.into()));
+    }
+    for (name, value) in fields {
+      body.extend_from_slice(
+        format!(
+          "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+        )
+        .as_bytes(),
+      );
+    }
+    body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"input\"\r\nContent-Type: {mime}\r\n\r\n").as_bytes());
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    Ok((
+      "/v1/speech-to-text".into(),
+      Draft::post(
+        None,
+        vec![("content-type".into(), format!("multipart/form-data; boundary={boundary}"))],
+        body,
+      ),
+    ))
+  }
+}

@@ -13,7 +13,7 @@ use std::{collections::BTreeMap, path::Path};
 pub fn project_images(
   models: &BTreeMap<String, Value>,
   model: &str,
-  image_dir: &Path,
+  blob_dir: &Path,
   rejected: bool,
   messages: &mut [Message],
   save: bool,
@@ -39,9 +39,9 @@ pub fn project_images(
           .decode(data_base64)
           .map_err(|error| Error::Build(format!("invalid stored image: {error}")))?;
         let image_id = blobs::blob_id(&bytes);
-        let path = image_dir.join(&image_id);
+        let path = blob_dir.join(&image_id);
         if save {
-          blobs::save_image(image_dir, data_base64)
+          blobs::save_image_bytes(blob_dir, &bytes)
             .map_err(|error| Error::Build(error.to_string()))?;
         }
         let notice = if unsupported {
