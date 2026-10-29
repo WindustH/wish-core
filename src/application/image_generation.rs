@@ -113,11 +113,16 @@ impl ImageConfig {
       if serde_json::to_vec(&p.parameters).map_err(ApplicationError::internal)?.len() > 16 * 1024 {
         return Err(ApplicationError::invalid("image parameters exceed 16 KiB"));
       }
-      for key in ["n", "num_images", "batch_size"] {
+      for key in ["n", "num_images", "batch_size", "n_samples"] {
         if p.parameters.get(key).is_some_and(|v| !v.as_u64().is_some_and(|n| (1..=8).contains(&n)))
         {
           return Err(ApplicationError::invalid("image count must be between 1 and 8"));
         }
+      }
+      if spec.protocol == ImageProtocol::Novelai {
+        let mut parameters = spec.parameters.clone();
+        parameters.extend(p.parameters.clone());
+        spec.protocol.submission(&p.model, "validation", &parameters)?;
       }
       for key in ["prompt", "model", "input", "stream", "webhook", "webhook_url"] {
         if p.parameters.contains_key(key) {

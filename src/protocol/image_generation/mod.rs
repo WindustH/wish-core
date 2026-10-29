@@ -4,6 +4,7 @@ use crate::protocol::{
   endpoint::{AuthScheme, Credentials, Draft, Endpoint},
   error::Error,
 };
+mod novelai;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -22,6 +23,7 @@ pub enum ImageProtocol {
   Replicate,
   Wan,
   Stability,
+  Novelai,
 }
 
 pub enum ImageSource {
@@ -83,6 +85,9 @@ impl ImageProtocol {
     prompt: &str,
     parameters: &serde_json::Map<String, Value>,
   ) -> Result<Draft, Error> {
+    if self == Self::Novelai {
+      return novelai::submission(model, prompt, parameters);
+    }
     let mut args = parameters.clone();
     args.insert("prompt".into(), json!(prompt));
     let body = match self {
@@ -143,6 +148,14 @@ impl ImageProtocol {
       }
     };
     match self {
+      Self::Novelai => {
+        for item in body["images"].as_array().into_iter().flatten() {
+          let data = item["image"]
+            .as_str()
+            .ok_or_else(|| Error::Malformed("NovelAI reply contains an invalid image".into()))?;
+          images.push(ImageSource::Base64(data.into()));
+        }
+      }
       Self::Gemini => {
         for part in body["candidates"]
           .as_array()
