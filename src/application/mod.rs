@@ -11,6 +11,7 @@ pub(crate) mod config;
 pub(crate) mod config_file;
 pub(crate) mod copilot_login;
 pub(crate) mod directory_queries;
+mod draft_uploads;
 pub(crate) mod error;
 pub(crate) mod events;
 pub(crate) mod fetch;
@@ -71,3 +72,5 @@ pub mod media_generation;
 pub mod media_access;
 
 pub mod audio_transcription;
+
+pub(crate) mod pages;

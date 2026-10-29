@@ -16,6 +16,9 @@ impl Drop for Temporary {
 }
 
 pub fn mime(bytes: &[u8]) -> Option<&'static str> {
+  if bytes.starts_with(b"PK\x03\x04") {
+    return Some("application/zip");
+  }
   if bytes.starts_with(b"ID3") || (bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0)
   {
     return Some("audio/mpeg");
@@ -30,7 +33,7 @@ pub fn mime(bytes: &[u8]) -> Option<&'static str> {
     return Some("audio/ogg");
   }
   if bytes.get(4..8) == Some(b"ftyp") {
-    return Some("video/mp4");
+    return Some(if bytes.get(8..12) == Some(b"qt  ") { "video/quicktime" } else { "video/mp4" });
   }
   if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
     return Some("video/webm");
@@ -38,11 +41,13 @@ pub fn mime(bytes: &[u8]) -> Option<&'static str> {
   None
 }
 
-pub async fn save<S, E>(
+pub type Validator = fn(&Path) -> Result<(), String>;
+pub async fn save_validated<S, E>(
   directory: &Path,
   mut chunks: S,
   kind: &str,
   limit: usize,
+  validator: Option<Validator>,
 ) -> Result<Blob, RepositoryError>
 where
   S: Stream<Item = Result<Vec<u8>, E>> + Unpin,
@@ -71,6 +76,13 @@ where
     .ok_or_else(|| RepositoryError::invalid("generated artifact is not a supported media file"))?;
   file.sync_all().await.map_err(RepositoryError::internal)?;
   drop(file);
+  if let Some(validator) = validator {
+    let path = temporary.0.clone();
+    crate::utils::blocking::cpu(move || validator(&path))
+      .await
+      .map_err(RepositoryError::internal)?
+      .map_err(RepositoryError::invalid)?;
+  }
   let id = format!("{:x}", hash.finalize());
   let path = directory.join(&id);
   tokio::fs::rename(&temporary.0, &path).await.map_err(RepositoryError::internal)?;

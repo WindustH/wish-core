@@ -281,5 +281,215 @@
       "21:9",
       "adaptive"
     ]
+  },
+  {
+    "id": "runway_aleph_video",
+    "name": "Runway Aleph 2 · 视频编辑",
+    "brand": "Runway",
+    "protocol": "runway_video",
+    "kind": "video",
+    "model": "aleph2",
+    "base_url": "https://api.dev.runwayml.com",
+    "account_presets": [
+      "runway",
+      "custom"
+    ],
+    "docs_url": "https://docs.dev.runwayml.com/api/",
+    "defaults": {},
+    "resolutions": [],
+    "aspect_ratios": []
+  },
+  {
+    "id": "runninghub_seedance_video",
+    "name": "RunningHub Seedance 2.5",
+    "brand": "RunningHub",
+    "protocol": "runninghub_video",
+    "kind": "video",
+    "model": "bytedance/seedance-2.5-token",
+    "base_url": "https://www.runninghub.ai",
+    "account_presets": [
+      "runninghub",
+      "custom"
+    ],
+    "docs_url": "https://www.runninghub.ai/runninghub-api-doc-en/api-498749513",
+    "resolutions": [
+      "480p",
+      "720p",
+      "native1080p",
+      "1080p",
+      "2k",
+      "4k"
+    ],
+    "aspect_ratios": [
+      "adaptive",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16",
+      "21:9"
+    ]
+  },
+  {
+    "id": "xiaoyunque_video",
+    "name": "小云雀 2.0",
+    "brand": "Volcengine Visual",
+    "protocol": "xiaoyunque_video",
+    "kind": "video",
+    "model": "pippit_iv2v_v20_cvtob_with_vinput",
+    "base_url": "https://visual.volcengineapi.com",
+    "account_presets": [
+      "volcengine_visual",
+      "custom"
+    ],
+    "docs_url": "https://docs.volcengine.com/docs/jimeng-ai/xiaoyunque-intelligent-life-video-agent20-reference-interface-documentation",
+    "required_credentials": [
+      "access_key_id",
+      "secret_access_key"
+    ],
+    "optional_credentials": [
+      "session_token"
+    ],
+    "aspect_ratios": [
+      "16:9",
+      "9:16",
+      "4:3",
+      "3:4"
+    ]
+  },
+  {
+    "id": "minimax_speech",
+    "name": "MiniMax Speech",
+    "brand": "minimax",
+    "protocol": "minimax_speech",
+    "kind": "speech",
+    "model": "speech-2.8-hd",
+    "base_url": "https://api.minimax.io",
+    "account_presets": [
+      "minimax",
+      "custom"
+    ],
+    "docs_url": "https://platform.minimax.io/docs/api-reference/speech-t2a-http"
+  },
+  {
+    "id": "xai_video",
+    "name": "xAI Grok Imagine 1.5",
+    "brand": "xAI",
+    "protocol": "xai_video",
+    "kind": "video",
+    "model": "grok-imagine-video-1.5",
+    "base_url": "https://api.x.ai",
+    "account_presets": [
+      "xai",
+      "custom"
+    ],
+    "docs_url": "https://docs.x.ai/developers/model-capabilities/video/generation",
+    "resolutions": [
+      "480p",
+      "720p",
+      "1080p"
+    ],
+    "aspect_ratios": [
+      "1:1",
+      "16:9",
+      "9:16",
+      "4:3",
+      "3:4",
+      "3:2",
+      "2:3",
+      "21:9",
+      "5:2"
+    ]
+  },
+  {
+    "id": "xai_video_lite",
+    "name": "xAI Grok Imagine 1.5 Lite",
+    "brand": "xAI",
+    "protocol": "xai_video",
+    "kind": "video",
+    "model": "grok-imagine-video-1.5-lite",
+    "base_url": "https://api.x.ai",
+    "account_presets": [
+      "xai",
+      "custom"
+    ],
+    "docs_url": "https://docs.x.ai/developers/model-capabilities/video/overview",
+    "resolutions": [
+      "480p",
+      "720p",
+      "1080p"
+    ],
+    "aspect_ratios": [
+      "1:1",
+      "16:9",
+      "9:16",
+      "4:3",
+      "3:4",
+      "3:2",
+      "2:3",
+      "21:9",
+      "5:2"
+    ]
+  },
+  {
+    "id": "xai_video_classic",
+    "name": "xAI Grok Imagine · Edit & Extend",
+    "brand": "xAI",
+    "protocol": "xai_video",
+    "kind": "video",
+    "model": "grok-imagine-video",
+    "base_url": "https://api.x.ai",
+    "account_presets": [
+      "xai",
+      "custom"
+    ],
+    "docs_url": "https://docs.x.ai/developers/model-capabilities/video/generation",
+    "resolutions": [
+      "480p",
+      "720p"
+    ],
+    "aspect_ratios": [
+      "1:1",
+      "16:9",
+      "9:16",
+      "4:3",
+      "3:4",
+      "3:2",
+      "2:3",
+      "21:9",
+      "5:2"
+    ]
+  },
+  {
+    "id": "xai_asr",
+    "name": "xAI Speech to Text",
+    "brand": "xAI",
+    "protocol": "xai_transcription",
+    "kind": "transcription",
+    "model": "grok-voice-transcribe-2.0",
+    "base_url": "https://api.x.ai",
+    "account_presets": [
+      "xai",
+      "custom"
+    ],
+    "docs_url": "https://docs.x.ai/developers/model-capabilities/audio/speech-to-text",
+    "resolutions": [],
+    "aspect_ratios": []
+  },
+  {
+    "id": "xai_speech",
+    "name": "xAI Text to Speech",
+    "brand": "xAI",
+    "protocol": "xai_speech",
+    "kind": "speech",
+    "model": "tts",
+    "base_url": "https://api.x.ai",
+    "account_presets": [
+      "xai",
+      "custom"
+    ],
+    "docs_url": "https://docs.x.ai/developers/model-capabilities/audio/text-to-speech",
+    "resolutions": [],
+    "aspect_ratios": []
   }
 ]

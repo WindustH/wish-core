@@ -14,9 +14,10 @@ use crate::application::{
   identity::{WISH_USER_AGENT, read_secret},
   presets,
 };
-use crate::client::{RetryObserver, account::AccountClient};
+use crate::client::RetryObserver;
+use crate::extension_host::search::{SearchProtocol, SearchQuery, SearchResults};
+use crate::extensions::shared::read::ReadClient;
 use crate::protocol::endpoint::Credentials;
-use crate::protocol::web_search::{SearchProtocol, SearchQuery, SearchResults};
 use crate::transport::ReqwestTransport;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -135,12 +136,8 @@ impl SearchConfig {
           }
         }
       }
-      if let Some(url) = &config.base_url
-        && !(url.starts_with("http://") || url.starts_with("https://"))
-      {
-        return Err(ApplicationError::invalid(format!(
-          "search provider {id}: the address must start with http:// or https://"
-        )));
+      if let Some(url) = &config.base_url {
+        crate::extensions::shared::urls::validate_base_url(url)?;
       }
     }
     Ok(())
@@ -247,6 +244,13 @@ impl SearchHub {
           preset: built.config.preset.clone(),
           kind: None,
           model: built.preset["model"].as_str().map(str::to_owned),
+          reference_images: None,
+          mask_editing: None,
+          markup_editing: None,
+          image_required: None,
+          image_options: None,
+          precise_references: None,
+          video: None,
           enabled: built.config.enabled,
           available: usable(built, accounts).is_ok(),
         })
@@ -256,6 +260,17 @@ impl SearchHub {
 
   /// Asks the providers in order until one answers. On failure, every provider's reason.
   pub async fn search(
+    &self,
+    accounts: &AccountRegistry,
+    query: &SearchQuery,
+    observer: Option<RetryObserver>,
+    only: Option<&str>,
+  ) -> Result<Answer, Vec<String>> {
+    crate::extensions::shared::read_budget::run(self.search_inner(accounts, query, observer, only))
+      .await
+      .map_err(|error| vec![error])?
+  }
+  async fn search_inner(
     &self,
     accounts: &AccountRegistry,
     query: &SearchQuery,
@@ -433,10 +448,12 @@ async fn search_with(
       if let Some(agent) = account.get_user_agent() {
         headers.push(("user-agent".to_owned(), agent));
       }
-      let mut client = account.client.clone().with_transport(transport.clone());
-      if let Some(observer) = observer {
-        client = client.with_retry_observer(observer);
-      }
+      let client = ReadClient::new(
+        transport.clone(),
+        account.client.get_credentials().clone(),
+        crate::utils::retry::RetryPolicy::auxiliary(),
+        observer,
+      );
       client
         .search(built.protocol, query, base_url.as_deref(), &headers)
         .await
@@ -448,10 +465,12 @@ async fn search_with(
       if crate::protocol::attempt::find_header(&headers, "user-agent").is_none() {
         headers.push(("user-agent".to_owned(), WISH_USER_AGENT.to_owned()));
       }
-      let mut client = AccountClient::new(transport.clone(), credentials.clone(), None);
-      if let Some(observer) = observer {
-        client = client.with_retry_observer(observer);
-      }
+      let client = ReadClient::new(
+        transport.clone(),
+        credentials.clone(),
+        crate::utils::retry::RetryPolicy::auxiliary(),
+        observer,
+      );
       client
         .search(built.protocol, query, base_url, &headers)
         .await

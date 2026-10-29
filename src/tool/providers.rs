@@ -12,6 +12,20 @@ pub struct Provider {
   pub model: Option<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub kind: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub mask_editing: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub markup_editing: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub image_required: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub reference_images: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub precise_references: Option<bool>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub image_options: Option<&'static [&'static str]>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub video: Option<crate::extension_host::media::video::VideoCapabilities>,
   pub enabled: bool,
   /// Local configuration/credential readiness, not a remote health or quota check.
   pub available: bool,

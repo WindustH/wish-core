@@ -25,7 +25,8 @@ pub async fn execute(
     .filter(|capability| {
       matches!(
         capability,
-        Capability::History
+        Capability::ExtensionDiscovery
+          | Capability::History
           | Capability::WebFetch
           | Capability::WebSearch
           | Capability::AskUser
@@ -37,12 +38,22 @@ pub async fn execute(
     })
     .ok_or_else(ApplicationError::not_found)?;
   let enabled = switches.enabled(capability);
-  let specification = slot
-    .tools
-    .specifications(capability)
-    .into_iter()
-    .find(|tool| capability != Capability::History || tool.name == name)
-    .ok_or_else(ApplicationError::not_found)?;
+  let specification = if let Some(registration) = crate::extensions::catalog::find(&name) {
+    (registration.specification)()
+  } else {
+    slot
+      .tools
+      .specifications(capability)
+      .into_iter()
+      .find(|tool| {
+        if name == "extension_tools" {
+          tool.name == name
+        } else {
+          capability != Capability::History || tool.name == name
+        }
+      })
+      .ok_or_else(ApplicationError::not_found)?
+  };
   if !enabled {
     return Err(ApplicationError::conflict(format!("{name} is disabled for this session")));
   }

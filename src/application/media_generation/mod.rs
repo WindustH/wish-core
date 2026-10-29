@@ -4,11 +4,9 @@ use super::{
   config::ProxyConfig,
   error::ApplicationError,
 };
+use crate::extension_host::media::{MediaKind, MediaProtocol, Parameters};
 use crate::{
-  protocol::{
-    attempt::{Call, Limits, Method, ReplyStream, Transport},
-    media_generation::{MediaKind, MediaOptions, MediaProtocol},
-  },
+  protocol::attempt::{Limits, ReplyStream, Transport},
   storage::{blobs, media},
   tool::providers::{Catalog, Provider},
   transport::ReqwestTransport,
@@ -23,16 +21,22 @@ use std::{
 };
 
 mod config;
+mod inputs;
 mod jobs;
+mod preflight;
 use config::preset;
 pub use config::{MediaConfig, MediaProvider, presets};
-pub use jobs::Request;
+pub use jobs::{Request, Scope};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum TransferProfile {
+  VideoSubmission,
+  AudioSubmission,
+  TimedSpeech,
   Status,
   Artifact,
   Transcription,
+  Upload,
 }
 
 pub(super) struct State {
@@ -44,8 +48,10 @@ pub struct PreparedMedia(State);
 pub struct MediaHub {
   pub(super) state: RwLock<Arc<State>>,
   pub(super) permits: tokio::sync::Semaphore,
+  pub(super) status_permits: tokio::sync::Semaphore,
+  pub(super) download_permits: tokio::sync::Semaphore,
   // Only live requests retain a per-job lock; unrelated jobs never share a lock.
-  locks: std::sync::Mutex<BTreeMap<std::path::PathBuf, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+  locks: crate::extensions::shared::jobs::JobLocks,
 }
 impl MediaHub {
   pub fn new(config: &MediaConfig, proxy: &ProxyConfig) -> Self {
@@ -56,6 +62,8 @@ impl MediaHub {
         transports: Default::default(),
       })),
       permits: tokio::sync::Semaphore::new(2),
+      status_permits: tokio::sync::Semaphore::new(4),
+      download_permits: tokio::sync::Semaphore::new(2),
       locks: Default::default(),
     }
   }
@@ -73,7 +81,7 @@ impl MediaHub {
     let state = self.state.read().unwrap();
     Catalog {
       default_order: state.config.order.clone(),
-      failure_policy: "first_enabled_compatible_kind_only_no_paid_submission_failover",
+      failure_policy: "first_enabled_compatible_provider_no_paid_submission_failover",
       providers: state
         .config
         .providers
@@ -86,11 +94,18 @@ impl MediaHub {
             preset: p.preset.clone(),
             model: Some(p.model.clone()),
             kind: Some(spec.kind.as_str().into()),
+            reference_images: None,
+            mask_editing: None,
+            markup_editing: None,
+            image_required: None,
+            image_options: None,
+            precise_references: None,
+            video: spec.protocol.video_capabilities(&p.model),
             enabled: p.enabled,
             available: p.enabled
               && accounts
                 .get(&format!("account:{}", p.credential_id))
-                .is_some_and(|a| !a.client.get_credentials().api_key.is_empty()),
+                .is_some_and(|a| spec.protocol.credentials_ready(a.client.get_credentials())),
           })
         })
         .collect(),
@@ -114,10 +129,24 @@ impl State {
         max_response_bytes: 2 * 1024 * 1024,
         ..Default::default()
       },
+      TransferProfile::Upload
+      | TransferProfile::VideoSubmission
+      | TransferProfile::AudioSubmission => Limits {
+        total: Duration::from_secs(600),
+        first_byte: Duration::from_secs(300),
+        max_response_bytes: 2 * 1024 * 1024,
+        ..Default::default()
+      },
       TransferProfile::Artifact => Limits {
         total: Duration::from_secs(600),
         first_byte: Duration::from_secs(300),
         max_response_bytes: 512 * 1024 * 1024,
+        ..Default::default()
+      },
+      TransferProfile::TimedSpeech => Limits {
+        total: Duration::from_secs(600),
+        first_byte: Duration::from_secs(300),
+        max_response_bytes: 192 * 1024 * 1024,
         ..Default::default()
       },
       TransferProfile::Transcription => Limits {

@@ -89,6 +89,12 @@ impl ToolSwitches {
   }
   pub(crate) fn enabled(self, capability: Capability) -> bool {
     match capability {
+      Capability::ExtensionDiscovery => {
+        crate::extensions::catalog::registrations().iter().any(|registration| {
+          Capability::from_tool(registration.name)
+            .is_some_and(|capability| self.enabled(capability))
+        })
+      }
       Capability::Image => true,
       Capability::History => self.history_search,
       Capability::Shell | Capability::Task => self.shell,
@@ -104,6 +110,16 @@ impl ToolSwitches {
   }
   pub(crate) fn delivery(self, capability: Capability) -> ToolDelivery {
     match capability {
+      Capability::ExtensionDiscovery => {
+        if crate::extensions::catalog::registrations().iter().any(|registration| {
+          Capability::from_tool(registration.name)
+            .is_some_and(|capability| self.advertised(capability))
+        }) {
+          ToolDelivery::Tool
+        } else {
+          ToolDelivery::Command
+        }
+      }
       Capability::History => self.history_search_delivery,
       Capability::Sessions => self.sessions_delivery,
       Capability::Task => self.task_delivery,

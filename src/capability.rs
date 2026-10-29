@@ -14,10 +14,11 @@ pub enum Capability {
   VideoGenerate,
   AudioGenerate,
   AudioTranscribe,
+  ExtensionDiscovery,
 }
 impl Capability {
   /// Stable advertisement order for a newly built generation.
-  pub const ALL: [Self; 12] = [
+  pub const ALL: [Self; 13] = [
     Self::History,
     Self::Image,
     Self::Sessions,
@@ -30,6 +31,7 @@ impl Capability {
     Self::VideoGenerate,
     Self::AudioGenerate,
     Self::AudioTranscribe,
+    Self::ExtensionDiscovery,
   ];
   pub fn from_tool(name: &str) -> Option<Self> {
     Some(match name {
@@ -41,23 +43,23 @@ impl Capability {
       }
       "task" => Self::Task,
       "ask_user" => Self::AskUser,
-      "web_fetch" => Self::WebFetch,
-      "web_search" => Self::WebSearch,
-      "image_generate" => Self::ImageGenerate,
-      "video_generate" => Self::VideoGenerate,
-      "audio_generate" => Self::AudioGenerate,
-      "audio_transcribe" => Self::AudioTranscribe,
-      _ => return None,
+      "extension_tools" => Self::ExtensionDiscovery,
+      _ => {
+        return crate::extensions::catalog::find(name).map(|registration| {
+          match registration.permission {
+            crate::extensions::catalog::Permission::ImageGeneration => Self::ImageGenerate,
+            crate::extensions::catalog::Permission::VideoGeneration => Self::VideoGenerate,
+            crate::extensions::catalog::Permission::AudioGeneration => Self::AudioGenerate,
+            crate::extensions::catalog::Permission::Transcription => Self::AudioTranscribe,
+            crate::extensions::catalog::Permission::WebSearch => Self::WebSearch,
+            crate::extensions::catalog::Permission::WebFetch => Self::WebFetch,
+          }
+        });
+      }
     })
   }
   pub fn from_command(name: &str) -> Option<Self> {
     match name {
-      "webfetch" => Some(Self::WebFetch),
-      "websearch" => Some(Self::WebSearch),
-      "imagegen" => Some(Self::ImageGenerate),
-      "videogen" => Some(Self::VideoGenerate),
-      "audiogen" => Some(Self::AudioGenerate),
-      "asr" => Some(Self::AudioTranscribe),
       "askuser" => Some(Self::AskUser),
       _ => Self::from_tool(name),
     }
@@ -69,16 +71,9 @@ impl Capability {
     Some(match self {
       Self::Sessions => "`wish session` — sessions and groups",
       Self::Task => "`wish task` — task management",
-      Self::WebFetch => "`wish webfetch` — read webpages",
-      Self::WebSearch => "`wish websearch` — web search",
-      Self::ImageGenerate => "`wish imagegen` — generate images into session blob storage",
-      Self::VideoGenerate => {
-        "`wish videogen` — generate video; discover providers and recover jobs"
+      Self::ExtensionDiscovery => {
+        "`wish extension search [TAG ...]`, `wish extension inspect TOOL`, `wish extension call TOOL --json '<arguments>'` — discover and invoke extension-owned tools"
       }
-      Self::AudioGenerate => {
-        "`wish audiogen` — generate speech, music or sound effects; discover providers"
-      }
-      Self::AudioTranscribe => "`wish asr` — transcribe session audio/video files",
       Self::History => "`wish history` — search/read session history",
       Self::AskUser => "`wish askuser` — ask the user",
       _ => return None,

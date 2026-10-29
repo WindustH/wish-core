@@ -12,7 +12,6 @@
 //! and its first event, so a streamed call is only replaced until that event is in hand - after
 //! that a replay would splice a second copy of the answer into what the caller has already seen.
 pub mod account;
-mod auxiliary;
 mod observer;
 pub(crate) mod retry;
 mod stream;
@@ -374,36 +373,6 @@ impl<T: Transport> Client<T> {
         )
       },
       classify_read_retry,
-    )
-    .await
-  }
-
-  /// Searches the web as this client's account, for a search service that comes with the
-  /// subscription it holds (see [`crate::protocol::web_search`]). The request goes out through
-  /// this client's transport, with its current credentials, so a renewed token is used at once.
-  #[allow(dead_code)] // The standalone client retry contract is exercised by wish-test.
-  pub async fn search(
-    &self,
-    protocol: crate::protocol::web_search::SearchProtocol,
-    query: &crate::protocol::web_search::SearchQuery,
-    base_url: Option<&str>,
-    headers: &[(String, String)],
-  ) -> Result<crate::protocol::web_search::SearchResults, Error> {
-    auxiliary::read(
-      &self.auxiliary_retry,
-      RetryOperation::WebSearch,
-      self.retry_observer.clone(),
-      || {
-        crate::protocol::web_search::search(
-          &self.transport,
-          protocol,
-          &self.credentials,
-          base_url,
-          headers,
-          query,
-          unix_seconds(),
-        )
-      },
     )
     .await
   }

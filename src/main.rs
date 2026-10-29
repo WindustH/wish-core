@@ -3,6 +3,8 @@
 mod application;
 mod client;
 mod executor;
+mod extension_host;
+mod extensions;
 mod mcp;
 mod migration;
 mod protocol;

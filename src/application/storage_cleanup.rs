@@ -185,7 +185,7 @@ fn release_unreferenced_files(
       if path.extension().is_none_or(|ext| ext != "json") {
         continue;
       }
-      let Ok(bytes) = std::fs::read(&path) else {
+      let Ok(bytes) = crate::utils::bounded_file::read_sync(&path, 2 * 1024 * 1024) else {
         continue;
       };
       let Ok(job) = serde_json::from_slice::<Value>(&bytes) else {

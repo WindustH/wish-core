@@ -37,6 +37,8 @@ hmac = "0.12"
 hex = "0.4"
 # Base64 for inline media and the PKCE challenge of a browser login.
 base64 = "0.22"
+# Bounded reference-image decoding and resizing for provider input requirements.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 imara-diff = { version = "0.2", features = ["unified_diff"] }
 # MCP client: the protocol, local servers over stdio and the Streamable HTTP session logic. Its own
 # reqwest client stays off: remote servers are reached through wish's, under the same proxy policy.
@@ -46,6 +48,7 @@ sse-stream = "0.2"
 # Starts a local MCP server in a process group of its own (a job object on Windows), so closing it
 # ends whatever it started too - `npx` and the server behind it.
 process-wrap = { version = "10", default-features = false, features = ["tokio1", "process-group", "job-object", "kill-on-drop"] }
+zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

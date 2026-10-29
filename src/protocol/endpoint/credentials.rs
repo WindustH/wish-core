@@ -48,11 +48,11 @@ pub struct Credentials {
   /// The region an AWS account is served from, which its signature's scope names and a read's
   /// path may address.
   pub region: Option<String>,
-  /// The key id of an AWS account, which its signature travels inside.
+  /// Access key ID for signed APIs (AWS or Volcengine), carried in the signature scope.
   pub access_key_id: Option<String>,
-  /// The secret an AWS account signs with. It signs; it never travels.
+  /// Secret key for signed APIs. It derives signatures and never travels on the wire.
   pub secret_access_key: Option<String>,
-  /// The session token temporary AWS credentials carry.
+  /// Optional security token for temporary signed credentials.
   pub session_token: Option<String>,
 }
 
@@ -154,7 +154,7 @@ pub enum CredentialField {
   AccessKeyId,
   /// The secret an AWS account signs with.
   SecretAccessKey,
-  /// The session token temporary AWS credentials carry.
+  /// Optional security token for temporary signed credentials.
   SessionToken,
 }
 

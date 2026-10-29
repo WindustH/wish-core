@@ -11,6 +11,7 @@ pub fn agent_instructions(switches: super::session::ToolSwitches) -> String {
     let mut commands = vec!["`wish mcp` — MCP services", "`wish skill` — discover/read skills"];
     use crate::capability::Capability;
     for capability in [
+      Capability::ExtensionDiscovery,
       Capability::Sessions,
       Capability::Task,
       Capability::WebFetch,
@@ -125,42 +126,42 @@ pub fn delivery_notice(
     ),
     ("task", previous.shell, next.shell, previous.task_delivery, next.task_delivery),
     (
-      "video_generate / wish videogen",
+      "video extensions / wish extension",
       previous.video_generate,
       next.video_generate,
       previous.video_generate_delivery,
       next.video_generate_delivery,
     ),
     (
-      "audio_transcribe / wish asr",
+      "transcription extensions / wish extension",
       previous.audio_transcribe,
       next.audio_transcribe,
       previous.audio_transcribe_delivery,
       next.audio_transcribe_delivery,
     ),
     (
-      "audio_generate / wish audiogen",
+      "audio extensions / wish extension",
       previous.audio_generate,
       next.audio_generate,
       previous.audio_generate_delivery,
       next.audio_generate_delivery,
     ),
     (
-      "image_generate / wish imagegen",
+      "image extensions / wish extension",
       previous.image_generate,
       next.image_generate,
       previous.image_generate_delivery,
       next.image_generate_delivery,
     ),
     (
-      "web_fetch / wish webfetch",
+      "web fetch extensions / wish extension",
       previous.web_fetch,
       next.web_fetch,
       previous.web_fetch_delivery,
       next.web_fetch_delivery,
     ),
     (
-      "web_search / wish websearch",
+      "web search extensions / wish extension",
       previous.web_search,
       next.web_search,
       previous.web_search_delivery,

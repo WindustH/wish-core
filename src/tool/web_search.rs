@@ -1,9 +1,7 @@
 //! Web search with ordered defaults, explicit provider selection and live discovery.
+use crate::extension_host::search::{Recency, SearchQuery, SearchResults};
 use crate::{
-  protocol::{
-    Tool,
-    web_search::{Recency, SearchQuery, SearchResults},
-  },
+  protocol::Tool,
   session::{ToolCall, ToolOutcome},
   tool::contract::ToolExecutor,
   utils::control::ExecutionControl,

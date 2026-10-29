@@ -119,7 +119,7 @@ fn split_signing_url(url: &str) -> Result<(&str, String, &str), String> {
 
 /// A moment in UTC seconds, spelled the SigV4 way: `YYYYMMDDTHHMMSSZ`, whose first eight
 /// characters are the day a credential scope names.
-fn format_amz_date(seconds: u64) -> String {
+pub(super) fn format_amz_date(seconds: u64) -> String {
   let (year, month, day) = civil_date(seconds / 86_400);
   let second_of_day = seconds % 86_400;
   format!(

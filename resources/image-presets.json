@@ -64,7 +64,7 @@
     "id": "xai_images",
     "name": "xAI Grok Imagine",
     "brand": "xAI",
-    "protocol": "openai",
+    "protocol": "xai",
     "base_url": "https://api.x.ai/v1",
     "path": "/images/generations",
     "model": "grok-imagine-image-2.0",
@@ -252,5 +252,61 @@
       "negative_prompt": ""
     },
     "docs_url": "https://image.novelai.net/docs/index.html"
+  },
+  {
+    "id": "jimeng_images",
+    "name": "即梦 4.6",
+    "brand": "Jimeng",
+    "protocol": "jimeng",
+    "model": "jimeng_seedream46_cvtob",
+    "base_url": "https://visual.volcengineapi.com",
+    "path": "/",
+    "account_presets": [
+      "volcengine_visual",
+      "custom"
+    ],
+    "required_credentials": [
+      "access_key_id",
+      "secret_access_key"
+    ],
+    "optional_credentials": [
+      "session_token"
+    ],
+    "parameters": {
+      "force_single": true
+    },
+    "docs_url": "https://docs.volcengine.com/docs/jimeng-ai/jimeng-ai-image-generation-46-interface-documentation"
+  },
+  {
+    "id": "bfl_fill_images",
+    "name": "Black Forest Labs · Fill",
+    "brand": "BFL",
+    "protocol": "bfl",
+    "base_url": "https://api.bfl.ai/v1",
+    "path": "/{model}",
+    "model": "flux-pro-1.0-fill",
+    "account_presets": [
+      "bfl"
+    ],
+    "parameters": {},
+    "docs_url": "https://docs.bfl.ai/flux_1_fill"
+  },
+  {
+    "id": "runninghub_images",
+    "name": "RunningHub Seedream 5 Pro",
+    "brand": "RunningHub",
+    "protocol": "runninghub",
+    "base_url": "https://www.runninghub.ai",
+    "path": "/openapi/v2/{model}/text-to-image",
+    "model": "seedream-v5-pro",
+    "account_presets": [
+      "runninghub",
+      "custom"
+    ],
+    "parameters": {
+      "resolution": "2k",
+      "outputFormat": "png"
+    },
+    "docs_url": "https://www.runninghub.ai/runninghub-api-doc-en/api-494859263"
   }
 ]

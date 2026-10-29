@@ -45,7 +45,7 @@ pub struct App {
   /// and hands the new one to those sessions (`SessionSlot::follow_global_shell`).
   pub(super) shell: RwLock<ShellCommand>,
   /// Serializes creation with first-input retries, including requests whose response was lost.
-  pub(super) creation_lock: AsyncMutex<()>,
+  pub(super) creation_lock: Arc<AsyncMutex<()>>,
   session_open_locks: Mutex<BTreeMap<String, std::sync::Weak<AsyncMutex<()>>>>,
   /// The sessions opened since startup, by id. A session is opened on first use and stays open
   /// until it is deleted.
@@ -178,7 +178,7 @@ impl App {
       providers: RwLock::new(providers),
       accounts: RwLock::new(accounts),
       shell: RwLock::new(shell),
-      creation_lock: AsyncMutex::new(()),
+      creation_lock: Arc::new(AsyncMutex::new(())),
       session_open_locks: Mutex::new(BTreeMap::new()),
       sessions: AsyncMutex::new(BTreeMap::new()),
       data_dir,
@@ -195,6 +195,7 @@ impl App {
       asr: super::media_generation::MediaHub::new(&config.audio_transcription, &config.proxy),
     });
     crate::application::credentials::start_refresh_worker(&app);
+    super::draft_uploads::start_reaper(&app);
     let reaper = app.clone();
     app.lifecycle.tasks.spawn(async move {
       loop {

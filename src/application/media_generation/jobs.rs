@@ -1,4 +1,5 @@
 use super::*;
+use crate::extension_host::media::video::{VideoInput, VideoMode};
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -10,16 +11,24 @@ enum Phase {
   Failed,
   OutcomeUnknown,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Job {
   id: String,
   kind: MediaKind,
+  #[serde(default)]
+  mode: VideoMode,
   provider: String,
   service: MediaProvider,
   phase: Phase,
   task_id: Option<String>,
   asset_url: Option<String>,
+  #[serde(default)]
+  subtitle_url: Option<String>,
+  #[serde(default)]
+  artifact_mime: Option<String>,
   artifacts: Vec<blobs::Blob>,
+  #[serde(default)]
+  timestamps: Option<blobs::Blob>,
   created_at: u64,
   updated_at: u64,
   error: Option<String>,
@@ -28,35 +37,59 @@ struct Job {
 }
 impl Job {
   fn view(&self) -> Value {
-    json!({"job_id":self.id,"kind":self.kind,"provider":self.provider,"model":self.service.model,"status":self.phase,"artifacts":self.artifacts,"created_at":self.created_at,"updated_at":self.updated_at,"error":self.error,"next_action":if matches!(self.phase,Phase::Running|Phase::Downloading) { Some("status") } else { None },"poll_after_seconds":if self.phase==Phase::Running {Some(5)} else {None}})
+    json!({"job_id":self.id,"kind":self.kind,"mode":self.mode,"provider":self.provider,"model":self.service.model,"status":self.phase,"artifacts":self.artifacts,"timestamps":self.timestamps,"created_at":self.created_at,"updated_at":self.updated_at,"error":self.error,"next_action":if matches!(self.phase,Phase::Running|Phase::Downloading) { Some("status") } else { None },"poll_after_seconds":if self.phase==Phase::Running {Some(5)} else {None}})
   }
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct Request {
-  #[serde(default)]
+  pub runway: Option<crate::extensions::runway::edit::Plan>,
+  // Extension-owned execution plan; never deserialized from tool arguments.
+  pub minimax: Option<Box<crate::extensions::minimax::speech::Plan>>,
   pub action: Option<String>,
-  #[serde(default)]
   pub provider: Option<String>,
-  #[serde(default)]
   pub prompt: Option<String>,
-  #[serde(default)]
   pub kind: Option<MediaKind>,
-  #[serde(default)]
   pub job_id: Option<String>,
-  #[serde(default)]
-  pub options: MediaOptions,
+  pub options: Parameters,
+  pub mode: Option<VideoMode>,
+  pub inputs: Vec<VideoInput>,
+  pub modify_mode: Option<String>,
+}
+/// Host-enforced extension scope. Empty presets is reserved for user-facing job recovery.
+pub struct Scope {
+  pub video: bool,
+  pub presets: &'static [&'static str],
+}
+impl Scope {
+  fn accepts(&self, preset: &str) -> bool {
+    self.presets.is_empty() || self.presets.contains(&preset)
+  }
 }
 impl MediaHub {
-  pub async fn execute(
+  pub async fn recover(
+    &self,
+    job_id: String,
+    directory: &Path,
+    accounts: &AccountRegistry,
+    video: bool,
+  ) -> Result<Value, String> {
+    let request =
+      Request { action: Some("status".into()), job_id: Some(job_id), ..Default::default() };
+    self.execute_scoped(request, "", directory, accounts, Scope { video, presets: &[] }).await
+  }
+  pub async fn execute_scoped(
     &self,
     request: Request,
     call_id: &str,
     directory: &Path,
     accounts: &AccountRegistry,
-    video: bool,
+    scope: Scope,
   ) -> Result<Value, String> {
+    let video = scope.video;
     let action = request.action.as_deref().unwrap_or("run");
+    if action == "run" && scope.presets.is_empty() {
+      return Err("generation requires an extension service scope".into());
+    }
     if !matches!(action, "run" | "status" | "list_jobs") {
       return Err("invalid media action".into());
     }
@@ -78,7 +111,7 @@ impl MediaHub {
                   continue;
                 }
               };
-              if (job.kind == MediaKind::Video) == video {
+              if (job.kind == MediaKind::Video) == video && scope.accepts(&job.service.preset) {
                 rows.push(job.view());
               }
             }
@@ -99,23 +132,11 @@ impl MediaHub {
       return Err("invalid job_id".into());
     }
     let path = jobs.join(format!("{id}.json"));
-    let lock = {
-      let mut locks = self.locks.lock().unwrap();
-      locks.retain(|_, lock| lock.strong_count() > 0);
-      match locks.get(&path).and_then(std::sync::Weak::upgrade) {
-        Some(lock) => lock,
-        None => {
-          let lock = Arc::new(tokio::sync::Mutex::new(()));
-          locks.insert(path.clone(), Arc::downgrade(&lock));
-          lock
-        }
-      }
-    };
-    let _lock = lock.lock().await;
+    let _lock = self.locks.lock(&path).await;
     let state = self.state.read().unwrap().clone();
     if action == "status" || tokio::fs::try_exists(&path).await.map_err(|e| e.to_string())? {
       let mut job: Job = read_job(&path).await?;
-      if (job.kind == MediaKind::Video) != video {
+      if (job.kind == MediaKind::Video) != video || !scope.accepts(&job.service.preset) {
         return Err("job belongs to a different tool".into());
       }
       self.advance(&mut job, &path, directory, accounts, &state).await?;
@@ -138,6 +159,45 @@ impl MediaHub {
     if (kind == MediaKind::Video) != video || kind == MediaKind::Transcription {
       return Err("kind does not match this tool".into());
     }
+    if !video
+      && (!request.inputs.is_empty() || request.mode.is_some() || request.modify_mode.is_some())
+    {
+      return Err("video inputs/mode are not supported by audio_generate".into());
+    }
+    let mode = request.mode.unwrap_or_else(|| {
+      use crate::extension_host::media::video::InputRole::*;
+      if request.inputs.is_empty() {
+        VideoMode::Text
+      } else if request.inputs.iter().any(|i| i.role == SourceVideo) {
+        VideoMode::Edit
+      } else if request.inputs.iter().any(|i| {
+        matches!(i.role, ReferenceImage | ReferenceVideo | ReferenceAudio | ReferenceVoice)
+      }) {
+        VideoMode::Reference
+      } else if request.inputs.iter().any(|i| matches!(i.role, FirstFrame | LastFrame | Keyframe)) {
+        VideoMode::Frames
+      } else {
+        VideoMode::Reference
+      }
+    });
+    let mut reusable_blobs = std::collections::HashSet::new();
+    if video && request.provider.is_none() {
+      for (service_id, service) in &state.config.providers {
+        if !service.enabled || !scope.accepts(&service.preset) {
+          continue;
+        }
+        for input in &request.inputs {
+          if let Some(id) = &input.blob_id
+            && blobs::is_blob_id(id)
+            && source_url(directory, id, service)
+              .await?
+              .is_some_and(|url| url.starts_with("https://"))
+          {
+            reusable_blobs.insert((service_id.clone(), id.clone()));
+          }
+        }
+      }
+    }
     let selected = request
       .provider
       .as_deref()
@@ -146,53 +206,115 @@ impl MediaHub {
           .config
           .order
           .iter()
-          .find(|id| {
-            state
-              .config
-              .providers
-              .get(*id)
-              .is_some_and(|p| p.enabled && preset(&p.preset).is_ok_and(|s| s.kind == kind))
+          .find(|service_id| {
+            state.config.providers.get(*service_id).is_some_and(|p| {
+              p.enabled
+                && scope.accepts(&p.preset)
+                && preset(&p.preset).is_ok_and(|s| {
+                  s.kind == kind
+                    && super::preflight::prepare(&request, p, s.protocol, kind, mode).is_ok()
+                    && accounts
+                      .get(&format!("account:{}", p.credential_id))
+                      .is_some_and(|a| s.protocol.credentials_ready(a.client.get_credentials()))
+                    && (!video
+                      || (s.protocol.video_capabilities(&p.model).is_some_and(|caps| {
+                        request.inputs.iter().all(|input| {
+                          input.blob_id.as_ref().is_none_or(|id| {
+                            caps.blob_inputs.iter().any(|kind| kind == input.role.media_type())
+                              || reusable_blobs.contains(&((*service_id).clone(), id.clone()))
+                          })
+                        })
+                      })))
+                })
+            })
           })
           .map(String::as_str)
       })
-      .ok_or("no enabled provider supports this media kind")?;
+      .ok_or("no available provider supports this media kind, mode, inputs and options")?;
     let service = state
       .config
       .providers
       .get(selected)
-      .filter(|p| p.enabled)
+      .filter(|p| p.enabled && scope.accepts(&p.preset))
       .ok_or("media provider is unknown or disabled")?
       .clone();
     let spec = preset(&service.preset).map_err(|e| e.to_string())?;
     if spec.kind != kind {
       return Err("selected provider does not support this media kind".into());
     }
-    let options = request.options.overlay(&service.parameters);
-    let (route, draft) = spec
-      .protocol
-      .submission(&service.model, request.prompt.as_deref().unwrap_or(""), &options)
-      .map_err(|e| e.to_string())?;
+    let (options, mut route, mut draft) =
+      super::preflight::prepare(&request, &service, spec.protocol, kind, mode)?;
+    let prompt = request.prompt.as_deref().unwrap_or("");
     let account = accounts
       .get(&format!("account:{}", service.credential_id))
       .ok_or("media account unavailable")?;
     let credentials = account.client.get_credentials();
-    if credentials.api_key.is_empty() {
-      return Err("media account has no API key".into());
+    if !spec.protocol.credentials_ready(credentials) {
+      return Err("media account lacks required credentials".into());
+    }
+    let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
+    let timed_speech = spec.protocol == MediaProtocol::XaiSpeech
+      && crate::extensions::xai::speech_wire::timed_response(&options);
+    if video && !request.inputs.is_empty() {
+      let inputs = super::inputs::resolve(
+        &request.inputs,
+        directory,
+        spec.protocol,
+        &service,
+        spec,
+        credentials,
+        &state,
+      )
+      .await?;
+      let protocol = spec.protocol;
+      let model = service.model.clone();
+      let prompt = prompt.to_owned();
+      let modify_mode = request.modify_mode.clone();
+      let runway = request.runway.clone();
+      (route, draft) = crate::utils::blocking::cpu(move || {
+        if let Some(plan) = runway {
+          plan.build(
+            &model,
+            &prompt,
+            &crate::extensions::shared::parameters::decode(&options)?,
+            &inputs,
+          )
+        } else {
+          protocol.video_submission(
+            &model,
+            &prompt,
+            mode,
+            &options,
+            &inputs,
+            modify_mode.as_deref(),
+          )
+        }
+      })
+      .await
+      .map_err(|e| e.to_string())?
+      .map_err(|e| e.to_string())?;
     }
     let base = service.base_url.as_deref().filter(|v| !v.is_empty()).unwrap_or(&spec.base_url);
     let call = spec.protocol.call(base, &route, credentials, draft).map_err(|e| e.to_string())?;
     let transport = state.transport(service.proxy_enabled, TransferProfile::Artifact)?;
-    let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
     let now = crate::utils::time::unix_seconds();
     let mut job = Job {
       id,
       kind,
+      mode,
       provider: selected.into(),
       service,
       phase: Phase::Submitting,
       task_id: None,
       asset_url: None,
+      subtitle_url: None,
+      artifact_mime: request
+        .runway
+        .as_ref()
+        .and_then(|plan| plan.artifact_mime())
+        .map(str::to_owned),
       artifacts: Vec::new(),
+      timestamps: None,
       created_at: now,
       updated_at: now,
       error: None,
@@ -204,7 +326,6 @@ impl MediaHub {
     while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
       if entry.path().extension().is_some_and(|s| s == "json") {
         let Ok(old) = read_job::<Job>(&entry.path()).await else {
-          count += 1;
           continue;
         };
         if matches!(old.phase, Phase::Submitting | Phase::Running | Phase::Downloading) {
@@ -220,7 +341,7 @@ impl MediaHub {
     let result = async {
       if video {
         let reply = state
-          .transport(job.service.proxy_enabled, TransferProfile::Status)?
+          .transport(job.service.proxy_enabled, TransferProfile::VideoSubmission)?
           .execute(&call)
           .await
           .map_err(|_| "submission connection failed; outcome unknown".to_owned())?;
@@ -234,12 +355,53 @@ impl MediaHub {
           .map_err(|_| "invalid media submission reply".to_owned())?;
         job.task_id = Some(spec.protocol.task_id(&value)?);
         job.phase = Phase::Running;
+      } else if timed_speech {
+        let reply = state
+          .transport(job.service.proxy_enabled, TransferProfile::TimedSpeech)?
+          .execute(&call)
+          .await
+          .map_err(|_| "timed speech submission connection failed; outcome unknown".to_owned())?;
+        if !reply.is_success() {
+          return Err(format!("timed speech HTTP {}; outcome unknown", reply.status));
+        }
+        let (audio, metadata) = crate::utils::blocking::cpu(move || {
+          let (audio, metadata) = crate::extensions::xai::speech_output::decode_timed(&reply.body)?;
+          let mime = media::mime(&audio).ok_or("unrecognized speech audio")?;
+          let value: Value = serde_json::from_slice(&metadata).map_err(|e| e.to_string())?;
+          if !["audio/mpeg", "audio/wav"].contains(&mime) || value["content_type"] != mime {
+            return Err("speech audio content type does not match its bytes".to_owned());
+          }
+          Ok::<_, String>((audio, metadata))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        job.artifacts =
+          vec![blobs::save_upload(directory, &audio).await.map_err(|e| e.to_string())?];
+        job.timestamps =
+          Some(blobs::save_upload(directory, &metadata).await.map_err(|e| e.to_string())?);
+        job.phase = Phase::Succeeded;
+      } else if spec.protocol == MediaProtocol::MinimaxSpeech {
+        let reply = state
+          .transport(job.service.proxy_enabled, TransferProfile::AudioSubmission)?
+          .execute(&call)
+          .await
+          .map_err(|_| "audio submission connection failed; outcome unknown".to_owned())?;
+        if !reply.is_success() {
+          return Err(format!("audio submission HTTP {}; outcome unknown", reply.status));
+        }
+        let value: Value = serde_json::from_slice(&reply.body)
+          .map_err(|_| "invalid speech submission reply".to_owned())?;
+        let urls =
+          request.minimax.as_ref().ok_or("missing MiniMax speech plan")?.result_urls(&value)?;
+        job.asset_url = Some(urls.audio);
+        job.subtitle_url = urls.subtitles;
+        job.phase = Phase::Downloading;
       } else {
         let stream = transport
           .execute_stream(&call)
           .await
           .map_err(|_| "audio submission connection failed; outcome unknown".to_owned())?;
-        job.artifacts = vec![save_stream(stream, directory, kind).await?];
+        job.artifacts = vec![save_stream(stream, directory, kind, None).await?];
         job.phase = Phase::Succeeded;
       }
       Ok::<_, String>(())
@@ -279,19 +441,21 @@ impl MediaHub {
     if now < job.next_poll_at {
       return Ok(());
     }
-    let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
     job.next_poll_at = now + 5;
     save_job(path, job).await?;
     let transport = state.transport(job.service.proxy_enabled, TransferProfile::Artifact)?;
-    if job.phase == Phase::Running || (job.phase == Phase::Downloading && job.error.is_some()) {
+    if job.phase == Phase::Running
+      || (job.phase == Phase::Downloading && job.error.is_some() && job.task_id.is_some())
+    {
+      let _status = self.status_permits.acquire().await.map_err(|e| e.to_string())?;
       let spec = preset(&job.service.preset).map_err(|e| e.to_string())?;
       let credentials = accounts
         .get(&format!("account:{}", job.service.credential_id))
         .ok_or("media account unavailable; restore it to continue the existing job")?
         .client
         .get_credentials();
-      if credentials.api_key.is_empty() {
-        return Err("media account has no API key".into());
+      if !spec.protocol.credentials_ready(credentials) {
+        return Err("media account lacks required credentials".into());
       }
       let base =
         job.service.base_url.as_deref().filter(|v| !v.is_empty()).unwrap_or(&spec.base_url);
@@ -307,7 +471,7 @@ impl MediaHub {
         return Err(format!("task query HTTP {}; retry status, not generation", reply.status));
       }
       let value: Value = serde_json::from_slice(&reply.body).map_err(|e| e.to_string())?;
-      use crate::protocol::media_generation::VideoStatus;
+      use crate::extension_host::media::VideoStatus;
       match spec.protocol.decode_status(&value).map_err(|e| e.to_string())? {
         VideoStatus::Complete(url) => {
           job.asset_url = Some(url);
@@ -322,39 +486,45 @@ impl MediaHub {
       save_job(path, job).await?;
     }
     if job.phase == Phase::Downloading {
-      let url = job.asset_url.as_deref().ok_or("missing artifact URL")?;
-      crate::protocol::image_generation::validate_url(url).map_err(|e| e.to_string())?;
-      // Follow bounded CDN redirects without forwarding account credentials.
+      let _download = self.download_permits.acquire().await.map_err(|e| e.to_string())?;
+      let spec = preset(&job.service.preset).map_err(|e| e.to_string())?;
+      let trusted_base = job
+        .service
+        .base_url
+        .as_deref()
+        .filter(|base| !base.is_empty())
+        .unwrap_or(&spec.base_url)
+        .to_owned();
+      // Streaming is shared infrastructure; the extension retains artifact validation and state.
       let result = async {
-        let mut target =
-          crate::protocol::image_generation::validate_url(url).map_err(|e| e.to_string())?;
-        for _ in 0..5 {
-          let call = Call {
-            method: Method::Get,
-            url: target.to_string(),
-            headers: Vec::new(),
-            body: Vec::new(),
-          };
-          let stream = transport
-            .execute_stream(&call)
-            .await
-            .map_err(|_| "artifact download connection failed".to_owned())?;
-          if matches!(stream.get_status(), 301 | 302 | 303 | 307 | 308) {
-            let location = crate::protocol::attempt::find_header(stream.get_headers(), "location")
-              .ok_or("artifact redirect has no location")?;
-            let next = target.join(location).map_err(|_| "invalid artifact redirect")?;
-            target = crate::protocol::image_generation::validate_url(next.as_str())
-              .map_err(|e| e.to_string())?;
-          } else {
-            return save_stream(stream, directory, job.kind).await;
-          }
+        if job.artifacts.is_empty() {
+          let url = job.asset_url.as_deref().ok_or("missing artifact URL")?;
+          let stream =
+            crate::extensions::shared::artifacts::open_stream(&transport, url, &trusted_base)
+              .await?;
+          job.artifacts =
+            vec![save_stream(stream, directory, job.kind, job.artifact_mime.as_deref()).await?];
+          // Persist audio independently so a subtitle failure/restart never repeats its download.
+          save_job(path, job).await?;
         }
-        Err("too many artifact redirects".into())
+        if let Some(url) = job.subtitle_url.as_deref().filter(|_| job.timestamps.is_none()) {
+          let client = state.transport(job.service.proxy_enabled, TransferProfile::Status)?;
+          let bytes =
+            crate::extensions::shared::artifacts::download(&client, url, "", &trusted_base).await?;
+          let bytes = crate::utils::blocking::cpu(move || {
+            crate::extensions::minimax::speech::validate_subtitles(&bytes)?;
+            Ok::<_, String>(bytes)
+          })
+          .await
+          .map_err(|e| e.to_string())??;
+          job.timestamps =
+            Some(blobs::save_upload(directory, &bytes).await.map_err(|e| e.to_string())?);
+        }
+        Ok::<_, String>(())
       }
       .await;
       match result {
-        Ok(blob) => {
-          job.artifacts = vec![blob];
+        Ok(()) => {
           job.phase = Phase::Succeeded;
           job.error = None;
         }
@@ -371,6 +541,7 @@ async fn save_stream<S: ReplyStream>(
   stream: S,
   directory: &Path,
   kind: MediaKind,
+  expected_mime: Option<&str>,
 ) -> Result<blobs::Blob, String> {
   if !stream.is_success() {
     return Err(format!("media transfer HTTP {}", stream.get_status()));
@@ -378,21 +549,71 @@ async fn save_stream<S: ReplyStream>(
   let chunks = Box::pin(futures_util::stream::try_unfold(stream, |mut stream| async move {
     Ok::<_, crate::protocol::error::Error>(stream.next().await?.map(|chunk| (chunk, stream)))
   }));
-  media::save(
+  media::save_validated(
     directory,
     chunks,
-    kind.file_kind(),
+    expected_mime.unwrap_or(kind.file_kind()),
     if kind == MediaKind::Video { 512 * 1024 * 1024 } else { 128 * 1024 * 1024 },
+    (expected_mime == Some("application/zip"))
+      .then_some(crate::extensions::runway::archive::validate as media::Validator),
   )
   .await
   .map_err(|e| e.to_string())
 }
 async fn save_job(path: &Path, job: &mut Job) -> Result<(), String> {
   job.updated_at = crate::utils::time::unix_seconds();
-  let bytes = serde_json::to_vec(job).map_err(|e| e.to_string())?;
-  blobs::atomic_write(path, &bytes).await.map_err(|e| e.to_string())
+  crate::extensions::shared::jobs::write(path, job.clone()).await
 }
-async fn read_job<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
-  let bytes = tokio::fs::read(path).await.map_err(|_| "media job not found".to_owned())?;
-  serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+async fn read_job<T: serde::de::DeserializeOwned + Send + 'static>(
+  path: &Path,
+) -> Result<T, String> {
+  crate::extensions::shared::jobs::read(path).await
+}
+
+/// Use only successful jobs owned by this session; never accept arbitrary upstream task IDs.
+pub(super) async fn source_task(
+  directory: &Path,
+  id: &str,
+  service: &MediaProvider,
+) -> Result<String, String> {
+  if !blobs::is_blob_id(id) {
+    return Err("invalid source job_id".into());
+  }
+  let job: Job = read_job(&directory.join(".media-jobs").join(format!("{id}.json"))).await?;
+  if job.phase != Phase::Succeeded
+    || job.kind != MediaKind::Video
+    || job.service.preset != service.preset
+    || job.service.credential_id != service.credential_id
+    || job.service.base_url != service.base_url
+    || job.service.model != service.model
+  {
+    return Err("extension requires a successful video job from the same service/account".into());
+  }
+  job.task_id.ok_or("source job has no upstream task ID".into())
+}
+pub(super) async fn source_url(
+  directory: &Path,
+  blob: &str,
+  service: &MediaProvider,
+) -> Result<Option<String>, String> {
+  let mut entries = match tokio::fs::read_dir(directory.join(".media-jobs")).await {
+    Ok(v) => v,
+    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+    Err(e) => return Err(e.to_string()),
+  };
+  while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+    if entry.path().extension().is_some_and(|s| s == "json") {
+      let Ok(job) = read_job::<Job>(&entry.path()).await else { continue };
+      if job.phase == Phase::Succeeded
+        && job.service.preset == service.preset
+        && job.service.credential_id == service.credential_id
+        && job.service.base_url == service.base_url
+        && job.service.model == service.model
+        && job.artifacts.iter().any(|b| b.id == blob)
+      {
+        return Ok(job.asset_url);
+      }
+    }
+  }
+  Ok(None)
 }

@@ -5,12 +5,13 @@ use super::{
   config::ProxyConfig,
   error::ApplicationError,
 };
+use crate::extension_host::fetch::{FetchProtocol, FetchRequest};
 use crate::{
-  client::{RetryObserver, account::AccountClient},
+  client::RetryObserver,
+  extensions::shared::read::ReadClient,
   protocol::{
     attempt::Limits,
     endpoint::{AuthScheme, Endpoint},
-    web_fetch::{FetchProtocol, FetchRequest},
   },
   transport::ReqwestTransport,
 };
@@ -42,7 +43,7 @@ pub struct FetchProvider {
   #[serde(default)]
   pub headers: BTreeMap<String, String>,
 }
-use crate::tool::web_fetch::FetchPage;
+use crate::application::pages::FetchPage;
 pub fn presets() -> Value {
   super::presets::fetch_presets().clone()
 }
@@ -169,6 +170,13 @@ impl FetchHub {
             preset: built.config.preset.clone(),
             kind: None,
             model: None,
+            reference_images: None,
+            mask_editing: None,
+            markup_editing: None,
+            image_required: None,
+            image_options: None,
+            precise_references: None,
+            video: None,
             enabled: built.config.enabled,
             available: built.config.enabled
               && (!built.requires_key
@@ -179,6 +187,25 @@ impl FetchHub {
     }
   }
   pub async fn fetch(
+    &self,
+    url: &str,
+    refresh: bool,
+    conversation: &str,
+    accounts: &AccountRegistry,
+    observer: Option<RetryObserver>,
+    only: Option<&str>,
+  ) -> Result<FetchPage, String> {
+    crate::extensions::shared::read_budget::run(self.fetch_inner(
+      url,
+      refresh,
+      conversation,
+      accounts,
+      observer,
+      only,
+    ))
+    .await?
+  }
+  async fn fetch_inner(
     &self,
     url: &str,
     refresh: bool,
@@ -260,17 +287,21 @@ async fn read(
   let transport = &service.transport;
   // Shared-account calls use the same client boundary as subscription web search.
   if let Some(account) = account {
-    let mut client = account.client.clone().with_transport(transport.clone());
-    if let Some(observer) = observer {
-      client = client.with_retry_observer(observer);
-    }
+    let client = ReadClient::new(
+      transport.clone(),
+      account.client.get_credentials().clone(),
+      crate::utils::retry::RetryPolicy::auxiliary(),
+      observer,
+    );
     let page = client.fetch(protocol, &request, p.base_url.as_deref(), &headers).await?;
     return Ok((page.title, page.content));
   }
-  let mut client = AccountClient::new(transport.clone(), credentials, None);
-  if let Some(observer) = observer {
-    client = client.with_retry_observer(observer);
-  }
+  let client = ReadClient::new(
+    transport.clone(),
+    credentials,
+    crate::utils::retry::RetryPolicy::auxiliary(),
+    observer,
+  );
   let page = client.fetch(protocol, &request, p.base_url.as_deref(), &headers).await?;
   Ok((page.title, page.content))
 }

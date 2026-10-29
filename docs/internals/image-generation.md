@@ -1,15 +1,15 @@
 # Image generation
 
 Implemented 2026-10-29. This is a text-to-image tool, independent of the chat model.
-Reference-image editing and masks are not exposed by this version.
+Reference images, masks and editing depend on the selected extension and model.
 
 ## Using it
 
-1. In Settings → Image generation, add a service and link its account. Model IDs,
+1. In Settings → Extension tools → Image generation, add a service and link its account. Model IDs,
    base URLs and provider-specific generation parameters are editable.
 2. Enable `Image Generate` in the session's tools (or in new-session defaults).
-   It can be delivered as a direct `image_generate` tool or `wish imagegen` command.
-3. The tool accepts `prompt` and an optional configured `provider` ID. Without an
+   Discover its independent tools through `extension_tools` or `wish extension search image`.
+3. The tool accepts `prompt` and an optional configured `service` ID. Without an
    ID, it selects the first enabled service in `image_generation.order`.
 4. Returned `images` contain `id`, `mime_type`, `byte_count`, and canonical `path`.
    Images are in the session's existing blob directory, not temporary CDN links.
@@ -20,7 +20,8 @@ Reference-image editing and masks are not exposed by this version.
 Example (inside a session shell):
 
 ```sh
-wish imagegen --json '{"prompt":"A watercolor mountain landscape","provider":"openai_images"}'
+wish extension inspect openai_image
+wish extension call openai_image --json '{"prompt":"A watercolor mountain landscape","service":"openai_images"}'
 ```
 
 Example service configuration (credentials remain in `accounts`):
@@ -123,13 +124,11 @@ they do not establish live billing, entitlement or model availability.
 
 ## Provider discovery and routing
 
-`image_generate`, `web_search` and `web_fetch` accept `{"action":"list_providers"}`
-without execution arguments. The result contains live configured IDs, display names, models,
-local credential readiness and `default_order`. It excludes credentials and connection details.
-CLI equivalents are `wish imagegen --list-providers`, `wish websearch --list-providers`
-and `wish webfetch --list-providers`. Discovery observes the session capability switch.
+Use `wish extension search image` (or tags `web search` / `web fetch`) then
+`wish extension inspect TOOL`. Discovery lists authorized enabled services and their capabilities
+in configured priority order, without sending an upstream request or exposing credentials.
 
-For execution, an optional `provider` pins the configured ID, including an enabled service
+For execution, an optional `service` pins the configured ID, including an enabled service
 outside the default order. A pinned failure never selects a different service. Without it,
 search/fetch try enabled providers in configuration order; image generation submits only to
 the first enabled provider, since an ambiguous paid request cannot safely fail over. Fetch

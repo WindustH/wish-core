@@ -1,5 +1,5 @@
 //! User-facing recovery of an existing session media job; never creates a generation.
-use super::{app::App, error::ApplicationError, media_generation::Request};
+use super::{app::App, error::ApplicationError};
 use serde_json::Value;
 use std::sync::Arc;
 pub async fn status(
@@ -14,14 +14,11 @@ pub async fn status(
     "audio" => (&app.audio, false),
     _ => return Err(ApplicationError::not_found()),
   };
-  let request: Request =
-    serde_json::from_value(serde_json::json!({"action":"status","job_id":job}))
-      .map_err(ApplicationError::internal)?;
   let directory = app.data_dir.blobs(&session);
   let accounts = app.get_service_accounts();
   app
     .lifecycle
-    .until_shutdown(hub.execute(request, "", &directory, &accounts, video))
+    .until_shutdown(hub.recover(job, &directory, &accounts, video))
     .await?
     .map_err(ApplicationError::invalid)
 }

@@ -26,14 +26,15 @@ HTTP / SSE / CLI
        |
     client/        model clients and independent account clients; retry policy
        |
-    protocol/      upstream request/response rules, authentication and renewal
+    protocol/      LLM request/response rules, shared authentication and renewal
+    extensions/    independent search, page-reading and media capabilities
        |
     transport/     one HTTP attempt and streamed body reading
 ```
 
 `server/` adapts external requests to application use cases. `application/` assembles services
 and coordinates sessions, without depending on HTTP types or server modules. `executor/` owns
-agent execution; it does not choose protocol-specific wire behavior. `protocol/` owns those
+agent execution; it does not choose protocol-specific wire behavior. `protocol/` owns LLM wire
 rules and does not know about application configuration or persistence. `storage/` accepts
 records to persist and does not reach back into application or session logic.
 
@@ -137,3 +138,5 @@ black-box/integration suites. This project deliberately has no inline Rust unit 
 
 See [image generation](image-generation.md) for provider protocols, subscription authentication,
 blob storage, configuration and integration verification.
+
+Independent service capabilities are described in [extensions](extensions.md).

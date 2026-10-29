@@ -348,9 +348,29 @@ Command delivery removes that capability from the model tool list and supplies c
 instructions instead. When shell is disabled, enabled web/question capabilities fall back to
 direct tools, so they remain reachable.
 
-`wish webfetch URL`, `wish websearch QUERY`, and `wish askuser --json '{"questions":[...]}'`
-share the direct tools' implementations. All three support `--json`, `--stdin` and `--schema`.
+Web and media capabilities use `wish extension search`, `wish extension inspect TOOL`, and
+`wish extension call TOOL --json '<arguments>'` (or `--stdin`). Direct delivery exposes
+`extension_tools` for discovery, then independently registered tool names. `wish askuser`
+retains `--json`, `--stdin` and `--schema`.
 Task direct delivery exposes one `task` tool using the task API's request object.
+
+Inside a session shell, discover before invoking:
+
+```sh
+wish extension search
+wish extension search image
+wish extension search web search
+wish extension inspect openai_image
+wish extension call openai_image --json '{"prompt":"A watercolor mountain"}'
+wish extension call openai_image --stdin < arguments.json
+```
+
+Search without tags lists available tools; multiple tags must all match (case-insensitively).
+Inspection returns the selected tool's schema, examples and authorized configured services in
+priority order. Pass `service` in that tool's arguments to select a service explicitly; omit it
+to use default priority. Calls and discovery print JSON. These commands require the session
+bridge environment and obey both shell and capability permissions. The former `websearch`,
+`webfetch`, `imagegen`, `videogen`, `audiogen` and `asr` commands are no longer supported.
 
 Command calls/results are stored as application history events and projected into ordinary
 frontend tool cards, including search metadata and question forms. They are not synthetic

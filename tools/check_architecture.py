@@ -5,6 +5,10 @@ import re
 import sys
 root = Path(__file__).resolve().parents[1] / "src"
 rules = {
+    "extensions/shared": (r"crate::extensions::(?!shared::)[a-z_]+::",),
+    "extensions": (r"crate::(?:application|server|session|executor|tool|extension_host)::",),
+    "client": (r"crate::extensions::",),
+    "protocol": (r"crate::extensions::",),
     "task": (r"crate::(?:executor|session|tool)::",),
     "tool": (r"crate::executor::", r"\bexecutor::\{"),
     "storage": (r"crate::(?:application|server|session|executor)::",),
@@ -12,6 +16,8 @@ rules = {
 errors = []
 for module, forbidden in rules.items():
     for path in [root / (module + ".rs"), *(root / module).rglob("*.rs")]:
+        if not path.is_file():
+            continue
         text = "\n".join(line for line in path.read_text().splitlines() if not line.lstrip().startswith("//"))
         for pattern in forbidden:
             if re.search(pattern, text):

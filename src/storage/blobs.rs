@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 /// An upload's description, saved beside it.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Blob {
   pub id: String,
   pub mime_type: String,
@@ -66,7 +66,7 @@ fn sniff_mime_type(bytes: &[u8]) -> &'static str {
 
 /// An upload's description; one without a readable description is not found.
 pub async fn read_description(directory: &Path, id: &str) -> Result<Blob, RepositoryError> {
-  let bytes = tokio::fs::read(description_path(directory, id))
+  let bytes = crate::utils::bounded_file::read(&description_path(directory, id), 64 * 1024)
     .await
     .map_err(|_| RepositoryError::not_found())?;
   serde_json::from_slice(&bytes).map_err(RepositoryError::internal)

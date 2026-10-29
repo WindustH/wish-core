@@ -2,7 +2,7 @@
 //!
 //! Where a protocol is read from is that protocol's own knowledge, so each tree that reads a
 //! service - [`account_state`](crate::protocol::account_state),
-//! [`model_list`](crate::protocol::model_list), [`web_search`](crate::protocol::web_search) - keeps
+//! [`model_list`](crate::protocol::model_list), [`web_search`](crate::extension_host::search) - keeps
 //! a `find_source` of its own: one match over its protocols, so the compiler checks that none is
 //! left without its row. What lives here is what every row shares: its shape (`&'static`
 //! everything, so a row costs nothing to state), and its turning into an [`Endpoint`], where the
@@ -59,6 +59,7 @@ impl Source {
     let path = path
       .or(self.path)
       .ok_or_else(|| Error::Build(format!("`{}` needs a path", self.protocol)))?;
+    Endpoint::new(base, path, self.auth)?;
     Ok(Endpoint {
       base_url: base.to_owned(),
       path: path.to_owned(),

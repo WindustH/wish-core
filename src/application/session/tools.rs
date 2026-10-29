@@ -1,5 +1,6 @@
 //! The built-in tools of a session: which optional ones it has (its switches), the executor that
 //! runs them, and the shell its commands run under.
+mod extensions;
 use super::{SessionSlot, ToolChanges, ToolSwitches};
 use crate::application::{
   config::ShellSettings,
@@ -41,11 +42,8 @@ pub struct SessionTools {
   video_generate_on: AtomicBool,
   audio_generate_on: AtomicBool,
   audio_transcribe_on: AtomicBool,
-  audio_transcribe: crate::tool::audio_transcribe::AudioTranscribeTool,
-  video_generate: crate::tool::media_generate::MediaGenerateTool,
-  audio_generate: crate::tool::media_generate::MediaGenerateTool,
   image_generate: crate::tool::image_generate::ImageGenerateTool,
-  pub web_fetch: crate::tool::web_fetch::WebFetchTool,
+  pub web_fetch: crate::application::pages::PageReader,
   pub web_search: WebSearchTool,
   pub history: HistoryTools,
   history_on: AtomicBool,
@@ -60,14 +58,13 @@ impl SessionTools {
       Capability::Task => vec![crate::application::task_access::specification()],
       Capability::Shell => self.shell().map(|shell| shell.get_specifications()).unwrap_or_default(),
       Capability::AskUser => vec![self.ask_user.get_specification()],
-      Capability::WebFetch => vec![self.web_fetch.get_specification()],
-      Capability::ImageGenerate => {
-        vec![crate::tool::image_generate::ImageGenerateTool::specification()]
-      }
-      Capability::WebSearch => vec![self.web_search.get_specification()],
-      Capability::VideoGenerate => vec![self.video_generate.specification()],
-      Capability::AudioGenerate => vec![self.audio_generate.specification()],
-      Capability::AudioTranscribe => vec![self.audio_transcribe.specification()],
+      Capability::ExtensionDiscovery => vec![extensions::specification()],
+      Capability::WebFetch
+      | Capability::WebSearch
+      | Capability::ImageGenerate
+      | Capability::VideoGenerate
+      | Capability::AudioGenerate
+      | Capability::AudioTranscribe => Vec::new(),
     }
   }
 
@@ -92,9 +89,6 @@ impl SessionTools {
       video_generate_on: AtomicBool::new(false),
       audio_generate_on: AtomicBool::new(false),
       audio_transcribe_on: AtomicBool::new(false),
-      audio_transcribe: make_asr(slot.clone()),
-      video_generate: make_media_generate(slot.clone(), true),
-      audio_generate: make_media_generate(slot.clone(), false),
       image_generate: make_image_generate(slot.clone()),
       web_fetch,
       web_search: WebSearchTool::new(
@@ -302,6 +296,9 @@ impl ToolExecutor for SessionTools {
   }
 
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
+    if crate::extensions::catalog::is_tool(&call.name) {
+      return self.execute_extension(call, control).await;
+    }
     match Capability::from_tool(&call.name) {
       Some(Capability::Image) => self.view_image(call, control).await,
       Some(Capability::Sessions) => {
@@ -355,36 +352,18 @@ impl ToolExecutor for SessionTools {
         }
         self.ask_user.execute(call, control).await
       }
-      Some(Capability::VideoGenerate) => {
-        if !self.video_generate_on.load(Ordering::Acquire) {
-          return ToolOutcome::Failed("video_generate is disabled for this session".into());
-        }
-        self.video_generate.execute(call, control).await
-      }
+      Some(Capability::VideoGenerate) => ToolOutcome::Failed("use an extension media tool".into()),
       Some(Capability::AudioTranscribe) => {
-        if !self.audio_transcribe_on.load(Ordering::Acquire) {
-          return ToolOutcome::Failed("audio_transcribe is disabled for this session".into());
-        }
-        self.audio_transcribe.execute(call, control).await
+        ToolOutcome::Failed("use an extension transcription tool".into())
       }
-      Some(Capability::AudioGenerate) => {
-        if !self.audio_generate_on.load(Ordering::Acquire) {
-          return ToolOutcome::Failed("audio_generate is disabled for this session".into());
-        }
-        self.audio_generate.execute(call, control).await
-      }
+      Some(Capability::AudioGenerate) => ToolOutcome::Failed("use an extension media tool".into()),
       Some(Capability::ImageGenerate) => {
         if !self.image_generate_on.load(Ordering::Acquire) {
           return ToolOutcome::Failed("image_generate is disabled for this session".into());
         }
         self.image_generate.execute(call, control).await
       }
-      Some(Capability::WebFetch) => {
-        if !self.web_fetch_on.load(Ordering::Acquire) {
-          return ToolOutcome::Failed("web_fetch is not enabled for this session".into());
-        }
-        self.web_fetch.execute(call, control).await
-      }
+      Some(Capability::WebFetch) => ToolOutcome::Failed("use an extension reader tool".into()),
       Some(Capability::WebSearch) => {
         if !self.web_search_on.load(Ordering::Acquire) {
           return ToolOutcome::Failed("web_search is not enabled for this session".into());
@@ -522,10 +501,9 @@ fn make_fetch(
   slot: Weak<SessionSlot>,
   session_id: &str,
   directory: std::path::PathBuf,
-) -> crate::tool::web_fetch::WebFetchTool {
-  let providers = provider_listing(slot.clone(), Capability::WebFetch);
+) -> crate::application::pages::PageReader {
   let conversation = session_id.to_owned();
-  crate::tool::web_fetch::WebFetchTool::new(
+  crate::application::pages::PageReader::new(
     Arc::new(move |url, refresh, provider| {
       let owner = slot.upgrade();
       let app = owner.as_ref().and_then(|s| s.app.upgrade());
@@ -541,7 +519,6 @@ fn make_fetch(
       })
     }),
     directory,
-    providers,
   )
 }
 
@@ -553,15 +530,7 @@ fn make_image_generate(slot: Weak<SessionSlot>) -> crate::tool::image_generate::
       Box::pin(async move {
         let owner = owner.ok_or("session is closed")?;
         let app = owner.app.upgrade().ok_or("server is shutting down")?;
-        app
-          .images
-          .generate(
-            &request.prompt,
-            request.provider.as_deref(),
-            &app.get_service_accounts(),
-            &owner.blob_dir,
-          )
-          .await
+        app.images.generate(&request, &app.get_service_accounts(), &owner.blob_dir).await
       })
     }),
     providers,
@@ -588,44 +557,4 @@ fn provider_listing(
       _ => Err("tool does not support provider discovery".into()),
     }
   })
-}
-
-fn make_media_generate(
-  slot: Weak<SessionSlot>,
-  video: bool,
-) -> crate::tool::media_generate::MediaGenerateTool {
-  let providers = provider_listing(
-    slot.clone(),
-    if video { Capability::VideoGenerate } else { Capability::AudioGenerate },
-  );
-  crate::tool::media_generate::MediaGenerateTool {
-    video,
-    providers,
-    backend: Arc::new(move |arguments, call_id| {
-      let owner = slot.upgrade();
-      Box::pin(async move {
-        let owner = owner.ok_or("session is closed")?;
-        let app = owner.app.upgrade().ok_or("server is shutting down")?;
-        let request = serde_json::from_value(arguments).map_err(|e| e.to_string())?;
-        let hub = if video { &app.videos } else { &app.audio };
-        hub.execute(request, &call_id, &owner.blob_dir, &app.get_service_accounts(), video).await
-      })
-    }),
-  }
-}
-
-fn make_asr(slot: Weak<SessionSlot>) -> crate::tool::audio_transcribe::AudioTranscribeTool {
-  let providers = provider_listing(slot.clone(), Capability::AudioTranscribe);
-  crate::tool::audio_transcribe::AudioTranscribeTool {
-    providers,
-    backend: Arc::new(move |arguments, _| {
-      let slot = slot.upgrade();
-      Box::pin(async move {
-        let slot = slot.ok_or("session is closed")?;
-        let app = slot.app.upgrade().ok_or("server is shutting down")?;
-        let request = serde_json::from_value(arguments).map_err(|e| e.to_string())?;
-        app.asr.transcribe(request, &slot.blob_dir, &app.get_service_accounts()).await
-      })
-    }),
-  }
 }

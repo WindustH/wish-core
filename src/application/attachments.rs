@@ -81,5 +81,5 @@ pub async fn upload_draft(
   let id = uuid::Uuid::parse_str(request_id)
     .map_err(|_| ApplicationError::invalid("draft request_id must be a UUID"))?
     .to_string();
-  Ok(blobs::save_upload(&app.data_dir.blobs(&id), body).await?)
+  super::draft_uploads::upload(app, id, body).await
 }

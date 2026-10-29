@@ -13,7 +13,7 @@ pub async fn load(root: &Path) -> std::io::Result<Vec<Value>> {
     if !entry.file_type().await?.is_dir() {
       continue;
     }
-    match tokio::fs::read(entry.path().join("task.json")).await {
+    match crate::utils::bounded_file::read(&entry.path().join("task.json"), 2 * 1024 * 1024).await {
       Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
         Ok(record) if record["task_id"].as_str().is_some_and(|id| entry.file_name() == id) => {
           records.push(record)
@@ -21,6 +21,9 @@ pub async fn load(root: &Path) -> std::io::Result<Vec<Value>> {
         _ => eprintln!("ignoring invalid task record: {}", entry.path().display()),
       },
       Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+      Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+        eprintln!("ignoring oversized task record: {}", entry.path().display())
+      }
       Err(error) => return Err(error),
     }
   }

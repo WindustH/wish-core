@@ -21,6 +21,7 @@ use super::{Proxy, TransportError, build_payload_error, build_read_error, cap_me
 #[derive(Clone)]
 pub struct ReqwestTransport {
   client: reqwest::Client,
+  proxy: std::sync::Arc<Proxy>,
   limits: Limits,
   stream_total: Option<std::time::Duration>,
 }
@@ -36,10 +37,31 @@ impl ReqwestTransport {
       // server states it did not process the stream, but invisible here. Retrying belongs above
       // this layer, where it can be seen, measured and switched off per caller.
       .retry(reqwest::retry::never());
-    let client = apply_proxy(builder, proxy)?
+    let client = apply_proxy(builder, proxy.clone())?
       .build()
       .map_err(|error| Error::Build(format!("client build failed: {error}")))?;
-    Ok(Self { client, limits, stream_total: None })
+    Ok(Self { client, proxy: std::sync::Arc::new(proxy), limits, stream_total: None })
+  }
+
+  /// Use a caller-owned DNS policy while preserving timeout and explicit proxy settings.
+  pub(crate) fn with_resolver(
+    &self,
+    resolver: impl reqwest::dns::Resolve + 'static,
+  ) -> Result<Self, Error> {
+    let builder = pooled_client_builder()
+      .connect_timeout(self.limits.connect)
+      .redirect(reqwest::redirect::Policy::none())
+      .retry(reqwest::retry::never())
+      .dns_resolver(std::sync::Arc::new(resolver));
+    let client = apply_proxy(builder, (*self.proxy).clone())?
+      .build()
+      .map_err(|error| Error::Build(format!("client build failed: {error}")))?;
+    Ok(Self {
+      client,
+      proxy: self.proxy.clone(),
+      limits: self.limits,
+      stream_total: self.stream_total,
+    })
   }
 
   /// Override the wall-clock limit only for streamed responses. Buffered calls keep `limits.total`.

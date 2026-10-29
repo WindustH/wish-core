@@ -12,15 +12,15 @@ part has its own page:
   conversation.
 - [account-state](protocol/account-state.md) and [model-list](protocol/model-list.md): what a
   service says about the account and its models.
-- `web_search` (module docs in `src/protocol/web_search.rs`): one search, in one shape across
-  services.
+- Search, page reading and media capabilities live under `src/extensions/`; their provider
+  formats are not LLM protocol families. See [extensions](extensions.md).
 - [endpoint](protocol/endpoint.md): the target, the auth scheme and the credentials every call is
   reached with.
 - [error](protocol/error.md): the error vocabulary, including `http_error.rs`'s decoding of
   non-`2xx` envelopes.
 
 Each feature names its protocols with its own enum: `ModelUseProtocol`, `TokenCountProtocol`,
-`UpstreamCompactionProtocol`, `AccountStateProtocol`, `ModelListProtocol`, `SearchProtocol`, and on
+`UpstreamCompactionProtocol`, `AccountStateProtocol`, `ModelListProtocol`, and on
 the endpoint `AuthScheme` with its `CredentialRenewal` option. The enums a configuration names by
 text id (all but `ModelUseProtocol` and the auth scheme) are declared through one macro,
 `text_id_enum!`, which gives each `ALL`, `get_id`, `Display` and `FromStr`. A feature a protocol
@@ -43,7 +43,7 @@ composition of a few of them.
  upstream_compaction              UpstreamCompactionRequest ─▶ a body;  a reply ─▶ UpstreamCompaction
  account_state/<service>          a body, or a reply head ──▶ AccountState
  model_list/<dialect>             one page ─────────────────▶ ModelListPage
- web_search/<service>             SearchQuery ─▶ a Draft;    a reply ─▶ SearchResults
+ extensions/web_search/<service>             SearchQuery ─▶ a Draft;    a reply ─▶ SearchResults
  http_error                       a non-2xx body ───────────▶ Error::Upstream
  json_read                        a JSON value ─────────────▶ the text a service wrote
  endpoint                         a Draft × an Endpoint × Credentials ─▶ Call
@@ -71,9 +71,9 @@ composition of a few of them.
    the entry's Endpoint × Credentials ─▶ build_call ─▶ Call ─▶ transport ─▶ HTTP
    ModelListPage ◀─ model_list/<dialect> ◀─ one page
 
- a web search                               bound by web_search/fetch.rs
-   web_search/<service> ─▶ a Draft ─▶ the entry's Endpoint ─▶ Call ─▶ transport ─▶ HTTP
-   SearchResults ◀─ domain filters and limit ◀─ web_search/<service> ◀─ the body
+ a web search                               bound by extensions/web_search/fetch.rs
+   extensions/web_search/<service> ─▶ a Draft ─▶ the entry's Endpoint ─▶ Call ─▶ transport ─▶ HTTP
+   SearchResults ◀─ domain filters and limit ◀─ extensions/web_search/<service> ◀─ the body
 
  a token refresh                            when to refresh is the caller's call
    a credential ─▶ endpoint/codex_oauth ─▶ transport ─▶ new credentials
@@ -98,12 +98,13 @@ dialect knows HTTP and no transport knows a body. The binders hold both ends:
 
 ## Webpage reading
 
-`protocol/web_fetch` owns the reader wire formats. `FetchProtocol` dispatches to the
+`extensions/web_fetch` owns the reader wire formats. `FetchProtocol` dispatches to the
 DeepSeek, Z.AI, Jina and Codex adapters; `source.rs` owns endpoints and authentication.
 `fetch.rs` performs one attempt using the supplied `Transport` and returns a `FetchResult`.
 It has no dependency on server configuration, account registries or snapshot files.
 
-`AccountClient::fetch` supplies credentials and retry policy for shared-account calls.
+`extensions/shared/read::ReadClient` supplies read-only retry policy using credentials selected by
+the application. `AccountClient` owns account material and renewal; it does not dispatch extensions.
 `application/fetch.rs` assembles configured services from `resources/fetch-presets.json`, selects
 accounts and transports, and tries enabled providers in order. `tool/web_fetch.rs` exposes
 this operation to the agent and owns continuation cursors and paging;

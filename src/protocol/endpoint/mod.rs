@@ -4,7 +4,7 @@
 //! [`model_use`](crate::protocol::model_use), [`token_count`](crate::protocol::token_count),
 //! [`upstream_compaction`](crate::protocol::upstream_compaction),
 //! [`account_state`](crate::protocol::account_state), [`model_list`](crate::protocol::model_list)
-//! and [`web_search`](crate::protocol::web_search) - render what the wire says and hand it over as a
+//! and [`web_search`](crate::extension_host::search) - render what the wire says and hand it over as a
 //! [`Draft`]: method, path, query, headers, body, everything the wire sees in the request and
 //! nothing the caller does. This module owns the other half, which comes from configuration rather
 //! than from a protocol: an [`Endpoint`] states where a draft goes and how its calls are proven,
@@ -33,6 +33,7 @@ pub mod copilot_oauth;
 pub use credentials::{CredentialField, Credentials, Tokens};
 pub(crate) mod sigv4;
 mod source;
+pub(crate) mod volcengine;
 
 use serde_json::Value;
 

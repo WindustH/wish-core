@@ -1,4 +1,5 @@
 //! Shared mechanisms without protocol, session or execution policy dependencies.
+pub mod bounded_file;
 pub mod retry;
 pub mod time;
 

@@ -8,8 +8,7 @@
 //! provider's count of a request's input, made without generating anything;
 //! [`upstream_compaction`], the call that asks a service to stand in for a conversation that grew
 //! too long; [`account_state`], the bodies a service reports about the key that reached it;
-//! [`model_list`], the pages it lists its models in; and [`web_search`], the searches a service
-//! runs on the model's behalf. [`attempt`] is the contract a transport implements, [`error`]
+//! [`model_list`], the pages it lists its models in. Independent capabilities live in `extensions`. [`attempt`] is the contract a transport implements, [`error`]
 //! with [`http_error`] is the failure vocabulary every layer speaks, and [`json_read`] is how every
 //! reader takes what a service wrote.
 //!
@@ -68,6 +67,8 @@ macro_rules! text_id_enum {
   };
 }
 
+pub(crate) use text_id_enum;
+
 pub mod account_state;
 pub mod attempt;
 pub mod endpoint;
@@ -78,8 +79,6 @@ pub mod model_list;
 pub mod model_use;
 pub mod token_count;
 pub mod upstream_compaction;
-pub mod web_fetch;
-pub mod web_search;
 
 pub use model_use::message::{ContentBlock, Message, ReasoningOpaqueKind};
 pub use model_use::request::{ReasoningConfig, ReasoningSummary, Request, ToolChoice};
@@ -88,7 +87,3 @@ pub use model_use::stream::{BlockKind, StreamAccumulator, StreamEvent};
 pub use model_use::tool::Tool;
 pub use token_count::{TokenCount, TokenCountProtocol};
 pub use upstream_compaction::{UpstreamCompaction, UpstreamCompactionRequest};
-
-pub mod image_generation;
-
-pub mod media_generation;
