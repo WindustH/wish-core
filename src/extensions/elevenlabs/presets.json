@@ -1,0 +1,60 @@
+{
+  "media": [
+    {
+      "id": "elevenlabs_speech",
+      "name": "ElevenLabs Speech",
+      "brand": "elevenlabs",
+      "protocol": "eleven_speech",
+      "kind": "speech",
+      "model": "eleven_multilingual_v2",
+      "base_url": "https://api.elevenlabs.io",
+      "account_presets": [
+        "elevenlabs",
+        "custom"
+      ],
+      "docs_url": "https://elevenlabs.io/docs/api-reference/text-to-speech/convert"
+    },
+    {
+      "id": "elevenlabs_music",
+      "name": "ElevenLabs Music",
+      "brand": "elevenlabs",
+      "protocol": "eleven_music",
+      "kind": "music",
+      "model": "music_v2",
+      "base_url": "https://api.elevenlabs.io",
+      "account_presets": [
+        "elevenlabs",
+        "custom"
+      ],
+      "docs_url": "https://elevenlabs.io/docs/api-reference/music/compose"
+    },
+    {
+      "id": "elevenlabs_sound",
+      "name": "ElevenLabs Sound Effects",
+      "brand": "elevenlabs",
+      "protocol": "eleven_sound",
+      "kind": "sound_effect",
+      "model": "eleven_text_to_sound_v2",
+      "base_url": "https://api.elevenlabs.io",
+      "account_presets": [
+        "elevenlabs",
+        "custom"
+      ],
+      "docs_url": "https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert"
+    },
+    {
+      "id": "elevenlabs_asr",
+      "name": "ElevenLabs Scribe",
+      "brand": "elevenlabs",
+      "protocol": "eleven_transcription",
+      "kind": "transcription",
+      "model": "scribe_v2",
+      "base_url": "https://api.elevenlabs.io",
+      "account_presets": [
+        "elevenlabs",
+        "custom"
+      ],
+      "docs_url": "https://elevenlabs.io/docs/api-reference/speech-to-text/convert"
+    }
+  ]
+}

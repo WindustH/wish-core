@@ -1,0 +1,25 @@
+{
+  "search": [
+    {
+      "id": "deepseek_search",
+      "name": "DeepSeek",
+      "brand": "DeepSeek",
+      "protocol": "deepseek_search",
+      "borrows_from": [
+        "deepseek"
+      ],
+      "key": "borrowed",
+      "docs_url": "https://api-docs.deepseek.com/zh-cn/guides/search"
+    }
+  ],
+  "fetch": [
+    {
+      "id": "deepseek_fetch",
+      "name": "DeepSeek",
+      "key": "required",
+      "base_url": "https://api.deepseek.com",
+      "path": "/v1/tools/fetch",
+      "protocol": "deepseek_fetch"
+    }
+  ]
+}

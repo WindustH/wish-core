@@ -57,6 +57,6 @@ pub const REGISTRATION: Registration = Registration {
       }
       _ => return Err("invalid action".into()),
     };
-    Ok(Invocation::XiaoyunqueVideo(request))
+    Ok(Invocation::new(request))
   },
 };

@@ -24,6 +24,27 @@ pub const REGISTRATION: Registration = Registration {
   parse: |value| {
     let request: Request = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
 
-    serde_json::to_value(request).map(Invocation::Configured).map_err(|e| e.to_string())
+    Ok(Invocation::new(request))
   },
 };
+
+impl crate::extensions::invocation::Executable for Request {
+  fn execute<'a>(
+    self: Box<Self>,
+    host: &'a dyn crate::extensions::invocation::Host,
+  ) -> crate::extensions::invocation::Future<'a> {
+    Box::pin(async move {
+      host
+        .image(crate::extensions::image_runtime::ImageRequest {
+          prompt: self.prompt,
+          provider: self.service,
+          options: Default::default(),
+          images: Vec::new(),
+          mask: None,
+          markup: None,
+          references: Vec::new(),
+        })
+        .await
+    })
+  }
+}

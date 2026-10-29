@@ -52,3 +52,26 @@ pub struct Request {
   pub recency: Option<crate::extensions::shared::web_search::Recency>,
   pub limit: usize,
 }
+
+use crate::extensions::shared::web_search::SearchQuery;
+impl From<&SearchQuery> for Request {
+  fn from(value: &SearchQuery) -> Self {
+    Self {
+      query: value.query.clone(),
+      allowed_domains: value.allowed_domains.clone(),
+      blocked_domains: value.blocked_domains.clone(),
+      recency: value.recency,
+      limit: value.limit,
+    }
+  }
+}
+
+pub static CODEC: crate::extensions::shared::read_codecs::SearchCodec =
+  crate::extensions::shared::read_codecs::SearchCodec {
+    id: "deepseek_search",
+    source: super::sources::search,
+    recency: true,
+    build: |query, now| build_draft(&query.into(), now),
+    parse: parse_body,
+    refusal: |_| None,
+  };

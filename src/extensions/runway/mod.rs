@@ -87,7 +87,7 @@ pub const REGISTRATION: Registration = Registration {
     ])
   },
   parse: |value| {
-    serde_json::from_value(value).map(Invocation::RunwayVideo).map_err(|e| e.to_string())
+    serde_json::from_value::<Request>(value).map(Invocation::new).map_err(|e| e.to_string())
   },
 };
 pub mod endpoint;
@@ -98,3 +98,9 @@ pub mod video_status;
 pub mod upload;
 
 pub(crate) mod operation;
+
+pub(crate) mod runway_video_driver;
+
+pub(crate) mod execution;
+
+pub(crate) mod package;

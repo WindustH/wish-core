@@ -1,0 +1,13 @@
+{
+  "search": [
+    {
+      "id": "metaso",
+      "name": "秘塔 Metaso",
+      "protocol": "metaso_search",
+      "key": "required",
+      "region": "cn",
+      "key_url": "https://metaso.cn/search-api/api-keys",
+      "docs_url": "https://metaso.cn/search-api/playground"
+    }
+  ]
+}

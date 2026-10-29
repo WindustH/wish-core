@@ -1,0 +1,23 @@
+{
+  "search": [
+    {
+      "id": "tavily_keyless",
+      "name": "Tavily Free",
+      "brand": "Tavily",
+      "protocol": "tavily_keyless_search",
+      "key": "none",
+      "region": "global",
+      "docs_url": "https://docs.tavily.com/documentation/keyless"
+    },
+    {
+      "id": "tavily",
+      "name": "Tavily",
+      "brand": "Tavily",
+      "protocol": "tavily_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://app.tavily.com",
+      "docs_url": "https://docs.tavily.com/documentation/api-reference/endpoint/search"
+    }
+  ]
+}

@@ -91,7 +91,7 @@ pub const GENERATE: Registration = Registration {
   specification: generation_specification,
   examples: || json!([{"service":"<configured BFL service ID>","prompt":"product photograph of the object in image 1, on a wooden table","reference_images":["<session blob ID>"],"parameters":{"seed":42}}]),
   parse: |value| {
-    serde_json::from_value(value).map(Invocation::BflGenerate).map_err(|e| e.to_string())
+    serde_json::from_value::<Generate>(value).map(Invocation::new).map_err(|e| e.to_string())
   },
 };
 pub const FILL: Registration = Registration {
@@ -104,8 +104,16 @@ pub const FILL: Registration = Registration {
   permission: Permission::ImageGeneration,
   specification: fill_specification,
   examples: || json!([{"service":"<configured BFL Fill service ID>","prompt":"replace the masked jacket with a red coat","source_image":"<session blob ID>","mask":"<session black/white mask blob ID>","parameters":{"steps":30,"guidance":30}}]),
-  parse: |value| serde_json::from_value(value).map(Invocation::BflFill).map_err(|e| e.to_string()),
+  parse: |value| {
+    serde_json::from_value::<Fill>(value).map(Invocation::new).map_err(|e| e.to_string())
+  },
 };
 pub mod endpoint;
 pub(crate) mod image;
 pub mod preparation;
+
+pub(crate) mod image_driver;
+
+pub(crate) mod execution;
+
+pub(crate) mod package;

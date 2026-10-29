@@ -27,6 +27,24 @@ pub const REGISTRATION: Registration = Registration {
   specification,
   examples: || json!([{"url": "https://example.com"}]),
   parse: |value| {
-    serde_json::from_value(value).map(Invocation::DeepseekFetch).map_err(|e| e.to_string())
+    serde_json::from_value::<Request>(value).map(Invocation::new).map_err(|e| e.to_string())
   },
 };
+
+impl crate::extensions::invocation::Executable for Request {
+  fn execute<'a>(
+    self: Box<Self>,
+    host: &'a dyn crate::extensions::invocation::Host,
+  ) -> crate::extensions::invocation::Future<'a> {
+    Box::pin(async move {
+      host
+        .read(crate::extensions::invocation::Read {
+          url: self.url,
+          cursor: self.cursor,
+          refresh: self.refresh.unwrap_or(false),
+          service: self.service,
+        })
+        .await
+    })
+  }
+}

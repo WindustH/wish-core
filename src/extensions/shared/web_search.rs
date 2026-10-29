@@ -118,3 +118,21 @@ pub(crate) fn format_date(seconds: u64) -> String {
   let (year, month, day) = civil_date(seconds / 86_400);
   format!("{year:04}-{month:02}-{day:02}")
 }
+
+/// One search, as the tool was asked for it.
+#[derive(Clone, Debug, Default)]
+pub struct SearchQuery {
+  pub query: String,
+  /// Only pages on these domains (and their subdomains). Empty for any domain.
+  pub allowed_domains: Vec<String>,
+  /// Never pages on these domains (or their subdomains).
+  pub blocked_domains: Vec<String>,
+  pub recency: Option<Recency>,
+  /// The most results wanted.
+  pub limit: usize,
+  /// The conversation the search belongs to, for a service that keeps one across searches
+  /// (Codex addresses later page reads by it).
+  pub conversation: Option<String>,
+  /// The model the search is made for, for a service whose request names one.
+  pub model: Option<String>,
+}

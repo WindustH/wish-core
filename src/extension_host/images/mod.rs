@@ -1,196 +1,131 @@
-//! Image generation contracts, provider adapters and bounded reference/mask preparation.
-pub(crate) use crate::extensions::bfl::image as bfl;
-use crate::extensions::shared::urls::validate_url;
+//! Registry-backed image runner. All supplier decisions belong to registered drivers.
+pub(crate) mod execution;
+pub use crate::extensions::image_runtime::*;
 use crate::protocol::{
   attempt::{Call, Method},
   endpoint::{Credentials, Draft},
   error::Error,
 };
-pub(crate) mod execution;
-pub(crate) use crate::extensions::google::image as gemini;
-mod inputs;
-pub(crate) use crate::extensions::google::interactions;
-pub(crate) use crate::extensions::jimeng::image as jimeng;
-pub(crate) use crate::extensions::openai::image as openai;
-mod references;
-pub(crate) use crate::extensions::alibaba::image as wan;
-pub(crate) use crate::extensions::runninghub::image as runninghub;
-pub(crate) use crate::extensions::xai::image as xai;
-pub use inputs::{EditOverlay, ReferenceImage, ReferenceInput};
-pub use references::{PreciseReference, ReferenceKind};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ImageProtocol {
-  Openai,
-  Xai,
-  Codex,
-  Gemini,
-  GeminiInteractions,
-  Together,
-  Siliconflow,
-  Seedream,
-  Bfl,
-  Fal,
-  Replicate,
-  Wan,
-  Stability,
-  Novelai,
-  Jimeng,
-  Runninghub,
-}
-
-pub use crate::extensions::shared::images::{ImageReply, ImageSource};
-
+#[derive(Clone, Copy)]
+pub struct ImageProtocol(pub &'static dyn ImageDriver);
 impl ImageProtocol {
   pub fn max_output_images(self) -> u64 {
-    match self {
-      Self::Wan => 12,
-      Self::Xai => 10,
-      _ => 8,
-    }
+    self.0.max_output_images()
   }
-
-  pub fn credentials_ready(self, credentials: &Credentials) -> bool {
-    match self {
-      Self::Openai => crate::extensions::openai::endpoint::ready(credentials),
-      Self::Codex => crate::extensions::openai::endpoint::ready(credentials),
-      Self::Xai => crate::extensions::xai::endpoint::ready(credentials),
-      Self::Gemini => crate::extensions::google::endpoint::ready(credentials),
-      Self::GeminiInteractions => crate::extensions::google::endpoint::ready(credentials),
-      Self::Together => crate::extensions::together::endpoint::ready(credentials),
-      Self::Siliconflow => crate::extensions::siliconflow::endpoint::ready(credentials),
-      Self::Seedream => crate::extensions::seedance::endpoint::ready(credentials),
-      Self::Bfl => crate::extensions::bfl::endpoint::ready(credentials),
-      Self::Fal => crate::extensions::fal::endpoint::ready(credentials),
-      Self::Replicate => crate::extensions::replicate::endpoint::ready(credentials),
-      Self::Wan => crate::extensions::alibaba::endpoint::ready(credentials),
-      Self::Stability => crate::extensions::stability::endpoint::ready(credentials),
-      Self::Novelai => crate::extensions::novelai::endpoint::ready(credentials),
-      Self::Jimeng => crate::extensions::jimeng::endpoint::ready(credentials),
-      Self::Runninghub => crate::extensions::runninghub::endpoint::ready(credentials),
-    }
+  pub fn subscription(self) -> bool {
+    self.0.subscription()
   }
-  pub fn task_status(
+  pub fn capabilities(self, model: &str) -> ImageCapabilities {
+    self.0.capabilities(model)
+  }
+  pub fn credentials_ready(self, c: &Credentials) -> bool {
+    self.0.credentials_ready(c)
+  }
+  pub fn call(self, base: &str, path: &str, c: &Credentials, d: Draft) -> Result<Call, Error> {
+    self.0.call(base, path, c, d)
+  }
+  pub fn decode(self, body: &Value, url: &str, result: Option<&str>) -> Result<ImageReply, Error> {
+    self.0.decode(body, url, result)
+  }
+  pub fn task_status(self, model: &str, task: &str, p: &Parameters) -> Result<Draft, Error> {
+    self.0.task_status(model, task, p)
+  }
+  pub fn request_options(self, model: &str) -> &'static [&'static str] {
+    self.capabilities(model).options
+  }
+  pub fn accepts_options(self, model: &str, p: &Parameters) -> bool {
+    p.keys().all(|key| self.request_options(model).contains(&key.as_str()))
+  }
+  pub fn merge_options(
     self,
     model: &str,
-    task: &str,
-    parameters: &serde_json::Map<String, Value>,
-  ) -> Result<Draft, Error> {
-    if self == Self::Runninghub {
-      return runninghub::status(task);
+    defaults: Parameters,
+    p: &Parameters,
+  ) -> Result<Parameters, Error> {
+    if !self.accepts_options(model, p) {
+      return Err(Error::Build("unsupported image parameters".into()));
     }
-    if self != Self::Jimeng {
-      return Err(Error::Build("image provider has no task status endpoint".into()));
-    }
-    jimeng::status_request(model, task, parameters)
+    self.0.merge_options(model, defaults, p)
   }
-  pub fn call(
-    self,
-    base: &str,
-    path: &str,
-    credentials: &Credentials,
-    draft: Draft,
-  ) -> Result<Call, Error> {
-    match self {
-      Self::Openai => crate::extensions::openai::endpoint::call(base, path, credentials, draft),
-      Self::Codex => {
-        crate::extensions::openai::endpoint::subscription_image(base, path, credentials, draft)
-      }
-      Self::Xai => crate::extensions::xai::endpoint::call(base, path, credentials, draft),
-      Self::Gemini => crate::extensions::google::endpoint::call(base, path, credentials, draft),
-      Self::GeminiInteractions => {
-        crate::extensions::google::endpoint::call(base, path, credentials, draft)
-      }
-      Self::Together => crate::extensions::together::endpoint::call(base, path, credentials, draft),
-      Self::Siliconflow => {
-        crate::extensions::siliconflow::endpoint::call(base, path, credentials, draft)
-      }
-      Self::Seedream => crate::extensions::seedance::endpoint::call(base, path, credentials, draft),
-      Self::Bfl => crate::extensions::bfl::endpoint::call(base, path, credentials, draft),
-      Self::Fal => crate::extensions::fal::endpoint::call(base, path, credentials, draft),
-      Self::Replicate => {
-        crate::extensions::replicate::endpoint::call(base, path, credentials, draft)
-      }
-      Self::Wan => crate::extensions::alibaba::endpoint::call(base, path, credentials, draft),
-      Self::Stability => {
-        crate::extensions::stability::endpoint::call(base, path, credentials, draft)
-      }
-      Self::Novelai => crate::extensions::novelai::endpoint::call(base, path, credentials, draft),
-      Self::Jimeng => crate::extensions::jimeng::endpoint::call(base, path, credentials, draft),
-      Self::Runninghub => {
-        crate::extensions::runninghub::endpoint::call(base, path, credentials, draft)
-      }
-    }
+  pub fn accepts_input(self, model: &str, value: &str) -> bool {
+    let c = self.capabilities(model);
+    c.reference_limit > 0
+      && if value.starts_with("https://") { c.remote_references } else { c.local_references }
   }
-  pub fn submission(
+  pub fn reference_images(self, model: &str) -> bool {
+    self.reference_image_limit(model) > 0
+  }
+  pub fn reference_image_limit(self, model: &str) -> usize {
+    self.capabilities(model).reference_limit
+  }
+  pub fn accepts_reference_count(self, model: &str, n: usize) -> bool {
+    n <= self.reference_image_limit(model) && (!self.image_required(model) || n == 1)
+  }
+  pub fn mask_editing(self, model: &str) -> bool {
+    let c = self.capabilities(model);
+    c.reference_limit > 0 && c.mask
+  }
+  pub fn markup_editing(self, model: &str) -> bool {
+    self.capabilities(model).markup
+  }
+  pub fn image_required(self, model: &str) -> bool {
+    self.capabilities(model).image_required
+  }
+  pub fn precise_references(self, model: &str) -> bool {
+    self.0.precise_references(model)
+  }
+  pub fn submission_with_images(
     self,
     model: &str,
     prompt: &str,
-    parameters: &serde_json::Map<String, Value>,
+    p: &Parameters,
+    images: &[ReferenceInput],
+    references: &[PreciseReference],
+    overlay: Option<&EditOverlay>,
   ) -> Result<Draft, Error> {
-    match self {
-      Self::Openai => crate::extensions::openai::image::generation(model, prompt, parameters),
-      Self::Codex => {
-        crate::extensions::openai::subscription_image::generation(model, prompt, parameters)
-      }
-      Self::Together => crate::extensions::together::image::generation(model, prompt, parameters),
-      Self::Seedream => crate::extensions::seedance::image::generation(model, prompt, parameters),
-      Self::Siliconflow => {
-        crate::extensions::siliconflow::image::generation(model, prompt, parameters)
-      }
-      Self::Fal => crate::extensions::fal::image::generation(model, prompt, parameters),
-      Self::Replicate => crate::extensions::replicate::image::generation(model, prompt, parameters),
-      Self::Bfl => crate::extensions::bfl::image::generation(model, prompt, parameters),
-      Self::Gemini => crate::extensions::google::image::submission(model, prompt, parameters, &[]),
-      Self::GeminiInteractions => {
-        crate::extensions::google::interactions::with_images(model, prompt, parameters, &[])
-      }
-      Self::Stability => crate::extensions::stability::image::submission(prompt, parameters),
-      Self::Novelai => crate::extensions::novelai::wire::submission(model, prompt, parameters),
-      Self::Xai => crate::extensions::xai::image::submission(model, prompt, parameters, &[]),
-      Self::Jimeng => crate::extensions::jimeng::image::submission(model, prompt, parameters, &[]),
-      Self::Runninghub => {
-        crate::extensions::runninghub::image::submission(model, prompt, parameters, &[])
-      }
-      Self::Wan => crate::extensions::alibaba::image::submission(model, prompt, parameters, &[]),
+    if overlay.is_some_and(|v| match v {
+      EditOverlay::Mask(_) => !self.mask_editing(model),
+      EditOverlay::Markup(_) => !self.markup_editing(model),
+    }) {
+      return Err(Error::Build("unsupported image overlay".into()));
     }
-  }
-  pub fn decode(
-    self,
-    body: &Value,
-    current_url: &str,
-    result_url: Option<&str>,
-  ) -> Result<ImageReply, Error> {
-    match self {
-      Self::Openai => crate::extensions::openai::image::decode(body),
-      Self::Codex => crate::extensions::openai::subscription_image::decode(body),
-      Self::Together => crate::extensions::together::image::decode(body),
-      Self::Seedream => crate::extensions::seedance::image::decode(body),
-      Self::Siliconflow => crate::extensions::siliconflow::image::decode(body),
-      Self::Fal => crate::extensions::fal::image::decode(body, current_url, result_url),
-      Self::Replicate => crate::extensions::replicate::image::decode(body, current_url, result_url),
-      Self::Bfl => crate::extensions::bfl::image::decode(body, current_url, result_url),
-      Self::Gemini => crate::extensions::google::image::decode(body),
-      Self::GeminiInteractions => crate::extensions::google::interactions::decode(body),
-      Self::Stability => crate::extensions::stability::image::decode(body),
-      Self::Novelai => crate::extensions::novelai::wire::decode(body),
-      Self::Xai => crate::extensions::xai::image::decode(body),
-      Self::Jimeng => crate::extensions::jimeng::image::decode(body),
-      Self::Runninghub => crate::extensions::runninghub::image::decode(body),
-      Self::Wan => crate::extensions::alibaba::image::decode(body),
+    if !self.accepts_reference_count(model, images.len()) {
+      return Err(Error::Build("unsupported reference image count".into()));
     }
+    self.0.with_images(model, prompt, p, images, references, overlay)
   }
 }
-/// Polling keeps credentials on the configured origin (BFL also returns regional origins).
+impl std::fmt::Debug for ImageProtocol {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.0.id())
+  }
+}
+impl PartialEq for ImageProtocol {
+  fn eq(&self, o: &Self) -> bool {
+    self.0.id() == o.0.id()
+  }
+}
+impl Eq for ImageProtocol {}
+impl serde::Serialize for ImageProtocol {
+  fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(self.0.id())
+  }
+}
+impl<'de> serde::Deserialize<'de> for ImageProtocol {
+  fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+    let id = <String as serde::Deserialize>::deserialize(d)?;
+    crate::extensions::image_registry::drivers()
+      .iter()
+      .find(|driver| driver.id() == id)
+      .map(|driver| Self(*driver))
+      .ok_or_else(|| serde::de::Error::custom(format!("unknown image implementation: {id}")))
+  }
+}
 pub fn poll_call(protocol: ImageProtocol, initial: &Call, url: &str) -> Result<Call, Error> {
-  let origin = validate_url(&initial.url)?;
-  let target = validate_url(url)?;
-  let bfl = protocol == ImageProtocol::Bfl
-    && crate::extensions::bfl::endpoint::permits_poll_origin(&origin, &target);
-  if origin.origin() != target.origin() && !bfl {
+  let origin = crate::extensions::shared::urls::validate_url(&initial.url)?;
+  let target = crate::extensions::shared::urls::validate_url(url)?;
+  if !protocol.0.permits_poll_origin(&origin, &target) {
     return Err(Error::Build("image polling URL has an untrusted origin".into()));
   }
   Ok(Call {

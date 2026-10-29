@@ -1,0 +1,25 @@
+{
+  "search": [
+    {
+      "id": "zai_search",
+      "name": "Z.AI",
+      "protocol": "zai_search",
+      "key": "required",
+      "region": "global",
+      "borrows_from": [],
+      "brand": "Z.AI",
+      "docs_url": "https://docs.z.ai/api-reference/tools/web-search",
+      "key_url": "https://z.ai/manage-apikey/apikey-list"
+    }
+  ],
+  "fetch": [
+    {
+      "id": "zai_reader",
+      "name": "Z.AI",
+      "key": "required",
+      "base_url": "https://api.z.ai/api/paas/v4",
+      "path": "/reader",
+      "protocol": "zai_reader"
+    }
+  ]
+}

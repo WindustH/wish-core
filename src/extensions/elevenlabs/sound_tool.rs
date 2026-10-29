@@ -49,7 +49,7 @@ pub const REGISTRATION: Registration = Registration {
   parse: |mut value| {
     let object = value.as_object_mut().ok_or("expected tool arguments object")?;
     object.entry("action").or_insert_with(|| json!("run"));
-    let request: Request = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    let request: Request = serde_json::from_value::<Request>(value).map_err(|e| e.to_string())?;
     match &request {
       Request::Run { prompt, .. } if prompt.trim().is_empty() => {
         return Err("prompt must not be empty".into());
@@ -59,6 +59,6 @@ pub const REGISTRATION: Registration = Registration {
       }
       _ => {}
     }
-    Ok(Invocation::ElevenlabsSound(request))
+    Ok(Invocation::new(request))
   },
 };

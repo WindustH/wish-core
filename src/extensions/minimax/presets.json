@@ -1,0 +1,62 @@
+{
+  "media": [
+    {
+      "id": "minimax_h3",
+      "name": "MiniMax H3",
+      "brand": "minimax",
+      "protocol": "minimax_h3",
+      "kind": "video",
+      "model": "MiniMax-H3",
+      "base_url": "https://api.minimax.io",
+      "account_presets": [
+        "minimax",
+        "custom"
+      ],
+      "docs_url": "https://platform.minimax.io/docs/api-reference/video-generation-v2-create",
+      "resolutions": [
+        "480P",
+        "768P",
+        "2K"
+      ],
+      "aspect_ratios": [
+        "21:9",
+        "16:9",
+        "4:3",
+        "1:1",
+        "3:4",
+        "9:16"
+      ]
+    },
+    {
+      "id": "minimax_speech",
+      "name": "MiniMax Speech",
+      "brand": "minimax",
+      "protocol": "minimax_speech",
+      "kind": "speech",
+      "model": "speech-2.8-hd",
+      "base_url": "https://api.minimax.io",
+      "account_presets": [
+        "minimax",
+        "custom"
+      ],
+      "docs_url": "https://platform.minimax.io/docs/api-reference/speech-t2a-http"
+    }
+  ],
+  "search": [
+    {
+      "id": "minimax_coding_plan_search",
+      "name": "MiniMax Token Plan",
+      "brand": "MiniMax",
+      "protocol": "minimax_coding_plan_search",
+      "borrows_from": [
+        "minimax_token_cn",
+        "minimax_token_global"
+      ],
+      "base_url_by_lender": {
+        "minimax_token_cn": "https://api.minimaxi.com",
+        "minimax_token_global": "https://api.minimax.io"
+      },
+      "key": "borrowed"
+    }
+  ]
+}

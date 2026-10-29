@@ -49,7 +49,7 @@ pub fn presets() -> &'static Vec<MediaPreset> {
   static PRESETS: std::sync::OnceLock<Vec<MediaPreset>> = std::sync::OnceLock::new();
   PRESETS.get_or_init(|| {
     let mut presets: Vec<MediaPreset> =
-      serde_json::from_str(include_str!("../../../resources/media-presets.json"))
+      serde_json::from_value(serde_json::json!(crate::extensions::package::presets("media")))
         .expect("valid media presets");
     for preset in &mut presets {
       preset.video = preset.protocol.video_capabilities(&preset.model);

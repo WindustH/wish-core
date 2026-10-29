@@ -1,0 +1,14 @@
+{
+  "search": [
+    {
+      "id": "brave",
+      "name": "Brave Search",
+      "brand": "Brave",
+      "protocol": "brave_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://api-dashboard.search.brave.com/app/keys",
+      "docs_url": "https://api-dashboard.search.brave.com/app/documentation/web-search/get-started"
+    }
+  ]
+}

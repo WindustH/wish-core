@@ -65,3 +65,27 @@ pub struct Request {
   pub conversation: Option<String>,
   pub model: Option<String>,
 }
+
+use crate::extensions::shared::web_search::SearchQuery;
+impl From<&SearchQuery> for Request {
+  fn from(value: &SearchQuery) -> Self {
+    Self {
+      query: value.query.clone(),
+      allowed_domains: value.allowed_domains.clone(),
+      blocked_domains: value.blocked_domains.clone(),
+      recency: value.recency,
+      conversation: value.conversation.clone(),
+      model: value.model.clone(),
+    }
+  }
+}
+
+pub static CODEC: crate::extensions::shared::read_codecs::SearchCodec =
+  crate::extensions::shared::read_codecs::SearchCodec {
+    id: "codex_alpha_search",
+    source: super::sources::search,
+    recency: true,
+    build: |query, _| build_draft(&query.into()),
+    parse: parse_body,
+    refusal: |_| None,
+  };

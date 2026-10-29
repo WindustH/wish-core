@@ -1,0 +1,14 @@
+{
+  "search": [
+    {
+      "id": "exa",
+      "name": "Exa",
+      "brand": "Exa",
+      "protocol": "exa_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://dashboard.exa.ai/api-keys",
+      "docs_url": "https://exa.ai/docs/reference/search"
+    }
+  ]
+}

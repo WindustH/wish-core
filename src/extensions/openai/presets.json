@@ -1,0 +1,130 @@
+{
+  "image": [
+    {
+      "id": "openai_images",
+      "name": "OpenAI API",
+      "brand": "OpenAI",
+      "protocol": "openai",
+      "base_url": "https://api.openai.com/v1",
+      "path": "/images/generations",
+      "model": "gpt-image-2.5-sunburst",
+      "account_presets": [
+        "openai"
+      ],
+      "parameters": {},
+      "docs_url": "https://developers.openai.com/api/docs/guides/image-generation"
+    },
+    {
+      "id": "codex_images",
+      "name": "ChatGPT / Codex",
+      "brand": "OpenAI",
+      "protocol": "codex",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "path": "/images/generations",
+      "model": "gpt-image-2",
+      "account_presets": [
+        "openai_codex"
+      ],
+      "parameters": {},
+      "docs_url": "https://learn.chatgpt.com/docs/image-generation"
+    }
+  ],
+  "media": [
+    {
+      "id": "openai_speech",
+      "name": "OpenAI Speech",
+      "brand": "OpenAI",
+      "protocol": "openai_speech",
+      "kind": "speech",
+      "model": "gpt-4o-mini-tts",
+      "base_url": "https://api.openai.com",
+      "account_presets": [
+        "openai",
+        "custom"
+      ],
+      "docs_url": "https://developers.openai.com/api/reference/resources/audio/subresources/speech/methods/create",
+      "defaults": {
+        "voice": "coral"
+      },
+      "resolutions": [],
+      "aspect_ratios": []
+    },
+    {
+      "id": "siliconflow_speech",
+      "name": "SiliconFlow Speech",
+      "brand": "SiliconFlow",
+      "protocol": "openai_speech",
+      "kind": "speech",
+      "model": "FunAudioLLM/CosyVoice2-0.5B",
+      "base_url": "https://api.siliconflow.cn",
+      "account_presets": [
+        "siliconflow_cn",
+        "custom"
+      ],
+      "docs_url": "https://docs.siliconflow.cn/docs/api/audio-speech-post",
+      "defaults": {
+        "voice": "FunAudioLLM/CosyVoice2-0.5B:alex"
+      },
+      "resolutions": [],
+      "aspect_ratios": []
+    },
+    {
+      "id": "openai_asr",
+      "name": "OpenAI Transcription",
+      "brand": "OpenAI",
+      "protocol": "openai_transcription",
+      "kind": "transcription",
+      "model": "gpt-4o-transcribe",
+      "base_url": "https://api.openai.com",
+      "account_presets": [
+        "openai",
+        "custom"
+      ],
+      "docs_url": "https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create",
+      "defaults": {},
+      "resolutions": [],
+      "aspect_ratios": []
+    },
+    {
+      "id": "groq_asr",
+      "name": "Groq Whisper",
+      "brand": "Groq",
+      "protocol": "openai_transcription",
+      "kind": "transcription",
+      "model": "whisper-large-v3-turbo",
+      "base_url": "https://api.groq.com/openai",
+      "account_presets": [
+        "groq",
+        "custom"
+      ],
+      "docs_url": "https://console.groq.com/docs/speech-to-text",
+      "defaults": {},
+      "resolutions": [],
+      "aspect_ratios": []
+    }
+  ],
+  "search": [
+    {
+      "id": "openai_codex_search",
+      "name": "ChatGPT",
+      "brand": "OpenAI",
+      "protocol": "codex_alpha_search",
+      "borrows_from": [
+        "openai_codex"
+      ],
+      "base_url_from_provider": true,
+      "key": "borrowed"
+    }
+  ],
+  "fetch": [
+    {
+      "id": "codex_fetch",
+      "name": "ChatGPT / Codex",
+      "key": "required",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "path": "/alpha/search",
+      "account_preset": "openai_codex",
+      "protocol": "codex_fetch"
+    }
+  ]
+}

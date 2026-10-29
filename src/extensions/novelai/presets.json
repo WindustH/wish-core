@@ -1,0 +1,27 @@
+{
+  "image": [
+    {
+      "id": "novelai_images",
+      "name": "NovelAI",
+      "brand": "NovelAI",
+      "protocol": "novelai",
+      "base_url": "https://image.novelai.net",
+      "path": "/ai/generate-image",
+      "model": "nai-diffusion-4-5-full",
+      "account_presets": [
+        "novelai"
+      ],
+      "parameters": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 28,
+        "scale": 5,
+        "n_samples": 1,
+        "sampler": "k_euler_ancestral",
+        "noise_schedule": "karras",
+        "negative_prompt": ""
+      },
+      "docs_url": "https://image.novelai.net/docs/index.html"
+    }
+  ]
+}

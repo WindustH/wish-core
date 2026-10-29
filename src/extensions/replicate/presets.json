@@ -1,0 +1,18 @@
+{
+  "image": [
+    {
+      "id": "replicate_images",
+      "name": "Replicate",
+      "brand": "Replicate",
+      "protocol": "replicate",
+      "base_url": "https://api.replicate.com/v1",
+      "path": "/models/{model}/predictions",
+      "model": "black-forest-labs/flux-schnell",
+      "account_presets": [
+        "replicate"
+      ],
+      "parameters": {},
+      "docs_url": "https://replicate.com/docs/reference/http"
+    }
+  ]
+}

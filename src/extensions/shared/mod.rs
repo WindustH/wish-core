@@ -13,3 +13,5 @@ pub(crate) mod urls;
 pub mod video;
 pub mod web_fetch;
 pub mod web_search;
+
+pub mod read_codecs;

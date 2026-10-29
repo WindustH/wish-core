@@ -55,3 +55,25 @@ pub struct Request {
   pub blocked_domains: Vec<String>,
   pub limit: usize,
 }
+
+use crate::extensions::shared::web_search::SearchQuery;
+impl From<&SearchQuery> for Request {
+  fn from(value: &SearchQuery) -> Self {
+    Self {
+      query: value.query.clone(),
+      allowed_domains: value.allowed_domains.clone(),
+      blocked_domains: value.blocked_domains.clone(),
+      limit: value.limit,
+    }
+  }
+}
+
+pub static CODEC: crate::extensions::shared::read_codecs::SearchCodec =
+  crate::extensions::shared::read_codecs::SearchCodec {
+    id: "jina_search",
+    source: super::sources::search,
+    recency: false,
+    build: |query, _| build_draft(&query.into()),
+    parse: parse_body,
+    refusal: |_| None,
+  };

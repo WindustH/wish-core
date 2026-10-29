@@ -1,0 +1,31 @@
+{
+  "media": [
+    {
+      "id": "xiaoyunque_video",
+      "name": "小云雀 2.0",
+      "brand": "Volcengine Visual",
+      "protocol": "xiaoyunque_video",
+      "kind": "video",
+      "model": "pippit_iv2v_v20_cvtob_with_vinput",
+      "base_url": "https://visual.volcengineapi.com",
+      "account_presets": [
+        "volcengine_visual",
+        "custom"
+      ],
+      "docs_url": "https://docs.volcengine.com/docs/jimeng-ai/xiaoyunque-intelligent-life-video-agent20-reference-interface-documentation",
+      "required_credentials": [
+        "access_key_id",
+        "secret_access_key"
+      ],
+      "optional_credentials": [
+        "session_token"
+      ],
+      "aspect_ratios": [
+        "16:9",
+        "9:16",
+        "4:3",
+        "3:4"
+      ]
+    }
+  ]
+}

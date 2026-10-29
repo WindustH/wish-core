@@ -17,3 +17,18 @@ pub struct Request {
   pub url: String,
   pub refresh: bool,
 }
+
+use crate::extensions::shared::web_fetch::FetchRequest;
+impl From<&FetchRequest> for Request {
+  fn from(value: &FetchRequest) -> Self {
+    Self { url: value.url.clone(), refresh: value.refresh }
+  }
+}
+
+pub static CODEC: crate::extensions::shared::read_codecs::FetchCodec =
+  crate::extensions::shared::read_codecs::FetchCodec {
+    id: "zai_reader",
+    source: super::sources::fetch,
+    build: |request| build_draft(&request.into()),
+    parse: parse_body,
+  };

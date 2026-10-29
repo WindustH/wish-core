@@ -1,0 +1,18 @@
+{
+  "image": [
+    {
+      "id": "fal_images",
+      "name": "fal.ai",
+      "brand": "fal",
+      "protocol": "fal",
+      "base_url": "https://queue.fal.run",
+      "path": "/{model}",
+      "model": "fal-ai/flux/schnell",
+      "account_presets": [
+        "fal"
+      ],
+      "parameters": {},
+      "docs_url": "https://fal.ai/docs/documentation/model-apis/inference/queue"
+    }
+  ]
+}

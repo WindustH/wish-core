@@ -83,8 +83,8 @@ pub const REGISTRATION: super::catalog::Registration = super::catalog::Registrat
     ])
   },
   parse: |value| {
-    serde_json::from_value(value)
-      .map(super::catalog::Invocation::Novelai)
+    serde_json::from_value::<Request>(value)
+      .map(super::catalog::Invocation::new)
       .map_err(|error| error.to_string())
   },
 };
@@ -114,3 +114,9 @@ pub(crate) fn request_options(model: &str) -> &'static [&'static str] {
   }
 }
 pub mod endpoint;
+
+pub(crate) mod image_driver;
+
+pub(crate) mod execution;
+
+pub(crate) mod package;

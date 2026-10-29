@@ -1,0 +1,55 @@
+{
+  "image": [
+    {
+      "id": "runninghub_images",
+      "name": "RunningHub Seedream 5 Pro",
+      "brand": "RunningHub",
+      "protocol": "runninghub",
+      "base_url": "https://www.runninghub.ai",
+      "path": "/openapi/v2/{model}/text-to-image",
+      "model": "seedream-v5-pro",
+      "account_presets": [
+        "runninghub",
+        "custom"
+      ],
+      "parameters": {
+        "resolution": "2k",
+        "outputFormat": "png"
+      },
+      "docs_url": "https://www.runninghub.ai/runninghub-api-doc-en/api-494859263"
+    }
+  ],
+  "media": [
+    {
+      "id": "runninghub_seedance_video",
+      "name": "RunningHub Seedance 2.5",
+      "brand": "RunningHub",
+      "protocol": "runninghub_video",
+      "kind": "video",
+      "model": "bytedance/seedance-2.5-token",
+      "base_url": "https://www.runninghub.ai",
+      "account_presets": [
+        "runninghub",
+        "custom"
+      ],
+      "docs_url": "https://www.runninghub.ai/runninghub-api-doc-en/api-498749513",
+      "resolutions": [
+        "480p",
+        "720p",
+        "native1080p",
+        "1080p",
+        "2k",
+        "4k"
+      ],
+      "aspect_ratios": [
+        "adaptive",
+        "16:9",
+        "4:3",
+        "1:1",
+        "3:4",
+        "9:16",
+        "21:9"
+      ]
+    }
+  ]
+}

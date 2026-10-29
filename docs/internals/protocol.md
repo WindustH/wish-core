@@ -105,7 +105,7 @@ It has no dependency on server configuration, account registries or snapshot fil
 
 `extensions/shared/read::ReadClient` supplies read-only retry policy using credentials selected by
 the application. `AccountClient` owns account material and renewal; it does not dispatch extensions.
-`application/fetch.rs` assembles configured services from `resources/fetch-presets.json`, selects
+`application/fetch.rs` assembles configured services from the fetch presets registered by extension packages, selects
 accounts and transports, and tries enabled providers in order. `tool/web_fetch.rs` exposes
 this operation to the agent and owns continuation cursors and paging;
 `storage/snapshots.rs` persists the immutable page snapshots.

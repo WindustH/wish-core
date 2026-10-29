@@ -1,0 +1,20 @@
+{
+  "image": [
+    {
+      "id": "stability_images",
+      "name": "Stability AI",
+      "brand": "Stability",
+      "protocol": "stability",
+      "base_url": "https://api.stability.ai/v2beta",
+      "path": "/stable-image/generate/{model}",
+      "model": "core",
+      "account_presets": [
+        "stability"
+      ],
+      "parameters": {
+        "output_format": "png"
+      },
+      "docs_url": "https://docs.stability.ai/api-reference"
+    }
+  ]
+}

@@ -7,6 +7,8 @@ root = Path(__file__).resolve().parents[1] / "src"
 rules = {
     "extensions/shared": (r"crate::extensions::(?!shared::)[a-z_]+::",),
     "extensions": (r"crate::(?:application|server|session|executor|tool|extension_host)::",),
+    "extension_host": (r"crate::extensions::(?!(?:shared|image_runtime|media_runtime|transcription_runtime|image_registry|media_registry|read_registry)::)[a-z_]+::",),
+    "application": (r"crate::extensions::(?!(?:catalog|invocation|package|shared|image_runtime|media_runtime|transcription_runtime)::)[a-z_]+::",),
     "client": (r"crate::extensions::",),
     "protocol": (r"crate::extensions::",),
     "task": (r"crate::(?:executor|session|tool)::",),

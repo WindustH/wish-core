@@ -1,0 +1,37 @@
+{
+  "image": [
+    {
+      "id": "gemini_images",
+      "name": "Google Gemini",
+      "brand": "Google Gemini",
+      "protocol": "gemini",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "path": "/models/{model}:generateContent",
+      "model": "gemini-3.1-flash-image-preview",
+      "account_presets": [
+        "google_gemini"
+      ],
+      "parameters": {
+        "responseModalities": [
+          "TEXT",
+          "IMAGE"
+        ]
+      },
+      "docs_url": "https://ai.google.dev/api/generate-content"
+    },
+    {
+      "id": "gemini_interactions_images",
+      "name": "Google Nano Banana",
+      "brand": "Google Gemini",
+      "protocol": "gemini_interactions",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "path": "/interactions",
+      "model": "gemini-nano-banana-2.1",
+      "account_presets": [
+        "google_gemini"
+      ],
+      "parameters": {},
+      "docs_url": "https://ai.google.dev/gemini-api/docs/image-generation"
+    }
+  ]
+}

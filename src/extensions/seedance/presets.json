@@ -1,0 +1,99 @@
+{
+  "image": [
+    {
+      "id": "seedream_images",
+      "name": "火山引擎 Seedream (LAS)",
+      "brand": "Volcengine Ark",
+      "protocol": "seedream",
+      "base_url": "https://operator.las.ap-southeast-1.volces.com/api/v1",
+      "path": "/images/generations",
+      "model": "doubao-seedream-4-5-251128",
+      "account_presets": [
+        "seedream_las"
+      ],
+      "parameters": {
+        "size": "2048x2048",
+        "response_format": "url"
+      },
+      "docs_url": "https://docs.volcengine.com/docs/lake-ai-service/image-generation-seed-ream-series-models?lang=en"
+    },
+    {
+      "id": "seedream_ark_images",
+      "name": "火山方舟 Seedream",
+      "brand": "Volcengine Ark",
+      "protocol": "seedream",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "path": "/images/generations",
+      "model": "doubao-seedream-5-0-lite-260128",
+      "account_presets": [
+        "volcengine_cn"
+      ],
+      "parameters": {
+        "size": "2K",
+        "response_format": "url"
+      },
+      "docs_url": "https://docs.volcengine.com/docs/ark/image-generation-tutorial?lang=en"
+    }
+  ],
+  "media": [
+    {
+      "id": "seedance_video",
+      "name": "Seedance 2.0 · 火山方舟",
+      "brand": "Volcengine Ark",
+      "protocol": "seedance_video",
+      "kind": "video",
+      "model": "doubao-seedance-2-0-260128",
+      "base_url": "https://ark.cn-beijing.volces.com",
+      "account_presets": [
+        "volcengine_cn",
+        "custom"
+      ],
+      "docs_url": "https://ark.volcengine.com/region:cn-beijing/docs/create-video-generation-task-api",
+      "defaults": {},
+      "resolutions": [
+        "480p",
+        "720p",
+        "1080p",
+        "4k"
+      ],
+      "aspect_ratios": [
+        "16:9",
+        "4:3",
+        "1:1",
+        "3:4",
+        "9:16",
+        "21:9",
+        "adaptive"
+      ]
+    },
+    {
+      "id": "seedance25_video",
+      "name": "Seedance 2.5 · 火山方舟",
+      "brand": "Volcengine Ark",
+      "protocol": "seedance25_video",
+      "kind": "video",
+      "model": "doubao-seedance-2-5-260628",
+      "base_url": "https://ark.cn-beijing.volces.com",
+      "account_presets": [
+        "volcengine_cn",
+        "custom"
+      ],
+      "docs_url": "https://ark.volcengine.com/region:cn-beijing/docs/create-video-generation-task-api",
+      "defaults": {},
+      "resolutions": [
+        "480p",
+        "720p",
+        "1080p"
+      ],
+      "aspect_ratios": [
+        "16:9",
+        "4:3",
+        "1:1",
+        "3:4",
+        "9:16",
+        "21:9",
+        "adaptive"
+      ]
+    }
+  ]
+}

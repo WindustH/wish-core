@@ -11,20 +11,12 @@ pub(super) fn prepare(
   kind: MediaKind,
   mode: VideoMode,
 ) -> Result<(Parameters, String, Draft), String> {
-  if let Some(plan) = &request.minimax {
-    if kind != MediaKind::Speech || protocol != MediaProtocol::MinimaxSpeech {
-      return Err("MiniMax speech plan requires a MiniMax speech service".into());
-    }
-    let (route, draft) =
-      plan.build(&service.model, &service.parameters).map_err(|e| e.to_string())?;
-    return Ok((Parameters::new(), route, draft));
-  }
   let options = protocol
     .parameters(&service.parameters, &request.options, mode, &request.inputs)
     .map_err(|e| e.to_string())?;
-  if let Some(plan) = &request.runway {
-    if kind != MediaKind::Video || protocol != MediaProtocol::RunwayVideo {
-      return Err("Runway native parameters require a Runway video service".into());
+  if let Some(plan) = &request.plan {
+    if protocol.0.id() != plan.driver_id() {
+      return Err("native plan requires its own extension service".into());
     }
     // Validate every source before any large earlier asset can be uploaded.
     for input in &request.inputs {
@@ -46,12 +38,13 @@ pub(super) fn prepare(
       })
       .collect();
     let (route, draft) = plan
-      .build(
-        &service.model,
-        request.prompt.as_deref().unwrap_or(""),
-        &crate::extensions::shared::parameters::decode(&options).map_err(|e| e.to_string())?,
-        &placeholders,
-      )
+      .build(&crate::extensions::media_runtime::PlanContext {
+        model: &service.model,
+        prompt: request.prompt.as_deref().unwrap_or(""),
+        defaults: &service.parameters,
+        parameters: &options,
+        inputs: &placeholders,
+      })
       .map_err(|e| e.to_string())?;
     return Ok((options, route, draft));
   }

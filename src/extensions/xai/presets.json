@@ -1,0 +1,141 @@
+{
+  "image": [
+    {
+      "id": "xai_images",
+      "name": "xAI Grok Imagine",
+      "brand": "xAI",
+      "protocol": "xai",
+      "base_url": "https://api.x.ai/v1",
+      "path": "/images/generations",
+      "model": "grok-imagine-image-2.0",
+      "account_presets": [
+        "xai"
+      ],
+      "parameters": {},
+      "docs_url": "https://docs.x.ai/developers/model-capabilities/images/generation"
+    }
+  ],
+  "media": [
+    {
+      "id": "xai_video",
+      "name": "xAI Grok Imagine 1.5",
+      "brand": "xAI",
+      "protocol": "xai_video",
+      "kind": "video",
+      "model": "grok-imagine-video-1.5",
+      "base_url": "https://api.x.ai",
+      "account_presets": [
+        "xai",
+        "custom"
+      ],
+      "docs_url": "https://docs.x.ai/developers/model-capabilities/video/generation",
+      "resolutions": [
+        "480p",
+        "720p",
+        "1080p"
+      ],
+      "aspect_ratios": [
+        "1:1",
+        "16:9",
+        "9:16",
+        "4:3",
+        "3:4",
+        "3:2",
+        "2:3",
+        "21:9",
+        "5:2"
+      ]
+    },
+    {
+      "id": "xai_video_lite",
+      "name": "xAI Grok Imagine 1.5 Lite",
+      "brand": "xAI",
+      "protocol": "xai_video",
+      "kind": "video",
+      "model": "grok-imagine-video-1.5-lite",
+      "base_url": "https://api.x.ai",
+      "account_presets": [
+        "xai",
+        "custom"
+      ],
+      "docs_url": "https://docs.x.ai/developers/model-capabilities/video/overview",
+      "resolutions": [
+        "480p",
+        "720p",
+        "1080p"
+      ],
+      "aspect_ratios": [
+        "1:1",
+        "16:9",
+        "9:16",
+        "4:3",
+        "3:4",
+        "3:2",
+        "2:3",
+        "21:9",
+        "5:2"
+      ]
+    },
+    {
+      "id": "xai_video_classic",
+      "name": "xAI Grok Imagine · Edit & Extend",
+      "brand": "xAI",
+      "protocol": "xai_video",
+      "kind": "video",
+      "model": "grok-imagine-video",
+      "base_url": "https://api.x.ai",
+      "account_presets": [
+        "xai",
+        "custom"
+      ],
+      "docs_url": "https://docs.x.ai/developers/model-capabilities/video/generation",
+      "resolutions": [
+        "480p",
+        "720p"
+      ],
+      "aspect_ratios": [
+        "1:1",
+        "16:9",
+        "9:16",
+        "4:3",
+        "3:4",
+        "3:2",
+        "2:3",
+        "21:9",
+        "5:2"
+      ]
+    },
+    {
+      "id": "xai_asr",
+      "name": "xAI Speech to Text",
+      "brand": "xAI",
+      "protocol": "xai_transcription",
+      "kind": "transcription",
+      "model": "grok-voice-transcribe-2.0",
+      "base_url": "https://api.x.ai",
+      "account_presets": [
+        "xai",
+        "custom"
+      ],
+      "docs_url": "https://docs.x.ai/developers/model-capabilities/audio/speech-to-text",
+      "resolutions": [],
+      "aspect_ratios": []
+    },
+    {
+      "id": "xai_speech",
+      "name": "xAI Text to Speech",
+      "brand": "xAI",
+      "protocol": "xai_speech",
+      "kind": "speech",
+      "model": "tts",
+      "base_url": "https://api.x.ai",
+      "account_presets": [
+        "xai",
+        "custom"
+      ],
+      "docs_url": "https://docs.x.ai/developers/model-capabilities/audio/text-to-speech",
+      "resolutions": [],
+      "aspect_ratios": []
+    }
+  ]
+}

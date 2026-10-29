@@ -1,74 +1,60 @@
-//! Webpage reading across services. Protocol adapters own wire formats; callers own
-//! credentials, transport policy, retries, provider selection and saved snapshots.
+//! Registry-backed read execution. Supplier logic is defined by its extension.
 mod client;
-use crate::extensions::deepseek::fetch as deepseek;
-use crate::extensions::openai::fetch as codex;
+mod source;
+use crate::extensions::shared::read_codecs::FetchCodec;
+pub use crate::extensions::shared::web_fetch::{FetchRequest, FetchResult};
 use crate::protocol::{endpoint::Draft, error::Error};
 use serde_json::Value;
 pub mod execution;
-use crate::extensions::jina::fetch as jina;
-mod source;
-use crate::extensions::zai::fetch as zai;
 pub use execution::fetch;
-
-#[derive(Clone, Debug, Default)]
-pub struct FetchRequest {
-  pub url: String,
-  pub refresh: bool,
-  pub conversation: Option<String>,
-  pub model: Option<String>,
-}
-pub use crate::extensions::shared::web_fetch::FetchResult;
-crate::protocol::text_id_enum! {
-  /// Supported webpage-reading wire protocols, independent of configured providers.
-  #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-  pub enum FetchProtocol (unknown: "unknown web fetch protocol: {}") {
-    DeepseekFetch => "deepseek_fetch",
-    ZaiReader => "zai_reader",
-    JinaReader => "jina_reader",
-    CodexFetch => "codex_fetch",
-  }
-}
+#[derive(Clone, Copy)]
+pub struct FetchProtocol(pub &'static FetchCodec);
 impl FetchProtocol {
+  pub fn get_id(self) -> &'static str {
+    self.0.id
+  }
+
   pub fn build_draft(self, request: &FetchRequest) -> Result<Draft, Error> {
-    match self {
-      Self::DeepseekFetch => deepseek::build_draft(&request.into()),
-      Self::ZaiReader => zai::build_draft(&request.into()),
-      Self::JinaReader => jina::build_draft(&request.into()),
-      Self::CodexFetch => codex::build_draft(&request.into()),
-    }
+    (self.0.build)(request)
   }
   pub fn parse_body(self, body: &Value) -> Result<FetchResult, Error> {
-    match self {
-      Self::DeepseekFetch => deepseek::parse_body(body),
-      Self::ZaiReader => zai::parse_body(body),
-      Self::JinaReader => jina::parse_body(body),
-      Self::CodexFetch => codex::parse_body(body),
-    }
+    (self.0.parse)(body)
   }
 }
-
-impl From<&FetchRequest> for crate::extensions::jina::fetch::Request {
-  fn from(value: &FetchRequest) -> Self {
-    Self { url: value.url.clone(), refresh: value.refresh }
+impl std::fmt::Debug for FetchProtocol {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_str(self.0.id)
   }
 }
-impl From<&FetchRequest> for crate::extensions::zai::fetch::Request {
-  fn from(value: &FetchRequest) -> Self {
-    Self { url: value.url.clone(), refresh: value.refresh }
+impl PartialEq for FetchProtocol {
+  fn eq(&self, other: &Self) -> bool {
+    self.0.id == other.0.id
   }
 }
-impl From<&FetchRequest> for crate::extensions::openai::fetch::Request {
-  fn from(value: &FetchRequest) -> Self {
-    Self {
-      url: value.url.clone(),
-      conversation: value.conversation.clone(),
-      model: value.model.clone(),
-    }
+impl Eq for FetchProtocol {}
+impl std::hash::Hash for FetchProtocol {
+  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    self.0.id.hash(state)
   }
 }
-impl From<&FetchRequest> for crate::extensions::deepseek::fetch::Request {
-  fn from(value: &FetchRequest) -> Self {
-    Self { url: value.url.clone() }
+impl std::str::FromStr for FetchProtocol {
+  type Err = Error;
+  fn from_str(id: &str) -> Result<Self, Error> {
+    crate::extensions::read_registry::fetch()
+      .iter()
+      .find(|codec| codec.id == id)
+      .map(|codec| Self(codec))
+      .ok_or_else(|| Error::Build(format!("unknown web fetch protocol: {id}")))
+  }
+}
+impl serde::Serialize for FetchProtocol {
+  fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(self.0.id)
+  }
+}
+impl<'de> serde::Deserialize<'de> for FetchProtocol {
+  fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+    let id = <String as serde::Deserialize>::deserialize(d)?;
+    id.parse().map_err(serde::de::Error::custom)
   }
 }

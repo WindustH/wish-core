@@ -71,7 +71,7 @@ regional access and paid quotas remain provider-controlled.
 | [Stability AI](https://docs.stability.ai/api-reference) | Multipart Stable Image generation, JSON image response |
 | [Alibaba Wan](https://www.alibabacloud.com/help/en/model-studio/wan-image-generation-and-editing-api-reference) | Synchronous multimodal generation; separate Beijing/Singapore workspace accounts, `workspace_id` endpoint expansion |
 
-The backend stores the authoritative presets in `resources/image-presets.json`.
+The backend stores the authoritative presets in each supplier extension’s `presets.json`.
 `parameters` are native provider fields, not falsely normalized into one universal
 schema. The application owns prompt and model fields. Counts are capped at eight.
 Unsupported parameters produce a provider error; images are never simulated.

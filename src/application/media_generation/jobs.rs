@@ -1,5 +1,5 @@
 use super::*;
-use crate::extension_host::media::video::{VideoInput, VideoMode};
+use crate::extension_host::media::video::VideoMode;
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -40,21 +40,7 @@ impl Job {
     json!({"job_id":self.id,"kind":self.kind,"mode":self.mode,"provider":self.provider,"model":self.service.model,"status":self.phase,"artifacts":self.artifacts,"timestamps":self.timestamps,"created_at":self.created_at,"updated_at":self.updated_at,"error":self.error,"next_action":if matches!(self.phase,Phase::Running|Phase::Downloading) { Some("status") } else { None },"poll_after_seconds":if self.phase==Phase::Running {Some(5)} else {None}})
   }
 }
-#[derive(Default)]
-pub struct Request {
-  pub runway: Option<crate::extensions::runway::edit::Plan>,
-  // Extension-owned execution plan; never deserialized from tool arguments.
-  pub minimax: Option<Box<crate::extensions::minimax::speech::Plan>>,
-  pub action: Option<String>,
-  pub provider: Option<String>,
-  pub prompt: Option<String>,
-  pub kind: Option<MediaKind>,
-  pub job_id: Option<String>,
-  pub options: Parameters,
-  pub mode: Option<VideoMode>,
-  pub inputs: Vec<VideoInput>,
-  pub modify_mode: Option<String>,
-}
+pub use crate::extensions::media_runtime::MediaRequest as Request;
 /// Host-enforced extension scope. Empty presets is reserved for user-facing job recovery.
 pub struct Scope {
   pub video: bool,
@@ -253,8 +239,9 @@ impl MediaHub {
       return Err("media account lacks required credentials".into());
     }
     let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
-    let timed_speech = spec.protocol == MediaProtocol::XaiSpeech
-      && crate::extensions::xai::speech_wire::timed_response(&options);
+    let timed_audio = spec.protocol.0.buffered_audio(&options);
+    let buffered_audio =
+      timed_audio || request.plan.as_ref().is_some_and(|plan| plan.buffered_audio());
     if video && !request.inputs.is_empty() {
       let inputs = super::inputs::resolve(
         &request.inputs,
@@ -270,15 +257,17 @@ impl MediaHub {
       let model = service.model.clone();
       let prompt = prompt.to_owned();
       let modify_mode = request.modify_mode.clone();
-      let runway = request.runway.clone();
+      let plan = request.plan.clone();
+      let defaults = service.parameters.clone();
       (route, draft) = crate::utils::blocking::cpu(move || {
-        if let Some(plan) = runway {
-          plan.build(
-            &model,
-            &prompt,
-            &crate::extensions::shared::parameters::decode(&options)?,
-            &inputs,
-          )
+        if let Some(plan) = plan {
+          plan.build(&crate::extensions::media_runtime::PlanContext {
+            model: &model,
+            prompt: &prompt,
+            defaults: &defaults,
+            parameters: &options,
+            inputs: &inputs,
+          })
         } else {
           protocol.video_submission(
             &model,
@@ -308,11 +297,7 @@ impl MediaHub {
       task_id: None,
       asset_url: None,
       subtitle_url: None,
-      artifact_mime: request
-        .runway
-        .as_ref()
-        .and_then(|plan| plan.artifact_mime())
-        .map(str::to_owned),
+      artifact_mime: request.plan.as_ref().and_then(|plan| plan.artifact_mime()).map(str::to_owned),
       artifacts: Vec::new(),
       timestamps: None,
       created_at: now,
@@ -355,53 +340,51 @@ impl MediaHub {
           .map_err(|_| "invalid media submission reply".to_owned())?;
         job.task_id = Some(spec.protocol.task_id(&value)?);
         job.phase = Phase::Running;
-      } else if timed_speech {
+      } else if buffered_audio {
+        let profile =
+          if timed_audio { TransferProfile::TimedSpeech } else { TransferProfile::AudioSubmission };
         let reply = state
-          .transport(job.service.proxy_enabled, TransferProfile::TimedSpeech)?
-          .execute(&call)
-          .await
-          .map_err(|_| "timed speech submission connection failed; outcome unknown".to_owned())?;
-        if !reply.is_success() {
-          return Err(format!("timed speech HTTP {}; outcome unknown", reply.status));
-        }
-        let (audio, metadata) = crate::utils::blocking::cpu(move || {
-          let (audio, metadata) = crate::extensions::xai::speech_output::decode_timed(&reply.body)?;
-          let mime = media::mime(&audio).ok_or("unrecognized speech audio")?;
-          let value: Value = serde_json::from_slice(&metadata).map_err(|e| e.to_string())?;
-          if !["audio/mpeg", "audio/wav"].contains(&mime) || value["content_type"] != mime {
-            return Err("speech audio content type does not match its bytes".to_owned());
-          }
-          Ok::<_, String>((audio, metadata))
-        })
-        .await
-        .map_err(|e| e.to_string())??;
-        job.artifacts =
-          vec![blobs::save_upload(directory, &audio).await.map_err(|e| e.to_string())?];
-        job.timestamps =
-          Some(blobs::save_upload(directory, &metadata).await.map_err(|e| e.to_string())?);
-        job.phase = Phase::Succeeded;
-      } else if spec.protocol == MediaProtocol::MinimaxSpeech {
-        let reply = state
-          .transport(job.service.proxy_enabled, TransferProfile::AudioSubmission)?
+          .transport(job.service.proxy_enabled, profile)?
           .execute(&call)
           .await
           .map_err(|_| "audio submission connection failed; outcome unknown".to_owned())?;
         if !reply.is_success() {
           return Err(format!("audio submission HTTP {}; outcome unknown", reply.status));
         }
-        let value: Value = serde_json::from_slice(&reply.body)
-          .map_err(|_| "invalid speech submission reply".to_owned())?;
-        let urls =
-          request.minimax.as_ref().ok_or("missing MiniMax speech plan")?.result_urls(&value)?;
-        job.asset_url = Some(urls.audio);
-        job.subtitle_url = urls.subtitles;
-        job.phase = Phase::Downloading;
+        let plan = request.plan.clone();
+        let protocol = spec.protocol;
+        let completion = crate::utils::blocking::cpu(move || {
+          if let Some(plan) = plan {
+            plan.decode_audio(&reply.body)
+          } else {
+            protocol.0.decode_audio(&reply.body)
+          }
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        match completion {
+          crate::extensions::media_runtime::AudioCompletion::Inline { audio, metadata } => {
+            job.artifacts =
+              vec![blobs::save_upload(directory, &audio).await.map_err(|e| e.to_string())?];
+            job.timestamps =
+              Some(blobs::save_upload(directory, &metadata).await.map_err(|e| e.to_string())?);
+            job.phase = Phase::Succeeded;
+          }
+          crate::extensions::media_runtime::AudioCompletion::Download { audio, subtitles } => {
+            job.asset_url = Some(audio);
+            job.subtitle_url = subtitles;
+            job.phase = Phase::Downloading;
+          }
+        }
       } else {
         let stream = transport
           .execute_stream(&call)
           .await
           .map_err(|_| "audio submission connection failed; outcome unknown".to_owned())?;
-        job.artifacts = vec![save_stream(stream, directory, kind, None).await?];
+        job.artifacts = vec![
+          save_stream(stream, directory, kind, None, spec.protocol.0.artifact_validator(None))
+            .await?,
+        ];
         job.phase = Phase::Succeeded;
       }
       Ok::<_, String>(())
@@ -502,8 +485,16 @@ impl MediaHub {
           let stream =
             crate::extensions::shared::artifacts::open_stream(&transport, url, &trusted_base)
               .await?;
-          job.artifacts =
-            vec![save_stream(stream, directory, job.kind, job.artifact_mime.as_deref()).await?];
+          job.artifacts = vec![
+            save_stream(
+              stream,
+              directory,
+              job.kind,
+              job.artifact_mime.as_deref(),
+              spec.protocol.0.artifact_validator(job.artifact_mime.as_deref()),
+            )
+            .await?,
+          ];
           // Persist audio independently so a subtitle failure/restart never repeats its download.
           save_job(path, job).await?;
         }
@@ -511,8 +502,9 @@ impl MediaHub {
           let client = state.transport(job.service.proxy_enabled, TransferProfile::Status)?;
           let bytes =
             crate::extensions::shared::artifacts::download(&client, url, "", &trusted_base).await?;
+          let protocol = spec.protocol;
           let bytes = crate::utils::blocking::cpu(move || {
-            crate::extensions::minimax::speech::validate_subtitles(&bytes)?;
+            protocol.0.validate_subtitles(&bytes)?;
             Ok::<_, String>(bytes)
           })
           .await
@@ -542,6 +534,7 @@ async fn save_stream<S: ReplyStream>(
   directory: &Path,
   kind: MediaKind,
   expected_mime: Option<&str>,
+  validator: Option<media::Validator>,
 ) -> Result<blobs::Blob, String> {
   if !stream.is_success() {
     return Err(format!("media transfer HTTP {}", stream.get_status()));
@@ -554,8 +547,7 @@ async fn save_stream<S: ReplyStream>(
     chunks,
     expected_mime.unwrap_or(kind.file_kind()),
     if kind == MediaKind::Video { 512 * 1024 * 1024 } else { 128 * 1024 * 1024 },
-    (expected_mime == Some("application/zip"))
-      .then_some(crate::extensions::runway::archive::validate as media::Validator),
+    validator,
   )
   .await
   .map_err(|e| e.to_string())

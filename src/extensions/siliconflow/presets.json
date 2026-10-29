@@ -1,0 +1,37 @@
+{
+  "image": [
+    {
+      "id": "siliconflow_images",
+      "name": "硅基流动 / SiliconFlow",
+      "brand": "SiliconFlow",
+      "protocol": "siliconflow",
+      "base_url": "https://api.siliconflow.cn/v1",
+      "path": "/images/generations",
+      "model": "Kwai-Kolors/Kolors",
+      "account_presets": [
+        "siliconflow_cn"
+      ],
+      "parameters": {},
+      "docs_url": "https://docs.siliconflow.cn/docs/userguide/capabilities/images"
+    }
+  ],
+  "media": [
+    {
+      "id": "siliconflow_asr",
+      "name": "SiliconFlow SenseVoice",
+      "brand": "SiliconFlow",
+      "protocol": "silicon_transcription",
+      "kind": "transcription",
+      "model": "FunAudioLLM/SenseVoiceSmall",
+      "base_url": "https://api.siliconflow.cn",
+      "account_presets": [
+        "siliconflow_cn",
+        "custom"
+      ],
+      "docs_url": "https://docs.siliconflow.cn/docs/api/audio-transcriptions-post",
+      "defaults": {},
+      "resolutions": [],
+      "aspect_ratios": []
+    }
+  ]
+}

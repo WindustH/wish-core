@@ -1,0 +1,43 @@
+{
+  "media": [
+    {
+      "id": "runway_video",
+      "name": "Runway Gen-4.5",
+      "brand": "Runway",
+      "protocol": "runway_video",
+      "kind": "video",
+      "model": "gen4.5",
+      "base_url": "https://api.dev.runwayml.com",
+      "account_presets": [
+        "runway",
+        "custom"
+      ],
+      "docs_url": "https://docs.dev.runwayml.com/api/",
+      "defaults": {},
+      "resolutions": [
+        "720p"
+      ],
+      "aspect_ratios": [
+        "16:9",
+        "9:16"
+      ]
+    },
+    {
+      "id": "runway_aleph_video",
+      "name": "Runway Aleph 2 · 视频编辑",
+      "brand": "Runway",
+      "protocol": "runway_video",
+      "kind": "video",
+      "model": "aleph2",
+      "base_url": "https://api.dev.runwayml.com",
+      "account_presets": [
+        "runway",
+        "custom"
+      ],
+      "docs_url": "https://docs.dev.runwayml.com/api/",
+      "defaults": {},
+      "resolutions": [],
+      "aspect_ratios": []
+    }
+  ]
+}

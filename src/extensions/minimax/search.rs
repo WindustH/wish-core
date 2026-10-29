@@ -52,3 +52,20 @@ pub(crate) fn parse_body(body: &Value) -> Result<Vec<SearchResult>, Error> {
 pub struct Request {
   pub query: String,
 }
+
+use crate::extensions::shared::web_search::SearchQuery;
+impl From<&SearchQuery> for Request {
+  fn from(value: &SearchQuery) -> Self {
+    Self { query: value.query.clone() }
+  }
+}
+
+pub static CODEC: crate::extensions::shared::read_codecs::SearchCodec =
+  crate::extensions::shared::read_codecs::SearchCodec {
+    id: "minimax_coding_plan_search",
+    source: super::sources::search,
+    recency: false,
+    build: |query, _| build_draft(&query.into()),
+    parse: parse_body,
+    refusal: |_| None,
+  };

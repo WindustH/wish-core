@@ -29,3 +29,20 @@ pub struct Request {
   pub query: String,
   pub limit: usize,
 }
+
+use crate::extensions::shared::web_search::SearchQuery;
+impl From<&SearchQuery> for Request {
+  fn from(value: &SearchQuery) -> Self {
+    Self { query: value.query.clone(), limit: value.limit }
+  }
+}
+
+pub static CODEC: crate::extensions::shared::read_codecs::SearchCodec =
+  crate::extensions::shared::read_codecs::SearchCodec {
+    id: "zai_search",
+    source: super::sources::search,
+    recency: false,
+    build: |query, _| build_draft(&query.into()),
+    parse: parse_body,
+    refusal: |_| None,
+  };

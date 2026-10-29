@@ -30,6 +30,30 @@ pub const REGISTRATION: Registration = Registration {
   parse: |value| {
     let request: Request = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
 
-    serde_json::to_value(request).map(Invocation::Configured).map_err(|e| e.to_string())
+    Ok(Invocation::new(request))
   },
 };
+
+impl crate::extensions::invocation::Executable for Request {
+  fn execute<'a>(
+    self: Box<Self>,
+    host: &'a dyn crate::extensions::invocation::Host,
+  ) -> crate::extensions::invocation::Future<'a> {
+    Box::pin(async move {
+      host
+        .search(
+          crate::extensions::shared::web_search::SearchQuery {
+            query: self.query,
+            allowed_domains: self.allowed_domains,
+            blocked_domains: self.blocked_domains,
+            recency: None,
+            limit: self.max_results.unwrap_or(10),
+            conversation: None,
+            model: None,
+          },
+          self.service,
+        )
+        .await
+    })
+  }
+}

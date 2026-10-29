@@ -1,0 +1,15 @@
+{
+  "search": [
+    {
+      "id": "kimi_code_search",
+      "name": "Kimi Code",
+      "brand": "Kimi",
+      "protocol": "kimi_code_search",
+      "borrows_from": [
+        "kimi_code"
+      ],
+      "base_url_from_provider": true,
+      "key": "borrowed"
+    }
+  ]
+}

@@ -195,3 +195,23 @@ impl Plan {
     Ok((route, Draft::post_json(&body)?))
   }
 }
+
+impl crate::extensions::media_runtime::NativePlan for Plan {
+  fn driver_id(&self) -> &'static str {
+    "runway_video"
+  }
+  fn build(
+    &self,
+    c: &crate::extensions::media_runtime::PlanContext<'_>,
+  ) -> Result<(String, Draft), Error> {
+    self.build(
+      c.model,
+      c.prompt,
+      &crate::extensions::shared::parameters::decode(c.parameters)?,
+      c.inputs,
+    )
+  }
+  fn artifact_mime(&self) -> Option<&'static str> {
+    self.artifact_mime()
+  }
+}

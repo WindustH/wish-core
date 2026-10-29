@@ -89,3 +89,25 @@ pub struct Request {
   pub blocked_domains: Vec<String>,
   pub recency: Option<crate::extensions::shared::web_search::Recency>,
 }
+
+use crate::extensions::shared::web_search::SearchQuery;
+impl From<&SearchQuery> for Request {
+  fn from(value: &SearchQuery) -> Self {
+    Self {
+      query: value.query.clone(),
+      allowed_domains: value.allowed_domains.clone(),
+      blocked_domains: value.blocked_domains.clone(),
+      recency: value.recency,
+    }
+  }
+}
+
+pub static CODEC: crate::extensions::shared::read_codecs::SearchCodec =
+  crate::extensions::shared::read_codecs::SearchCodec {
+    id: "searxng_search",
+    source: super::sources::search,
+    recency: true,
+    build: |query, _| Ok(build_draft(&query.into())),
+    parse: parse_body,
+    refusal: explain_refusal,
+  };

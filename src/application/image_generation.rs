@@ -5,7 +5,6 @@ use super::{
   error::ApplicationError,
 };
 use crate::extension_host::images::{self as wire, ImageProtocol, ImageSource};
-use crate::extensions::novelai::preparation as references;
 use crate::{protocol::attempt::Limits, storage::blobs, transport::ReqwestTransport};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -70,7 +69,7 @@ pub fn presets() -> &'static Vec<ImagePreset> {
   static PRESETS: std::sync::OnceLock<Vec<ImagePreset>> = std::sync::OnceLock::new();
   PRESETS.get_or_init(|| {
     let mut presets: Vec<ImagePreset> =
-      serde_json::from_str(include_str!("../../resources/image-presets.json"))
+      serde_json::from_value(serde_json::json!(crate::extensions::package::presets("image")))
         .expect("valid image presets");
     for preset in &mut presets {
       preset.reference_images = preset.protocol.reference_images(&preset.model);
@@ -104,12 +103,12 @@ impl ImageConfig {
       let account = accounts
         .get(&p.credential_id)
         .ok_or_else(|| ApplicationError::invalid("image service requires an account"))?;
-      if spec.protocol == ImageProtocol::Codex && !account.is_codex() {
+      if spec.protocol.subscription() && !account.is_codex() {
         return Err(ApplicationError::invalid(
           "subscription image generation requires a ChatGPT account",
         ));
       }
-      if spec.protocol != ImageProtocol::Codex && account.is_codex() {
+      if !spec.protocol.subscription() && account.is_codex() {
         return Err(ApplicationError::invalid(
           "ChatGPT subscription credentials cannot be used as an image API key",
         ));
@@ -143,24 +142,9 @@ impl ImageConfig {
           )));
         }
       }
-      if matches!(
-        spec.protocol,
-        ImageProtocol::Novelai | ImageProtocol::Jimeng | ImageProtocol::GeminiInteractions
-      ) {
-        let mut parameters = spec.parameters.clone();
-        parameters.extend(p.parameters.clone());
-        spec.protocol.submission(&p.model, "validation", &parameters)?;
-      }
       let mut edit_parameters = spec.parameters.clone();
       edit_parameters.extend(p.parameters.clone());
-      spec.protocol.validate_edit_parameters(&p.model, &edit_parameters)?;
-      if spec.protocol == ImageProtocol::Bfl
-        && p.parameters.keys().any(|key| key.starts_with("input_image"))
-      {
-        return Err(ApplicationError::invalid(
-          "BFL input images are managed by the tool images argument",
-        ));
-      }
+      spec.protocol.0.validate_configuration(&p.model, &edit_parameters)?;
       for key in [
         "prompt",
         "model",
@@ -406,54 +390,30 @@ impl ImageHub {
       } else {
         None
       };
-      if spec.protocol == ImageProtocol::Wan {
-        let prepare_parameters = parameters.clone();
-        images = crate::utils::blocking::cpu(move || {
-          crate::extensions::alibaba::preparation::prepare_references(
-            &mut images,
-            &prepare_parameters,
-          )?;
-          Ok::<_, String>(images)
-        })
-        .await
-        .map_err(|e| e.to_string())??;
-      }
-      let is_fill = spec.protocol.image_required(&service.config.model);
-      let is_openai = spec.protocol == ImageProtocol::Openai;
-      let (mut images, overlay) = if is_fill || (is_openai && overlay.is_some()) {
-        crate::utils::blocking::cpu(move || {
-          let overlay = if is_fill {
-            crate::extensions::bfl::preparation::validate(
-              &images,
-              overlay.as_ref().map(wire::EditOverlay::image),
-            )?;
-            overlay
-          } else {
-            overlay
-              .map(|overlay| {
-                crate::extensions::openai::preparation::prepare_overlay(&mut images, overlay)
-              })
-              .transpose()?
-          };
-          Ok::<_, String>((images, overlay))
-        })
-        .await
-        .map_err(|e| e.to_string())??
-      } else {
-        (images, overlay)
-      };
+      let driver = spec.protocol;
+      let prepare_model = service.config.model.clone();
+      let prepare_parameters = parameters.clone();
+      let (mut images, overlay) = crate::utils::blocking::cpu(move || {
+        let overlay =
+          driver.0.prepare(&prepare_model, &prepare_parameters, &mut images, overlay)?;
+        Ok::<_, String>((images, overlay))
+      })
+      .await
+      .map_err(|e| e.to_string())??;
       let reference_images = images.split_off(image_ids.len());
       let settings =
         references.iter().map(|r| (r.kind, r.strength, r.fidelity)).collect::<Vec<_>>();
       let prepared = if reference_images.is_empty() {
         Vec::new()
       } else {
-        crate::utils::blocking::cpu(move || references::prepare(reference_images, settings))
+        crate::utils::blocking::cpu(move || driver.0.prepare_references(reference_images, settings))
           .await
           .map_err(|e| e.to_string())??
       };
-      let images = if spec.protocol == ImageProtocol::Runninghub {
-        crate::extensions::runninghub::image_upload::references(
+      let images = spec
+        .protocol
+        .0
+        .upload(
           images,
           &service.transport,
           service
@@ -464,10 +424,7 @@ impl ImageHub {
             .unwrap_or(&spec.base_url),
           credentials,
         )
-        .await?
-      } else {
-        images
-      };
+        .await?;
       let draft = spec
         .protocol
         .submission_with_images(

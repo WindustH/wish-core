@@ -1,0 +1,14 @@
+{
+  "search": [
+    {
+      "id": "searxng",
+      "name": "SearXNG",
+      "brand": "SearXNG",
+      "protocol": "searxng_search",
+      "key": "none",
+      "base_url_required": true,
+      "base_url_placeholder": "http://127.0.0.1:8888",
+      "docs_url": "https://docs.searxng.org/dev/search_api.html"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "image": [
+    {
+      "id": "together_images",
+      "name": "Together AI",
+      "brand": "Together AI",
+      "protocol": "together",
+      "base_url": "https://api.together.xyz/v1",
+      "path": "/images/generations",
+      "model": "black-forest-labs/FLUX.2-dev",
+      "account_presets": [
+        "together"
+      ],
+      "parameters": {
+        "response_format": "base64"
+      },
+      "docs_url": "https://docs.together.ai/docs/inference/images/overview"
+    }
+  ]
+}

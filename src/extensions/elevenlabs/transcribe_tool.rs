@@ -31,7 +31,7 @@ pub const REGISTRATION: Registration = Registration {
   specification,
   examples: || json!([{"audio": "<blob ID>"}]),
   parse: |value| {
-    serde_json::from_value(value).map(Invocation::ElevenlabsTranscribe).map_err(|e| e.to_string())
+    serde_json::from_value::<Request>(value).map(Invocation::new).map_err(|e| e.to_string())
   },
 };
 

@@ -1,0 +1,38 @@
+{
+  "image": [
+    {
+      "id": "wan_images_cn",
+      "name": "阿里云 Wan · 北京",
+      "brand": "Qwen",
+      "protocol": "wan",
+      "base_url": "https://{workspace_id}.cn-beijing.maas.aliyuncs.com/api/v1",
+      "path": "/services/aigc/multimodal-generation/generation",
+      "model": "wan2.7-image",
+      "account_presets": [
+        "qwen_workspace_cn"
+      ],
+      "parameters": {
+        "size": "2K",
+        "n": 1
+      },
+      "docs_url": "https://www.alibabacloud.com/help/en/model-studio/wan-image-generation-and-editing-api-reference"
+    },
+    {
+      "id": "wan_images_singapore",
+      "name": "阿里云 Wan · 新加坡",
+      "brand": "Qwen",
+      "protocol": "wan",
+      "base_url": "https://{workspace_id}.ap-southeast-1.maas.aliyuncs.com/api/v1",
+      "path": "/services/aigc/multimodal-generation/generation",
+      "model": "wan2.7-image",
+      "account_presets": [
+        "qwen_workspace_singapore"
+      ],
+      "parameters": {
+        "size": "2K",
+        "n": 1
+      },
+      "docs_url": "https://www.alibabacloud.com/help/en/model-studio/wan-image-generation-and-editing-api-reference"
+    }
+  ]
+}

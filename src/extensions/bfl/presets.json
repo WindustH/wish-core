@@ -1,0 +1,32 @@
+{
+  "image": [
+    {
+      "id": "bfl_images",
+      "name": "Black Forest Labs",
+      "brand": "BFL",
+      "protocol": "bfl",
+      "base_url": "https://api.bfl.ai/v1",
+      "path": "/{model}",
+      "model": "flux-2-pro",
+      "account_presets": [
+        "bfl"
+      ],
+      "parameters": {},
+      "docs_url": "https://docs.bfl.ai/quick_start/generating_images"
+    },
+    {
+      "id": "bfl_fill_images",
+      "name": "Black Forest Labs · Fill",
+      "brand": "BFL",
+      "protocol": "bfl",
+      "base_url": "https://api.bfl.ai/v1",
+      "path": "/{model}",
+      "model": "flux-pro-1.0-fill",
+      "account_presets": [
+        "bfl"
+      ],
+      "parameters": {},
+      "docs_url": "https://docs.bfl.ai/flux_1_fill"
+    }
+  ]
+}

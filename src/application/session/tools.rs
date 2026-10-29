@@ -18,7 +18,7 @@ use crate::{
     history::HistoryTools,
     shell::ShellTool,
     view_image::ViewImageTool,
-    web_search::{SearchBackend, WebSearchTool},
+    web_search::{SearchBackend, SearchService},
   },
 };
 use serde_json::json;
@@ -42,9 +42,9 @@ pub struct SessionTools {
   video_generate_on: AtomicBool,
   audio_generate_on: AtomicBool,
   audio_transcribe_on: AtomicBool,
-  image_generate: crate::tool::image_generate::ImageGenerateTool,
+  image_generate: crate::tool::image_generate::ImageService,
   pub web_fetch: crate::application::pages::PageReader,
-  pub web_search: WebSearchTool,
+  pub web_search: SearchService,
   pub history: HistoryTools,
   history_on: AtomicBool,
   slot: Weak<SessionSlot>,
@@ -91,11 +91,7 @@ impl SessionTools {
       audio_transcribe_on: AtomicBool::new(false),
       image_generate: make_image_generate(slot.clone()),
       web_fetch,
-      web_search: WebSearchTool::new(
-        search_backend(slot.clone()),
-        session_id.to_owned(),
-        provider_listing(slot.clone(), Capability::WebSearch),
-      ),
+      web_search: SearchService::new(search_backend(slot.clone()), session_id.to_owned()),
       history: HistoryTools::new(session),
       history_on: AtomicBool::new(true),
       slot,
@@ -357,18 +353,8 @@ impl ToolExecutor for SessionTools {
         ToolOutcome::Failed("use an extension transcription tool".into())
       }
       Some(Capability::AudioGenerate) => ToolOutcome::Failed("use an extension media tool".into()),
-      Some(Capability::ImageGenerate) => {
-        if !self.image_generate_on.load(Ordering::Acquire) {
-          return ToolOutcome::Failed("image_generate is disabled for this session".into());
-        }
-        self.image_generate.execute(call, control).await
-      }
-      Some(Capability::WebFetch) => ToolOutcome::Failed("use an extension reader tool".into()),
-      Some(Capability::WebSearch) => {
-        if !self.web_search_on.load(Ordering::Acquire) {
-          return ToolOutcome::Failed("web_search is not enabled for this session".into());
-        }
-        self.web_search.execute(call, control).await
+      Some(Capability::ImageGenerate | Capability::WebFetch | Capability::WebSearch) => {
+        ToolOutcome::Failed("use an extension tool; discover tools with extension_tools".into())
       }
       Some(Capability::History) => {
         if !self.history_on.load(Ordering::Acquire) {
@@ -522,9 +508,9 @@ fn make_fetch(
   )
 }
 
-fn make_image_generate(slot: Weak<SessionSlot>) -> crate::tool::image_generate::ImageGenerateTool {
+fn make_image_generate(slot: Weak<SessionSlot>) -> crate::tool::image_generate::ImageService {
   let providers = provider_listing(slot.clone(), Capability::ImageGenerate);
-  crate::tool::image_generate::ImageGenerateTool(
+  crate::tool::image_generate::ImageService(
     Arc::new(move |request| {
       let owner = slot.upgrade();
       Box::pin(async move {

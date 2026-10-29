@@ -67,8 +67,6 @@ macro_rules! text_id_enum {
   };
 }
 
-pub(crate) use text_id_enum;
-
 pub mod account_state;
 pub mod attempt;
 pub mod endpoint;

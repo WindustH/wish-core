@@ -1,0 +1,14 @@
+{
+  "search": [
+    {
+      "id": "bocha",
+      "name": "博查 Bocha",
+      "brand": "Bocha",
+      "protocol": "bocha_search",
+      "key": "required",
+      "region": "cn",
+      "key_url": "https://open.bochaai.com",
+      "docs_url": "https://bocha-ai.feishu.cn/wiki/RXEOw02rFiwzGSkd9mUcqoeAnNK"
+    }
+  ]
+}

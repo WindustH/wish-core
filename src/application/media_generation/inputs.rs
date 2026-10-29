@@ -87,27 +87,19 @@ pub(super) async fn resolve(
         ) {
           return Err("unsupported input encoding for video generation".into());
         }
-        if protocol == MediaProtocol::RunninghubVideo {
-          crate::extensions::runninghub::upload::send(
-            bytes,
-            mime,
-            service.base_url.as_deref().filter(|v| !v.is_empty()).unwrap_or(&spec.base_url),
-            credentials,
-            &state.transport(service.proxy_enabled, TransferProfile::Upload)?,
-          )
-          .await?
-        } else if protocol == MediaProtocol::RunwayVideo
-          && crate::extensions::runway::upload::requires_upload(bytes.len())
-        {
-          crate::extensions::runway::upload::send(
-            bytes,
-            mime,
-            service.base_url.as_deref().filter(|v| !v.is_empty()).unwrap_or(&spec.base_url),
-            credentials,
-            &state.transport(service.proxy_enabled, TransferProfile::Upload)?,
-            &state.transport(service.proxy_enabled, TransferProfile::Status)?,
-          )
-          .await?
+        if protocol.0.requires_upload(bytes.len()) {
+          protocol
+            .0
+            .upload(
+              bytes,
+              mime,
+              service.base_url.as_deref().filter(|v| !v.is_empty()).unwrap_or(&spec.base_url),
+              credentials,
+              &state.transport(service.proxy_enabled, TransferProfile::Upload)?,
+              &state.transport(service.proxy_enabled, TransferProfile::Status)?,
+            )
+            .await?
+            .ok_or("extension upload did not return a URI")?
         } else {
           crate::utils::blocking::cpu(move || {
             format!(
@@ -130,16 +122,5 @@ pub(super) async fn resolve(
   Ok(result)
 }
 pub(super) fn validate_input_url(value: &str, protocol: MediaProtocol) -> Result<(), String> {
-  match protocol {
-    MediaProtocol::SeedanceVideo | MediaProtocol::Seedance25Video => {
-      crate::extensions::seedance::video_contract::validate_input_url(value)
-    }
-    MediaProtocol::MinimaxH3 => {
-      crate::extensions::minimax::video_contract::validate_input_url(value)
-    }
-    MediaProtocol::RunwayVideo => {
-      crate::extensions::runway::video_contract::validate_input_url(value)
-    }
-    _ => crate::extensions::shared::urls::validate_asset_url(value, None),
-  }
+  protocol.0.validate_input_url(value)
 }

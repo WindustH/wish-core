@@ -1,0 +1,14 @@
+{
+  "search": [
+    {
+      "id": "perplexity_search",
+      "name": "Perplexity",
+      "brand": "Perplexity",
+      "protocol": "perplexity_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://www.perplexity.ai/account/api/keys",
+      "docs_url": "https://docs.perplexity.ai/docs/search/quickstart"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "search": [
+    {
+      "id": "jina",
+      "name": "Jina",
+      "brand": "Jina",
+      "protocol": "jina_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://jina.ai/api-dashboard/key-manager",
+      "docs_url": "https://jina.ai/reader"
+    }
+  ],
+  "fetch": [
+    {
+      "id": "jina_reader",
+      "name": "Jina Reader",
+      "key": "optional",
+      "base_url": "https://r.jina.ai",
+      "path": "/",
+      "protocol": "jina_reader"
+    }
+  ]
+}

@@ -90,5 +90,5 @@ pub const REGISTRATION: Registration = Registration {
     {"action":"extend","prompt":"Continue the camera movement","video":{"url":"https://example.com/source.mp4"},"duration":6},
     {"action":"status","job_id":"<returned job ID>"},{"action":"list_jobs"}])
   },
-  parse: |v| serde_json::from_value(v).map(Invocation::XaiVideo).map_err(|e| e.to_string()),
+  parse: |v| serde_json::from_value::<Request>(v).map(Invocation::new).map_err(|e| e.to_string()),
 };

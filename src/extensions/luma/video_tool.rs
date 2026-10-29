@@ -59,6 +59,6 @@ pub const REGISTRATION: Registration = Registration {
       }
       _ => return Err("invalid action".into()),
     };
-    Ok(Invocation::LumaVideo(request))
+    Ok(Invocation::new(request))
   },
 };

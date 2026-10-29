@@ -191,3 +191,29 @@ pub fn validate_configuration(
   }
   configured_submission(model, "validation", &values, &Parameters::default()).map(|_| ())
 }
+
+impl crate::extensions::media_runtime::NativePlan for Plan {
+  fn driver_id(&self) -> &'static str {
+    "minimax_speech"
+  }
+  fn build(
+    &self,
+    c: &crate::extensions::media_runtime::PlanContext<'_>,
+  ) -> Result<(String, Draft), crate::protocol::error::Error> {
+    self.build(c.model, c.defaults)
+  }
+  fn buffered_audio(&self) -> bool {
+    true
+  }
+  fn decode_audio(
+    &self,
+    bytes: &[u8],
+  ) -> Result<crate::extensions::media_runtime::AudioCompletion, String> {
+    let value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    let urls = self.result_urls(&value)?;
+    Ok(crate::extensions::media_runtime::AudioCompletion::Download {
+      audio: urls.audio,
+      subtitles: urls.subtitles,
+    })
+  }
+}

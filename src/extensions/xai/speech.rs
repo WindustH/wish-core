@@ -71,7 +71,7 @@ pub const REGISTRATION: Registration = Registration {
     ])
   },
   parse: |value| {
-    serde_json::from_value(value).map(Invocation::XaiSpeech).map_err(|error| error.to_string())
+    serde_json::from_value::<Request>(value).map(Invocation::new).map_err(|error| error.to_string())
   },
 };
 

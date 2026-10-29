@@ -79,7 +79,7 @@ pub const SPEECH: Registration = Registration {
     ])
   },
   parse: |value| {
-    serde_json::from_value(value).map(Invocation::MinimaxSpeech).map_err(|e| e.to_string())
+    serde_json::from_value::<Speech>(value).map(Invocation::new).map_err(|e| e.to_string())
   },
 };
 pub mod endpoint;
@@ -90,3 +90,11 @@ pub(crate) mod video;
 pub mod video_contract;
 pub mod video_status;
 pub(crate) mod video_tool;
+
+pub(crate) mod minimax_h3_driver;
+
+pub(crate) mod minimax_speech_driver;
+
+pub(crate) mod execution;
+
+pub(crate) mod package;

@@ -51,7 +51,7 @@ pub const TRANSCRIBE: Registration = Registration {
   specification,
   examples: || json!([{"audio":"<session audio blob ID>","language":"en","diarize":true,"format":true,"keyterms":["Wish"]}]),
   parse: |value| {
-    serde_json::from_value(value).map(Invocation::XaiTranscribe).map_err(|e| e.to_string())
+    serde_json::from_value::<Transcribe>(value).map(Invocation::new).map_err(|e| e.to_string())
   },
 };
 
@@ -112,3 +112,17 @@ impl Transcribe {
 }
 
 pub(crate) mod video_operation;
+
+pub(crate) mod image_driver;
+
+pub(crate) mod xai_video_driver;
+
+pub(crate) mod xai_speech_driver;
+
+pub(crate) mod xai_transcription_driver;
+
+pub(crate) mod transcription_driver;
+
+pub(crate) mod execution;
+
+pub(crate) mod package;

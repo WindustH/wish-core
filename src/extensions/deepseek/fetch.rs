@@ -14,3 +14,18 @@ pub(crate) fn parse_body(body: &Value) -> Result<FetchResult, Error> {
 pub struct Request {
   pub url: String,
 }
+
+use crate::extensions::shared::web_fetch::FetchRequest;
+impl From<&FetchRequest> for Request {
+  fn from(value: &FetchRequest) -> Self {
+    Self { url: value.url.clone() }
+  }
+}
+
+pub static CODEC: crate::extensions::shared::read_codecs::FetchCodec =
+  crate::extensions::shared::read_codecs::FetchCodec {
+    id: "deepseek_fetch",
+    source: super::sources::fetch,
+    build: |request| build_draft(&request.into()),
+    parse: parse_body,
+  };

@@ -1,0 +1,13 @@
+{
+  "search": [
+    {
+      "id": "serper",
+      "name": "Serper",
+      "protocol": "serper_search",
+      "key": "required",
+      "region": "global",
+      "key_url": "https://serper.dev/api-keys",
+      "docs_url": "https://serper.dev"
+    }
+  ]
+}

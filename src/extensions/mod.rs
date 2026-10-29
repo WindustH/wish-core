@@ -39,3 +39,17 @@ pub mod tavily;
 pub mod together;
 pub mod xiaoyunque;
 pub mod zai;
+
+pub(crate) mod read_registry;
+
+pub(crate) mod image_registry;
+pub(crate) mod image_runtime;
+
+pub(crate) mod media_registry;
+pub(crate) mod media_runtime;
+
+pub(crate) mod transcription_runtime;
+
+pub(crate) mod invocation;
+
+pub(crate) mod package;

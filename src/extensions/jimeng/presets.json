@@ -1,0 +1,28 @@
+{
+  "image": [
+    {
+      "id": "jimeng_images",
+      "name": "即梦 4.6",
+      "brand": "Jimeng",
+      "protocol": "jimeng",
+      "model": "jimeng_seedream46_cvtob",
+      "base_url": "https://visual.volcengineapi.com",
+      "path": "/",
+      "account_presets": [
+        "volcengine_visual",
+        "custom"
+      ],
+      "required_credentials": [
+        "access_key_id",
+        "secret_access_key"
+      ],
+      "optional_credentials": [
+        "session_token"
+      ],
+      "parameters": {
+        "force_single": true
+      },
+      "docs_url": "https://docs.volcengine.com/docs/jimeng-ai/jimeng-ai-image-generation-46-interface-documentation"
+    }
+  ]
+}
