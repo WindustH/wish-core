@@ -121,6 +121,6 @@ async fn execute(
     .await
     .map_err(|e| Failure::Unknown(e.to_string()))?;
   Ok(
-    json!({"provider":selected,"model":service.model,"language":output["language_code"],"text":text.chars().take(32_000).collect::<String>(),"truncated":text.chars().count()>32_000,"transcript":artifact,"format":"json","word_timestamps":output["words"].as_array().is_some_and(|a|!a.is_empty())}),
+    json!({"provider":selected,"model":service.model,"language":output.get("language_code").or_else(|| output.get("language")),"text":text.chars().take(32_000).collect::<String>(),"truncated":text.chars().count()>32_000,"transcript":artifact,"format":"json","word_timestamps":output["words"].as_array().is_some_and(|a|!a.is_empty())}),
   )
 }

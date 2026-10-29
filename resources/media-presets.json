@@ -11,7 +11,20 @@
       "minimax",
       "custom"
     ],
-    "docs_url": "https://platform.minimax.io/docs/api-reference/video-generation-v2-create"
+    "docs_url": "https://platform.minimax.io/docs/api-reference/video-generation-v2-create",
+    "resolutions": [
+      "480P",
+      "768P",
+      "2K"
+    ],
+    "aspect_ratios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16"
+    ]
   },
   {
     "id": "elevenlabs_speech",
@@ -68,5 +81,146 @@
       "custom"
     ],
     "docs_url": "https://elevenlabs.io/docs/api-reference/speech-to-text/convert"
+  },
+  {
+    "id": "runway_video",
+    "name": "Runway Gen-4.5",
+    "brand": "Runway",
+    "protocol": "runway_video",
+    "kind": "video",
+    "model": "gen4.5",
+    "base_url": "https://api.dev.runwayml.com",
+    "account_presets": [
+      "runway",
+      "custom"
+    ],
+    "docs_url": "https://docs.dev.runwayml.com/api/",
+    "defaults": {},
+    "resolutions": [
+      "720p"
+    ],
+    "aspect_ratios": [
+      "16:9",
+      "9:16"
+    ]
+  },
+  {
+    "id": "luma_video",
+    "name": "Luma Dream Machine",
+    "brand": "Luma",
+    "protocol": "luma_video",
+    "kind": "video",
+    "model": "ray-2",
+    "base_url": "https://api.lumalabs.ai",
+    "account_presets": [
+      "luma",
+      "custom"
+    ],
+    "docs_url": "https://docs.lumalabs.ai/reference/creategeneration",
+    "defaults": {},
+    "resolutions": [
+      "540p",
+      "720p",
+      "1080p",
+      "4k"
+    ],
+    "aspect_ratios": [
+      "21:9",
+      "16:9",
+      "4:3",
+      "1:1",
+      "3:4",
+      "9:16",
+      "9:21"
+    ]
+  },
+  {
+    "id": "openai_speech",
+    "name": "OpenAI Speech",
+    "brand": "OpenAI",
+    "protocol": "openai_speech",
+    "kind": "speech",
+    "model": "gpt-4o-mini-tts",
+    "base_url": "https://api.openai.com",
+    "account_presets": [
+      "openai",
+      "custom"
+    ],
+    "docs_url": "https://developers.openai.com/api/reference/resources/audio/subresources/speech/methods/create",
+    "defaults": {
+      "voice": "coral"
+    },
+    "resolutions": [],
+    "aspect_ratios": []
+  },
+  {
+    "id": "siliconflow_speech",
+    "name": "SiliconFlow Speech",
+    "brand": "SiliconFlow",
+    "protocol": "openai_speech",
+    "kind": "speech",
+    "model": "FunAudioLLM/CosyVoice2-0.5B",
+    "base_url": "https://api.siliconflow.cn",
+    "account_presets": [
+      "siliconflow_cn",
+      "custom"
+    ],
+    "docs_url": "https://docs.siliconflow.cn/docs/api/audio-speech-post",
+    "defaults": {
+      "voice": "FunAudioLLM/CosyVoice2-0.5B:alex"
+    },
+    "resolutions": [],
+    "aspect_ratios": []
+  },
+  {
+    "id": "openai_asr",
+    "name": "OpenAI Transcription",
+    "brand": "OpenAI",
+    "protocol": "openai_transcription",
+    "kind": "transcription",
+    "model": "gpt-4o-transcribe",
+    "base_url": "https://api.openai.com",
+    "account_presets": [
+      "openai",
+      "custom"
+    ],
+    "docs_url": "https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create",
+    "defaults": {},
+    "resolutions": [],
+    "aspect_ratios": []
+  },
+  {
+    "id": "groq_asr",
+    "name": "Groq Whisper",
+    "brand": "Groq",
+    "protocol": "openai_transcription",
+    "kind": "transcription",
+    "model": "whisper-large-v3-turbo",
+    "base_url": "https://api.groq.com/openai",
+    "account_presets": [
+      "groq",
+      "custom"
+    ],
+    "docs_url": "https://console.groq.com/docs/speech-to-text",
+    "defaults": {},
+    "resolutions": [],
+    "aspect_ratios": []
+  },
+  {
+    "id": "siliconflow_asr",
+    "name": "SiliconFlow SenseVoice",
+    "brand": "SiliconFlow",
+    "protocol": "silicon_transcription",
+    "kind": "transcription",
+    "model": "FunAudioLLM/SenseVoiceSmall",
+    "base_url": "https://api.siliconflow.cn",
+    "account_presets": [
+      "siliconflow_cn",
+      "custom"
+    ],
+    "docs_url": "https://docs.siliconflow.cn/docs/api/audio-transcriptions-post",
+    "defaults": {},
+    "resolutions": [],
+    "aspect_ratios": []
   }
 ]

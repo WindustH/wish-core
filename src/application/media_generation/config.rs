@@ -32,6 +32,12 @@ pub struct MediaPreset {
   pub base_url: String,
   pub account_presets: Vec<String>,
   pub docs_url: String,
+  #[serde(default)]
+  pub defaults: MediaOptions,
+  #[serde(default)]
+  pub resolutions: Vec<String>,
+  #[serde(default)]
+  pub aspect_ratios: Vec<String>,
 }
 pub fn presets() -> &'static Vec<MediaPreset> {
   static PRESETS: std::sync::OnceLock<Vec<MediaPreset>> = std::sync::OnceLock::new();
@@ -93,7 +99,9 @@ impl MediaConfig {
         options.voice = Some("validation".into());
       }
       if spec.kind == MediaKind::Transcription {
-        if !matches!(p.model.as_str(), "scribe_v1" | "scribe_v2") {
+        if spec.protocol == MediaProtocol::ElevenTranscription
+          && !matches!(p.model.as_str(), "scribe_v1" | "scribe_v2")
+        {
           return Err(ApplicationError::invalid("unsupported ASR model"));
         }
         if serde_json::to_value(&options)
