@@ -13,6 +13,8 @@ pub enum MediaProtocol {
   MinimaxH3,
   RunwayVideo,
   LumaVideo,
+  SeedanceVideo,
+  Seedance25Video,
   OpenaiSpeech,
   OpenaiTranscription,
   SiliconTranscription,
@@ -67,7 +69,11 @@ impl MediaOptions {
 impl MediaProtocol {
   pub fn kind(self) -> MediaKind {
     match self {
-      Self::MinimaxH3 | Self::RunwayVideo | Self::LumaVideo => MediaKind::Video,
+      Self::MinimaxH3
+      | Self::RunwayVideo
+      | Self::LumaVideo
+      | Self::SeedanceVideo
+      | Self::Seedance25Video => MediaKind::Video,
       Self::ElevenSpeech | Self::OpenaiSpeech => MediaKind::Speech,
       Self::ElevenMusic => MediaKind::Music,
       Self::ElevenSound => MediaKind::SoundEffect,
@@ -122,6 +128,34 @@ impl MediaProtocol {
     let (path, body) = match self {
       Self::ElevenTranscription | Self::OpenaiTranscription | Self::SiliconTranscription => {
         return Err(invalid("use audio_transcribe for ASR"));
+      }
+      Self::SeedanceVideo | Self::Seedance25Video => {
+        let max_duration = if self == Self::Seedance25Video { 30.0 } else { 15.0 };
+        let duration = options.duration.unwrap_or(5.0);
+        if duration != -1.0
+          && (!(4.0..=max_duration).contains(&duration) || duration.fract() != 0.0)
+        {
+          return Err(invalid(
+            "Seedance duration must be -1 (automatic), or an integer in 4..15 (2.5: 4..30)",
+          ));
+        }
+        let resolution = options.resolution.as_deref().unwrap_or("720p").to_ascii_lowercase();
+        let resolutions: &[&str] = if self == Self::Seedance25Video {
+          &["480p", "720p", "1080p"]
+        } else {
+          &["480p", "720p", "1080p", "4k"]
+        };
+        if !resolutions.contains(&resolution.as_str()) {
+          return Err(invalid("unsupported Seedance resolution"));
+        }
+        let ratio = options.aspect_ratio.as_deref().unwrap_or("16:9");
+        if !["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"].contains(&ratio) {
+          return Err(invalid("unsupported Seedance aspect ratio"));
+        }
+        (
+          "/api/v3/contents/generations/tasks".into(),
+          json!({"model":model,"content":[{"type":"text","text":prompt}],"duration":duration as i64,"resolution":resolution,"ratio":ratio}),
+        )
       }
       Self::RunwayVideo => {
         let duration = options.duration.unwrap_or(5.0);
@@ -273,6 +307,9 @@ impl MediaProtocol {
     let path = match self {
       Self::MinimaxH3 => format!("/v2/query/video_generation/{task}"),
       Self::RunwayVideo => format!("/v1/tasks/{task}"),
+      Self::SeedanceVideo | Self::Seedance25Video => {
+        format!("/api/v3/contents/generations/tasks/{task}")
+      }
       Self::LumaVideo => format!("/dream-machine/v1/generations/{task}"),
       _ => return Err(Error::Build("provider has no video status API".into())),
     };
@@ -282,9 +319,17 @@ impl MediaProtocol {
     let (status, url) = match self {
       Self::MinimaxH3 => (&value["task"]["status"], &value["task"]["content"]["url"]),
       Self::RunwayVideo => (&value["status"], &value["output"][0]),
+      Self::SeedanceVideo | Self::Seedance25Video => {
+        (&value["status"], &value["content"]["video_url"])
+      }
       Self::LumaVideo => (&value["state"], &value["assets"]["video"]),
       _ => return Err(Error::Build("provider has no video status API".into())),
     };
+    if matches!(self, Self::SeedanceVideo | Self::Seedance25Video)
+      && status.as_str() == Some("expired")
+    {
+      return Ok(VideoStatus::Failed);
+    }
     match status.as_str().unwrap_or("").to_ascii_lowercase().as_str() {
       "succeeded" | "completed" => {
         let url =
