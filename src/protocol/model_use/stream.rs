@@ -83,6 +83,14 @@ trait WireDecoder {
 }
 
 impl StreamDecoder {
+  pub fn checkpoint(&self) -> Option<Self> {
+    match self {
+      Self::GoogleGenerateContent(d) => Some(Self::GoogleGenerateContent(d.clone())),
+      Self::GoogleAntigravity(d) => Some(Self::GoogleAntigravity(d.clone())),
+      _ => None,
+    }
+  }
+
   fn get_wire_mut(&mut self) -> &mut dyn WireDecoder {
     match self {
       StreamDecoder::AnthropicMessages(decoder) => decoder,
@@ -148,6 +156,14 @@ pub enum BlockKind {
 /// One normalized event from a protocol's stream decoder.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 pub enum StreamEvent {
+  /// Commit the current logical output; contains no provider credential.
+  Checkpoint { revision: u64 },
+  /// Discard only the speculative suffix of this logical model call.
+  Rewind { revision: u64 },
+  /// A cancellable native recovery attempt is about to start.
+  Recovering { attempt: u32, delay_ms: u64 },
+  /// Original prompt size, independent of additive continuation billing.
+  InputTokens { tokens: u64 },
   /// A block opened at `index`; deltas for it may follow.
   BlockStart { index: u32, kind: BlockKind },
   /// Text appended to a text block.
@@ -183,8 +199,9 @@ pub enum StreamEvent {
 }
 
 /// Rebuilds a [`Response`] from events, holding the stream to the contract above.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct StreamAccumulator {
+  checkpoint: Option<(u64, Box<StreamAccumulator>)>,
   /// How the protocol that produced the stream takes reasoning back; display-only without one.
   replay: ReasoningReplay,
   blocks: BTreeMap<u32, Block>,
@@ -196,6 +213,7 @@ pub struct StreamAccumulator {
 }
 
 /// One block while it is being streamed.
+#[derive(Clone)]
 struct Block {
   kind: BlockKind,
   closed: bool,
@@ -276,6 +294,24 @@ impl StreamAccumulator {
       return Err(build_violation_error("event after the stop event"));
     }
     match event {
+      StreamEvent::Checkpoint { revision } => {
+        self.checkpoint = None;
+        self.checkpoint = Some((revision, Box::new(self.clone())));
+        Ok(())
+      }
+      StreamEvent::Rewind { revision } => {
+        let (saved, state) = self
+          .checkpoint
+          .take()
+          .ok_or_else(|| build_violation_error("rewind without checkpoint"))?;
+        if saved != revision {
+          return Err(build_violation_error("checkpoint revision mismatch"));
+        }
+        *self = *state;
+        self.checkpoint = Some((saved, Box::new(self.clone())));
+        Ok(())
+      }
+      StreamEvent::Recovering { .. } | StreamEvent::InputTokens { .. } => Ok(()),
       StreamEvent::BlockStart { index, kind } => self.open(index, kind),
       StreamEvent::TextDelta { index, delta } => {
         self.get_block_mut(index, BlockKind::Text)?.text.push_str(&delta);

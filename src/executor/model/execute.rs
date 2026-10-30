@@ -37,16 +37,18 @@ pub(in crate::executor) async fn execute_model(
   let mut last_request_input_tokens = None;
   let mut last_request_estimated_tokens = None;
   let mut segments = 0;
+  let mut stream_recoveries = 0u32;
   loop {
     segments += 1;
     let mut observation = continuation.observe_next_segment();
     let mut result =
       call_segment(model_caller, &continuation.request, control, &mut observation, observe).await;
+    stream_recoveries = stream_recoveries.saturating_add(observation.stream_recoveries);
     first_event_at = first_event_at.or(observation.first_event_at);
     continuation.next_index = observation.next_index;
     let usage = combine_usage(continuation.usage, observation.usage);
     if matches!(result, SegmentResult::Complete(_) | SegmentResult::OutputLimited(_)) {
-      last_request_input_tokens = observation.usage.input_tokens;
+      last_request_input_tokens = observation.initial_input.or(observation.usage.input_tokens);
       last_request_estimated_tokens =
         estimator.map(|estimator| estimator.estimate_request(&continuation.request));
     }
@@ -74,6 +76,7 @@ pub(in crate::executor) async fn execute_model(
       SegmentResult::Failed(RunOutcome::StreamFailed(partial)) => partial.usage = usage,
       _ => {}
     }
+    observation.call.stream_recoveries = stream_recoveries;
     observation.call.first_event_at = first_event_at;
     observation.call.usage = usage;
     observation.call.last_request_input_tokens = last_request_input_tokens;
@@ -158,6 +161,8 @@ async fn read_segment_stream(
           observation.first_event_at.get_or_insert(Timestamp::now());
           match &event {
             StreamEvent::Usage(usage) => observation.usage = *usage,
+            StreamEvent::Recovering { attempt, .. } => observation.stream_recoveries = *attempt,
+            StreamEvent::InputTokens { tokens } => observation.initial_input = Some(*tokens),
             StreamEvent::Stop(reason) => observation.stop_reason = Some(*reason),
             _ => {}
           }

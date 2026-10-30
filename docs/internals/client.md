@@ -179,3 +179,37 @@ transport phases, since replaying a read does not repeat generation.
 | `AwaitStreamHeaders` | yes | a service sends a stream's head when it admits the call; no head within `min(first_byte, total)` means the call is stuck before generation |
 | `AwaitHeaders` (buffered) | no | a buffered head comes with the whole answer, so the service may be generating and billing |
 | `ReadBody` | no | the service started answering |
+
+## Native stream recovery
+
+`protocol/model_use/recovery.rs` describes recovery semantics separately from
+`executor/model/continuation.rs` (application output-limit continuation). The first
+implementation supports Gemini GenerateContent checkpoint tokens, including its
+Cloud Code envelope. It activates only on a Gemini request that actually supplies
+`candidates[0].continuationToken`; a model name alone never authorizes a replay.
+Other protocols and buffered calls retain their existing behavior. Event-cursor
+reattachment for Responses and Interactions is not enabled by this implementation.
+
+The Client freezes the rendered request and credentials. Recovery changes only
+`continuationToken`, reuses the latest decoder checkpoint, and emits `Rewind` before
+resuming. `Checkpoint` and `Rewind` identify a local revision; the token never enters
+these events, history, prompts or web snapshots. The accumulator and live preview
+retain one committed snapshot and discard the speculative suffix, including tool
+arguments and reasoning signatures. Tools still execute only after response acceptance.
+The web snapshot includes a separate committed preview for reconnecting clients.
+
+A `CONTINUATION` boundary opens the next hop immediately. Transport interruptions,
+transient upstream errors and EOF without a finish reason can resume only with a
+checkpoint. Failed reconnects use the model retry policy, with at most 32 recovery
+attempts for the logical call. Dropping the stream interrupts waiting and local reads;
+it does not promise remote cancellation. No checkpoint means no native replay.
+Usage is cumulative within a hop and additive across committed hops; the original
+prompt count remains separate for context estimation. `stream_recoveries` records
+scheduled recovery attempts independently of token usage.
+
+Recovery is in-process only. Old failed calls and process restarts have no persisted
+checkpoint; explicitly running such a session starts a new request from its retained
+context. Gemini providers tolerate 20 minutes of body silence so long reasoning can
+reach its first checkpoint; other providers keep their existing timeout.
+
+Wire reference: [Google long decode](https://ai.google.dev/gemini-api/docs/generate-content/long-decode).

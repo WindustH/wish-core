@@ -34,13 +34,14 @@ use crate::protocol::model_use::response::google_generate_content as buffered;
 use crate::protocol::{BlockKind, StopReason, StreamEvent};
 
 /// One reasoning block while it is open, holding its signature back until it closes.
+#[derive(Clone)]
 struct OpenReasoning {
   index: u32,
   signature: Option<String>,
 }
 
 /// Decodes one `generateContent` stream.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Decoder {
   counter: BlockCounter,
   open_text: Option<u32>,

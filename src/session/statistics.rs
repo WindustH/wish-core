@@ -55,6 +55,9 @@ pub struct ModelCallRecord {
   /// Fallback estimate of that same physical request, for subsequent estimate calibration.
   pub last_request_estimated_tokens: Option<u64>,
   pub stop_reason: Option<StopReason>,
+  /// Native recovery attempts scheduled, separate from usage and application output continuation.
+  #[serde(default)]
+  pub stream_recoveries: u32,
 }
 
 #[derive(Default)]
@@ -66,6 +69,7 @@ pub(crate) struct CallObservation {
   pub last_request_input_tokens: Option<u64>,
   pub last_request_estimated_tokens: Option<u64>,
   pub stop_reason: Option<StopReason>,
+  pub stream_recoveries: u32,
 }
 impl CallObservation {
   /// Marks the call finished now, `started` being when the caller was first asked.

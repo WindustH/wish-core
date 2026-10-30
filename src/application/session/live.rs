@@ -8,12 +8,18 @@ use std::collections::HashMap;
 pub(super) struct LivePreview {
   pub revision: u64,
   events: Vec<Value>,
+  checkpoint: Option<(u64, Vec<Value>, HashMap<String, usize>)>,
   positions: HashMap<String, usize>,
   retries: HashMap<String, RetryStatus>,
 }
 impl LivePreview {
   pub fn snapshot(&self, data: Value) -> Value {
+    let checkpoint = self
+      .checkpoint
+      .as_ref()
+      .map(|(revision, events, _)| json!({"revision":revision, "events":events}));
     json!({"type":"snapshot", "data":data, "revision":self.revision, "live_events":self.events,
+      "stream_checkpoint":checkpoint,
       "retries":self.retries.values().collect::<Vec<_>>(), "server_time":crate::utils::time::Timestamp::now().0})
   }
   pub fn observe_retry(&mut self, status: &RetryStatus) {
@@ -25,6 +31,7 @@ impl LivePreview {
     }
   }
   fn clear(&mut self) {
+    self.checkpoint = None;
     self.events.clear();
     self.positions.clear();
   }
@@ -39,6 +46,32 @@ impl LivePreview {
       | SessionEvent::ResponseInterrupted(_)
       | SessionEvent::Finished(_) => self.clear(),
       SessionEvent::ModelStream(stream) => {
+        match stream {
+          StreamEvent::Checkpoint { revision } => {
+            self.checkpoint = Some((*revision, self.events.clone(), self.positions.clone()));
+            return;
+          }
+          StreamEvent::Rewind { revision } => {
+            if let Some((saved, events, positions)) = &self.checkpoint
+              && saved == revision
+            {
+              self.events = events.clone();
+              self.positions = positions.clone();
+            }
+            return;
+          }
+          StreamEvent::Recovering { .. } => {
+            let key = "recovery".to_owned();
+            if let Some(position) = self.positions.get(&key) {
+              self.events[*position] = json!(event);
+            } else {
+              self.positions.insert(key, self.events.len());
+              self.events.push(json!(event));
+            }
+            return;
+          }
+          _ => {}
+        }
         let (kind, index, field, fragment) = match stream {
           StreamEvent::TextDelta { index, delta } => ("TextDelta", *index, "delta", delta),
           StreamEvent::ReasoningDelta { index, delta } => {
@@ -62,6 +95,14 @@ impl LivePreview {
           }
           _ => return,
         };
+        if let Some(position) = self.positions.remove("recovery") {
+          self.events.remove(position);
+          for index in self.positions.values_mut() {
+            if *index > position {
+              *index -= 1;
+            }
+          }
+        }
         let key = format!("{kind}:{index}");
         if let Some(position) = self.positions.get(&key) {
           let value = &mut self.events[*position]["ModelStream"][kind];

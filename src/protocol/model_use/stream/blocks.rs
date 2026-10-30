@@ -8,7 +8,7 @@ use crate::protocol::model_use::mistral_chunks::{ChunkText, visit_chunks};
 use crate::protocol::{BlockKind, StreamEvent};
 
 /// Hands out block indices in the order blocks open, for a wire that does not number its blocks.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct BlockCounter {
   next: u32,
 }
@@ -32,7 +32,7 @@ impl BlockCounter {
 /// The one text block and the one reasoning block of a turn on a wire without block events (the
 /// chat wire and Mistral's conversations wire): each opens the first time its kind streams, and
 /// both stay open until the turn ends. Tool blocks take their indices from the same counter.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct LazyBlocks {
   pub(super) counter: BlockCounter,
   text: Option<u32>,

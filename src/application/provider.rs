@@ -143,14 +143,21 @@ impl Provider {
         _ => return Err(ApplicationError::invalid(format!("unknown credential: {field}"))),
       }
     }
+    let protocol = crate::protocol::model_use::catalog::parse_protocol(&config.protocol)?;
+    let long_decode = matches!(
+      protocol,
+      crate::protocol::model_use::ModelUseProtocol::GoogleGenerateContent
+        | crate::protocol::model_use::ModelUseProtocol::GoogleVertexGenerateContent
+        | crate::protocol::model_use::ModelUseProtocol::GoogleAntigravityGenerateContent
+    );
     let mut client = Client::new(
-      crate::protocol::model_use::catalog::parse_protocol(&config.protocol)?,
+      protocol,
       endpoint,
       ReqwestTransport::new(
         crate::protocol::attempt::Limits {
-          // Models can think without sending body chunks. Give both body silence and buffered
-          // attempts three times the transport defaults; keep connection/header limits intact.
-          idle: std::time::Duration::from_secs(180),
+          // Gemini long decode can think silently before its first checkpoint. Other models
+          // retain their existing idle limit; connect and header limits stay unchanged.
+          idle: std::time::Duration::from_secs(if long_decode { 1200 } else { 180 }),
           total: std::time::Duration::from_secs(900),
           ..Default::default()
         },

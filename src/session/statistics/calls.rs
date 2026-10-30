@@ -32,6 +32,7 @@ impl ModelCallRecord {
       last_request_input_tokens: None,
       last_request_estimated_tokens: None,
       stop_reason: None,
+      stream_recoveries: 0,
     }
   }
   /// Ends the call as `status`, with what the caller observed of it.
@@ -43,6 +44,7 @@ impl ModelCallRecord {
     self.last_request_input_tokens = observation.last_request_input_tokens;
     self.last_request_estimated_tokens = observation.last_request_estimated_tokens;
     self.stop_reason = observation.stop_reason;
+    self.stream_recoveries = observation.stream_recoveries;
     self.status = status;
   }
   /// Ends, at `at`, a call whose run stopped without its observation.

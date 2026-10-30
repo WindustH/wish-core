@@ -17,6 +17,7 @@ pub mod context;
 pub mod message;
 pub(crate) mod mistral_chunks;
 pub mod mode;
+pub mod recovery;
 pub mod request;
 pub mod response;
 pub mod stream;

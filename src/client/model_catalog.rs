@@ -71,7 +71,7 @@ impl ModelCatalogCache {
   /// # Errors
   ///
   /// The refetch's own error, when no page was ever read for the query it describes.
-  pub async fn page<T: Transport>(
+  pub async fn page<T: Transport + Send + Sync>(
     &self,
     client: &Client<T>,
     query: &ModelListQuery,

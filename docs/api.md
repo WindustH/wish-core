@@ -1435,3 +1435,19 @@ as Web Fetch and Web Search. Global defaults only affect new sessions. A deliver
 change appends a system notice; moving from direct tools to commands retains the
 active definitions until the next generation, while disabling history removes them
 immediately. Valid requests via either route are accepted while history is enabled.
+
+### Native generation recovery
+
+Gemini streamed calls may emit `ModelStream.Checkpoint { revision }`,
+`Rewind { revision }` and `Recovering { attempt, delay_ms }`. A rewind restores the
+latest checkpoint of the current logical call, including text, reasoning, tools
+and usage; it never removes accepted history. Clients should retain one checkpoint
+of their temporary display. `InputTokens { tokens }` reports original prompt size,
+separately from additive `Usage` across continuation hops.
+
+A live snapshot may include `stream_checkpoint: { revision, events }`. Rebuild its
+committed preview separately from `live_events`, which remains the current full
+preview. Both contain only display events; native continuation tokens are private
+in-process client state. Call records include `stream_recoveries` (default 0 for
+older records), counting scheduled native recovery attempts. Restarting the server
+or running a previously failed session does not restore an old native checkpoint.

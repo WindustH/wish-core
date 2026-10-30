@@ -16,6 +16,7 @@ mod model_catalog;
 mod observer;
 pub(crate) mod retry;
 mod stream;
+mod stream_recovery;
 
 pub use observer::{AttemptObserver, AttemptObserverFactory};
 pub use retry::{RetryObserver, RetryOperation, RetryPhase, RetryStatus};
@@ -61,7 +62,7 @@ pub struct Client<T> {
   model_use: ModelUseProtocol,
   endpoint: Endpoint,
   credentials: Credentials,
-  transport: T,
+  transport: std::sync::Arc<T>,
   model_retry: RetryPolicy,
   auxiliary_retry: RetryPolicy,
   retry_observer: Option<RetryObserver>,
@@ -73,7 +74,7 @@ pub struct Client<T> {
   catalog: std::sync::Arc<model_catalog::ModelCatalogCache>,
 }
 
-impl<T: Transport> Client<T> {
+impl<T: Transport + Send + Sync> Client<T> {
   pub fn with_retry_observer(mut self, observer: RetryObserver) -> Self {
     self.retry_observer = Some(observer);
     self
@@ -105,7 +106,7 @@ impl<T: Transport> Client<T> {
       model_use,
       endpoint,
       credentials: Credentials::default(),
-      transport,
+      transport: std::sync::Arc::new(transport),
       model_retry: RetryPolicy::model(),
       auxiliary_retry: RetryPolicy::auxiliary(),
       retry_observer: None,
@@ -260,10 +261,7 @@ impl<T: Transport> Client<T> {
 
   /// Sends a request in the response mode it declares. Buffered calls retry whole attempts;
   /// streamed calls retry only until the first event, then hand ownership of the stream back.
-  pub async fn call(
-    &self,
-    request: &Request,
-  ) -> Result<CallResponse<EventStream<T::Stream>>, Error> {
+  pub async fn call(&self, request: &Request) -> Result<CallResponse<EventStream<T>>, Error> {
     let resolved;
     let request = if self.model_use == ModelUseProtocol::GoogleAntigravityGenerateContent
       && self.model_list == Some(ModelListProtocol::GoogleAntigravityModels)
@@ -351,7 +349,7 @@ impl<T: Transport> Client<T> {
       self.retry_observer.clone(),
       |_| {
         model_list::fetch(
-          &self.transport,
+          self.transport.as_ref(),
           protocol,
           query,
           headers,
@@ -387,7 +385,7 @@ impl<T: Transport> Client<T> {
       self.retry_observer.clone(),
       |_| {
         account_state::fetch(
-          &self.transport,
+          self.transport.as_ref(),
           protocol,
           &self.credentials,
           base_url,
@@ -509,16 +507,23 @@ impl<T: Transport> Client<T> {
   /// transport and the policy would replace at all: a connect failure or a head that never came,
   /// but not a failure after the service started answering. Once an event is in the caller's
   /// hands a failure is terminal.
-  async fn attempt_streamed_call(
-    &self,
-    request: &Request,
-  ) -> Result<EventStream<T::Stream>, Error> {
+  async fn attempt_streamed_call(&self, request: &Request) -> Result<EventStream<T>, Error> {
     let call = self.build_model_use_call(request)?;
     let framing = match self.model_use {
       ModelUseProtocol::BedrockConverse => Framing::AwsEventStream,
       _ => Framing::Sse,
     };
     let mut stream = self.open_event_stream(&call, &request.model, framing).await?;
+    if let Some(protocol) = crate::protocol::model_use::recovery::RecoveryProtocol::for_call(
+      self.model_use,
+      &request.model,
+    ) {
+      stream.recovery = Some(stream_recovery::Recovery::new(protocol, call, self.model_retry));
+      if let Some(recovery) = &mut stream.recovery {
+        recovery.observer = self.attempt_observer.clone();
+        recovery.model = request.model.clone();
+      }
+    }
     stream.read_ahead().await?;
     Ok(stream)
   }
@@ -621,7 +626,7 @@ impl<T: Transport> Client<T> {
     call: &Call,
     model: &str,
     framing: Framing,
-  ) -> Result<EventStream<T::Stream>, Error> {
+  ) -> Result<EventStream<T>, Error> {
     let observer = self.attempt_observer.as_ref().map(|factory| factory(model));
     let mut reply = self.transport.execute_stream(call).await?;
     if !reply.is_success() {
@@ -633,7 +638,13 @@ impl<T: Transport> Client<T> {
       );
     }
     let account_state = self.parse_account_state_reading(reply.get_headers(), None)?;
-    Ok(EventStream::new(RecordStream::new(reply, framing), self.model_use, observer, account_state))
+    Ok(EventStream::new(
+      self.transport.clone(),
+      RecordStream::new(reply, framing),
+      self.model_use,
+      observer,
+      account_state,
+    ))
   }
 
   /// Internal: a buffered reply's headers and JSON body, or the failure its protocol's envelope
@@ -700,7 +711,7 @@ fn classify_retry(error: &Error) -> RetryDecision {
   }
 }
 
-impl<T: Transport + Sync> ModelCaller for Client<T> {
+impl<T: Transport + Send + Sync> ModelCaller for Client<T> {
   fn supports_upstream_compaction(&self) -> bool {
     self.get_upstream_compaction_protocol().is_some()
   }
@@ -720,7 +731,7 @@ impl<T: Transport + Sync> ModelCaller for Client<T> {
   fn get_model_use_protocol(&self) -> Option<ModelUseProtocol> {
     Some(Client::get_model_use_protocol(self))
   }
-  type Stream = EventStream<T::Stream>;
+  type Stream = EventStream<T>;
   async fn call(&self, request: &Request) -> Result<CallResponse<Self::Stream>, Error> {
     Client::call(self, request).await
   }

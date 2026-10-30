@@ -2,7 +2,7 @@
 use super::{WireDecoder, google_generate_content};
 use crate::protocol::{StreamEvent, error::Error, model_use::response::google_antigravity};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Decoder {
   inner: google_generate_content::Decoder,
 }

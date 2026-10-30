@@ -52,6 +52,7 @@ impl Continuation {
   pub fn observe_next_segment(&self) -> SegmentObservation {
     SegmentObservation {
       call: CallObservation::default(),
+      initial_input: None,
       previous_usage: self.usage,
       index_offset: self.next_index,
       next_index: self.next_index,
@@ -61,6 +62,7 @@ impl Continuation {
 
 pub(super) struct SegmentObservation {
   pub call: CallObservation,
+  pub initial_input: Option<u64>,
   pub previous_usage: Option<Usage>,
   pub index_offset: u32,
   pub next_index: u32,
