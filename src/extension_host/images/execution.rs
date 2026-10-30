@@ -34,7 +34,10 @@ impl Execution<'_> {
       .protocol
       .call(self.base_url, self.path, self.credentials, draft)
       .map_err(|e| e.to_string())?;
-    initial.headers.push(("user-agent".into(), self.user_agent.into()));
+    // Protocol identities can be required upstream; the application identity is only a fallback.
+    if !initial.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("user-agent")) {
+      initial.headers.push(("user-agent".into(), self.user_agent.into()));
+    }
     let mut call = initial.clone();
     let mut result_url = None;
     let mut task_id = None;
