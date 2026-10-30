@@ -1121,8 +1121,15 @@ Returns `{"items": [{"record", "content": {"kind", "value"}}], "next", "end_sequ
 Timeline history includes `Application` events with `type: "model_instruction"`.
 Their `instruction` contains a title and text content for request-time instructions or
 tool definitions. These are display-only records, never additional conversation input;
-identical records are deduplicated within one model instance. They record preparation of
-an attempted request, not proof of upstream acceptance. Continuation, summary and handoff
+they describe changes to the request context, not a log of each request. New events carry
+`key` (the instruction slot or image identity) and `operation` (`set` or `remove`).
+`instruction` carries the new content for `set`, or the removed content for `remove`.
+Comparison uses the most recent state reconstructed from session history, across runs,
+generations and server restarts. Reusing unchanged context adds no observation; changing
+A to B and back to A records both changes. Message positions do not count as changes.
+Legacy observations without an operation are interpreted as `set`; missing legacy removal
+events cannot be reconstructed. These records describe preparation of an attempted request,
+not proof of upstream acceptance. Continuation, summary and handoff
 prompts are recorded from this version onward; older unrecorded prompts cannot be recovered.
 The first stored message includes `initial_tools`, containing generation #0’s saved tool
 definitions for the timeline opening inspector. Each generation also exposes its own tools

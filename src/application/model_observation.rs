@@ -6,14 +6,14 @@ use crate::{
 };
 use serde_json::Value;
 use std::{
-  collections::HashSet,
+  collections::BTreeMap,
   sync::{Arc, Mutex},
 };
 pub struct InstructionObserver {
   sender: SessionSender,
   events: tokio::sync::broadcast::Sender<Value>,
   reader: SessionReader,
-  recorded: Arc<Mutex<Option<HashSet<[u8; 32]>>>>,
+  recording: Arc<Mutex<()>>,
 }
 impl InstructionObserver {
   pub fn new(
@@ -21,7 +21,7 @@ impl InstructionObserver {
     reader: SessionReader,
     events: tokio::sync::broadcast::Sender<Value>,
   ) -> Self {
-    Self { sender, reader, events, recorded: Arc::new(Mutex::new(None)) }
+    Self { sender, reader, events, recording: Arc::new(Mutex::new(())) }
   }
   pub async fn record(&self, original: &Request, request: &Request) -> Result<(), Error> {
     let (sender, events) = (&self.sender, &self.events);
@@ -59,28 +59,45 @@ impl InstructionObserver {
     if !request.tools.is_empty() {
       notes.push(serde_json::json!({"title":"可用工具定义","content":[{"Text":{"text":serde_json::to_string_pretty(&request.tools).map_err(|error| Error::Build(error.to_string()))?}}]}));
     }
-    if notes.is_empty() {
-      return Ok(());
-    }
     let sender = sender.clone();
     let reader = self.reader.clone();
-    let recorded = self.recorded.clone();
+    let recording = self.recording.clone();
     let changed = crate::utils::blocking::io(move || {
-      let mut cache = recorded.lock().unwrap();
-      if cache.is_none() {
-        *cache = Some(recorded_instructions(&reader)?);
-      }
-      let recorded = cache.as_mut().expect("loaded instruction observations");
-      let mut changed = false;
+      let _recording = recording.lock().unwrap();
+      // Another model wrapper (for compaction or a resumed run) may have observed context
+      // since our previous call. History, rather than an instance-local cache, is authoritative.
+      let mut recorded = recorded_instructions(&reader)?;
+      // Compare current state, not all values ever seen: A -> B -> A is two changes.
+      // Message positions and generation IDs do not identify request instructions.
+      let mut current: BTreeMap<String, Value> = BTreeMap::new();
       for note in notes {
-        let key = fingerprint(&note);
-        if recorded.contains(&key) {
+        let key = note_key(&note);
+        if let Some(previous) = current.get_mut(&key) {
+          if !same_content(previous, &note) {
+            previous["content"].as_array_mut().expect("instruction content")
+              .extend(note["content"].as_array().expect("instruction content").iter().cloned());
+          }
+        } else {
+          current.insert(key, note);
+        }
+      }
+      let mut changed = false;
+      for (key, note) in &current {
+        if recorded.get(key).is_some_and(|previous| same_content(previous, note)) {
           continue;
         }
         sender.record_application_event(
-          serde_json::json!({"type":"model_instruction","instruction":note}),
+          serde_json::json!({"type":"model_instruction","key":key,"operation":"set","instruction":note}),
         )?;
-        recorded.insert(key);
+        recorded.insert(key.clone(), note.clone());
+        changed = true;
+      }
+      let removed: Vec<_> = recorded.keys().filter(|key| !current.contains_key(*key)).cloned().collect();
+      for key in removed {
+        sender.record_application_event(
+          serde_json::json!({"type":"model_instruction","key":key,"operation":"remove","instruction":recorded[&key]}),
+        )?;
+        recorded.remove(&key);
         changed = true;
       }
       Ok::<_, crate::session::SessionError>(changed)
@@ -95,21 +112,33 @@ impl InstructionObserver {
   }
 }
 
-fn fingerprint(note: &Value) -> [u8; 32] {
-  use sha2::Digest;
-  sha2::Sha256::digest(note.to_string()).into()
+fn same_content(left: &Value, right: &Value) -> bool {
+  left["title"] == right["title"] && left["content"] == right["content"]
 }
 
-/// The model wrapper is rebuilt between runs. Seed its cache from durable observations so
-/// resuming a session or restarting the server does not turn old request context into new activity.
+/// Each image remains in context independently; replacing a tool set or an instruction
+/// changes one slot. Legacy observations have the same titles but no explicit keys.
+fn note_key(note: &Value) -> String {
+  let title = note["title"].as_str().unwrap_or_default();
+  if title == "图片输入说明"
+    && let Some(text) = note["content"][0]["Text"]["text"].as_str()
+    && let Some((identity, _)) = text.split_once(']')
+  {
+    return identity.to_owned();
+  }
+  title.to_owned()
+}
+
+/// Replay context deltas in history order, including legacy observations as assignments.
+/// A generation switch does not reset this state: unchanged context is inherited.
 fn recorded_instructions(
   reader: &SessionReader,
-) -> Result<HashSet<[u8; 32]>, crate::session::SessionError> {
+) -> Result<BTreeMap<String, Value>, crate::session::SessionError> {
   use crate::session::history::{
     HistoryItem,
     query::{HistoryFilter, HistoryPageRequest},
   };
-  let mut recorded = HashSet::new();
+  let mut recorded = BTreeMap::new();
   let mut cursor = None;
   loop {
     let page = reader.query_history(
@@ -122,7 +151,13 @@ fn recorded_instructions(
         && let SessionEvent::Application(value) = event.as_ref()
         && value["type"] == "model_instruction"
       {
-        recorded.insert(fingerprint(&value["instruction"]));
+        let note = &value["instruction"];
+        let key = value["key"].as_str().map(str::to_owned).unwrap_or_else(|| note_key(note));
+        if value["operation"] == "remove" {
+          recorded.remove(&key);
+        } else {
+          recorded.insert(key, note.clone());
+        }
       }
     }
     cursor = page.next;
