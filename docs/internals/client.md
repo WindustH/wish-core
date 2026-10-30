@@ -55,7 +55,11 @@ For a subscription, the credentials carry tokens instead of a key (`api_key` = a
 placement: `AuthScheme::Bearer(Some(CredentialRenewal::CodexOAuth))`, or `CopilotToken` for a
 Copilot session renewed from the GitHub token in `refresh_token`.
 `AccountClient::refresh_credentials` returns renewed credentials and installs them nowhere; the application
-saves them in the shared account configuration and rebuilds dependent service clients. A `build_call` over spent credentials is refused
+saves them in the shared account configuration and rebuilds dependent service clients. Providers
+with the same credential binding, endpoint and scope share a renewal handle with active runs.
+`SessionModel` snapshots that handle before each logical call, so a long tool loop picks up refreshed
+tokens without changing an in-flight request or its recovery attempts. Endpoint or account-scope
+edits create a separate handle. A `build_call` over spent credentials is refused
 as `Error::Renewal` before anything is sent. Storing what the exchange rotated stays with the
 caller.
 

@@ -99,3 +99,9 @@ records into its management database's `calls` table, tagged with the session's 
 samples visible streamed output once per second per attempt into `stream_samples`
 (`src/application/sampling.rs`). Tokens there are estimated at 4 bytes each; these samples are
 throughput observations, not billing usage.
+
+Antigravity stream samples use the public model ID before its reasoning mode is resolved to an
+upstream deployment. The series projection also joins legacy deployment-named samples to the
+public model for configured Antigravity providers. This changes grouping only: recorded bytes,
+durations and billing usage are preserved. Estimated TPS is received output bytes / 4 / elapsed
+seconds; it is separate from provider-reported token usage and includes waiting intervals.

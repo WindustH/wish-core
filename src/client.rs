@@ -255,6 +255,10 @@ impl<T: Transport + Send + Sync> Client<T> {
     self
   }
 
+  pub fn get_credentials(&self) -> &Credentials {
+    &self.credentials
+  }
+
   pub fn get_api_key(&self) -> &str {
     &self.credentials.api_key
   }
@@ -262,6 +266,7 @@ impl<T: Transport + Send + Sync> Client<T> {
   /// Sends a request in the response mode it declares. Buffered calls retry whole attempts;
   /// streamed calls retry until the first event, then recover only from native checkpoints.
   pub async fn call(&self, request: &Request) -> Result<CallResponse<EventStream<T>>, Error> {
+    let logical_model = &request.model;
     let resolved;
     let request = if self.model_use == ModelUseProtocol::GoogleAntigravityGenerateContent
       && self.model_list == Some(ModelListProtocol::GoogleAntigravityModels)
@@ -279,7 +284,7 @@ impl<T: Transport + Send + Sync> Client<T> {
         &self.model_retry,
         RetryOperation::Model,
         self.retry_observer.clone(),
-        |_| self.attempt_streamed_call(request),
+        |_| self.attempt_streamed_call(request, logical_model),
         classify_retry,
       )
       .await
@@ -507,13 +512,17 @@ impl<T: Transport + Send + Sync> Client<T> {
   /// transport and the policy would replace at all: a connect failure or a head that never came,
   /// but not a failure after the service started answering. Once an event is in the caller's
   /// hands, only an explicitly supported native checkpoint permits recovery.
-  async fn attempt_streamed_call(&self, request: &Request) -> Result<EventStream<T>, Error> {
+  async fn attempt_streamed_call(
+    &self,
+    request: &Request,
+    logical_model: &str,
+  ) -> Result<EventStream<T>, Error> {
     let call = self.build_model_use_call(request)?;
     let framing = match self.model_use {
       ModelUseProtocol::BedrockConverse => Framing::AwsEventStream,
       _ => Framing::Sse,
     };
-    let mut stream = self.open_event_stream(&call, &request.model, framing).await?;
+    let mut stream = self.open_event_stream(&call, logical_model, framing).await?;
     if let Some(protocol) = crate::protocol::model_use::recovery::RecoveryProtocol::for_call(
       self.model_use,
       &request.model,
@@ -521,7 +530,7 @@ impl<T: Transport + Send + Sync> Client<T> {
       stream.recovery = Some(stream_recovery::Recovery::new(protocol, call, self.model_retry));
       if let Some(recovery) = &mut stream.recovery {
         recovery.observer = self.attempt_observer.clone();
-        recovery.model = request.model.clone();
+        recovery.model = logical_model.to_owned();
       }
     }
     stream.read_ahead().await?;

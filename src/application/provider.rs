@@ -14,7 +14,10 @@ use crate::{
   transport::ReqwestTransport,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+  collections::BTreeMap,
+  sync::{Arc, RwLock},
+};
 use tokio_util::task::TaskTracker;
 
 pub type ModelClient = Client<ReqwestTransport>;
@@ -84,11 +87,13 @@ pub enum Auth {
   SigV4,
 }
 
+#[derive(Clone)]
 pub struct Provider {
   /// The provider's key in the configuration.
   pub id: String,
   pub client: ModelClient,
   pub config: ProviderConfig,
+  pub(crate) credentials: Arc<RwLock<Credentials>>,
 }
 impl Provider {
   pub fn build(
@@ -165,7 +170,7 @@ impl Provider {
       )?
       .with_stream_total(std::time::Duration::from_secs(30 * 60)),
     )
-    .with_credentials(credentials);
+    .with_credentials(credentials.clone());
     match config.preset.as_deref() {
       Some("openai" | "openai_codex") => {
         client = client.with_code_agent_identity(CodeAgentIdentity::Codex);
@@ -210,7 +215,39 @@ impl Provider {
           .map_err(|e| ApplicationError::invalid(e.to_string()))?,
       );
     }
-    Ok(Self { id, client, config })
+    Ok(Self { id, client, config, credentials: Arc::new(RwLock::new(credentials)) })
+  }
+  /// Carry token-only renewals to clients retained by active runs. A changed endpoint,
+  /// account binding or credential scope starts a separate handle instead.
+  pub(crate) fn inherit_credentials(&mut self, previous: &Self) {
+    if self.config.get_renewal().is_none() {
+      return;
+    }
+    let stable = |config: &ProviderConfig| {
+      let mut value = serde_json::json!(config);
+      value.as_object_mut().expect("provider config").retain(|key, _| {
+        matches!(
+          key.as_str(),
+          "credential_id"
+            | "preset"
+            | "enabled"
+            | "protocol"
+            | "base_url"
+            | "path"
+            | "auth"
+            | "api_key_env"
+            | "credentials"
+            | "credentials_env"
+            | "headers"
+        )
+      });
+      value
+    };
+    if stable(&self.config) == stable(&previous.config) {
+      let renewed = self.credentials.read().unwrap().clone();
+      self.credentials = previous.credentials.clone();
+      *self.credentials.write().unwrap() = renewed;
+    }
   }
   /// Public model-service metadata without credentials or secret headers.
   pub fn describe(&self) -> serde_json::Value {

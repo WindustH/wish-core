@@ -168,16 +168,34 @@ async fn series(
     ))
   })
   .await?;
+  // Old samples used the upstream reasoning deployment ID, while call records use
+  // the public model ID. Join them at the protocol boundary without rewriting history.
+  let providers = app.get_providers();
+  let model_id = |provider: &str, model: &str| {
+    if providers
+      .get(provider)
+      .is_some_and(|p| p.config.protocol == "google_antigravity_generate_content")
+    {
+      crate::protocol::model_list::antigravity::variant(model)
+        .map_or(model, |(base, _)| base)
+        .to_owned()
+    } else {
+      model.to_owned()
+    }
+  };
   let displayed_samples = samples.len();
   let sample_count: i64 = aggregates.iter().map(|aggregate| aggregate.count).sum();
   let mut groups: BTreeMap<(String, String), Group> = BTreeMap::new();
-  for row in rows {
+  for mut row in rows {
+    row.model = model_id(&row.provider, &row.model);
     groups.entry((row.provider.clone(), row.model.clone())).or_default().buckets.push(row);
   }
-  for sample in samples {
+  for mut sample in samples {
+    sample.model = model_id(&sample.provider, &sample.model);
     groups.entry((sample.provider.clone(), sample.model.clone())).or_default().samples.push(sample);
   }
-  for aggregate in aggregates {
+  for mut aggregate in aggregates {
+    aggregate.model = model_id(&aggregate.provider, &aggregate.model);
     let key = (aggregate.provider.clone(), aggregate.model.clone());
     groups.entry(key).or_default().aggregates.push(aggregate);
   }
@@ -187,8 +205,11 @@ async fn series(
     group.samples.sort_by_key(|sample| sample.at_ms);
     let usage: Usage = group.buckets.iter().sum();
     total = total + usage;
-    let by_start: BTreeMap<i64, &Usage> =
-      group.buckets.iter().map(|bucket| (bucket.start_ms, &bucket.usage)).collect();
+    let mut by_start: BTreeMap<i64, Usage> = BTreeMap::new();
+    for bucket in &group.buckets {
+      let usage = by_start.entry(bucket.start_ms).or_default();
+      *usage = *usage + bucket.usage;
+    }
     let mut rates: BTreeMap<i64, Rate> = BTreeMap::new();
     let mut window = Rate::default();
     for aggregate in &group.aggregates {
@@ -197,7 +218,7 @@ async fn series(
     }
     let buckets: Vec<_> = bucket_starts(from, to, step)
       .map(|at| {
-        let usage = by_start.get(&at).copied().copied().unwrap_or_default();
+        let usage = by_start.get(&at).copied().unwrap_or_default();
         let rate = rates.get(&at).copied().unwrap_or_default();
         json!({
           "start_ms": at,

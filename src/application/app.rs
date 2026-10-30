@@ -367,8 +367,25 @@ impl App {
     Ok(PreparedConfig { accounts, providers, search, fetch, images, videos, audio, asr, shell })
   }
   async fn apply_config(&self, prepared: PreparedConfig, config: &Config) {
-    let PreparedConfig { accounts, providers, search, fetch, images, videos, audio, asr, shell } =
-      prepared;
+    let PreparedConfig {
+      accounts,
+      mut providers,
+      search,
+      fetch,
+      images,
+      videos,
+      audio,
+      asr,
+      shell,
+    } = prepared;
+    {
+      let previous = self.providers.read().unwrap();
+      for (id, provider) in &mut providers {
+        if let Some(old) = previous.get(id) {
+          Arc::make_mut(provider).inherit_credentials(old);
+        }
+      }
+    }
     self.mcp.apply(
       config.mcp.clone(),
       config.proxy.clone(),

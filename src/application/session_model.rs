@@ -22,14 +22,14 @@ use serde_json::Value;
 use std::{
   path::PathBuf,
   sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
   },
 };
 
 pub struct SessionModel {
   provider: Arc<Provider>,
-  client: ModelClient,
+  client: Mutex<ModelClient>,
   /// The session's blobs, where its images are saved for the model to be pointed at.
   blob_dir: PathBuf,
   /// Set once the upstream refused an image.
@@ -41,11 +41,21 @@ impl SessionModel {
   pub fn new(provider: Arc<Provider>, blob_dir: PathBuf, client: ModelClient) -> Self {
     Self {
       provider,
-      client,
+      client: Mutex::new(client),
       blob_dir,
       rejected: AtomicBool::new(false),
       instruction_observer: None,
     }
+  }
+  /// Snapshot credentials once at a logical call boundary. Physical retries and native
+  /// stream recovery retain that snapshot, including the original account identity.
+  fn client(&self) -> ModelClient {
+    let credentials = self.provider.credentials.read().unwrap().clone();
+    let mut client = self.client.lock().unwrap();
+    if client.get_credentials() != &credentials {
+      *client = client.clone().with_credentials(credentials);
+    }
+    client.clone()
   }
   pub fn with_history(
     mut self,
@@ -114,10 +124,10 @@ impl SessionModel {
 impl ModelCaller for SessionModel {
   type Stream = <ModelClient as ModelCaller>::Stream;
   fn get_model_use_protocol(&self) -> Option<ModelUseProtocol> {
-    Some(self.client.get_model_use_protocol())
+    Some(self.client().get_model_use_protocol())
   }
   fn supports_upstream_compaction(&self) -> bool {
-    self.client.supports_upstream_compaction()
+    self.client().supports_upstream_compaction()
   }
   fn validate_request(&self, request: &Request) -> Result<(), Error> {
     let mut request = request.clone();
@@ -132,11 +142,11 @@ impl ModelCaller for SessionModel {
       &mut request.conversation,
       false,
     )?;
-    self.client.validate_request(&request)
+    self.client().validate_request(&request)
   }
   async fn count_tokens(&self, request: &Request) -> Result<Option<TokenCount>, Error> {
     let (request, _) = self.prepare(request).await?;
-    ModelCaller::count_tokens(&self.client, &request)
+    ModelCaller::count_tokens(&self.client(), &request)
       .await
       .map_err(|error| self.with_model_context(error, &request.model))
   }
@@ -158,7 +168,7 @@ impl ModelCaller for SessionModel {
     projected.conversation = request.conversation.clone();
     let (projected, _) = self.prepare(&projected).await?;
     let mut compaction = self
-      .client
+      .client()
       .compact_upstream(&UpstreamCompactionRequest {
         model: request.model.clone(),
         conversation: projected.conversation,
@@ -177,15 +187,16 @@ impl ModelCaller for SessionModel {
     Ok(compaction)
   }
   async fn call(&self, original: &Request) -> Result<CallResponse<Self::Stream>, Error> {
+    let client = self.client();
     let (request, images) = self.prepare(original).await?;
     self.record_instructions(original, &request).await?;
-    let result = match self.client.call(&request).await {
+    let result = match client.call(&request).await {
       // Client has not handed out any event; partial stream failures never enter this branch.
       Err(error) if images && crate::protocol::http_error::rejects_image_input(&error) => {
         self.rejected.store(true, Ordering::Relaxed);
         let (request, _) = self.prepare(original).await?;
         self.record_instructions(original, &request).await?;
-        self.client.call(&request).await
+        client.call(&request).await
       }
       result => result,
     };
