@@ -10,7 +10,7 @@
 //! The client owns the retry loop, [`retry`] over [`RetryPolicy`]: a transient failure is waited
 //! out and the whole attempt replaced while the policy allows it. A streamed attempt is the opening
 //! and its first event, so a streamed call is only replaced until that event is in hand - after
-//! that a replay would splice a second copy of the answer into what the caller has already seen.
+//! that only a protocol checkpoint can authorize a recovery with explicit output rewind.
 pub mod account;
 mod model_catalog;
 mod observer;
@@ -260,7 +260,7 @@ impl<T: Transport + Send + Sync> Client<T> {
   }
 
   /// Sends a request in the response mode it declares. Buffered calls retry whole attempts;
-  /// streamed calls retry only until the first event, then hand ownership of the stream back.
+  /// streamed calls retry until the first event, then recover only from native checkpoints.
   pub async fn call(&self, request: &Request) -> Result<CallResponse<EventStream<T>>, Error> {
     let resolved;
     let request = if self.model_use == ModelUseProtocol::GoogleAntigravityGenerateContent
@@ -506,7 +506,7 @@ impl<T: Transport + Send + Sync> Client<T> {
   /// hand the attempt delivered nothing, so it may still be replaced - when the failure is one the
   /// transport and the policy would replace at all: a connect failure or a head that never came,
   /// but not a failure after the service started answering. Once an event is in the caller's
-  /// hands a failure is terminal.
+  /// hands, only an explicitly supported native checkpoint permits recovery.
   async fn attempt_streamed_call(&self, request: &Request) -> Result<EventStream<T>, Error> {
     let call = self.build_model_use_call(request)?;
     let framing = match self.model_use {

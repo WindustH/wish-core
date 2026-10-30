@@ -30,15 +30,19 @@ impl RecoveryProtocol {
   }
 
   /// Remove the hop boundary before the content decoder sees it. It is not a logical stop.
-  pub fn inspect(self, data: &str) -> Result<(String, Option<Checkpoint>), Error> {
+  pub fn inspect(self, data: &str) -> Result<(String, Option<Checkpoint>, bool), Error> {
     let mut body: Value = serde_json::from_str(data)
       .map_err(|_| Error::Malformed("recovery record is not JSON".into()))?;
+    if !body.is_object() {
+      return Err(Error::Malformed("recovery record must be an object".into()));
+    }
     let Self::GoogleGeneration { enveloped } = self;
     let root = if enveloped { &mut body["response"] } else { &mut body };
     let Some(candidate) = root.pointer_mut("/candidates/0") else {
-      return Ok((data.to_owned(), None));
+      return Ok((data.to_owned(), None, false));
     };
     let continuation = candidate["finishReason"] == "CONTINUATION";
+    let terminal = candidate.get("finishReason").and_then(Value::as_str).is_some() && !continuation;
     let token = candidate
       .get("continuationToken")
       .and_then(Value::as_str)
@@ -50,7 +54,7 @@ impl RecoveryProtocol {
     if continuation {
       candidate.as_object_mut().expect("candidate with finishReason").remove("finishReason");
     }
-    Ok((body.to_string(), token.map(|token| Checkpoint { token, continuation })))
+    Ok((body.to_string(), token.map(|token| Checkpoint { token, continuation }), terminal))
   }
 
   pub fn resume(self, original: &Call, token: &str) -> Result<Call, Error> {

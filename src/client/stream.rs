@@ -87,10 +87,10 @@ impl<T: Transport + Send + Sync> EventStream<T> {
       };
       match next {
         Some(record) => {
-          let (data, checkpoint) = if let Some(recovery) = &self.recovery {
+          let (data, checkpoint, terminal) = if let Some(recovery) = &self.recovery {
             recovery.protocol.inspect(&record.data)?
           } else {
-            (record.data, None)
+            (record.data, None, false)
           };
           let mut events = match self.decoder.feed(record.event.as_deref(), &data) {
             Ok(events) => events,
@@ -105,6 +105,7 @@ impl<T: Transport + Send + Sync> EventStream<T> {
             }
           }
           if let Some(recovery) = &mut self.recovery {
+            recovery.terminal |= terminal;
             for event in &mut events {
               if let StreamEvent::Usage(usage) = event {
                 recovery.usage = *usage;
@@ -135,17 +136,11 @@ impl<T: Transport + Send + Sync> EventStream<T> {
           self.pending.extend(events);
         }
         None => {
-          let events = match self.decoder.finish() {
-            Ok(events) => events,
-            Err(error)
-              if self.recovery.as_ref().is_some_and(|r| r.token.is_some())
-                && matches!(&error, Error::Malformed(s) if s == "stream ended without a finishReason") =>
-            {
-              self.schedule_recovery(None)?;
-              continue;
-            }
-            Err(error) => return Err(error),
-          };
+          if self.recovery.as_ref().is_some_and(|r| r.token.is_some() && !r.terminal) {
+            self.schedule_recovery(None)?;
+            continue;
+          }
+          let events = self.decoder.finish()?;
           self.observer.take();
           self.pending.extend(events);
           self.done = true;
@@ -218,6 +213,7 @@ impl<T: Transport + Send + Sync> EventStream<T> {
           r.decoder.as_ref().and_then(StreamDecoder::checkpoint).expect("checkpoint decoder");
         r.previous_usage =
           crate::protocol::model_use::recovery::sum_usage(r.previous_usage, r.committed_usage);
+        r.terminal = false;
         r.committed_usage = Default::default();
         r.usage = Default::default();
         Ok(())
