@@ -64,18 +64,17 @@ fn extension_instructions(switches: super::session::ToolSwitches) -> String {
   if direct.is_empty() && commands.is_empty() {
     return String::new();
   }
-  let mut text = String::from(
-    "\n\n# Extension tools\nDiscover available tools before using an extension. Search returns tool names, tags and configured services; inspect returns the selected tool's schema and examples. Search without tags to see all available tools. Do not guess tool names or arguments. Availability follows this session's permissions and configured services.",
-  );
+  let mut text =
+    String::from("\n\n# Extension tools\nDiscover tool names and schemas before calling.");
   if !direct.is_empty() {
     text.push_str(&format!(
-      "\nDirect tools ({}): call `extension_tools` with {{\"action\":\"search\"}}, then {{\"action\":\"inspect\",\"tool\":\"TOOL\"}}. Invoke the discovered tool by its name using the inspected schema.",
+      "\nDirect tools ({}): call `extension_tools` with {{\"action\":\"search\"}}, then {{\"action\":\"inspect\",\"tool\":\"TOOL\"}}; invoke the discovered tool.",
       direct.join(", ")
     ));
   }
   if !commands.is_empty() {
     text.push_str(&format!(
-      "\nWish commands in the session shell ({}): run `wish extension search [TAG ...]`, then `wish extension inspect TOOL`, then `wish extension call TOOL --json '<arguments>'` (or `--stdin`). Run `wish extension --help` for usage. These tools are available through shell commands even when they are absent from the direct tool list.",
+      "\nShell ({}): `wish extension search` → `wish extension inspect TOOL` → `wish extension call TOOL --json '<arguments>'`.",
       commands.join(", ")
     ));
   }
