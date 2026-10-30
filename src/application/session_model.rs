@@ -50,10 +50,11 @@ impl SessionModel {
   pub fn with_history(
     mut self,
     sender: crate::session::SessionSender,
+    reader: crate::session::SessionReader,
     events: tokio::sync::broadcast::Sender<Value>,
   ) -> Self {
     self.instruction_observer =
-      Some(super::model_observation::InstructionObserver::new(sender, events));
+      Some(super::model_observation::InstructionObserver::new(sender, reader, events));
     self
   }
   async fn record_instructions(&self, original: &Request, request: &Request) -> Result<(), Error> {

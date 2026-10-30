@@ -151,8 +151,11 @@ impl SessionSlot {
     )
     .with_session_id(session_id)
     .with_retry_observer(self.retry_observer());
-    SessionModel::new(provider, self.blob_dir.clone(), client)
-      .with_history(self.sender.clone(), self.events.clone())
+    SessionModel::new(provider, self.blob_dir.clone(), client).with_history(
+      self.sender.clone(),
+      self.reader.clone(),
+      self.events.clone(),
+    )
   }
   /// Stages a selection while an operation runs. Only the model, reasoning and output limit may
   /// differ from the config the session has, or has staged already.
