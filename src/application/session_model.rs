@@ -57,14 +57,15 @@ impl SessionModel {
     }
     client.clone()
   }
-  pub fn with_history(
+  pub(super) fn with_history(
     mut self,
     sender: crate::session::SessionSender,
     reader: crate::session::SessionReader,
     events: tokio::sync::broadcast::Sender<Value>,
+    state: Arc<Mutex<super::model_observation::InstructionState>>,
   ) -> Self {
     self.instruction_observer =
-      Some(super::model_observation::InstructionObserver::new(sender, reader, events));
+      Some(super::model_observation::InstructionObserver::new(sender, reader, events, state));
     self
   }
   async fn record_instructions(&self, original: &Request, request: &Request) -> Result<(), Error> {

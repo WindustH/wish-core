@@ -138,6 +138,17 @@ impl TaskManager {
   pub fn is_running(&self, id: &str) -> bool {
     self.get_execution(id).is_ok_and(|execution| execution.get_snapshot().status == Status::Running)
   }
+  /// No running processes or independent owners (including completion-notification workers).
+  /// An application may then unload its idle session without terminating background work.
+  pub fn can_unload(&self) -> bool {
+    Arc::strong_count(&self.inner) == 1
+      && self.lock_registry().is_ok_and(|registry| {
+        registry
+          .executions
+          .values()
+          .all(|execution| execution.get_snapshot().status != Status::Running)
+      })
+  }
   pub fn forget_removed(&self) {
     if let Ok(mut registry) = self.lock_registry() {
       registry.executions.retain(|_, task| {

@@ -4,6 +4,8 @@ use crate::session::{Session, SessionError, SessionEvent, ToolCall, ToolMode, To
 pub use crate::tool::contract::{ToolExecutor, ToolInput};
 use futures_util::{StreamExt, stream::FuturesUnordered};
 
+const MAX_PARALLEL_TOOLS: usize = 8;
+
 pub(super) async fn execute_tools(
   executor: &impl ToolExecutor,
   session: &mut Session,
@@ -48,30 +50,32 @@ pub(super) async fn execute_tools(
       }
     }
     ToolMode::Parallel => {
-      let permits = tokio::sync::Semaphore::new(8);
+      let mut waiting = calls.iter();
       let mut futures = FuturesUnordered::new();
-      for call in calls {
-        let registered =
-          is_registered(session, call) || executor.accepts_unadvertised_call(&call.name);
-        if registered && !control.is_cancelled() {
-          session.start_tool(call)?;
-          deliver_new_events(session, delivered, observe)?;
+      loop {
+        // Admit at most eight calls. Queued calls have not started and must remain
+        // distinguishable from work whose external effects may be unknown after a crash.
+        while futures.len() < MAX_PARALLEL_TOOLS {
+          let Some(call) = waiting.next() else { break };
+          let registered =
+            is_registered(session, call) || executor.accepts_unadvertised_call(&call.name);
+          if registered && !control.is_cancelled() {
+            session.start_tool(call)?;
+            deliver_new_events(session, delivered, observe)?;
+          }
+          let input = input.clone();
+          futures.push(async move {
+            let outcome = if control.is_cancelled() {
+              ToolOutcome::Cancelled
+            } else if !registered {
+              ToolOutcome::Failed(format!("unknown tool: {}", call.name))
+            } else {
+              executor.execute_with_input(call, control, input).await
+            };
+            (call, outcome)
+          });
         }
-        let input = input.clone();
-        let permits = &permits;
-        futures.push(async move {
-          let _permit = permits.acquire().await.expect("tool semaphore is never closed");
-          let outcome = if control.is_cancelled() {
-            ToolOutcome::Cancelled
-          } else if !registered {
-            ToolOutcome::Failed(format!("unknown tool: {}", call.name))
-          } else {
-            executor.execute_with_input(call, control, input).await
-          };
-          (call, outcome)
-        });
-      }
-      while let Some((call, outcome)) = futures.next().await {
+        let Some((call, outcome)) = futures.next().await else { break };
         session.accept_tool_outcome(call, outcome)?;
         deliver_new_events(session, delivered, observe)?;
       }

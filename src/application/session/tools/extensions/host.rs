@@ -140,7 +140,7 @@ impl Host for Adapter<'_> {
         )
         .await?;
       Ok(Report {
-        text: crate::application::pages::render(&page.output, self.registration.name),
+        text: crate::application::fetch::reader::render(&page.output, self.registration.name),
         output: page.output,
         metadata: page.metadata,
       })

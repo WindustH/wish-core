@@ -15,3 +15,6 @@ pub mod web_fetch;
 pub mod web_search;
 
 pub mod read_codecs;
+
+pub mod image_request;
+pub mod operation;

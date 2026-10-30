@@ -32,7 +32,13 @@ pub async fn download(
   let length = opened.length;
   let etag = format!("\"{blob}\"");
   let mut headers = HeaderMap::new();
-  headers.insert(header::CONTENT_TYPE, opened.mime_type.parse().unwrap());
+  headers.insert(
+    header::CONTENT_TYPE,
+    opened
+      .mime_type
+      .parse()
+      .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
+  );
   headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
   headers.insert(header::ETAG, etag.parse().unwrap());
   headers

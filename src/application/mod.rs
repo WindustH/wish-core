@@ -68,10 +68,8 @@ pub mod image_generation;
 
 pub mod media_generation;
 
-pub mod media_access;
+pub mod media_status;
 
 pub mod audio_transcription;
-
-pub(crate) mod pages;
 
 pub(crate) mod google_login;

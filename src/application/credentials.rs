@@ -1,7 +1,11 @@
 //! Account credential persistence and scheduled renewal shared by sign-in providers.
 use super::{app::App, error::ApplicationError};
 use crate::{protocol::endpoint::Credentials, utils::time::unix_seconds};
-use std::{sync::Arc, time::Duration};
+use std::{
+  collections::BTreeMap,
+  sync::Arc,
+  time::{Duration, Instant},
+};
 const REFRESH_MARGIN: u64 = 300;
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -74,13 +78,47 @@ async fn save_credentials_if_current(
   Err(ApplicationError::conflict("configuration kept changing during sign-in"))
 }
 
+/// Failures are scoped to the credential/configuration revision. Unrelated config saves
+/// keep the delay; editing the account or logging in again permits an immediate attempt.
+struct RefreshFailure {
+  config: super::accounts::AccountConfig,
+  failures: u32,
+  retry_at: Instant,
+}
+#[derive(Default)]
+struct RefreshSchedule(BTreeMap<String, RefreshFailure>);
+impl RefreshSchedule {
+  fn ready(&mut self, id: &str, config: &super::accounts::AccountConfig, now: Instant) -> bool {
+    match self.0.get(id) {
+      Some(failure) if failure.config == *config => now >= failure.retry_at,
+      _ => {
+        self.0.remove(id);
+        true
+      }
+    }
+  }
+  fn failed(&mut self, id: &str, config: &super::accounts::AccountConfig, now: Instant) {
+    let failures = self
+      .0
+      .get(id)
+      .filter(|previous| previous.config == *config)
+      .map_or(1, |previous| previous.failures.saturating_add(1));
+    let delay = Duration::from_secs((60u64.saturating_mul(1 << failures.min(6))).min(3600));
+    self.0.insert(
+      id.into(),
+      RefreshFailure { config: config.clone(), failures, retry_at: now + delay },
+    );
+  }
+}
+
 pub fn start_refresh_worker(app: &Arc<App>) {
   let worker = Arc::clone(app);
   app.lifecycle.tasks.spawn(async move {
+    let mut schedule = RefreshSchedule::default();
     loop {
       tokio::select! {
         _ = worker.lifecycle.stop.cancelled() => break,
-        _ = refresh_due(&worker) => {}
+        _ = refresh_due(&worker, &mut schedule) => {}
       }
       tokio::select! {
         _ = worker.lifecycle.stop.cancelled() => break,
@@ -90,13 +128,11 @@ pub fn start_refresh_worker(app: &Arc<App>) {
   });
 }
 
-async fn refresh_due(app: &Arc<App>) {
+async fn refresh_due(app: &Arc<App>, schedule: &mut RefreshSchedule) {
   let now = unix_seconds();
-  let due: Vec<_> = app
-    .accounts
-    .read()
-    .unwrap()
-    .clone()
+  let accounts = app.get_service_accounts();
+  schedule.0.retain(|id, _| accounts.contains_key(id));
+  let due: Vec<_> = accounts
     .into_values()
     .filter(|account| {
       account.enabled
@@ -107,15 +143,24 @@ async fn refresh_due(app: &Arc<App>) {
     .collect();
   for account in due {
     let id = &account.id;
+    if !schedule.ready(id, &account.config, Instant::now()) {
+      continue;
+    }
     match account.client.refresh_credentials().await {
       Ok(tokens) => {
         if let Err(error) =
           save_credentials_if_current(app, id, &tokens, Some(&account.config)).await
         {
+          schedule.failed(id, &account.config, Instant::now());
           eprintln!("Token refresh for {id} could not be saved: {error}");
+        } else {
+          schedule.0.remove(id);
         }
       }
-      Err(error) => eprintln!("Token refresh for {id} failed: {error}"),
+      Err(error) => {
+        schedule.failed(id, &account.config, Instant::now());
+        eprintln!("Token refresh for {id} failed; automatic renewal backed off: {error}");
+      }
     }
   }
 }

@@ -45,8 +45,8 @@ impl ViewImageTool {
     if bytes.len() as u64 > MAX_IMAGE_BYTES {
       return Err("image exceeds 20 MiB; use shell to resize it first".into());
     }
-    let mime_type = crate::utils::image_format::supported_mime(&bytes)
-      .ok_or_else(|| crate::utils::image_format::conversion_hint(&bytes))?;
+    let mime_type =
+      crate::utils::image_format::supported_mime(&bytes).ok_or_else(|| conversion_hint(&bytes))?;
     Ok(ToolOutcome::SuccessWithInput {
       output: json!({"path":args.path,"mime_type":mime_type,"byte_count":bytes.len()}),
       input: vec![
@@ -82,4 +82,11 @@ impl ToolExecutor for ViewImageTool {
       None => ToolOutcome::Cancelled,
     }
   }
+}
+
+fn conversion_hint(bytes: &[u8]) -> String {
+  format!(
+    "Cannot view image: detected {} from file content. Supported: PNG, JPEG, GIF, WebP. Try converting to a new PNG using an available decoder (for example ImageMagick or ffmpeg), then call view_image with its absolute path. Preserve the original; renaming the extension is not conversion.",
+    crate::utils::image_format::unsupported_format(bytes)
+  )
 }

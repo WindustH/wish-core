@@ -43,7 +43,7 @@ pub struct SessionTools {
   audio_generate_on: AtomicBool,
   audio_transcribe_on: AtomicBool,
   image_generate: crate::tool::image_generate::ImageService,
-  pub web_fetch: crate::application::pages::PageReader,
+  pub web_fetch: crate::application::fetch::reader::PageReader,
   pub web_search: SearchService,
   pub history: HistoryTools,
   history_on: AtomicBool,
@@ -487,9 +487,9 @@ fn make_fetch(
   slot: Weak<SessionSlot>,
   session_id: &str,
   directory: std::path::PathBuf,
-) -> crate::application::pages::PageReader {
+) -> crate::application::fetch::reader::PageReader {
   let conversation = session_id.to_owned();
-  crate::application::pages::PageReader::new(
+  crate::application::fetch::reader::PageReader::new(
     Arc::new(move |url, refresh, provider| {
       let owner = slot.upgrade();
       let app = owner.as_ref().and_then(|s| s.app.upgrade());

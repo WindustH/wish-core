@@ -107,6 +107,7 @@ pub struct SessionSlot {
   global_events: broadcast::Sender<Value>,
   /// Advanced by every interrupt: a run scheduled before one does not start after it.
   schedule_epoch: AtomicU64,
+  pub(super) last_access: AtomicU64,
   deleted: AtomicBool,
   pub(super) session: Arc<AsyncMutex<Session>>,
   /// Serializes descriptor edits, which never wait for an operation.
@@ -128,6 +129,7 @@ pub struct SessionSlot {
   /// This session's live events, for `GET /sessions/{id}/events`.
   pub(super) events: broadcast::Sender<Value>,
   live: Arc<Mutex<live::LivePreview>>,
+  instruction_state: Arc<Mutex<super::model_observation::InstructionState>>,
   status: Mutex<SessionStatus>,
   /// The running operation's, while one runs.
   control: Mutex<Option<ExecutionControl>>,
@@ -164,6 +166,7 @@ impl SessionSlot {
       management: app.management.clone(),
       global_events: app.events.clone(),
       schedule_epoch: AtomicU64::new(0),
+      last_access: AtomicU64::new(app.started.elapsed().as_secs()),
       deleted: AtomicBool::new(false),
       sender: session.create_sender(),
       reader: session.reader().clone(),
@@ -176,12 +179,23 @@ impl SessionSlot {
       app: Arc::downgrade(app),
       events,
       live: Arc::new(Mutex::new(live::LivePreview::default())),
+      instruction_state: Default::default(),
       status,
       control: Mutex::new(None),
     });
     super::background_tools::recover(&slot).await?;
     slot.tools.switch(switches).await?;
     Ok(slot)
+  }
+  /// Called under the application's cache lock, with no external slot or session owner.
+  /// Live streams, runs, schedulers and background completion workers keep their resources pinned.
+  pub(super) fn can_unload(&self) -> bool {
+    Arc::strong_count(&self.session) == 1
+      && self.events.receiver_count() == 0
+      && self.control.lock().unwrap().is_none()
+      && !self.tools.background.is_active()
+      && self.tools.tasks().is_none_or(crate::task::TaskManager::can_unload)
+      && self.session.try_lock().is_ok_and(|session| session.get_state().is_stable())
   }
   pub fn get_descriptor(&self) -> Descriptor {
     self.descriptor.read().unwrap().clone()

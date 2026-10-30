@@ -102,3 +102,112 @@ Local validation on 2026-10-27: formatting, dependency checks, zero-warning Clip
 build passed. The combined external run executed 177 cases: 176 passed; the new initialization
 rollback case initially omitted the required `run` configuration. After correcting that test
 request, its isolated rerun passed. No backend source changes followed that combined run.
+
+## Resource-control review (2026-10-31)
+
+This follow-up starts from `743af5b`. The supplied static review identified useful risks, but
+several conclusions omitted an outer boundary or assumed a different state-machine meaning.
+The stored format, historical enum spellings, HTTP routes and tool argument fields stay stable.
+
+### Confirmed defects and changes
+
+- **Repeated context rejection:** one automatic recovery is allowed until a conversation call
+  makes progress. A second explicit context-length refusal remains the run's recorded failure;
+  it cannot trigger another paid compaction. A later explicit run can try again. Upstream
+  compaction already checked its resulting size against the configured target; the missing
+  protection concerned inaccurate budgets or a provider that still refused that result.
+- **Remote token counting:** standby planning counts its first complete span once, then probes
+  boundaries with locally calibrated estimates. Local trimming searches complete, protocol-valid
+  candidates with at most eight count calls, independent of the number of boundaries. Under a
+  tight probe budget it may retain a more conservative tail. A configured counter's failure
+  still fails the compaction; estimates do not silently override that failure or authorize an
+  over-budget provider-counted cutover. No wall-clock performance gain is claimed without a
+  workload benchmark.
+- **Draft upload admission:** a dedicated draft inventory lock serializes quota changes and
+  adoption. It is acquired before session creation admission, so an adoption waiting for a scan
+  cannot hold the creation lock. The inventory is reconciled on startup/first use and hourly;
+  ordinary uploads inspect only their own directory. Successful adoption removes that pending
+  entry. A failed or cancelled write invalidates the inventory before another upload is admitted.
+  Scans and filesystem work run on bounded blocking IO, and their owned guard survives cancellation.
+- **Instruction observations:** an open session shares one instruction state and history cursor
+  across model wrappers and generations. It replays only application events after that cursor,
+  including observations committed by another writer. Reopening replays durable history once.
+  Set/remove events and A -> B -> A changes retain the existing context-delta semantics; a new
+  generation alone does not reset the state or repeat tool definitions.
+- **Credential renewal:** failures use monotonic exponential backoff from two minutes up to one
+  hour. The failure budget survives unrelated configuration saves and is reset by editing the
+  account or signing in again. This does not permanently disable an account or expose credentials
+  in an API status. Failed configuration persistence is backed off too.
+- **Stream recovery:** `InputTokens` is emitted once, when the initial input count becomes known,
+  rather than after every subsequent frame. Checkpoint rewind and cumulative usage remain intact.
+- **Parallel tools:** at most eight calls are admitted at once. `ToolStarted` is recorded at
+  admission, before calling the implementation. A crash with twenty calls leaves eight potentially
+  effective calls and twelve unstarted calls, rather than marking the entire queue started.
+  Ordinary cancellation still awaits and records each implementation's explicit outcome; the
+  original report's `Unknown` claim applies to abandoned/crashed work, not every normal Ctrl+C.
+- **Open-session cache:** stable, unreferenced sessions expire after fifteen idle minutes; above
+  128 cached slots, eligible entries are retired in least-recently-used order. Runs, live event
+  subscribers, mutable session owners, background tools, running processes and independent task
+  manager owners pin their resources. A weakly promoted retired owner is reused instead of opening
+  a second state machine. History, blobs and task captures stay on disk. These are cache limits,
+  not permission to terminate active work; pinned entries can exceed 128. Storage already shares
+  its SQLite worker across sessions, so each slot did not own a separate database connection.
+- **Ordered-list deletion:** two range updates stage the suffix above its previous length before
+  shifting it down. This preserves both the unique position key and `CHECK(position>=0)` without
+  relying on SQLite's update order. Cache invalidations still cover the affected suffix, so the
+  overall operation is not O(1). Rollback and warmed-page reads are regression-tested.
+
+### Boundaries and naming
+
+- Application media-job recovery is `media_status`; signed HTTP blob access is `media_grant`.
+  Fetch snapshots and their cursor reader live in `application/fetch/reader.rs`.
+- Image conversion guidance is assembled by `tool/view_image`; `utils/image_format` only detects
+  formats. Image request DTOs and generic operation reports/failures live in `extensions/shared`,
+  with compatibility re-exports from existing extension entry points. The tool dependency guard
+  now rejects extension implementation imports and permits the neutral shared contracts.
+- MCP's caller-resolution helper is `authenticate_bridge_caller`. Skill access already used
+  `session_roots`, contrary to the report.
+- Historical Chinese instruction titles are retained because they are durable observation keys
+  and compatibility metadata. Presentation/localization belongs to the existing UI projection;
+  changing persisted titles merely for English consistency would manufacture context deltas.
+
+### Claims that did not justify the proposed fix
+
+- Image execution is already wrapped in a **600-second deadline** in
+  `application/image_generation.rs`, covering submission, polling and materialization. A timeout
+  after submission is an unknown paid outcome, never permission to resubmit. The inner polling
+  loop alone did not prove an unbounded production operation; no redundant timeout was added.
+- Download MIME is derived from a bounded content prefix and fixed MIME literals, not untrusted
+  upload metadata. Header parsing now has an octet-stream fallback for robustness, but the
+  reported remote panic path did not exist in the inspected implementation.
+- A normally completed run enters `Idle`. `Suspended` records a failed, interrupted or otherwise
+  abnormal outcome and requires explicit resume. Renaming it `CompletedRun` or `AwaitingInput`
+  would hide that distinction and change durable contracts without a demonstrated benefit.
+
+### Regression entry points
+
+The tests remain in the separate `wish-test` repository; no inline Rust tests or production test
+switches were added. `test_wish_core_review` builds copied application source into an independent
+executable and exercises renewal backoff/reset, draft/creation lock ordering, quota accounting,
+cache eviction/reopening and incremental instruction observations. The agent fixture covers
+repeated context refusal, bounded counting, queued-tool crash semantics and ordered-list rollback.
+The Google fixture asserts a single initial-input event across checkpoint recovery. Existing HTTP,
+engine/history and process-tree suites cover API compatibility and lifecycle behavior.
+
+```sh
+cargo fmt --check
+CARGO_INCREMENTAL=0 cargo clippy --offline --all-targets -- -D warnings
+python3 ../wish-test/tools/check_architecture.py
+cd ../wish-test
+CARGO_INCREMENTAL=0 python3 -m unittest tests.test_wish_core_review tests.test_wish_core_agent tests.test_wish_core_google -q
+CARGO_INCREMENTAL=0 python3 -m unittest tests.test_wish_server tests.test_wish_core_history tests.test_wish_core_shell tests.test_wish_architecture -q
+```
+
+Local validation: formatting, zero-warning Clippy and dependency checks passed. The three
+external executable fixtures passed (engine contracts, Google recovery, and application resource
+guards). The broad HTTP/history/process run executed 191 Python cases: 181 passed and 10 failed.
+Re-running those ten cases against the unchanged baseline reproduced eight failures (legacy
+extension commands/tool advertisement and a preset-count assertion). The other two tests waited
+for `running=false` before accepted input had drained; their explicit queue-draining waits were
+corrected and their isolated rerun passed. The eight reproduced baseline failures remain outside
+this resource-control change; the broad suite is not reported as entirely green.

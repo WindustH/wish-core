@@ -31,6 +31,9 @@ use std::{
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
+const SESSION_CACHE_LIMIT: usize = 128;
+const SESSION_IDLE_SECONDS: u64 = 15 * 60;
+
 pub struct App {
   pub(super) storage: Storage,
   pub(super) management: Arc<ManagementStore>,
@@ -46,10 +49,14 @@ pub struct App {
   pub(super) shell: RwLock<ShellCommand>,
   /// Serializes creation with first-input retries, including requests whose response was lost.
   pub(super) creation_lock: Arc<AsyncMutex<()>>,
+  pub(super) drafts: Arc<AsyncMutex<super::draft_uploads::DraftInventory>>,
   session_open_locks: Mutex<BTreeMap<String, std::sync::Weak<AsyncMutex<()>>>>,
-  /// The sessions opened since startup, by id. A session is opened on first use and stays open
-  /// until it is deleted.
+  /// Recently used sessions. Inactive, unreferenced slots expire after fifteen minutes;
+  /// above 128 cached slots they are retired in least-recently-used order. Active work is pinned.
   pub(super) sessions: AsyncMutex<BTreeMap<String, Arc<SessionSlot>>>,
+  /// A weak promotion can race cache retirement. Reuse that owner rather than opening
+  /// a second state machine for the same session. Dead weak entries are pruned on reaping.
+  retired_sessions: Mutex<BTreeMap<String, std::sync::Weak<SessionSlot>>>,
   pub(super) data_dir: DataDir,
   pub bearer_token: Option<String>,
   pub lifecycle: Lifecycle,
@@ -179,8 +186,10 @@ impl App {
       accounts: RwLock::new(accounts),
       shell: RwLock::new(shell),
       creation_lock: Arc::new(AsyncMutex::new(())),
+      drafts: Arc::new(AsyncMutex::new(Default::default())),
       session_open_locks: Mutex::new(BTreeMap::new()),
       sessions: AsyncMutex::new(BTreeMap::new()),
+      retired_sessions: Mutex::new(BTreeMap::new()),
       data_dir,
       bearer_token,
       lifecycle,
@@ -201,7 +210,10 @@ impl App {
       loop {
         tokio::select! {
           _ = reaper.lifecycle.stop.cancelled() => break,
-          _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => reaper.mcp.reap(),
+          _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+            reaper.mcp.reap();
+            reaper.reap_sessions(reaper.started.elapsed().as_secs()).await;
+          },
         }
       }
     });
@@ -248,6 +260,9 @@ impl App {
   ) -> Result<Arc<SessionSlot>, ApplicationError> {
     if let Some(slot) = self.sessions.lock().await.get(id) {
       slot.require_live()?;
+      slot
+        .last_access
+        .store(self.started.elapsed().as_secs(), std::sync::atomic::Ordering::Relaxed);
       return Ok(slot.clone());
     }
     let opening = {
@@ -266,7 +281,23 @@ impl App {
     let _opening = opening.lock().await;
     if let Some(slot) = self.sessions.lock().await.get(id) {
       slot.require_live()?;
+      slot
+        .last_access
+        .store(self.started.elapsed().as_secs(), std::sync::atomic::Ordering::Relaxed);
       return Ok(slot.clone());
+    }
+    {
+      let mut sessions = self.sessions.lock().await;
+      let retired =
+        self.retired_sessions.lock().unwrap().get(id).and_then(std::sync::Weak::upgrade);
+      if let Some(slot) = retired {
+        slot.require_live()?;
+        slot
+          .last_access
+          .store(self.started.elapsed().as_secs(), std::sync::atomic::Ordering::Relaxed);
+        sessions.insert(id.to_owned(), slot.clone());
+        return Ok(slot);
+      }
     }
     self.lifecycle.require_open()?;
     let storage = self.storage.clone();
@@ -283,6 +314,32 @@ impl App {
     let slot = self.open_slot(descriptor, session).await?;
     self.sessions.lock().await.insert(slot.get_descriptor().id.clone(), slot.clone());
     Ok(slot)
+  }
+  /// Only releases cache ownership. Persisted history, blobs and task captures stay intact.
+  pub(super) async fn reap_sessions(&self, now: u64) {
+    use std::sync::atomic::Ordering;
+    let mut sessions = self.sessions.lock().await;
+    let mut retired = self.retired_sessions.lock().unwrap();
+    retired.retain(|_, slot| slot.strong_count() > 0);
+    let mut candidates: Vec<_> = sessions
+      .iter()
+      .filter(|(_, slot)| Arc::strong_count(slot) == 1 && slot.can_unload())
+      .map(|(id, slot)| (slot.last_access.load(Ordering::Relaxed), id.clone()))
+      .collect();
+    candidates.sort_unstable();
+    for (last_access, id) in candidates {
+      if sessions.len() <= SESSION_CACHE_LIMIT
+        && now.saturating_sub(last_access) < SESSION_IDLE_SECONDS
+      {
+        break;
+      }
+      if let Some(slot) = sessions.remove(&id) {
+        retired.insert(id, Arc::downgrade(&slot));
+        // Drop under cache admission: a new opener cannot race the old Session's owner release.
+        drop(slot);
+      }
+    }
+    retired.retain(|_, slot| slot.strong_count() > 0);
   }
   /// Opens a slot for a session and installs the tools its switches give it, then saves its index
   /// record.

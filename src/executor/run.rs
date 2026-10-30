@@ -108,6 +108,9 @@ async fn run_session(
 ) -> Result<RunOutcome, SessionError> {
   let mut delivered = session.reader().get_history().len()?;
   let mut standby = StandbySummarizer::new(model_caller, control);
+  // A compacted request can still exceed the provider's real window. Only one automatic
+  // recovery is allowed until a conversation call makes progress. A new run may try afresh.
+  let mut recovered_context = false;
   loop {
     if session.get_state().is_stable() {
       match boundary.apply(session, control, &mut delivered, &mut observe).await? {
@@ -172,13 +175,20 @@ async fn run_session(
           ModelResult::Interrupted(partial) => session.accept_interruption(partial, observation)?,
           ModelResult::Failed(outcome) => session.fail_model_call(outcome, observation)?,
         }
-        if context_rejected && session.get_config().compaction.is_some() && !control.is_cancelled()
+        if !context_rejected {
+          recovered_context = false;
+        }
+        if context_rejected
+          && !recovered_context
+          && session.get_config().compaction.is_some()
+          && !control.is_cancelled()
         {
           if let StandbyWait::Cancelled =
             standby.settle(session, &mut delivered, &mut observe).await?
           {
             return finish_interrupted(session, &mut delivered, &mut observe);
           }
+          recovered_context = true;
           recover_context_rejection(model_caller, session, control, &mut delivered, &mut observe)
             .await?;
         }

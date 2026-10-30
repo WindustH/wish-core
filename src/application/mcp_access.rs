@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 /// The session a bridge request speaks for, when its MCP switch is on, and the providers as they
 /// stand.
-async fn bridge_session(
+async fn authenticate_bridge_caller(
   app: &Arc<App>,
   id: &str,
   token: Option<&str>,
@@ -38,7 +38,7 @@ pub async fn servers(
   query: ServersQuery,
   token: Option<&str>,
 ) -> Result<Value, ApplicationError> {
-  let (caller, providers) = bridge_session(&app, &id, token).await?;
+  let (caller, providers) = authenticate_bridge_caller(&app, &id, token).await?;
   Ok(json!(app.mcp.list(&caller, &providers, query.server.as_deref()).await?))
 }
 
@@ -53,7 +53,7 @@ pub async fn tool(
   query: ToolQuery,
   token: Option<&str>,
 ) -> Result<Value, ApplicationError> {
-  let (caller, providers) = bridge_session(&app, &id, token).await?;
+  let (caller, providers) = authenticate_bridge_caller(&app, &id, token).await?;
   Ok(app.mcp.describe_tool(&query.server, &query.name, &caller, &providers).await?)
 }
 
@@ -75,7 +75,7 @@ pub async fn call(
   input: CallInput,
 ) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
-  let (caller, providers) = bridge_session(&app, &id, token).await?;
+  let (caller, providers) = authenticate_bridge_caller(&app, &id, token).await?;
   let call = app.mcp.call(&input.server, &input.tool, input.arguments, &caller, &providers);
   let mut result = app.lifecycle.until_shutdown(call).await??;
   let directory =

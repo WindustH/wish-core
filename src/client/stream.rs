@@ -106,17 +106,19 @@ impl<T: Transport + Send + Sync> EventStream<T> {
           }
           if let Some(recovery) = &mut self.recovery {
             recovery.terminal |= terminal;
+            let mut initial_input = None;
             for event in &mut events {
               if let StreamEvent::Usage(usage) = event {
                 recovery.usage = *usage;
                 if recovery.initial_input.is_none() {
                   recovery.initial_input = usage.input_tokens;
+                  initial_input = recovery.initial_input;
                 }
                 *usage =
                   crate::protocol::model_use::recovery::sum_usage(recovery.previous_usage, *usage);
               }
             }
-            if let Some(tokens) = recovery.initial_input {
+            if let Some(tokens) = initial_input {
               events.push(StreamEvent::InputTokens { tokens });
             }
             if let Some(checkpoint) = checkpoint {

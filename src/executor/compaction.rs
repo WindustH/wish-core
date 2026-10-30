@@ -135,15 +135,24 @@ async fn measure(
       source: TokenMeasurementSource::ProviderCount,
     })
   } else {
-    let estimate = config.estimator.estimate_request(request);
-    Ok(TokenMeasurement {
-      tokens: calibration.map(|ratio| (estimate as f64 * ratio).ceil() as u64).unwrap_or(estimate),
-      source: if calibration.is_some() {
-        TokenMeasurementSource::CalibratedEstimate
-      } else {
-        TokenMeasurementSource::Estimate
-      },
-    })
+    Ok(estimate(config, request, calibration))
+  }
+}
+
+/// Boundary probes use local estimates, calibrated by one measured span or recent usage.
+fn estimate(
+  config: &CompactionConfig,
+  request: &Request,
+  calibration: Option<f64>,
+) -> TokenMeasurement {
+  let tokens = config.estimator.estimate_request(request);
+  TokenMeasurement {
+    tokens: calibration.map(|ratio| (tokens as f64 * ratio).ceil() as u64).unwrap_or(tokens),
+    source: if calibration.is_some() {
+      TokenMeasurementSource::CalibratedEstimate
+    } else {
+      TokenMeasurementSource::Estimate
+    },
   }
 }
 

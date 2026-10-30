@@ -180,19 +180,31 @@ impl Transaction<'_> {
     if position >= length {
       return Err(StorageError::InvalidRange);
     }
+    if length > (i64::MAX as u64) / 2 {
+      return Err(StorageError::InvalidRange);
+    }
     self.sql.execute(
       concat!("DELETE FROM wish_items WHERE list=", list_key!(), " AND position=?2"),
       params![list.0, position as i64],
     )?;
-    let mut statement = self.sql.prepare(concat!(
-      "UPDATE wish_items SET position=position-1 WHERE list=",
-      list_key!(),
-      " AND position=?2"
-    ))?;
-    for source in position + 1..length {
-      statement.execute(params![list.0, source as i64])?;
-    }
-    drop(statement);
+    // A direct position-1 UPDATE depends on row visitation order. Stage the suffix
+    // above the old length first, preserving CHECK(position>=0) and the unique key.
+    self.sql.execute(
+      concat!(
+        "UPDATE wish_items SET position=position+?3 WHERE list=",
+        list_key!(),
+        " AND position>?2"
+      ),
+      params![list.0, position as i64, length as i64],
+    )?;
+    self.sql.execute(
+      concat!(
+        "UPDATE wish_items SET position=position-?2-1 WHERE list=",
+        list_key!(),
+        " AND position>=?2"
+      ),
+      params![list.0, length as i64],
+    )?;
     self.sql.execute("UPDATE wish_lists SET length=length-1 WHERE name=?1", [&list.0])?;
     for changed in position..length {
       self.mark_item_changed(list, changed);

@@ -17,6 +17,10 @@ impl App {
     mut input: CreateSession,
   ) -> Result<Arc<SessionSlot>, ApplicationError> {
     self.lifecycle.require_open()?;
+    // Adoption and draft cleanup share a lock, acquired BEFORE creation admission so a
+    // slow draft scan cannot block unrelated creations through the creation lock.
+    let mut drafts =
+      if input.first_input.is_some() { Some(self.drafts.lock().await) } else { None };
     // Serialize creation/replay so a retry after a lost response cannot enqueue the first input twice.
     let _creation = self.creation_lock.lock().await;
     let initial_input_digest = input
@@ -37,6 +41,9 @@ impl App {
     if input.first_input.is_some() {
       match self.get_session(&id).await {
         Ok(slot) if slot.get_descriptor().initial_input_digest == initial_input_digest => {
+          if let Some(drafts) = &mut drafts {
+            drafts.adopted(&id);
+          }
           return Ok(slot);
         }
         Ok(_) => {
@@ -224,6 +231,9 @@ impl App {
       }
     }
     self.sessions.lock().await.insert(slot.get_descriptor().id.clone(), slot.clone());
+    if let Some(drafts) = &mut drafts {
+      drafts.adopted(&slot.get_descriptor().id);
+    }
     if start_run {
       slot.schedule(self);
     }

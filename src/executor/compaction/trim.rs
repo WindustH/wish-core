@@ -8,6 +8,8 @@ use crate::{
   session::{CompactionReason, EntryId, GenerationId, Session, SessionError},
 };
 
+const MAX_COUNT_PROBES: usize = 8;
+
 /// The context a local cutover starts from, before anything is removed.
 struct Candidate {
   generation: GenerationId,
@@ -65,34 +67,65 @@ pub(super) async fn trim_context(
   let Candidate { generation, original, entries, compaction_cursor, request: initial } =
     build_candidate(session, request, fixed)?;
   let boundaries = find_replay_unit_boundaries(&initial.conversation)?;
-  let mut request = initial.clone();
-  // Retain the fixed prefix verbatim. Try only structurally complete prefixes, in order.
-  for remove_end in std::iter::once(fixed).chain(boundaries.into_iter().filter(|end| *end > fixed))
-  {
-    if remove_end == initial.conversation.len() {
-      continue;
-    }
+  let boundaries: Vec<_> = std::iter::once(fixed)
+    .chain(boundaries.into_iter().filter(|end| *end > fixed && *end < initial.conversation.len()))
+    .filter(|end| {
+      !(matches!(reason, CompactionReason::ContextRejected) && *end == fixed && entries == original)
+    })
+    .collect();
+  // Bounded binary search counts only complete, protocol-valid candidates. Keep an actual
+  // fitting measurement; an estimate alone never authorizes a provider-counted cutover.
+  let (mut low, mut high, mut probes) = (0, boundaries.len(), 0);
+  let mut fitting = None;
+  while low < high && probes < MAX_COUNT_PROBES {
     check_cancelled(control)?;
-    request.conversation = initial.conversation[..fixed]
-      .iter()
-      .chain(&initial.conversation[remove_end..])
-      .cloned()
-      .collect();
-    // A wire may reject a structurally closed suffix (e.g. a model-only beginning). Move to the
-    // next complete boundary; never repair it by deleting a signature or inventing a tool result.
-    if caller.validate_request(&request).is_err() {
+    // Reserve the final probe for the smallest valid tail if no fitting candidate is known.
+    let final_probe = probes + 1 == MAX_COUNT_PROBES && fitting.is_none();
+    let pivot = if final_probe { high - 1 } else { low + (high - low) / 2 };
+    let mut index = pivot;
+    let candidate = loop {
+      check_cancelled(control)?;
+      let mut request = initial.clone();
+      request.conversation = initial.conversation[..fixed]
+        .iter()
+        .chain(&initial.conversation[boundaries[index]..])
+        .cloned()
+        .collect();
+      if caller.validate_request(&request).is_ok() {
+        break Some(request);
+      }
+      // Invalid candidates cost no network requests. Exhausting the right half leaves
+      // the left half searchable instead of incorrectly skipping an earlier valid context.
+      if final_probe {
+        if index == low {
+          break None;
+        }
+        index -= 1;
+      } else {
+        index += 1;
+        if index == high {
+          break None;
+        }
+      }
+    };
+    let Some(request) = candidate else {
+      high = if final_probe { low } else { pivot };
       continue;
-    }
+    };
+    let remove_end = boundaries[index];
+    probes += 1;
     let measurement = measure(caller, control, &config, &request, calibration).await?;
     if measurement.tokens > config.target_tokens {
-      continue;
+      low = index + 1;
+    } else {
+      fitting = Some((remove_end, measurement));
+      high = index;
     }
+  }
+  if let Some((remove_end, measurement)) = fitting {
     let kept: Vec<EntryId> =
       entries[..fixed].iter().chain(&entries[remove_end..]).copied().collect();
     if kept == original {
-      if matches!(reason, CompactionReason::ContextRejected) {
-        continue;
-      }
       return Ok(());
     }
     check_cancelled(control)?;

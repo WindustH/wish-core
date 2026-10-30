@@ -155,6 +155,7 @@ impl SessionSlot {
       self.sender.clone(),
       self.reader.clone(),
       self.events.clone(),
+      self.instruction_state.clone(),
     )
   }
   /// Stages a selection while an operation runs. Only the model, reasoning and output limit may

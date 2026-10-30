@@ -3,7 +3,7 @@ use super::{config::Config, error::ApplicationError, presets, provider::Provider
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AccountConfig {
   pub name: String,

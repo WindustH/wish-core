@@ -34,10 +34,3 @@ pub fn unsupported_format(bytes: &[u8]) -> &'static str {
   }
   "unknown or corrupt data"
 }
-
-pub fn conversion_hint(bytes: &[u8]) -> String {
-  format!(
-    "Cannot view image: detected {} from file content. Supported: PNG, JPEG, GIF, WebP. Try converting to a new PNG using an available decoder (for example ImageMagick or ffmpeg), then call view_image with its absolute path. Preserve the original; renaming the extension is not conversion.",
-    unsupported_format(bytes)
-  )
-}

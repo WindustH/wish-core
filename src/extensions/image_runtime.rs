@@ -109,23 +109,6 @@ pub trait ImageDriver: Sync {
   }
 }
 
-use serde::Deserialize;
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReferenceKind {
-  Character,
-  Style,
-  CharacterStyle,
-}
-impl ReferenceKind {
-  pub fn caption(self) -> &'static str {
-    match self {
-      Self::Character => "character",
-      Self::Style => "style",
-      Self::CharacterStyle => "character&style",
-    }
-  }
-}
 pub struct PreciseReference {
   pub image: ReferenceImage,
   pub kind: ReferenceKind,
@@ -133,33 +116,4 @@ pub struct PreciseReference {
   pub fidelity: f64,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageRequest {
-  pub prompt: String,
-  #[serde(default)]
-  pub options: serde_json::Map<String, Value>,
-  #[serde(default)]
-  pub images: Vec<String>,
-  #[serde(default)]
-  pub mask: Option<String>,
-  #[serde(default)]
-  pub markup: Option<String>,
-  #[serde(default)]
-  pub references: Vec<PreciseReferenceRequest>,
-  #[serde(default)]
-  pub provider: Option<String>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PreciseReferenceRequest {
-  pub image: String,
-  pub kind: ReferenceKind,
-  #[serde(default = "reference_default")]
-  pub strength: f64,
-  #[serde(default = "reference_default")]
-  pub fidelity: f64,
-}
-fn reference_default() -> f64 {
-  1.0
-}
+pub use super::shared::image_request::{ImageRequest, PreciseReferenceRequest};

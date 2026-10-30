@@ -44,7 +44,7 @@ impl SearchService {
     &self,
     query: SearchQuery,
     provider: Option<String>,
-  ) -> Result<crate::extensions::invocation::Report, String> {
+  ) -> Result<crate::extensions::shared::operation::Report, String> {
     let mut query = read_query(
       &json!({"query":query.query,"allowed_domains":query.allowed_domains,"blocked_domains":query.blocked_domains,"recency":query.recency,"max_results":query.limit}),
     )?;
@@ -52,7 +52,7 @@ impl SearchService {
     let text = query.query.clone();
     let answer = (self.backend)(query, provider).await.map_err(|errors| errors.join("; "))?;
     let rendered = format!("Provider: {}\n{}", answer.provider, render(&text, &answer.results));
-    Ok(crate::extensions::invocation::Report {
+    Ok(crate::extensions::shared::operation::Report {
       text: rendered.clone(),
       output: json!(rendered),
       metadata: json!({"query":text,"provider":answer.provider,"provider_name":answer.name,"results":answer.results.results,"warnings":answer.results.warnings}),

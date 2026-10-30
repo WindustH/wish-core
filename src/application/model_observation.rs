@@ -13,15 +13,23 @@ pub struct InstructionObserver {
   sender: SessionSender,
   events: tokio::sync::broadcast::Sender<Value>,
   reader: SessionReader,
-  recording: Arc<Mutex<()>>,
+  state: Arc<Mutex<InstructionState>>,
+}
+/// Shared across model wrappers and generation changes in one open session. The cursor
+/// tracks committed history, including observations made outside the current wrapper.
+#[derive(Default)]
+pub(super) struct InstructionState {
+  recorded: BTreeMap<String, Value>,
+  next_sequence: u64,
 }
 impl InstructionObserver {
-  pub fn new(
+  pub(super) fn new(
     sender: SessionSender,
     reader: SessionReader,
     events: tokio::sync::broadcast::Sender<Value>,
+    state: Arc<Mutex<InstructionState>>,
   ) -> Self {
-    Self { sender, reader, events, recording: Arc::new(Mutex::new(())) }
+    Self { sender, reader, events, state }
   }
   pub async fn record(&self, original: &Request, request: &Request) -> Result<(), Error> {
     let (sender, events) = (&self.sender, &self.events);
@@ -61,12 +69,13 @@ impl InstructionObserver {
     }
     let sender = sender.clone();
     let reader = self.reader.clone();
-    let recording = self.recording.clone();
+    let state = self.state.clone();
     let changed = crate::utils::blocking::io(move || {
-      let _recording = recording.lock().unwrap();
+      let mut state = state.lock().unwrap();
       // Another model wrapper (for compaction or a resumed run) may have observed context
       // since our previous call. History, rather than an instance-local cache, is authoritative.
-      let mut recorded = recorded_instructions(&reader)?;
+      state.refresh(&reader)?;
+      let recorded = &mut state.recorded;
       // Compare current state, not all values ever seen: A -> B -> A is two changes.
       // Message positions and generation IDs do not identify request instructions.
       let mut current: BTreeMap<String, Value> = BTreeMap::new();
@@ -131,38 +140,50 @@ fn note_key(note: &Value) -> String {
 
 /// Replay context deltas in history order, including legacy observations as assignments.
 /// A generation switch does not reset this state: unchanged context is inherited.
-fn recorded_instructions(
-  reader: &SessionReader,
-) -> Result<BTreeMap<String, Value>, crate::session::SessionError> {
-  use crate::session::history::{
-    HistoryItem,
-    query::{HistoryFilter, HistoryPageRequest},
-  };
-  let mut recorded = BTreeMap::new();
-  let mut cursor = None;
-  loop {
-    let page = reader.query_history(
-      HistoryFilter { event_types: vec!["Application".into()], ..Default::default() },
-      HistoryPageRequest { limit: 100, cursor, ..Default::default() },
-    )?;
-    for item in page.items {
-      if let HistoryItem::Event(id) = item.record.item
-        && let Some(event) = reader.get_event(id)?
-        && let SessionEvent::Application(value) = event.as_ref()
-        && value["type"] == "model_instruction"
-      {
-        let note = &value["instruction"];
-        let key = value["key"].as_str().map(str::to_owned).unwrap_or_else(|| note_key(note));
-        if value["operation"] == "remove" {
-          recorded.remove(&key);
-        } else {
-          recorded.insert(key, note.clone());
+impl InstructionState {
+  fn refresh(&mut self, reader: &SessionReader) -> Result<(), crate::session::SessionError> {
+    use crate::session::history::{
+      HistoryItem,
+      query::{HistoryCursor, HistoryFilter, HistoryOrder, HistoryPageRequest},
+    };
+    let end_sequence = reader.get_history().len()?;
+    if end_sequence < self.next_sequence {
+      self.recorded.clear();
+      self.next_sequence = 0;
+    }
+    if end_sequence == self.next_sequence {
+      return Ok(());
+    }
+    let mut cursor = (self.next_sequence > 0).then(|| HistoryCursor {
+      end_sequence,
+      after_sequence: self.next_sequence - 1,
+      order: HistoryOrder::OldestFirst,
+    });
+    loop {
+      let page = reader.query_history(
+        HistoryFilter { event_types: vec!["Application".into()], ..Default::default() },
+        HistoryPageRequest { limit: 100, cursor, ..Default::default() },
+      )?;
+      for item in page.items {
+        if let HistoryItem::Event(id) = item.record.item
+          && let Some(event) = reader.get_event(id)?
+          && let SessionEvent::Application(value) = event.as_ref()
+          && value["type"] == "model_instruction"
+        {
+          let note = &value["instruction"];
+          let key = value["key"].as_str().map(str::to_owned).unwrap_or_else(|| note_key(note));
+          if value["operation"] == "remove" {
+            self.recorded.remove(&key);
+          } else {
+            self.recorded.insert(key, note.clone());
+          }
         }
       }
-    }
-    cursor = page.next;
-    if cursor.is_none() {
-      return Ok(recorded);
+      cursor = page.next;
+      if cursor.is_none() {
+        self.next_sequence = page.end_sequence;
+        return Ok(());
+      }
     }
   }
 }

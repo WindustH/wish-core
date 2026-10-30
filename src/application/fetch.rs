@@ -1,4 +1,5 @@
 //! Independent webpage-reading services, sharing account credentials with other services.
+pub(crate) mod reader;
 use super::{
   accounts::AccountConfig,
   accounts::{AccountRegistry, AccountRuntime},
@@ -43,7 +44,7 @@ pub struct FetchProvider {
   #[serde(default)]
   pub headers: BTreeMap<String, String>,
 }
-use crate::application::pages::FetchPage;
+use crate::application::fetch::reader::FetchPage;
 pub fn presets() -> Value {
   super::presets::fetch_presets().clone()
 }

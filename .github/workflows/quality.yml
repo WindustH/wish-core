@@ -58,4 +58,4 @@ jobs:
         working-directory: wish-test
         env:
           WISH_CORE_REPO: ${{ github.workspace }}/wish-core
-        run: python3 -m unittest tests.test_wish_server tests.test_wish_core_history tests.test_wish_core_shell tests.test_wish_core_agent -q
+        run: python3 -m unittest tests.test_wish_server tests.test_wish_core_history tests.test_wish_core_shell tests.test_wish_core_agent tests.test_wish_core_review tests.test_wish_core_google -q

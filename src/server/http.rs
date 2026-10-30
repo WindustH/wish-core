@@ -12,7 +12,7 @@ mod history;
 mod manage;
 mod mcp;
 mod media;
-mod media_access;
+mod media_grant;
 mod naming;
 mod peers;
 mod providers;
@@ -129,7 +129,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/blobs/{blob}", get(content::download))
     .route("/sessions/{id}/blobs/{blob}/meta", get(content::metadata))
     .route("/sessions/{id}/media/{kind}/{job}/status", post(media::status))
-    .route("/sessions/{id}/blobs/{blob}/playback", post(media_access::grant))
+    .route("/sessions/{id}/blobs/{blob}/playback", post(media_grant::grant))
     .route("/sessions/{id}/config", put(sessions::set_config))
     .route("/sessions/{id}/metadata", put(sessions::set_metadata))
     .route("/sessions/{id}/tasks/background-shell", post(tasks::background_foreground))
@@ -233,7 +233,7 @@ async fn authorize(State(app): State<Arc<App>>, request: Request, next: Next) ->
       .get("authorization")
       .and_then(|h| h.to_str().ok())
       .and_then(|h| h.strip_prefix("Bearer "));
-    if supplied != Some(token.as_str()) && !media_access::authorized(&request, token) {
+    if supplied != Some(token.as_str()) && !media_grant::authorized(&request, token) {
       return (StatusCode::UNAUTHORIZED, Json(json!({"error":{"message":"unauthorized"}})))
         .into_response();
     }

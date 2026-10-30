@@ -1,35 +1,10 @@
 //! Erased execution dispatch; each tool retains its own concrete request and implementation.
+pub use super::shared::operation::{Failure, Report};
 use super::{
   image_runtime::ImageRequest, media_runtime::MediaRequest, shared::web_search::SearchQuery,
   transcription_runtime::Transcription,
 };
-use serde_json::Value;
 use std::pin::Pin;
-pub struct Report {
-  pub text: String,
-  pub output: Value,
-  pub metadata: Value,
-}
-impl Report {
-  pub fn json(output: Value) -> Self {
-    Self { text: output.to_string(), metadata: output.clone(), output }
-  }
-}
-#[derive(Debug)]
-pub enum Failure {
-  Rejected(String),
-  Unknown(String),
-}
-impl From<String> for Failure {
-  fn from(v: String) -> Self {
-    Self::Rejected(v)
-  }
-}
-impl From<&str> for Failure {
-  fn from(v: &str) -> Self {
-    Self::Rejected(v.into())
-  }
-}
 pub type Future<'a> =
   Pin<Box<dyn std::future::Future<Output = Result<Report, Failure>> + Send + 'a>>;
 pub struct Read {

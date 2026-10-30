@@ -2,7 +2,7 @@
 //! standby generation the cutover then builds on. A run keeps at most one in flight beside its work
 //! ([`StandbySummarizer`]); a cutover summarizes remaining spans in bounded batches ([`catch_up`]).
 use super::{
-  Failure, check_cancelled, collect_assistant_content, count_kept_prefix, measure,
+  Failure, check_cancelled, collect_assistant_content, count_kept_prefix, estimate, measure,
   trigger::{UsageReading, read_usage},
 };
 use crate::executor::{
@@ -96,18 +96,44 @@ async fn plan_standby_summaries(
   if eligible <= processed || processed >= request.conversation.len() {
     return Ok(plans);
   }
+  let eligible = request.conversation[processed..eligible]
+    .iter()
+    .position(|message| matches!(message, Message::UpstreamCompaction { .. }))
+    .map(|offset| processed + offset)
+    .unwrap_or(eligible);
+  if eligible <= processed {
+    return Ok(plans);
+  }
   let boundaries = find_replay_unit_boundaries(&request.conversation)?;
+  let Some(first_end) = boundaries.iter().copied().find(|end| *end > processed && *end <= eligible)
+  else {
+    return Ok(plans);
+  };
+  // Count the first complete span once, then calibrate local probes of larger spans.
+  // A whole-tail ratio would dilute the fixed framing cost of a small summary segment.
+  let span = build_span_request(&request, &request.conversation[processed..first_end]);
+  caller.validate_request(&span)?;
+  let measured = measure(caller, control, &config, &span, calibration).await?;
+  let local = config.estimator.estimate_request(&span);
+  let calibration = if matches!(
+    measured.source,
+    crate::session::TokenMeasurementSource::ProviderCount
+  ) && local > 0
+  {
+    Some(measured.tokens as f64 / local as f64)
+  } else {
+    calibration
+  };
   let mut start = processed;
   for end in boundaries.into_iter().filter(|end| *end > processed && *end <= eligible) {
-    if request.conversation[start..end]
-      .iter()
-      .any(|message| matches!(message, Message::UpstreamCompaction { .. }))
-    {
-      break;
-    }
+    check_cancelled(control)?;
     let span_request = build_span_request(&request, &request.conversation[start..end]);
     caller.validate_request(&span_request)?;
-    let measurement = measure(caller, control, &config, &span_request, calibration).await?;
+    let measurement = if start == processed && end == first_end {
+      measured
+    } else {
+      estimate(&config, &span_request, calibration)
+    };
     if measurement.tokens < config.segment_tokens {
       continue;
     }

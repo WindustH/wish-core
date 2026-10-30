@@ -45,3 +45,21 @@ pub struct ImageCapabilities {
   pub markup: bool,
   pub options: &'static [&'static str],
 }
+
+use serde::Deserialize;
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceKind {
+  Character,
+  Style,
+  CharacterStyle,
+}
+impl ReferenceKind {
+  pub fn caption(self) -> &'static str {
+    match self {
+      Self::Character => "character",
+      Self::Style => "style",
+      Self::CharacterStyle => "character&style",
+    }
+  }
+}
