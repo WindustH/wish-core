@@ -29,8 +29,9 @@ AWS credentials ──▶ sigv4 ──▶ x-amz-date, authorization, and x-amz-s
 | `SigV4` | an AWS signature over the finished request, service `bedrock` |
 | `GitHubToken` | `Authorization: token <refresh_token>`: the GitHub token a Copilot session is exchanged from |
 
-`CredentialRenewal` has two variants: `CodexOAuth` (the Codex subscription's refresh token) and
-`CopilotToken` (a GitHub token exchanged for a Copilot session). The server builds
+`CredentialRenewal` has three variants: `CodexOAuth` (the Codex subscription's refresh token) and
+`CopilotToken` (a GitHub token exchanged for a Copilot session), plus `GoogleOAuth`
+(a Google refresh token from the `google_antigravity` preset). The server builds
 `Bearer(Some(CodexOAuth))` for the `openai_codex` preset and `Bearer(Some(CopilotToken))` for
 `github_copilot` (`src/application/provider.rs`).
 
@@ -88,3 +89,13 @@ the method, query and body, so the same row serves an account read's `GET` and a
   expiry. Debug builds honor `WISH_TEST_GITHUB` for both hosts.
 
 Every exchange is one attempt, and deciding when to refresh stays with the caller.
+
+- `google_oauth`: authorization and refresh grants use Google's form-encoded token
+  endpoint, PKCE and the Antigravity desktop OAuth registration. Missing access tokens
+  or positive lifetimes fail decoding; an omitted refresh token keeps the saved one.
+  Debug builds honor `WISH_TEST_GOOGLE_ISSUER`.
+- `antigravity`: single `loadCodeAssist` and `onboardUser` attempts discover the Cloud
+  Code project. `application/google_login.rs` owns the bounded onboarding wait;
+  `application/browser_login.rs` shares grant state and persistence with ChatGPT.
+  Debug builds honor `WISH_TEST_GOOGLE_CLOUDCODE` and the callback listener honors
+  `WISH_TEST_GOOGLE_CALLBACK_PORT`.

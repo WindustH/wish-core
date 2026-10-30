@@ -28,8 +28,10 @@
 
 mod credentials;
 
+pub mod antigravity;
 pub mod codex_oauth;
 pub mod copilot_oauth;
+pub mod google_oauth;
 pub use credentials::{CredentialField, Credentials, Tokens};
 pub(crate) mod sigv4;
 mod source;
@@ -87,6 +89,8 @@ pub enum CredentialRenewal {
   /// A GitHub token, exchanged for a Copilot session ([`copilot_oauth`]); the GitHub token itself
   /// is never rotated.
   CopilotToken,
+  /// A Google refresh token from Antigravity browser sign-in.
+  GoogleOAuth,
 }
 
 /// What one of the payload trees says: a request already rendered, aimed at nothing yet.

@@ -4,7 +4,7 @@ use super::{
   web_search::{SearchQuery, SearchResult},
 };
 use crate::protocol::{
-  endpoint::{Draft, Source},
+  endpoint::{Credentials, Draft, Source},
   error::Error,
 };
 use serde_json::Value;
@@ -12,7 +12,7 @@ pub struct SearchCodec {
   pub id: &'static str,
   pub source: fn(&'static str) -> Source,
   pub recency: bool,
-  pub build: fn(&SearchQuery, u64) -> Result<Draft, Error>,
+  pub build: fn(&SearchQuery, u64, &Credentials) -> Result<Draft, Error>,
   pub parse: fn(&Value) -> Result<Vec<SearchResult>, Error>,
   pub refusal: fn(u16) -> Option<Error>,
 }

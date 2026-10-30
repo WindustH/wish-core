@@ -10,3 +10,8 @@ pub(crate) mod image_driver;
 pub(crate) mod gemini_interactions_driver;
 
 pub(crate) mod package;
+
+pub(crate) mod antigravity;
+pub(crate) mod antigravity_image_driver;
+pub(crate) mod search;
+pub(crate) mod search_tool;

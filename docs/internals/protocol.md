@@ -93,7 +93,7 @@ dialect knows HTTP and no transport knows a body. The binders hold both ends:
   [client](client.md#retry).
 - Each read's `fetch.rs`, and the Codex OAuth exchanges, bind their own round trip. Each is one
   attempt with no retry. The reads and the token refresh take a reply from status to JSON with
-  `http_error::read_provider_json`; the browser login (`src/server/codex_login.rs`) words a
+  `http_error::read_provider_json`; the browser login (`src/server/browser_login.rs`) words a
   refused code exchange itself.
 
 ## Webpage reading
@@ -109,3 +109,13 @@ the application. `AccountClient` owns account material and renewal; it does not 
 accounts and transports, and tries enabled providers in order. `tool/web_fetch.rs` exposes
 this operation to the agent and owns continuation cursors and paging;
 `storage/snapshots.rs` persists the immutable page snapshots.
+
+## Antigravity subscription
+
+`google_antigravity_generate_content` reuses the Gemini content renderer and decoder,
+with request, response and stream envelope adapters in their respective trees.
+The request adapter renders Cloud Code-compatible tool schemas and Claude thinking
+budgets. The client joins the account project and conversation session with the
+rendered body before `Endpoint::build_call`. The transport remains wire-neutral.
+The model list has its own POST draft and keyed-object decoder. Authentication,
+renewal and browser state stay in endpoint, account client and application layers.

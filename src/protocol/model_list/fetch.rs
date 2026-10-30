@@ -66,7 +66,14 @@ pub async fn fetch<T: Transport>(
   if query.unauthenticated && protocol == ModelListProtocol::OpenAiModels {
     source.auth = AuthScheme::None;
   }
-  let draft = Draft::get(build_page_query(protocol, query.cursor.as_deref(), query.page_size));
+  let draft = if protocol == ModelListProtocol::GoogleAntigravityModels {
+    let project = credentials.project.as_deref().filter(|v| !v.is_empty()).ok_or_else(|| {
+      Error::Build("Antigravity model listing requires a Cloud Code project".to_owned())
+    })?;
+    Draft::post_json(&serde_json::json!({"project": project}))?
+  } else {
+    Draft::get(build_page_query(protocol, query.cursor.as_deref(), query.page_size))
+  };
   let call = source
     .to_endpoint(Some(&query.base_url), Some(&query.path))?
     .beneath(headers)

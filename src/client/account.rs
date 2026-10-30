@@ -34,6 +34,12 @@ impl<T: Transport> AccountClient<T> {
             .await?;
         Ok(self.credentials.renew(&tokens))
       }
+      Some(CredentialRenewal::GoogleOAuth) => {
+        let tokens =
+          crate::protocol::endpoint::google_oauth::refresh(&self.transport, &self.credentials)
+            .await?;
+        Ok(self.credentials.renew(&tokens))
+      }
       None => Err(Error::build_unsupported(
         "credential refresh",
         "account",

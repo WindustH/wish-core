@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 use crate::protocol::attempt::find_header;
 use crate::protocol::error::Error;
 
+pub mod antigravity;
 pub mod codex;
 pub mod copilot;
 pub mod deepseek;
@@ -173,6 +174,8 @@ text_id_enum! {
     OpenAiCodexQuotaHeaders => "openai_codex_quota_headers",
     /// The meters a Codex subscription's own account endpoint reports.
     OpenAiCodexUsage => "openai_codex_usage",
+    /// Antigravity subscription windows grouped by model family.
+    GoogleAntigravityQuota => "google_antigravity_quota",
     /// Anthropic's rate-limit headers.
     AnthropicRatelimitHeaders => "anthropic_ratelimit_headers",
     /// OpenAI's rate-limit headers.
@@ -335,6 +338,7 @@ pub fn parse_account_body(
   body: &Value,
 ) -> Result<AccountState, Error> {
   match protocol {
+    AccountStateProtocol::GoogleAntigravityQuota => antigravity::parse(body),
     AccountStateProtocol::DeepseekUserBalance => deepseek::parse(body),
     AccountStateProtocol::KimiOpenBalance => kimi::parse_balance(body),
     AccountStateProtocol::KimiCodeCompanionUsage => kimi::parse_companion(body),

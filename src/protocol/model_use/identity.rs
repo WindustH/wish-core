@@ -40,6 +40,14 @@ pub fn apply_headers(
         .with_header("x-app", "cli")
         .with_header("x-claude-code-session-id", "{session}");
     }
+    Some("google_antigravity") => {
+      for header in crate::protocol::endpoint::antigravity::API_HEADERS {
+        if let SourceHeader::Literal(name, value) = header {
+          endpoint = endpoint.with_header(name, value);
+        }
+      }
+      endpoint = endpoint.with_header("x-machine-session-id", "{session}");
+    }
     Some("github_copilot") => {
       for header in copilot_oauth::API_HEADERS {
         if let SourceHeader::Literal(name, value) = header {

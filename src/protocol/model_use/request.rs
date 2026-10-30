@@ -13,6 +13,7 @@
 
 pub mod anthropic_messages;
 pub mod bedrock_converse;
+pub mod google_antigravity;
 pub mod google_generate_content;
 pub mod google_interactions;
 pub mod mistral_conversations;

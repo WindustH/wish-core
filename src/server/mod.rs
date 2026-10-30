@@ -2,8 +2,8 @@
 //! Application use cases live in `application`; persistence lives in `storage`.
 
 use crate::application::{app, config};
+mod browser_login;
 mod cli;
-mod codex_login;
 #[cfg(windows)]
 mod console;
 mod copilot_login;

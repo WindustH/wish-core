@@ -22,12 +22,6 @@ Wish is a minimal, fast AI agent that runs on your own machine. Use it from
 the [web app](https://github.com/WindustH/wish-web) on desktop or phone, or over
 the [HTTP API](docs/api.md).
 
-<p align="center">
-  <img src="docs/assets/screenshot-desktop.png" alt="Wish on the desktop" width="74%">
-  &nbsp;
-  <img src="docs/assets/screenshot-mobile.png" alt="Wish on a phone" width="22%">
-</p>
-
 ## Why Wish
 
 - **Minimal and fast.** One Rust program with its own embedded database;

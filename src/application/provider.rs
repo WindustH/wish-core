@@ -1,8 +1,6 @@
 //! Model providers: their configuration as the file holds it, and the client each one is built
 //! into. A configuration save rebuilds them all.
-use crate::application::{
-  config::ProxyConfig, error::ApplicationError, model_catalog::ModelCatalogCache, presets, sampling,
-};
+use crate::application::{config::ProxyConfig, error::ApplicationError, presets, sampling};
 use crate::storage::management::ManagementStore;
 use crate::{
   client::{Client, CodeAgentIdentity},
@@ -91,20 +89,20 @@ pub struct Provider {
   pub id: String,
   pub client: ModelClient,
   pub config: ProviderConfig,
-  /// Pages read for `GET /providers/{id}/models`, so reopening a picker does not reread the
-  /// service. Rebuilt providers start empty; see [`crate::application::model_catalog`].
-  pub catalog: ModelCatalogCache,
 }
 impl Provider {
   pub fn build(
     id: String,
-    config: ProviderConfig,
+    mut config: ProviderConfig,
     proxy: &ProxyConfig,
   ) -> Result<Self, ApplicationError> {
     if let Some(preset) = &config.preset
       && presets::find_provider(preset).is_none()
     {
       return Err(ApplicationError::invalid(format!("unknown provider preset: {preset}")));
+    }
+    if config.protocol == "google_antigravity_generate_content" {
+      config.models = crate::protocol::model_list::antigravity::normalize_overrides(&config.models);
     }
     let auth = match config.auth {
       Auth::None => AuthScheme::None,
@@ -190,6 +188,14 @@ impl Provider {
         value.parse::<ModelListProtocol>().map_err(|e| ApplicationError::invalid(e.to_string()))?,
       );
     }
+    if let Some(path) = &config.model_list_path {
+      let mut query = crate::protocol::model_list::ModelListQuery::first(
+        config.model_list_base_url.as_deref().unwrap_or(&config.base_url),
+        path,
+      );
+      query.unauthenticated = matches!(config.auth, Auth::None);
+      client = client.with_model_list_source(query);
+    }
     if let Some(value) = &config.account_state {
       client = client.with_account_state(
         value
@@ -197,7 +203,7 @@ impl Provider {
           .map_err(|e| ApplicationError::invalid(e.to_string()))?,
       );
     }
-    Ok(Self { id, client, config, catalog: Default::default() })
+    Ok(Self { id, client, config })
   }
   /// Public model-service metadata without credentials or secret headers.
   pub fn describe(&self) -> serde_json::Value {

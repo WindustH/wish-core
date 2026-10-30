@@ -107,7 +107,7 @@ pub static CODEC: crate::extensions::shared::read_codecs::SearchCodec =
     id: "searxng_search",
     source: super::sources::search,
     recency: true,
-    build: |query, _| Ok(build_draft(&query.into())),
+    build: |query, _, _| Ok(build_draft(&query.into())),
     parse: parse_body,
     refusal: explain_refusal,
   };

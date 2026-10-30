@@ -4,7 +4,7 @@
 use super::accounts::{AccountRegistry, AccountRuntime};
 use crate::application::{
   bridge::Bridge,
-  codex_login::LoginManager,
+  browser_login::LoginManager,
   config::Config,
   config_file::ConfigFile,
   copilot_login::CopilotLoginManager,
@@ -35,7 +35,7 @@ pub struct App {
   pub(super) storage: Storage,
   pub(super) management: Arc<ManagementStore>,
   pub(super) config_file: AsyncMutex<ConfigFile>,
-  pub codex_login: LoginManager,
+  pub browser_login: LoginManager,
   pub(super) copilot_login: CopilotLoginManager,
   /// Changes to the session list and the configuration, for `GET /events`.
   pub(super) events: tokio::sync::broadcast::Sender<Value>,
@@ -171,7 +171,7 @@ impl App {
       storage,
       management,
       config_file: AsyncMutex::new(config_file),
-      codex_login: LoginManager::default(),
+      browser_login: LoginManager::default(),
       copilot_login: CopilotLoginManager::default(),
       events,
       started: std::time::Instant::now(),

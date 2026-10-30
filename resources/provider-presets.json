@@ -1728,6 +1728,43 @@
       ]
     },
     {
+      "id": "google_antigravity",
+      "provider": "Google Gemini",
+      "region": "global",
+      "billing": "subscription",
+      "required_credentials": [
+        "project"
+      ],
+      "optional_credentials": [],
+      "reasoning_efforts": {
+        "low": "low",
+        "medium": "medium",
+        "high": "high"
+      },
+      "variants": {
+        "google_antigravity_generate_content": {
+          "preset": "google_antigravity",
+          "enabled": true,
+          "protocol": "google_antigravity_generate_content",
+          "base_url": "https://daily-cloudcode-pa.googleapis.com",
+          "path": "/v1internal:generateContent",
+          "auth": "bearer",
+          "models": {},
+          "headers": {},
+          "credentials": {},
+          "credentials_env": {},
+          "model_list": "google_antigravity_models",
+          "account_state": "google_antigravity_quota",
+          "model_list_path": "/v1internal:fetchAvailableModels",
+          "proxy_enabled": true
+        }
+      },
+      "unsupported_protocols": [],
+      "protocols": [
+        "google_antigravity_generate_content"
+      ]
+    },
+    {
       "id": "aws_bedrock",
       "provider": "AWS Bedrock",
       "region": "custom",

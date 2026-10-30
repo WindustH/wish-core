@@ -5,7 +5,7 @@ pub(crate) mod attachments;
 pub(crate) mod background_tools;
 pub(crate) mod bridge;
 pub(crate) mod bridge_access;
-pub(crate) mod codex_login;
+pub(crate) mod browser_login;
 pub(crate) mod compaction_item;
 pub(crate) mod config;
 pub(crate) mod config_file;
@@ -23,7 +23,6 @@ pub(crate) mod input;
 pub(crate) mod instructions;
 pub(crate) mod mcp;
 pub(crate) mod mcp_access;
-pub(crate) mod model_catalog;
 pub(crate) mod model_observation;
 pub(crate) mod naming;
 pub(crate) mod peer_commands;
@@ -74,3 +73,5 @@ pub mod media_access;
 pub mod audio_transcription;
 
 pub(crate) mod pages;
+
+pub(crate) mod google_login;

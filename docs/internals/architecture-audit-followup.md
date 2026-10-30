@@ -83,7 +83,7 @@ No throughput improvement is claimed without a controlled load benchmark.
 ## Validation and CI
 
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, a build, and
-`python3 tools/check_architecture.py` are CI gates. The dependency guard prevents task from reaching
+`python3 ../wish-test/tools/check_architecture.py` are CI gates. The dependency guard prevents task from reaching
 back into session/executor/tool and storage from reaching application/server/session/executor.
 
 The local `wish-test` checkout has no configured Git remote. CI therefore does not invent a remote

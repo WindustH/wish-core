@@ -27,7 +27,7 @@ pub mod tool_commands;
 mod usage;
 use crate::application::{app::App, presets};
 use crate::server::{
-  codex_login, copilot_login,
+  browser_login, copilot_login,
   web::{self, WebFront},
 };
 use axum::{
@@ -80,8 +80,16 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/providers/{id}", get(providers::get))
     .route("/providers/{id}/models", get(providers::models))
     .route("/providers/{id}/account", get(providers::account))
-    .route("/providers/{id}/chatgpt-login", post(codex_login::start).get(codex_login::status))
-    .route("/providers/{id}/chatgpt-login/complete", post(codex_login::complete))
+    .route(
+      "/providers/{id}/chatgpt-login",
+      post(browser_login::start_chatgpt).get(browser_login::status_chatgpt),
+    )
+    .route("/providers/{id}/chatgpt-login/complete", post(browser_login::complete_chatgpt))
+    .route(
+      "/providers/{id}/google-login",
+      post(browser_login::start_google).get(browser_login::status_google),
+    )
+    .route("/providers/{id}/google-login/complete", post(browser_login::complete_google))
     .route("/providers/{id}/copilot-login", post(copilot_login::start).get(copilot_login::status))
     .route("/providers/{id}/call", post(providers::call))
     .route("/providers/{id}/count-tokens", post(providers::count))

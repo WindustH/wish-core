@@ -50,6 +50,8 @@ pub enum ModelUseProtocol {
   /// an API key - the caller obtains and renews the token, and an
   /// [`Endpoint`](crate::protocol::endpoint::Endpoint) whose auth is `Bearer` carries it.
   GoogleVertexGenerateContent,
+  /// Antigravity subscription: Gemini contents inside a Cloud Code envelope.
+  GoogleAntigravityGenerateContent,
   GoogleInteractions,
   BedrockConverse,
   /// Mistral's stateful wire: the history as `inputs` entries, the answer as `outputs` entries.
@@ -74,7 +76,9 @@ impl ModelUseProtocol {
       ModelUseProtocol::AnthropicMessages(..) => request::anthropic_messages::HEADERS,
       ModelUseProtocol::OpenAiChat(..) => request::openai_chat::HEADERS,
       ModelUseProtocol::OpenAiResponses(mode) => request::openai_responses::get_headers(mode),
-      ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent => {
+      ModelUseProtocol::GoogleGenerateContent
+      | ModelUseProtocol::GoogleVertexGenerateContent
+      | ModelUseProtocol::GoogleAntigravityGenerateContent => {
         request::google_generate_content::HEADERS
       }
       ModelUseProtocol::GoogleInteractions => request::google_interactions::HEADERS,
@@ -93,6 +97,9 @@ impl ModelUseProtocol {
       ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent => {
         request::google_generate_content::render(request)
       }
+      ModelUseProtocol::GoogleAntigravityGenerateContent => {
+        request::google_antigravity::render(request)
+      }
       ModelUseProtocol::GoogleInteractions => request::google_interactions::render(request),
       ModelUseProtocol::BedrockConverse => request::bedrock_converse::render(request),
       ModelUseProtocol::MistralConversations => request::mistral_conversations::render(request),
@@ -105,7 +112,9 @@ impl ModelUseProtocol {
       return path;
     }
     match self {
-      ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent => {
+      ModelUseProtocol::GoogleGenerateContent
+      | ModelUseProtocol::GoogleVertexGenerateContent
+      | ModelUseProtocol::GoogleAntigravityGenerateContent => {
         request::google_generate_content::resolve_stream_path(&path)
       }
       ModelUseProtocol::BedrockConverse => request::bedrock_converse::resolve_stream_path(&path),
@@ -128,6 +137,9 @@ impl ModelUseProtocol {
       ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent => {
         StreamDecoder::GoogleGenerateContent(stream::google_generate_content::Decoder::new())
       }
+      ModelUseProtocol::GoogleAntigravityGenerateContent => {
+        StreamDecoder::GoogleAntigravity(stream::google_antigravity::Decoder::default())
+      }
       ModelUseProtocol::GoogleInteractions => {
         StreamDecoder::GoogleInteractions(stream::google_interactions::Decoder::new())
       }
@@ -148,6 +160,9 @@ impl ModelUseProtocol {
       ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent => {
         response::google_generate_content::decode(body)
       }
+      ModelUseProtocol::GoogleAntigravityGenerateContent => {
+        response::google_antigravity::decode(body)
+      }
       ModelUseProtocol::GoogleInteractions => response::google_interactions::decode(body),
       ModelUseProtocol::BedrockConverse => response::bedrock_converse::decode(body),
       ModelUseProtocol::MistralConversations => response::mistral_conversations::decode(body),
@@ -164,6 +179,7 @@ impl ModelUseProtocol {
       }
       ModelUseProtocol::GoogleGenerateContent
       | ModelUseProtocol::GoogleVertexGenerateContent
+      | ModelUseProtocol::GoogleAntigravityGenerateContent
       | ModelUseProtocol::GoogleInteractions => http_error::decode_google_envelope(status, body),
       ModelUseProtocol::BedrockConverse => http_error::decode_bedrock_converse(status, body),
       ModelUseProtocol::MistralConversations => {
@@ -180,6 +196,7 @@ impl ModelUseProtocol {
       ModelUseProtocol::OpenAiResponses(..) => "openai responses",
       ModelUseProtocol::GoogleGenerateContent => "google generateContent",
       ModelUseProtocol::GoogleVertexGenerateContent => "google vertex generateContent",
+      ModelUseProtocol::GoogleAntigravityGenerateContent => "google antigravity generateContent",
       ModelUseProtocol::GoogleInteractions => "google interactions",
       ModelUseProtocol::BedrockConverse => "bedrock converse",
       ModelUseProtocol::MistralConversations => "mistral conversations",
@@ -203,7 +220,9 @@ impl ModelUseProtocol {
       ModelUseProtocol::BedrockConverse => {
         (Some(Kind::BedrockSignature), false, ReplayProof::SignatureOrCiphertext)
       }
-      ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent => {
+      ModelUseProtocol::GoogleGenerateContent
+      | ModelUseProtocol::GoogleVertexGenerateContent
+      | ModelUseProtocol::GoogleAntigravityGenerateContent => {
         (Some(Kind::GoogleSignature), false, ReplayProof::Signature)
       }
       ModelUseProtocol::GoogleInteractions => {
@@ -225,7 +244,9 @@ impl ModelUseProtocol {
       proof,
       seals_next_part: matches!(
         self,
-        ModelUseProtocol::GoogleGenerateContent | ModelUseProtocol::GoogleVertexGenerateContent
+        ModelUseProtocol::GoogleGenerateContent
+          | ModelUseProtocol::GoogleVertexGenerateContent
+          | ModelUseProtocol::GoogleAntigravityGenerateContent
       ),
     }
   }

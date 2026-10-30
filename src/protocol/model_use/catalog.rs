@@ -38,6 +38,7 @@ pub fn parse_protocol(name: &str) -> Result<ModelUseProtocol, crate::protocol::e
     "tokenhub_messages" => ModelUseProtocol::AnthropicMessages(Messages::TokenHub),
     "google_generate_content" => ModelUseProtocol::GoogleGenerateContent,
     "google_vertex_generate_content" => ModelUseProtocol::GoogleVertexGenerateContent,
+    "google_antigravity_generate_content" => ModelUseProtocol::GoogleAntigravityGenerateContent,
     "google_interactions" => ModelUseProtocol::GoogleInteractions,
     "bedrock_converse" => ModelUseProtocol::BedrockConverse,
     "mistral_conversations" => ModelUseProtocol::MistralConversations,

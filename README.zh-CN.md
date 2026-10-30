@@ -21,12 +21,6 @@
 Wish 是一个运行在你自己机器上的极简、高性能 AI 智能体。可以在桌面或手机上通过
 [Web 应用](https://github.com/WindustH/wish-web) 使用，也可以调用 [HTTP API](docs/api.md)。
 
-<p align="center">
-  <img src="docs/assets/screenshot-desktop-zh.png" alt="桌面端的 Wish" width="74%">
-  &nbsp;
-  <img src="docs/assets/screenshot-mobile-zh.png" alt="手机上的 Wish" width="22%">
-</p>
-
 ## 为什么选择 Wish
 
 - **极简、高性能。** 一个 Rust 程序，自带嵌入式数据库，不需要安装或运行其他任何东西。

@@ -36,6 +36,7 @@ pub fn renewal(preset: Option<&str>) -> Option<crate::protocol::endpoint::Creden
   use crate::protocol::endpoint::CredentialRenewal;
   match preset {
     Some("openai_codex") => Some(CredentialRenewal::CodexOAuth),
+    Some("google_antigravity") => Some(CredentialRenewal::GoogleOAuth),
     Some("github_copilot") => Some(CredentialRenewal::CopilotToken),
     _ => None,
   }

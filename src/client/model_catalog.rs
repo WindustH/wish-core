@@ -1,4 +1,4 @@
-//! Server-side caching of model-catalog pages: what `GET /providers/{id}/models` reads.
+//! Shared catalog cache for model pickers and protocol deployment resolution.
 //!
 //! A catalog page is the same answer to the same question for minutes at a time: the set of models
 //! a service offers changes on the service's schedule, not the caller's. This module keeps the
@@ -19,7 +19,8 @@
 //!   the answer in the cache; concurrent walks of one catalog interleave page by page instead of
 //!   fetching the same pages twice.
 
-use crate::application::provider::ModelClient;
+use super::Client;
+use crate::protocol::attempt::Transport;
 use crate::protocol::model_list::{ModelListPage, ModelListQuery};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -70,9 +71,9 @@ impl ModelCatalogCache {
   /// # Errors
   ///
   /// The refetch's own error, when no page was ever read for the query it describes.
-  pub async fn page(
+  pub async fn page<T: Transport>(
     &self,
-    client: &ModelClient,
+    client: &Client<T>,
     query: &ModelListQuery,
   ) -> Result<ModelListPage, crate::protocol::error::Error> {
     let key = Key::of(query);
@@ -83,7 +84,7 @@ impl ModelCatalogCache {
     if let Some(page) = self.fresh(&key, Instant::now()) {
       return Ok(page);
     }
-    match client.get_model_list(query).await {
+    match client.fetch_model_list(query).await {
       Ok(page) => {
         let mut pages = self.pages.lock().unwrap();
         if pages.len() >= 128

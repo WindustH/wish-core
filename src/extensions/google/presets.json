@@ -32,6 +32,38 @@
       ],
       "parameters": {},
       "docs_url": "https://ai.google.dev/gemini-api/docs/image-generation"
+    },
+    {
+      "id": "google_antigravity_images",
+      "name": "Google Antigravity",
+      "brand": "Google Gemini",
+      "protocol": "google_antigravity_image",
+      "base_url": "https://daily-cloudcode-pa.googleapis.com",
+      "path": "/v1internal:generateContent",
+      "model": "gemini-3.1-flash-image",
+      "account_presets": [
+        "google_antigravity"
+      ],
+      "parameters": {
+        "responseModalities": [
+          "TEXT",
+          "IMAGE"
+        ]
+      },
+      "docs_url": "https://github.com/lbjlaq/Antigravity-Manager"
+    }
+  ],
+  "search": [
+    {
+      "id": "google_antigravity_search",
+      "name": "Google Antigravity",
+      "brand": "Google Gemini",
+      "protocol": "google_antigravity_search",
+      "borrows_from": [
+        "google_antigravity"
+      ],
+      "base_url_from_provider": true,
+      "key": "borrowed"
     }
   ]
 }

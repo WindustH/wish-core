@@ -63,7 +63,7 @@ pub static CODEC: crate::extensions::shared::read_codecs::SearchCodec =
     id: "metaso_search",
     source: super::sources::search,
     recency: false,
-    build: |query, _| build_draft(&query.into()),
+    build: |query, _, _| build_draft(&query.into()),
     parse: parse_body,
     refusal: |_| None,
   };

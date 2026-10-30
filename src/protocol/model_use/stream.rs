@@ -35,6 +35,7 @@ pub use partial::{
 
 pub mod anthropic_messages;
 pub mod bedrock_converse;
+pub mod google_antigravity;
 pub mod google_generate_content;
 pub mod google_interactions;
 pub mod mistral_conversations;
@@ -56,6 +57,7 @@ pub enum StreamDecoder {
   AnthropicMessages(anthropic_messages::Decoder),
   BedrockConverse(bedrock_converse::Decoder),
   GoogleGenerateContent(google_generate_content::Decoder),
+  GoogleAntigravity(google_antigravity::Decoder),
   GoogleInteractions(google_interactions::Decoder),
   MistralConversations(mistral_conversations::Decoder),
   OpenAiChat(openai_chat::Decoder),
@@ -86,6 +88,7 @@ impl StreamDecoder {
       StreamDecoder::AnthropicMessages(decoder) => decoder,
       StreamDecoder::BedrockConverse(decoder) => decoder,
       StreamDecoder::GoogleGenerateContent(decoder) => decoder,
+      StreamDecoder::GoogleAntigravity(decoder) => decoder,
       StreamDecoder::GoogleInteractions(decoder) => decoder,
       StreamDecoder::MistralConversations(decoder) => decoder,
       StreamDecoder::OpenAiChat(decoder) => decoder,

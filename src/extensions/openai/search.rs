@@ -85,7 +85,7 @@ pub static CODEC: crate::extensions::shared::read_codecs::SearchCodec =
     id: "codex_alpha_search",
     source: super::sources::search,
     recency: true,
-    build: |query, _| build_draft(&query.into()),
+    build: |query, _, _| build_draft(&query.into()),
     parse: parse_body,
     refusal: |_| None,
   };

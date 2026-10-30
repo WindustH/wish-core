@@ -62,3 +62,11 @@ Failure      { kind: Unauthorized | Unpaid | Throttled | Unknown, code, message 
 Numbers keep the service's exact decimal text. An unlimited allowance is never flattened into a
 number. What cannot be represented goes to `warnings`. A refusal the service reports inside a `2xx`
 body (a rejected key, an account in arrears) is data in `failure`, not an error.
+
+## Google Antigravity
+
+`google_antigravity_quota` posts the account project to
+`/v1internal:retrieveUserQuotaSummary`. Each group bucket becomes a quota window;
+`remainingFraction` supplies the spent percentage, `resetTime` the reset stamp.
+Missing or invalid fractions stay unknown with a warning. No token amount or
+currency balance is inferred from a fraction.

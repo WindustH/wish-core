@@ -20,7 +20,7 @@ pub const REGISTRATION: Registration = Registration {
   name: "google_image",
   summary: "google_image generation",
   tags: &["image", "generation", "editing", "reference"],
-  service_presets: &["gemini_images"],
+  service_presets: &["gemini_images", "google_antigravity_images"],
   accepts_model: |_| true,
   permission: Permission::ImageGeneration,
   specification,

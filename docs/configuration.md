@@ -126,7 +126,7 @@ proxy switch, enabled state and other service settings.
 An account stores `name`, optional `preset`, `api_key` / `api_key_env`,
 `credentials` / `credentials_env`, and the `refresh_token` / `expires_at`
 maintained by subscription sign-in. Its `proxy_enabled` controls sign-in and
-renewal only. ChatGPT and Copilot tokens renew once per account, and every linked
+renewal only. ChatGPT, Google and Copilot tokens renew once per account, and every linked
 service receives the new credentials. Service requests use their own proxy switch.
 All credential values are redacted by the configuration API. An account that a
 service still references cannot be removed. Disabling or deleting a model service
@@ -155,7 +155,7 @@ entry needs at least `protocol`, `base_url` and `path`.
 | `base_url` | required | `http://` or `https://` origin, optionally with a path prefix. Credential names such as `{region}` or `{workspace_id}` are replaced by their values |
 | `path` | required | Request path appended to `base_url`. `{model}` is replaced by the model ID, and credential names as in `base_url` |
 | `display_name` | `null` | Name shown in the web app |
-| `preset` | `null` | ID of the preset this entry came from; see [Presets](#presets). It adds the preset's branding and default request headers, and enables ChatGPT sign-in for `openai_codex` and GitHub sign-in for `github_copilot` |
+| `preset` | `null` | ID of the preset this entry came from; see [Presets](#presets). It adds the preset's branding and default request headers, and enables ChatGPT sign-in for `openai_codex` , Google sign-in for `google_antigravity`, and GitHub sign-in for `github_copilot` |
 | `enabled` | `true` | `false` keeps the entry but refuses new calls through it |
 | `auth` | `"bearer"` | How requests are authenticated, see [below](#authentication) |
 | `api_key` / `api_key_env` | `null` | The API key, or the name of an environment variable holding it; see [Secrets](#secrets) |
@@ -170,7 +170,7 @@ entry needs at least `protocol`, `base_url` and `path`.
 | `compaction` | `null` | Upstream compaction protocol, to let the provider compact the context itself |
 | `account_state` | `null` | Protocol for reading balance or quota |
 | `account_state_base_url` | `null` | Host the account reading is asked on, for a service with regional twins (`https://open.bigmodel.cn` for a Zhipu plan). Without it, the protocol's own host; the provider's `base_url` is never used for it |
-| `refresh_token`, `expires_at` | `null` | Written by ChatGPT and GitHub sign-in; not meant to be edited by hand |
+| `refresh_token`, `expires_at` | `null` | Written by ChatGPT, Google and GitHub sign-in; not meant to be edited by hand |
 
 ### Protocols
 
@@ -230,7 +230,7 @@ model list leaves the models to be added by hand.
 | OpenAI | `openai`; ChatGPT subscription `openai_codex` |
 | GitHub Copilot | `github_copilot`, a Copilot subscription; see [GitHub Copilot sign-in](#github-copilot-sign-in) |
 | Anthropic | `anthropic` |
-| Google Gemini | `google_gemini` |
+| Google Gemini | `google_gemini`; Antigravity subscription `google_antigravity` |
 | AWS Bedrock | `aws_bedrock` |
 | MiniMax | `minimax_cn`, `minimax_global`; Token Plan `minimax_token_cn`, `minimax_token_global` |
 | StepFun | `stepfun_global`, `stepfun_cn`; Step Plan `stepfun_plan_global`, `stepfun_plan_cn` |
@@ -258,6 +258,55 @@ The sign-in opens a temporary callback on `127.0.0.1:1455`, so the browser
 must run on the same machine as Wish; otherwise, paste the final redirect URL
 back into the web app. The flow is described in the
 [API reference](api.md#chatgpt-sign-in).
+
+### Google Antigravity sign-in
+
+Choose **Google Gemini → Antigravity · Google subscription** and sign in with Google
+in the linked account editor (or the first-run setup). Wish uses the account's
+Antigravity Cloud Code access, discovers its project, and stores `api_key`,
+`refresh_token`, `expires_at` and `credentials.project` in the shared account.
+All services linked to that account use the renewed token. If Google has not
+assigned a project, Wish onboards the default eligible tier returned by Google;
+if no eligible tier is returned, complete Antigravity setup first.
+
+The loopback callback uses `http://localhost:51121/oauth-callback`, falling back
+to ports 51122 and 51123. On a remote server, paste the complete redirect URL
+into Wish. The ten-minute grant uses PKCE and validates its state and callback.
+
+The `google_antigravity_generate_content` protocol wraps Gemini contents in Cloud
+Code's project/model envelope and supports buffered replies, SSE, tools and thought
+signatures. `google_antigravity_models` reads the account's available models via
+`POST /v1internal:fetchAvailableModels` and normalizes its deployment IDs. The preset uses
+`https://daily-cloudcode-pa.googleapis.com`; its base URL and client headers can be
+overridden in the usual provider settings. This is an unofficial subscription
+interface; the models available depend on Google's account eligibility and quota.
+It does not use an AI Studio API key. Native token counting is not exposed.
+
+The protocol folds `-low`, `-medium`, `-high`, `-thinking` and `-tiered` deployments
+into one model with the reasoning modes actually available to this account. For
+example, `gemini-4-argon` offers low/medium/high and defaults to medium. Thinking
+and tiered deployments appear as enabled/adaptive modes; Lite and Image remain
+separate model families. The client resolves the chosen mode using the same cached
+catalog the picker reads, including on a cold call. Unsupported modes fail before
+generation; raw deployment IDs from older sessions remain callable.
+
+`google_antigravity_quota` reads `retrieveUserQuotaSummary` with the same account
+and project. It reports each model group's five-hour and weekly windows, remaining
+percentage and reset time. Missing quota values remain unknown, not zero.
+
+The Google extension provides `google_antigravity_search` and
+`google_antigravity_images` services. Both can share the signed-in account.
+Search uses Gemini grounding and preserves source links; ungrounded answers fail
+instead of becoming search results. Google may return redirect URLs, so domain
+filters can exclude those results. The image service uses the account's
+`gemini-3.1-flash-image` model and supports the existing image controls and session
+reference images. Service availability depends on the subscription. `urlContext`
+did not execute in authenticated checks, so no Antigravity page-fetch service is
+advertised; configure one of Wish's existing fetch services instead.
+
+The wire and OAuth registration were checked against
+[antigravity-claude-proxy](https://github.com/badrisnarayanan/antigravity-claude-proxy)
+and [Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager).
 
 ### GitHub Copilot sign-in
 

@@ -5,7 +5,10 @@ use crate::extensions::shared::read_codecs::SearchCodec;
 pub use crate::extensions::shared::web_search::{
   Recency, SearchQuery, SearchResult, SearchResults,
 };
-use crate::protocol::{endpoint::Draft, error::Error};
+use crate::protocol::{
+  endpoint::{Credentials, Draft},
+  error::Error,
+};
 use serde_json::Value;
 pub mod fetch;
 pub use fetch::search;
@@ -22,8 +25,13 @@ impl SearchProtocol {
   pub fn can_filter_recency(self) -> bool {
     self.0.recency
   }
-  fn build_draft(self, query: &SearchQuery, now: u64) -> Result<Draft, Error> {
-    (self.0.build)(query, now)
+  fn build_draft(
+    self,
+    query: &SearchQuery,
+    now: u64,
+    credentials: &Credentials,
+  ) -> Result<Draft, Error> {
+    (self.0.build)(query, now, credentials)
   }
   fn explain_refusal(self, status: u16) -> Option<Error> {
     (self.0.refusal)(status)

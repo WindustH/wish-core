@@ -126,6 +126,8 @@ engine error, for example
 | POST | `/api/provider-draft/models` | Catalog page of a provider not saved yet |
 | GET | `/api/providers/{id}/account` | Upstream account reading |
 | POST, GET | `/api/providers/{id}/chatgpt-login` | Start or poll a ChatGPT sign-in |
+| POST, GET | `/api/providers/{id}/google-login` | Start or poll a Google Antigravity sign-in |
+| POST | `/api/providers/{id}/google-login/complete` | Finish Google sign-in with a pasted callback URL |
 | POST | `/api/providers/{id}/chatgpt-login/complete` | Finish a sign-in from a pasted redirect URL |
 | POST, GET | `/api/providers/{id}/copilot-login` | Start or poll a GitHub sign-in for Copilot |
 | POST | `/api/providers/{id}/call` | Stateless model call |
@@ -471,6 +473,21 @@ For providers made from the `openai_codex` preset:
 On success Wish stores the access token, refresh token, account ID and expiry
 in the configuration, refreshes them in the background before they expire, and
 emits `configuration_changed`.
+
+### Google Antigravity sign-in
+
+For `google_antigravity` accounts, use `POST` and `GET` on
+`/api/providers/{id}/google-login`, and `POST {"callback_url": "..."}` on
+`/api/providers/{id}/google-login/complete`. `{id}` may be a model service ID or
+`account:<account-id>`. Responses, ten-minute expiry and PKCE validation match the
+ChatGPT flow above. The callback path is `/oauth-callback`, on loopback port 51121,
+51122 or 51123. Starting either browser login replaces the previous browser attempt.
+
+Success saves the Google tokens and `credentials.project` in the linked shared
+account after project discovery or onboarding. Tokens are redacted by the
+configuration API and renewed through the account's existing background worker.
+The Google token exchange and Cloud Code discovery honor the account proxy setting;
+model calls honor the service proxy setting.
 
 ### GitHub Copilot sign-in
 

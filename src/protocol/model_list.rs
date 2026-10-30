@@ -9,7 +9,8 @@
 //!
 //! - Ids are kept as the service spelled them, except for the `models/` or
 //!   `publishers/<publisher>/models/` prefix of a Google resource name, which is stripped because
-//!   the wire wants the bare id back.
+//!   the wire wants the bare id back. Antigravity reasoning deployments are grouped under their
+//!   base id; `reasoning_variants` retains the callable id of each mode.
 //! - What cannot be represented is kept as text in [`ModelListPage::warnings`] rather than guessed
 //!   at. A cursor comes from the service, except Qwen's next page number, which follows from the
 //!   page's own `page_no`, `page_size` and `total`.
@@ -25,6 +26,7 @@ use serde_json::Value;
 use crate::protocol::error::Error;
 
 pub mod anthropic;
+pub mod antigravity;
 pub mod bedrock;
 pub mod codex;
 pub mod copilot;
@@ -51,6 +53,12 @@ pub struct Model {
   pub context_window: Option<u64>,
   /// Largest answer it gives, when the service reports one.
   pub max_output_tokens: Option<u64>,
+  /// Whether the service declares thinking support.
+  pub supports_reasoning: Option<bool>,
+  /// Callable deployments for one model's reasoning modes, when the service splits them.
+  pub reasoning_variants: std::collections::BTreeMap<String, String>,
+  /// Default mode among those deployments.
+  pub default_reasoning_effort: Option<String>,
 }
 
 impl Model {
@@ -63,6 +71,9 @@ impl Model {
       created_at: None,
       context_window: None,
       max_output_tokens: None,
+      supports_reasoning: None,
+      reasoning_variants: Default::default(),
+      default_reasoning_effort: None,
     }
   }
 }
@@ -98,6 +109,8 @@ text_id_enum! {
     AnthropicModels => "anthropic_models",
     /// Google's list.
     GoogleModels => "google_models",
+    /// Models available to the Antigravity subscription.
+    GoogleAntigravityModels => "google_antigravity_models",
     /// Bedrock's list, which is read with a signed request.
     BedrockModels => "bedrock_models",
     /// The models a GitHub Copilot subscription may pick.
@@ -118,6 +131,7 @@ pub fn parse_page(protocol: ModelListProtocol, body: &Value) -> Result<ModelList
     ModelListProtocol::QwenModels => qwen::parse(body),
     ModelListProtocol::AnthropicModels => anthropic::parse(body),
     ModelListProtocol::GoogleModels => google::parse(body),
+    ModelListProtocol::GoogleAntigravityModels => antigravity::parse(body),
     ModelListProtocol::BedrockModels => bedrock::parse(body),
     ModelListProtocol::GitHubCopilotModels => copilot::parse(body),
   }
@@ -133,7 +147,9 @@ pub fn build_page_query(
   match protocol {
     ModelListProtocol::OpenAiModels => openai::build_page_query(cursor),
     ModelListProtocol::OpenAiCodexModels => codex::build_page_query(),
-    ModelListProtocol::GitHubCopilotModels => Vec::new(),
+    ModelListProtocol::GitHubCopilotModels | ModelListProtocol::GoogleAntigravityModels => {
+      Vec::new()
+    }
     ModelListProtocol::QwenModels => qwen::build_page_query(cursor, page_size),
     ModelListProtocol::AnthropicModels => anthropic::build_page_query(cursor, page_size),
     ModelListProtocol::GoogleModels => google::build_page_query(cursor, page_size),

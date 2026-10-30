@@ -35,7 +35,7 @@ pub async fn search<T: Transport>(
   query: &SearchQuery,
   now: u64,
 ) -> Result<SearchResults, Error> {
-  let mut draft = protocol.build_draft(query, now)?;
+  let mut draft = protocol.build_draft(query, now, credentials)?;
   draft.headers.extend(headers.iter().cloned());
   let call =
     find_source(protocol).to_endpoint(base_url, None)?.build_call(draft, credentials, now)?;

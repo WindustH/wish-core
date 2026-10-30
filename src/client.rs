@@ -12,6 +12,7 @@
 //! and its first event, so a streamed call is only replaced until that event is in hand - after
 //! that a replay would splice a second copy of the answer into what the caller has already seen.
 pub mod account;
+mod model_catalog;
 mod observer;
 pub(crate) mod retry;
 mod stream;
@@ -68,6 +69,8 @@ pub struct Client<T> {
   upstream_compaction: Option<UpstreamCompactionProtocol>,
   model_list: Option<ModelListProtocol>,
   token_count: Option<TokenCountProtocol>,
+  model_list_source: Option<ModelListQuery>,
+  catalog: std::sync::Arc<model_catalog::ModelCatalogCache>,
 }
 
 impl<T: Transport> Client<T> {
@@ -110,6 +113,8 @@ impl<T: Transport> Client<T> {
       upstream_compaction: None,
       model_list: None,
       token_count: None,
+      model_list_source: None,
+      catalog: Default::default(),
     }
   }
 
@@ -128,6 +133,7 @@ impl<T: Transport> Client<T> {
   #[must_use]
   pub fn with_credentials(mut self, credentials: Credentials) -> Self {
     self.credentials = credentials;
+    self.catalog = Default::default();
     self
   }
 
@@ -258,6 +264,18 @@ impl<T: Transport> Client<T> {
     &self,
     request: &Request,
   ) -> Result<CallResponse<EventStream<T::Stream>>, Error> {
+    let resolved;
+    let request = if self.model_use == ModelUseProtocol::GoogleAntigravityGenerateContent
+      && self.model_list == Some(ModelListProtocol::GoogleAntigravityModels)
+      && model_list::antigravity::variant(&request.model).is_none()
+      && let Some(query) = &self.model_list_source
+    {
+      let catalog = self.get_model_list(query).await?;
+      resolved = model_list::antigravity::resolve(request, &catalog.models)?;
+      &resolved
+    } else {
+      request
+    };
     if request.stream {
       retry_upstream(
         &self.model_retry,
@@ -306,14 +324,19 @@ impl<T: Transport> Client<T> {
     .await
   }
 
-  /// Reads one page of the model list this upstream serves, over the protocol named when the
-  /// client was built.
-  ///
-  /// # Errors
-  ///
-  /// [`Error::Unsupported`] when no model-list protocol was named for this client; the rest as
-  /// [`mod@crate::protocol::model_list::fetch`] states them.
+  /// The catalog source used when the model protocol resolves a public id to a deployment.
+  pub fn with_model_list_source(mut self, query: ModelListQuery) -> Self {
+    self.model_list_source = Some(query);
+    self
+  }
+
+  /// Reads and caches a page of the configured model-list protocol.
+  /// Returns `Unsupported` if no model-list protocol was configured.
   pub async fn get_model_list(&self, query: &ModelListQuery) -> Result<ModelListPage, Error> {
+    self.catalog.page(self, query).await
+  }
+
+  async fn fetch_model_list(&self, query: &ModelListQuery) -> Result<ModelListPage, Error> {
     let protocol = self.model_list.ok_or_else(|| {
       Error::build_unsupported(
         "model list",
@@ -383,6 +406,14 @@ impl<T: Transport> Client<T> {
     let session_id = self.call_session_id();
     let mut body = self.model_use.render(request)?;
     self.apply_code_agent_identity(&mut body, &session_id);
+    if self.model_use == ModelUseProtocol::GoogleAntigravityGenerateContent {
+      body = crate::protocol::model_use::request::google_antigravity::wrap(
+        body,
+        &request.model,
+        self.credentials.project.as_deref(),
+        &session_id,
+      )?;
+    }
     let path =
       self.model_use.resolve_request_path(request, self.endpoint.resolve_path(&request.model));
     self.build_json_call(session_id, path, &self.get_code_agent_headers(request), body)

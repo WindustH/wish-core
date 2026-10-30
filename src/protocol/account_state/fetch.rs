@@ -42,11 +42,18 @@ pub async fn fetch<T: Transport>(
     };
     return Err(Error::build_unsupported("account state", protocol, reason.get_text()));
   };
-  let call = source.to_endpoint(base_url, None)?.beneath(headers).build_call(
-    Draft::get(Vec::new()),
-    credentials,
-    now,
-  )?;
+  let draft = if protocol == AccountStateProtocol::GoogleAntigravityQuota {
+    let project = credentials
+      .project
+      .as_deref()
+      .filter(|v| !v.is_empty())
+      .ok_or_else(|| Error::Build("Antigravity quota requires a Google project".into()))?;
+    Draft::post_json(&serde_json::json!({"project": project}))?
+  } else {
+    Draft::get(Vec::new())
+  };
+  let call =
+    source.to_endpoint(base_url, None)?.beneath(headers).build_call(draft, credentials, now)?;
   let reply = transport.execute(&call).await?;
   parse_account_body(protocol, &http_error::read_provider_json(reply, protocol.get_id())?)
 }

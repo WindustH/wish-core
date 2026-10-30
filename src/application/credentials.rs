@@ -40,7 +40,7 @@ async fn save_credentials_if_current(
       .or_else(|| next.providers.get(id).and_then(|p| p.credential_id.clone()))
       .ok_or_else(ApplicationError::not_found)?;
     let account = next.accounts.get_mut(&account_id).ok_or_else(ApplicationError::not_found)?;
-    if !matches!(account.preset.as_deref(), Some("openai_codex" | "github_copilot")) {
+    if account.get_renewal().is_none() {
       return Err(ApplicationError::invalid("account does not support token renewal"));
     }
     if let Some(expected) = expected
@@ -59,6 +59,10 @@ async fn save_credentials_if_current(
     if let Some(account_id) = &credentials.account_id {
       account.credentials.insert("account_id".to_owned(), account_id.clone());
       account.credentials_env.remove("account_id");
+    }
+    if let Some(project) = &credentials.project {
+      account.credentials.insert("project".to_owned(), project.clone());
+      account.credentials_env.remove("project");
     }
     let value = serde_json::to_value(next).map_err(ApplicationError::internal)?;
     match app.save_config(revision, value).await {

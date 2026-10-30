@@ -71,7 +71,7 @@ pub static CODEC: crate::extensions::shared::read_codecs::SearchCodec =
     id: "deepseek_search",
     source: super::sources::search,
     recency: true,
-    build: |query, now| build_draft(&query.into(), now),
+    build: |query, now, _| build_draft(&query.into(), now),
     parse: parse_body,
     refusal: |_| None,
   };

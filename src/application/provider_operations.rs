@@ -105,8 +105,7 @@ async fn catalog_page(
     page.page_size = limit;
   }
   // Cached while fresh, and one fetch in flight at a time; see the model_catalog module.
-  let catalog =
-    app.lifecycle.until_shutdown(provider.catalog.page(&provider.client, &page)).await??;
+  let catalog = app.lifecycle.until_shutdown(provider.client.get_model_list(&page)).await??;
   let items: Vec<_> = catalog
     .models
     .into_iter()
@@ -118,6 +117,11 @@ async fn catalog_page(
         "created_at": m.created_at,
         "context_window": m.context_window,
         "max_output_tokens": m.max_output_tokens,
+        "supports_reasoning": m.supports_reasoning,
+        "reasoning_efforts": (!m.reasoning_variants.is_empty()).then(|| m.reasoning_variants.keys()
+          .map(|effort| (effort.clone(), effort.clone())).collect::<std::collections::BTreeMap<_, _>>()),
+        "default_reasoning_effort": m.default_reasoning_effort,
+        "reasoning_required": (!m.reasoning_variants.is_empty()).then(|| !m.reasoning_variants.contains_key("none")),
       })
     })
     .collect();

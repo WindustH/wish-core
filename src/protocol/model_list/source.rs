@@ -39,6 +39,9 @@ pub(crate) fn find_source(protocol: ModelListProtocol) -> Source {
     ),
     // Google takes the key in `x-goog-api-key` (the `?key=` form is the other spelling of the same
     // thing, and a credential in a URL is a credential in every log line that ever touches it).
+    ModelListProtocol::GoogleAntigravityModels => {
+      asked_with(AuthScheme::Bearer(None), crate::protocol::endpoint::antigravity::API_HEADERS)
+    }
     ModelListProtocol::GoogleModels => asked_with(AuthScheme::Header("x-goog-api-key"), &[]),
     // Bedrock's list answers the account its signature names, on a host the region decides, and
     // the account's AWS credentials sign the call.

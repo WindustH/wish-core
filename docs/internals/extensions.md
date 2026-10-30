@@ -47,7 +47,7 @@ search), while the preset definitions and validation belong to extensions.
 supplier. Neither can application orchestration. `extensions/shared` cannot import suppliers;
 extensions cannot import application, server, session, executor, tool or extension_host.
 `protocol` owns shared credentials/signing and conversational LLM codecs, and cannot import
-extensions. `tools/check_architecture.py` enforces these directions.
+extensions. `wish-test/tools/check_architecture.py` enforces these directions.
 
 ## Resource and recovery guarantees
 

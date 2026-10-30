@@ -29,6 +29,10 @@ pub(crate) fn find_source(protocol: AccountStateProtocol) -> Option<Source> {
     | AccountStateProtocol::GroqRatelimitHeaders
     | AccountStateProtocol::CerebrasRatelimitHeaders
     | AccountStateProtocol::MistralRatelimitHeaders => return None,
+    AccountStateProtocol::GoogleAntigravityQuota => Source {
+      headers: crate::protocol::endpoint::antigravity::API_HEADERS,
+      ..at("https://daily-cloudcode-pa.googleapis.com", "/v1internal:retrieveUserQuotaSummary")
+    },
     AccountStateProtocol::DeepseekUserBalance => at("https://api.deepseek.com", "/user/balance"),
     // Moonshot serves one API from two hosts: `api.moonshot.cn` for an account registered in the
     // mainland console, `api.moonshot.ai` for a global one. Which host an account lives on is the
