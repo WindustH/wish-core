@@ -11,7 +11,6 @@ pub fn agent_instructions(switches: super::session::ToolSwitches) -> String {
     let mut commands = vec!["`wish mcp` — MCP services", "`wish skill` — discover/read skills"];
     use crate::capability::Capability;
     for capability in [
-      Capability::ExtensionDiscovery,
       Capability::Sessions,
       Capability::Task,
       Capability::WebFetch,
@@ -35,6 +34,50 @@ pub fn agent_instructions(switches: super::session::ToolSwitches) -> String {
     text.push_str(
       "\nRun `wish <command> --help` for full usage. Availability follows session settings.",
     );
+  }
+  text.push_str(&extension_instructions(switches));
+  text
+}
+
+/// Discovery follows each capability's effective route, including mixed delivery and
+/// the direct-tool fallback when the session shell is disabled.
+fn extension_instructions(switches: super::session::ToolSwitches) -> String {
+  use crate::capability::Capability;
+  let mut direct = Vec::new();
+  let mut commands = Vec::new();
+  for (capability, name) in [
+    (Capability::ImageGenerate, "image generation"),
+    (Capability::VideoGenerate, "video generation"),
+    (Capability::AudioGenerate, "audio generation"),
+    (Capability::AudioTranscribe, "audio transcription"),
+    (Capability::WebFetch, "webpage reading"),
+    (Capability::WebSearch, "web search"),
+  ] {
+    if switches.enabled(capability) {
+      if switches.advertised(capability) {
+        direct.push(name);
+      } else {
+        commands.push(name);
+      }
+    }
+  }
+  if direct.is_empty() && commands.is_empty() {
+    return String::new();
+  }
+  let mut text = String::from(
+    "\n\n# Extension tools\nDiscover available tools before using an extension. Search returns tool names, tags and configured services; inspect returns the selected tool's schema and examples. Search without tags to see all available tools. Do not guess tool names or arguments. Availability follows this session's permissions and configured services.",
+  );
+  if !direct.is_empty() {
+    text.push_str(&format!(
+      "\nDirect tools ({}): call `extension_tools` with {{\"action\":\"search\"}}, then {{\"action\":\"inspect\",\"tool\":\"TOOL\"}}. Invoke the discovered tool by its name using the inspected schema.",
+      direct.join(", ")
+    ));
+  }
+  if !commands.is_empty() {
+    text.push_str(&format!(
+      "\nWish commands in the session shell ({}): run `wish extension search [TAG ...]`, then `wish extension inspect TOOL`, then `wish extension call TOOL --json '<arguments>'` (or `--stdin`). Run `wish extension --help` for usage. These tools are available through shell commands even when they are absent from the direct tool list.",
+      commands.join(", ")
+    ));
   }
   text
 }
@@ -193,5 +236,5 @@ pub fn delivery_notice(
   format!(
     "Tool availability changed. Follow these settings for subsequent calls, even if the initial instructions or retained tool definitions describe an earlier route:\n{}\nFor command usage, run `wish <command> --help`. The next generation will use updated initial instructions and tool definitions.",
     changes.join("\n")
-  )
+  ) + &extension_instructions(next)
 }
