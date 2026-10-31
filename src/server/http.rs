@@ -119,7 +119,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/messages", post(sessions::enqueue))
     .route("/sessions/{id}/input", post(content::input))
     .route("/sessions/{id}/queue/{entry}", delete(manage::cancel_input).patch(manage::move_input))
-    .route("/sessions/{id}/blobs", post(content::upload))
+    .route("/sessions/{id}/blobs", get(content::list).post(content::upload))
     .route(
       "/media-presets",
       get(|| async {

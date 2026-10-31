@@ -190,6 +190,7 @@ engine error, for example
 | GET | `/api/sessions/{id}/generations/{generation}/structure` | Stored generation structure with filtered entries |
 | GET | `/api/sessions/{id}/calls` | Model call records |
 | POST | `/api/sessions/{id}/blobs` | Upload an attachment |
+| GET | `/api/sessions/{id}/blobs?start&limit` | Page through stored session files |
 | GET | `/api/sessions/{id}/blobs/{blob}` | Download an attachment |
 | GET | `/api/sessions/{id}/blobs/{blob}/meta` | Attachment metadata |
 | POST | `/api/sessions/{id}/ask` | Side question on the session's context |
@@ -1218,12 +1219,21 @@ each response includes the generation metadata observed with its entries.
 
 ## Attachments
 
+- `GET /api/sessions/{id}/blobs?start=0&limit=80` returns
+  `{"items":[{"id","mime_type","byte_count","modified_at"}],"next":null,"total":0}`.
+  `next` is the next start offset or null; `limit` is 1–200 (default 50).
+  Files are ordered newest first, with content hashes breaking timestamp ties. The catalog
+  includes uploads and generated/model images without metadata sidecars. It reads at most
+  512 bytes per returned file for type detection and does not scan conversation history.
+  Only published hash-named regular files are listed; sidecars, temporary files, directories
+  and symlinks are excluded. No local paths or file contents are included. Text detection is
+  a prefix hint; the preview still validates UTF-8 when reading the file.
 - `POST /api/sessions/{id}/blobs` takes the raw file as the body and returns
   `{"id", "mime_type", "byte_count", "path"}`. `id` is the SHA-256 of the
-  content. PNG, JPEG, GIF and WebP are recognised as images; everything else is
-  `application/octet-stream`. `path` is where the file lives on the server.
-- `GET /api/sessions/{id}/blobs/{blob}` downloads it, always as
-  `application/octet-stream` with `X-Content-Type-Options: nosniff`.
+  content. Supported image and media signatures, PDF and ZIP are recognized; unknown formats
+  are `application/octet-stream`. `path` is where the file lives on the server.
+- `GET /api/sessions/{id}/blobs/{blob}` downloads it with a content-sniffed media type and
+  `X-Content-Type-Options: nosniff`. Byte ranges and ETags support native media playback and PDF reads.
 - `GET /api/sessions/{id}/blobs/{blob}/meta` returns
   `{"id", "mime_type", "byte_count"}` without the path.
 

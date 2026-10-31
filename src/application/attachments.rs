@@ -28,6 +28,21 @@ pub async fn upload(app: &Arc<App>, owner: &str, body: &[u8]) -> Result<Blob, Ap
   require_owner(app, owner).await?;
   Ok(blobs::save_upload(&app.data_dir.blobs(owner), body).await?)
 }
+
+pub async fn list(
+  app: &Arc<App>,
+  owner: &str,
+  start: usize,
+  limit: usize,
+) -> Result<blobs::catalog::Page, ApplicationError> {
+  require_owner(app, owner).await?;
+  super::pagination::validate_limit(limit, 200)?;
+  if start > i64::MAX as usize {
+    return Err(ApplicationError::invalid("start is too large"));
+  }
+  let directory = app.data_dir.blobs(owner);
+  super::error::blocking(move || Ok(blobs::catalog::list(&directory, start, limit)?)).await
+}
 pub struct BlobReader {
   pub file: tokio::fs::File,
   pub length: u64,

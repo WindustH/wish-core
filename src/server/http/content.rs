@@ -9,11 +9,20 @@ use crate::server::error::ApiError;
 use axum::{
   Json,
   body::Bytes,
-  extract::{Path, State},
+  extract::{Path, Query, State},
   http::{HeaderMap, StatusCode, header},
 };
 use serde_json::Value;
 use std::sync::Arc;
+pub async fn list(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Query(page): Query<crate::application::session_queries::Page>,
+) -> Result<Json<crate::storage::blobs::catalog::Page>, ApiError> {
+  let start = usize::try_from(page.start)
+    .map_err(|_| crate::application::error::ApplicationError::invalid("start is too large"))?;
+  Ok(Json(attachments::list(&app, &id, start, page.limit).await?))
+}
 pub async fn upload(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,

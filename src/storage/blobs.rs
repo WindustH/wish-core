@@ -6,6 +6,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+pub mod catalog;
 
 /// An upload's description, saved beside it.
 #[derive(Clone, Serialize, Deserialize)]

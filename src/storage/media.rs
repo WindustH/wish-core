@@ -16,6 +16,9 @@ impl Drop for Temporary {
 }
 
 pub fn mime(bytes: &[u8]) -> Option<&'static str> {
+  if bytes.starts_with(b"%PDF-") {
+    return Some("application/pdf");
+  }
   if bytes.starts_with(b"PK\x03\x04") {
     return Some("application/zip");
   }
