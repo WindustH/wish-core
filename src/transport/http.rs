@@ -24,6 +24,7 @@ pub struct ReqwestTransport {
   proxy: std::sync::Arc<Proxy>,
   limits: Limits,
   stream_total: Option<std::time::Duration>,
+  deferred_stream_headers: Option<std::time::Duration>,
 }
 
 impl ReqwestTransport {
@@ -40,7 +41,13 @@ impl ReqwestTransport {
     let client = apply_proxy(builder, proxy.clone())?
       .build()
       .map_err(|error| Error::Build(format!("client build failed: {error}")))?;
-    Ok(Self { client, proxy: std::sync::Arc::new(proxy), limits, stream_total: None })
+    Ok(Self {
+      client,
+      proxy: std::sync::Arc::new(proxy),
+      limits,
+      stream_total: None,
+      deferred_stream_headers: None,
+    })
   }
 
   /// Use a caller-owned DNS policy while preserving timeout and explicit proxy settings.
@@ -61,12 +68,21 @@ impl ReqwestTransport {
       proxy: self.proxy.clone(),
       limits: self.limits,
       stream_total: self.stream_total,
+      deferred_stream_headers: self.deferred_stream_headers,
     })
   }
 
   /// Override the wall-clock limit only for streamed responses. Buffered calls keep `limits.total`.
   pub fn with_stream_total(mut self, total: std::time::Duration) -> Self {
     self.stream_total = Some(total);
+    self
+  }
+
+  /// An upstream may generate before sending its stream headers. Give that phase its own
+  /// deadline and report a timeout as an ambiguous sent request, without automatic replay.
+  /// Buffered requests and checkpoint-authorized stream recovery keep their existing policies.
+  pub fn with_deferred_stream_headers(mut self, timeout: std::time::Duration) -> Self {
+    self.deferred_stream_headers = Some(timeout);
     self
   }
 
@@ -159,8 +175,13 @@ impl Transport for ReqwestTransport {
   async fn execute_stream(&self, call: &Call) -> Result<ReqwestReplyStream, Error> {
     let mut limits = self.limits;
     limits.total = self.stream_total.unwrap_or(limits.total);
-    let (response, _) =
-      self.send_until_head(call, &limits, TransportError::AwaitStreamHeaders).await?;
+    let head_timeout = if let Some(timeout) = self.deferred_stream_headers {
+      limits.first_byte = timeout;
+      TransportError::AwaitHeaders
+    } else {
+      TransportError::AwaitStreamHeaders
+    };
+    let (response, _) = self.send_until_head(call, &limits, head_timeout).await?;
     Ok(ReqwestReplyStream::from_http_response(response, limits))
   }
 }

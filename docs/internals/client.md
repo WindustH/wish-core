@@ -172,6 +172,13 @@ limit per attempt rather than one timeout around all retries.
 to 30 minutes. A stream's total deadline restarts when its head arrives. `Proxy` is `Environment`,
 `Disabled` or `Manual{url, basic_auth}`.
 
+`with_deferred_stream_headers` sets a separate streamed response-head deadline for upstreams
+that may generate before sending headers. The server enables this for Google GenerateContent,
+Vertex and Antigravity with a five-minute wait. Expiry reports non-retryable `AwaitHeaders`:
+no response head does not establish that generation never began. Buffered and auxiliary calls
+keep their original response-head limit; connection failures and explicit retryable HTTP
+responses still use their existing retry policies.
+
 Which transport failures retry:
 
 The following table describes model calls. Read-only auxiliary operations can retry all four
@@ -180,8 +187,8 @@ transport phases, since replaying a read does not repeat generation.
 | Phase | Retryable | Why |
 | --- | --- | --- |
 | `Connect` | yes | nothing reached the service |
-| `AwaitStreamHeaders` | yes | a service sends a stream's head when it admits the call; no head within `min(first_byte, total)` means the call is stuck before generation |
-| `AwaitHeaders` (buffered) | no | a buffered head comes with the whole answer, so the service may be generating and billing |
+| `AwaitStreamHeaders` | yes | the caller expects immediate stream admission acknowledgement |
+| `AwaitHeaders` (buffered or deferred stream head) | no | the service may already be generating and billing |
 | `ReadBody` | no | the service started answering |
 
 ## Native stream recovery

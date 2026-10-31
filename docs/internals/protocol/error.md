@@ -48,11 +48,11 @@ One call, with every place an error can leave it:
 
 Step 1 never leaves our side and costs no attempt; an expired credential is refused here too
 (`Renewal`). Step 2 keeps the transport's phase, which is also the retry judgment. `connect` may be
-replaced, and so may a stream whose head did not arrive within the first-byte limit, because a
-service acknowledges a stream as soon as it admits the call. Any other failure after the request
-left is not, because a service that has the call may already be generating and billing it. A
-buffered reply's head only comes with the whole answer, so a late one means it is still being
-generated. Step 3 lets the status say only *that* this is a failure. What it is, the wire's
+replaced, and so may a stream whose caller expects immediate admission acknowledgement.
+Google's deferred stream-head policy instead reports non-retryable `AwaitHeaders` when the
+longer head deadline expires. A service may generate before sending headers, so a missing head
+alone does not authorize replay. Buffered replies use the same conservative classification.
+Step 3 lets the status say only *that* this is a failure. What it is, the wire's
 envelope says, so the same `429` is a rate limit for one service and an exhausted quota for
 another. Non-`2xx` bodies that are not JSON become `HTTP {status}: <text>`, truncated.
 

@@ -155,22 +155,23 @@ impl Provider {
         | crate::protocol::model_use::ModelUseProtocol::GoogleVertexGenerateContent
         | crate::protocol::model_use::ModelUseProtocol::GoogleAntigravityGenerateContent
     );
-    let mut client = Client::new(
-      protocol,
-      endpoint,
-      ReqwestTransport::new(
-        crate::protocol::attempt::Limits {
-          // Gemini long decode can think silently before its first checkpoint. Other models
-          // retain their existing idle limit; connect and header limits stay unchanged.
-          idle: std::time::Duration::from_secs(if long_decode { 1200 } else { 180 }),
-          total: std::time::Duration::from_secs(900),
-          ..Default::default()
-        },
-        proxy.policy(config.proxy_enabled),
-      )?
-      .with_stream_total(std::time::Duration::from_secs(30 * 60)),
-    )
-    .with_credentials(credentials.clone());
+    let mut transport = ReqwestTransport::new(
+      crate::protocol::attempt::Limits {
+        // Gemini long decode can think silently before its first checkpoint.
+        idle: std::time::Duration::from_secs(if long_decode { 1200 } else { 180 }),
+        total: std::time::Duration::from_secs(900),
+        ..Default::default()
+      },
+      proxy.policy(config.proxy_enabled),
+    )?
+    .with_stream_total(std::time::Duration::from_secs(30 * 60));
+    if long_decode {
+      // A late stream head does not prove Gemini rejected the request. Wait longer for
+      // admission/prefill, then stop rather than replaying the same generation six times.
+      transport = transport.with_deferred_stream_headers(std::time::Duration::from_secs(300));
+    }
+    let mut client =
+      Client::new(protocol, endpoint, transport).with_credentials(credentials.clone());
     match config.preset.as_deref() {
       Some("openai" | "openai_codex") => {
         client = client.with_code_agent_identity(CodeAgentIdentity::Codex);

@@ -4,10 +4,9 @@
 //! matches on; this module holds the network half of it, divided by how far the attempt got. That
 //! division is also the retry judgment, and the judgment is not "was it the network": a failure
 //! before the request left deserves another attempt, and so does a stream whose head never came,
-//! because a service acknowledges a stream as soon as it admits the call - a head that late means
-//! the call is stuck ahead of generation, and a replay is the way out. Past that, the upstream may
-//! already be generating - and billing - the answer a replay would ask for again, so the failure is
-//! handed up instead of being retried behind the caller's back.
+//! when its caller expects an immediate admission acknowledgement. An upstream that defers its
+//! stream headers may already be generating - and billing - the answer a replay would ask for
+//! again, so its missing head is handed up instead of being retried behind the caller's back.
 //!
 //! A body that arrived but does not read (framing, ceilings) is not a network failure at all: it is
 //! deterministic, and it lands in [`Error::Malformed`](crate::protocol::error::Error::Malformed).
@@ -23,11 +22,10 @@ pub enum TransportError {
   /// Establishing TCP/TLS: nothing of the request reached the service.
   Connect(String),
   /// Waiting for the response head: the request did reach the service, and it has not answered yet.
-  /// A buffered reply only has its head once the whole answer is ready, so this is still
-  /// generating.
+  /// Buffered replies and upstreams with deferred stream headers may already be generating.
   AwaitHeaders(String),
-  /// Waiting for the head of a streamed reply: a service sends it once it admits the call, before
-  /// generating anything, so a head this late means the call is stuck ahead of generation.
+  /// Waiting for a stream head when the caller expects immediate admission acknowledgement.
+  /// Upstreams that may defer their stream headers use `AwaitHeaders` instead.
   AwaitStreamHeaders(String),
   /// Reading the body: the service started answering and the answer stopped arriving, or the attempt
   /// outlived the total limit.
