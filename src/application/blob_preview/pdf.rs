@@ -42,7 +42,7 @@ pub async fn extract(
 ) -> Result<Preview, ApplicationError> {
   let Source { etag, key, file } = source;
   if let Some(bytes) = cached(&key).await {
-    return Ok(Preview { bytes, etag });
+    return Ok(Preview { bytes });
   }
   let _permit = tokio::time::timeout(std::time::Duration::from_secs(45), WORKERS.acquire())
     .await
@@ -53,22 +53,24 @@ pub async fn extract(
     })?
     .map_err(ApplicationError::internal)?;
   if let Some(bytes) = cached(&key).await {
-    return Ok(Preview { bytes, etag });
+    return Ok(Preview { bytes });
   }
   let mut command = super::command(if page.is_some() { "pdf-page" } else { "pdf-info" }, &file)?;
   if let Some(number) = page {
     command.arg(number.to_string());
   }
-  let result =
+  let mut result =
     super::execute(command, if page.is_some() { 64 * 1024 * 1024 } else { 2 * 1024 * 1024 })
       .await?;
   if page.is_none() {
-    let info: serde_json::Value =
+    let mut info: serde_json::Value =
       serde_json::from_slice(&result).map_err(ApplicationError::internal)?;
     if info["pages"].as_u64().unwrap_or(0) == 0 {
       return Err(ApplicationError::invalid("PDF has no pages"));
     }
+    info["version"] = serde_json::Value::String(etag.clone());
+    result = serde_json::to_vec(&info).map_err(ApplicationError::internal)?;
   }
   let bytes = super::remember(key, result).await;
-  Ok(Preview { bytes, etag })
+  Ok(Preview { bytes })
 }

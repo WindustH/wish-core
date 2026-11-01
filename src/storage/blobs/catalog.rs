@@ -81,7 +81,7 @@ fn scan(directory: &Path) -> Result<Vec<Row>, RepositoryError> {
   for entry in entries {
     let entry = entry.map_err(RepositoryError::internal)?;
     let filename = entry.file_name().to_string_lossy().into_owned();
-    let mut linked = None;
+    let mut linked_blob = None;
     let id = if let Some(id) = filename.strip_suffix(".json").filter(|id| is_blob_id(id)) {
       if directory.join(id).exists() {
         continue;
@@ -101,7 +101,7 @@ fn scan(directory: &Path) -> Result<Vec<Row>, RepositoryError> {
       if !blob.linked || blob.id != id {
         continue;
       }
-      linked = Some(blob);
+      linked_blob = Some(blob);
       id.to_owned()
     } else {
       filename
@@ -120,7 +120,7 @@ fn scan(directory: &Path) -> Result<Vec<Row>, RepositoryError> {
       .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
       .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
       .unwrap_or(0);
-    files.push((modified_at, id, linked));
+    files.push((modified_at, id, linked_blob));
   }
   files.sort_unstable_by(|a, b| (&b.0, &b.1).cmp(&(&a.0, &a.1)));
   Ok(files)
@@ -129,15 +129,15 @@ pub fn list(directory: &Path, start: usize, limit: usize) -> Result<Page, Reposi
   let files = indexed(directory)?;
   let total = files.len();
   let mut items = Vec::new();
-  for (modified_at, id, linked) in files.iter().skip(start).take(limit).cloned() {
-    let path = linked
+  for (modified_at, id, linked_blob) in files.iter().skip(start).take(limit).cloned() {
+    let path = linked_blob
       .as_ref()
       .map(|blob| std::path::PathBuf::from(&blob.path))
       .unwrap_or_else(|| directory.join(&id));
     let name =
-      linked.as_ref().and_then(|_| path.file_name()).map(|n| n.to_string_lossy().into_owned());
-    let local_path = linked.as_ref().map(|blob| blob.path.clone());
-    if let Some(blob) = &linked
+      linked_blob.as_ref().and_then(|_| path.file_name()).map(|n| n.to_string_lossy().into_owned());
+    let local_path = linked_blob.as_ref().map(|blob| blob.path.clone());
+    if let Some(blob) = &linked_blob
       && !std::fs::metadata(&path).is_ok_and(|m| m.is_file())
     {
       items.push(Item {
@@ -168,7 +168,7 @@ pub fn list(directory: &Path, start: usize, limit: usize) -> Result<Page, Reposi
       mime_type,
       byte_count,
       modified_at,
-      linked: linked.is_some(),
+      linked: linked_blob.is_some(),
       available: true,
       name,
       local_path,

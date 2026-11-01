@@ -33,17 +33,7 @@ async fn response(
     return Ok((StatusCode::NOT_MODIFIED, headers, Body::empty()).into_response());
   }
   let result = pdf::extract(app, source, page).await?;
-  let bytes = if page.is_none() {
-    let mut info: serde_json::Value = serde_json::from_slice(&result.bytes)
-      .map_err(crate::application::error::ApplicationError::internal)?;
-    info["version"] = serde_json::Value::String(result.etag);
-    bytes::Bytes::from(
-      serde_json::to_vec(&info).map_err(crate::application::error::ApplicationError::internal)?,
-    )
-  } else {
-    result.bytes
-  };
-  Ok((headers, Body::from(bytes)).into_response())
+  Ok((headers, Body::from(result.bytes)).into_response())
 }
 pub async fn info(
   State(app): State<Arc<App>>,

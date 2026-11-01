@@ -22,17 +22,14 @@ pub fn prepare(bytes: &[u8]) -> Result<Arc<Prepared>, String> {
     return Err("image exceeds 100 MiB".into());
   }
   let key: [u8; 32] = Sha256::digest(bytes).into();
+  if let Some(result) = cached(&key) {
+    return Ok(result);
+  }
   // Decoder scratch memory is bounded process-wide, including legacy history projection.
   static DECODER: Mutex<()> = Mutex::new(());
   let _decoder = DECODER.lock().unwrap_or_else(|error| error.into_inner());
-  {
-    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(index) = cache.iter().position(|(id, _)| id == &key) {
-      let entry = cache.remove(index).expect("existing cache entry");
-      let result = entry.1.clone();
-      cache.push_back(entry);
-      return Ok(result);
-    }
+  if let Some(result) = cached(&key) {
+    return Ok(result);
   }
   let result = Arc::new(convert(bytes)?);
   let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -44,6 +41,14 @@ pub fn prepare(bytes: &[u8]) -> Result<Arc<Prepared>, String> {
     cache.pop_front();
   }
   Ok(result)
+}
+fn cached(key: &[u8; 32]) -> Option<Arc<Prepared>> {
+  let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+  let index = cache.iter().position(|(id, _)| id == key)?;
+  let entry = cache.remove(index)?;
+  let result = entry.1.clone();
+  cache.push_back(entry);
+  Some(result)
 }
 fn convert(bytes: &[u8]) -> Result<Prepared, String> {
   let decode = || -> Result<Prepared, Box<dyn std::error::Error>> {
@@ -74,19 +79,25 @@ fn convert(bytes: &[u8]) -> Result<Prepared, String> {
     if picture.width().max(picture.height()) > MAX_EDGE {
       picture = picture.thumbnail(MAX_EDGE, MAX_EDGE);
     }
+    let alpha =
+      picture.color().has_alpha() && picture.to_rgba8().pixels().any(|pixel| pixel.0[3] != 255);
+    let mut try_png = true;
     loop {
-      let rgba = picture.to_rgba8();
-      let alpha = rgba.pixels().any(|pixel| pixel.0[3] != 255);
-      let mut png = Vec::new();
-      image::codecs::png::PngEncoder::new(&mut png).write_image(
-        rgba.as_raw(),
-        rgba.width(),
-        rgba.height(),
-        image::ExtendedColorType::Rgba8,
-      )?;
-      // Preserve text, diagrams and transparency losslessly whenever the budget permits.
-      if png.len() <= MAX_OUTPUT_BYTES {
-        return Ok(Prepared { bytes: png, mime: "image/png" });
+      if try_png {
+        let rgba = picture.to_rgba8();
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png).write_image(
+          rgba.as_raw(),
+          rgba.width(),
+          rgba.height(),
+          image::ExtendedColorType::Rgba8,
+        )?;
+        // Preserve text, diagrams and transparency losslessly whenever the budget permits.
+        if png.len() <= MAX_OUTPUT_BYTES {
+          return Ok(Prepared { bytes: png, mime: "image/png" });
+        }
+        // After an opaque image exceeds the lossless budget, keep JPEG on retries.
+        try_png = alpha;
       }
       if !alpha {
         let rgb = picture.to_rgb8();
@@ -110,7 +121,7 @@ fn convert(bytes: &[u8]) -> Result<Prepared, String> {
         picture.thumbnail((picture.width() * 3 / 4).max(1), (picture.height() * 3 / 4).max(1));
     }
   };
-  decode().map_err(|error| format!("Cannot prepare image for model input: {error}. Detected {}. Supported decoders: PNG, JPEG, GIF, WebP, BMP, TIFF; animated files use the first frame. For unsupported formats, try converting a copy to PNG, then call view_image again.", super::image_format::unsupported_format(bytes)))
+  decode().map_err(|error| format!("Cannot prepare image for model input: {error}. Detected {}. Supported decoders: PNG, JPEG, GIF, WebP, BMP, TIFF; animated files use the first frame. For unsupported formats, try converting a copy to PNG.", super::image_format::unsupported_format(bytes)))
 }
 
 /// Admission precedes reading, so concurrent uploads cannot each retain a 100 MiB buffer.

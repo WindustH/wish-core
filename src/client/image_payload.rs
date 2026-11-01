@@ -2,25 +2,44 @@
 //! unpredictable per-call bindings are expanded, directly into the final byte buffer.
 use crate::protocol::{ContentBlock, Message, Request, error::Error};
 use serde_json::Value;
-use std::io::Write;
+use std::{borrow::Cow, io::Write};
 
-pub(super) struct Images<'a>(Vec<(String, &'a str)>);
+struct ImageBinding<'a> {
+  token: String,
+  data_base64: &'a str,
+}
+pub(super) struct Images<'a>(Vec<ImageBinding<'a>>);
 impl<'a> Images<'a> {
-  pub fn bind(request: &'a Request) -> Result<(Request, Self), Error> {
+  pub fn bind(request: &'a Request) -> Result<(Cow<'a, Request>, Self), Error> {
     let (conversation, images) = Self::bind_conversation(&request.conversation)?;
+    if images.0.is_empty() {
+      return Ok((Cow::Borrowed(request), images));
+    }
     let projected = Request {
       stream: request.stream,
       model: request.model.clone(),
-      conversation,
+      conversation: conversation.into_owned(),
       tools: request.tools.clone(),
       tool_choice: request.tool_choice,
       max_output_tokens: request.max_output_tokens,
       reasoning: request.reasoning.clone(),
       cache: request.cache.clone(),
     };
-    Ok((projected, images))
+    Ok((Cow::Owned(projected), images))
   }
-  pub fn bind_conversation(messages: &'a [Message]) -> Result<(Vec<Message>, Self), Error> {
+  pub fn bind_conversation(messages: &'a [Message]) -> Result<(Cow<'a, [Message]>, Self), Error> {
+    let has_images = messages.iter().any(|message| match message {
+      Message::User { content, .. }
+      | Message::Assistant { content, .. }
+      | Message::System { content, .. }
+      | Message::Developer { content, .. } => {
+        content.iter().any(|block| matches!(block, ContentBlock::Image { .. }))
+      }
+      _ => false,
+    });
+    if !has_images {
+      return Ok((Cow::Borrowed(messages), Self(Vec::new())));
+    }
     let mut images = Vec::new();
     let mut total = 0usize;
     let mut content = |blocks: &'a [ContentBlock]| -> Result<Vec<ContentBlock>, Error> {
@@ -36,7 +55,7 @@ impl<'a> Images<'a> {
               ));
             }
             let token = format!("wish-image-{}", uuid::Uuid::new_v4());
-            images.push((token.clone(), data_base64.as_str()));
+            images.push(ImageBinding { token: token.clone(), data_base64 });
             Ok(ContentBlock::Image { mime_type: mime_type.clone(), data_base64: token })
           } else {
             Ok(block.clone())
@@ -66,9 +85,12 @@ impl<'a> Images<'a> {
         })
       })
       .collect::<Result<Vec<_>, Error>>()?;
-    Ok((projected, Self(images)))
+    Ok((Cow::Owned(projected), Self(images)))
   }
   pub fn serialize(&self, value: &Value) -> Result<Vec<u8>, Error> {
+    if self.0.is_empty() {
+      return serde_json::to_vec(value).map_err(|e| Error::Build(e.to_string()));
+    }
     let mut output = Vec::new();
     self.write(value, &mut output).map_err(|e| Error::Build(e.to_string()))?;
     Ok(output)
@@ -76,12 +98,12 @@ impl<'a> Images<'a> {
   fn write(&self, value: &Value, out: &mut Vec<u8>) -> std::io::Result<()> {
     match value {
       Value::String(text) => {
-        for (token, data) in &self.0 {
+        for ImageBinding { token, data_base64: data } in &self.0 {
           let prefix = if text == token {
             Some("")
           } else {
             text
-              .strip_suffix(token)
+              .strip_suffix(token.as_str())
               .filter(|prefix| prefix.starts_with("data:") && prefix.ends_with(";base64,"))
           };
           if let Some(prefix) = prefix {

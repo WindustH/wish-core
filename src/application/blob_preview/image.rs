@@ -17,8 +17,13 @@ pub async fn prepare(
     return Err(ApplicationError::invalid("Image preview width must be 384, 768 or 1536"));
   }
   let opened = attachments::open(app, owner, blob).await?;
-  if !matches!(opened.mime_type.as_str(), "image/png" | "image/jpeg" | "image/webp" | "image/gif") {
-    return Err(ApplicationError::invalid("Image preview requires PNG, JPEG, WebP or GIF"));
+  if !matches!(
+    opened.mime_type.as_str(),
+    "image/png" | "image/jpeg" | "image/webp" | "image/gif" | "image/bmp" | "image/tiff"
+  ) {
+    return Err(ApplicationError::invalid(
+      "Image preview requires PNG, JPEG, WebP, GIF, BMP or TIFF",
+    ));
   }
   let file = crate::storage::blobs::linked::resolve(&app.data_dir.blobs(owner), blob).await?;
   let metadata = opened.file.metadata().await.map_err(ApplicationError::internal)?;
@@ -41,9 +46,9 @@ pub async fn render(
   source: Source,
   width: u32,
 ) -> Result<Preview, ApplicationError> {
-  let Source { etag, key, file } = source;
+  let Source { key, file, .. } = source;
   if let Some(bytes) = cached(&key).await {
-    return Ok(Preview { bytes, etag });
+    return Ok(Preview { bytes });
   }
   let _permit = tokio::time::timeout(std::time::Duration::from_secs(45), WORKERS.acquire())
     .await
@@ -54,11 +59,11 @@ pub async fn render(
     })?
     .map_err(ApplicationError::internal)?;
   if let Some(bytes) = cached(&key).await {
-    return Ok(Preview { bytes, etag });
+    return Ok(Preview { bytes });
   }
   let mut command = super::command("image", &file)?;
   command.arg(width.to_string());
   let result = super::execute(command, 16 * 1024 * 1024).await?;
   let bytes = super::remember(key, result).await;
-  Ok(Preview { bytes, etag })
+  Ok(Preview { bytes })
 }

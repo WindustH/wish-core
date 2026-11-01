@@ -28,7 +28,6 @@ pub struct Source {
 }
 pub struct Preview {
   pub bytes: bytes::Bytes,
-  pub etag: String,
 }
 pub(super) async fn remember(key: String, bytes: Vec<u8>) -> bytes::Bytes {
   let bytes = bytes::Bytes::from(bytes);

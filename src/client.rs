@@ -558,15 +558,21 @@ impl<T: Transport + Send + Sync> Client<T> {
       }
     };
     let (conversation, images) = image_payload::Images::bind_conversation(&request.conversation)?;
-    let projected = UpstreamCompactionRequest {
-      model: request.model.clone(),
-      conversation,
-      tools: request.tools.clone(),
-      tool_choice: request.tool_choice,
-      reasoning: request.reasoning.clone(),
-      cache: request.cache.clone(),
+    let projected = match conversation {
+      std::borrow::Cow::Borrowed(_) => None,
+      std::borrow::Cow::Owned(conversation) => Some(UpstreamCompactionRequest {
+        model: request.model.clone(),
+        conversation,
+        tools: request.tools.clone(),
+        tool_choice: request.tool_choice,
+        reasoning: request.reasoning.clone(),
+        cache: request.cache.clone(),
+      }),
     };
-    let mut body = upstream_compaction_wire::openai_responses::render(&projected, mode)?;
+    let mut body = upstream_compaction_wire::openai_responses::render(
+      projected.as_ref().unwrap_or(request),
+      mode,
+    )?;
     let session_id = self.call_session_id();
     if mode.deployment == ResponsesDeployment::Codex {
       self.apply_code_agent_identity(&mut body, &session_id);

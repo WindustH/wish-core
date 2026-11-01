@@ -63,14 +63,7 @@ pub async fn download(
   // revoked access must never be served from a fresh shared/public cache.
   headers.insert(header::CACHE_CONTROL, "private, no-cache".parse().unwrap());
   headers.insert(header::VARY, "Authorization".parse().unwrap());
-  if request.get(header::IF_NONE_MATCH).and_then(|value| value.to_str().ok()).is_some_and(
-    |values| {
-      values.split(',').any(|value| {
-        let value = value.trim().strip_prefix("W/").unwrap_or(value.trim());
-        value == "*" || value == etag
-      })
-    },
-  ) {
+  if super::conditional::not_modified(&request, &etag) {
     return Ok((StatusCode::NOT_MODIFIED, headers, Body::empty()).into_response());
   }
   headers
