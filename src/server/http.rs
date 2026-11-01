@@ -112,6 +112,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/groups/{id}", get(groups::get).patch(groups::update).delete(groups::delete))
     .route("/groups/{id}/messages", get(groups::messages).post(groups::post))
     .route("/groups/{id}/blobs", get(content::list).post(content::upload))
+    .route("/groups/{id}/blobs/link", post(content::link))
     .route("/groups/{id}/blobs/{blob}", get(content::download))
     .route("/groups/{id}/blobs/{blob}/meta", get(content::metadata))
     .route("/groups/{id}/blobs/{blob}/image", get(image_preview::preview))
