@@ -387,6 +387,8 @@ credentials, paths and queries are hidden and marked `redacted`.
 ```
 
 Immediate subdirectories of an absolute path, sorted, hidden ones included.
+Pass `include_files=true` to also return a sorted `files` array of regular file names
+(including links to regular files). This only lists names; it does not read file contents.
 `path` is canonical; `parent` is `null` at the root. `path=~` opens the server
 user's `HOME`. A relative, missing, unreadable or non-directory path returns
 `400`.

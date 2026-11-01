@@ -6,12 +6,16 @@ use std::path::PathBuf;
 #[derive(Deserialize)]
 pub struct DirectoryQuery {
   path: String,
+  #[serde(default)]
+  include_files: bool,
 }
 #[derive(Serialize)]
 pub struct DirectoryListing {
   path: String,
   parent: Option<String>,
   directories: Vec<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  files: Option<Vec<String>>,
 }
 
 pub async fn list(query: DirectoryQuery) -> Result<DirectoryListing, ApplicationError> {
@@ -33,20 +37,33 @@ pub async fn list(query: DirectoryQuery) -> Result<DirectoryListing, Application
     let entries = std::fs::read_dir(&path)
       .map_err(|error| ApplicationError::invalid(format!("Cannot read directory: {error}")))?;
     let mut directories = Vec::new();
+    let mut files = query.include_files.then(Vec::new);
     for entry in entries {
       let entry = entry
         .map_err(|error| ApplicationError::invalid(format!("Cannot read directory: {error}")))?;
-      if entry.path().is_dir()
-        && let Some(name) = entry.file_name().to_str()
+      let Some(name) = entry.file_name().to_str().map(str::to_owned) else { continue };
+      let kind = entry
+        .file_type()
+        .map_err(|error| ApplicationError::invalid(format!("Cannot read directory: {error}")))?;
+      // Follow links only to identify browsable directories / regular files.
+      let metadata = if kind.is_symlink() { std::fs::metadata(entry.path()).ok() } else { None };
+      if kind.is_dir() || metadata.as_ref().is_some_and(|value| value.is_dir()) {
+        directories.push(name);
+      } else if (kind.is_file() || metadata.as_ref().is_some_and(|value| value.is_file()))
+        && let Some(files) = &mut files
       {
-        directories.push(name.to_owned());
+        files.push(name);
       }
     }
     directories.sort_unstable();
+    if let Some(files) = &mut files {
+      files.sort_unstable();
+    }
     Ok(DirectoryListing {
       parent: path.parent().map(|p| p.to_string_lossy().into_owned()),
       path: path.to_string_lossy().into_owned(),
       directories,
+      files,
     })
   })
   .await
