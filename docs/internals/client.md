@@ -224,3 +224,16 @@ context. Gemini providers tolerate 20 minutes of body silence so long reasoning 
 reach its first checkpoint; other providers keep their existing timeout.
 
 Wire reference: [Google long decode](https://ai.google.dev/gemini-api/docs/generate-content/long-decode).
+
+### Imported Gemini tool history
+
+The GenerateContent renderer applies Google's documented migration marker
+`skip_thought_signature_validator` to the first function call of a Gemini 3+ model turn
+only when that part has no signature. This allows a session to switch from Responses or
+another provider mid-tool-loop. Actual Google signatures stay on their original parts;
+unsigned siblings of a signed parallel batch remain untouched. The marker exists only
+in the rendered request, not in persisted history or the model-neutral conversation.
+The same renderer covers Vertex and Antigravity Gemini deployments; Claude and older
+Gemini deployments retain their previous rendering.
+
+Reference: [Google's history migration FAQ](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures).

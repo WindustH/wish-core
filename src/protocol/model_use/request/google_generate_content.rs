@@ -51,7 +51,21 @@ pub fn render(request: &Request) -> Result<Value, Error> {
     &request.conversation,
     "a system instruction can only carry text blocks on the generateContent wire",
   )?;
-  let contents = render_contents(rest)?;
+  let mut contents = render_contents(rest)?;
+  // Gemini 3+ validates the first call of each tool step. Imported history has no
+  // Google proof; use its documented migration marker only where that proof is
+  // absent. Never overwrite a signature or stamp the unsigned parallel siblings.
+  if requires_call_signature(&request.model) {
+    for turn in &mut contents {
+      if turn["role"] == "model"
+        && let Some(parts) = turn["parts"].as_array_mut()
+        && let Some(call) = parts.iter_mut().find(|part| part.get("functionCall").is_some())
+        && call.get("thoughtSignature").is_none()
+      {
+        call["thoughtSignature"] = json!("skip_thought_signature_validator");
+      }
+    }
+  }
   if contents.is_empty() {
     return Err(Error::Build("request has no contents".to_owned()));
   }
@@ -88,6 +102,17 @@ pub fn render(request: &Request) -> Result<Value, Error> {
     body.insert("generationConfig".into(), Value::Object(generation_config));
   }
   Ok(Value::Object(body))
+}
+
+// Includes Vertex resource names and Antigravity's named Gemini deployments.
+fn requires_call_signature(model: &str) -> bool {
+  model
+    .rsplit('/')
+    .next()
+    .and_then(|name| name.strip_prefix("gemini-"))
+    .and_then(|version| version.split(['.', '-']).next())
+    .and_then(|major| major.parse::<u32>().ok())
+    .is_some_and(|major| major >= 3)
 }
 
 /// The wire's `thinkingConfig`: the caller's depth tier becomes the uppercase `thinkingLevel` word,
