@@ -10,3 +10,5 @@ pub mod blocking;
 pub mod control;
 
 pub mod resource_id;
+
+pub mod model_image;

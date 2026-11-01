@@ -9,7 +9,6 @@ use base64::Engine;
 use serde::Deserialize;
 use serde_json::json;
 use std::path::PathBuf;
-use tokio::io::AsyncReadExt;
 
 #[derive(Clone, Default)]
 pub struct ViewImageTool;
@@ -23,7 +22,7 @@ impl ViewImageTool {
   pub fn get_specification(&self) -> Tool {
     Tool {
       name: "view_image".into(),
-      description: "View a local image using its absolute file path. The image is retained in context. The application sends native image input when supported, otherwise a file notice.".into(),
+      description: "View a local image using its absolute file path. A normalized image (up to 2048 pixels per edge and 2 MiB) is retained in context; the original file is unchanged. Animated images use the first frame. The application sends native image input when supported, otherwise a file notice.".into(),
       input_schema: json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","description":"Absolute path to a local image file."}}}),
     }
   }
@@ -39,21 +38,15 @@ impl ViewImageTool {
     if metadata.len() > MAX_IMAGE_BYTES {
       return Err("image exceeds 100 MiB; use shell to resize it first".into());
     }
-    let file = tokio::fs::File::open(&args.path).await.map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    file.take(MAX_IMAGE_BYTES + 1).read_to_end(&mut bytes).await.map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > MAX_IMAGE_BYTES {
-      return Err("image exceeds 100 MiB; use shell to resize it first".into());
-    }
-    let mime_type =
-      crate::utils::image_format::supported_mime(&bytes).ok_or_else(|| conversion_hint(&bytes))?;
+    let prepared = crate::utils::model_image::prepare_file(&args.path).await?;
+    let mime_type = prepared.mime;
     Ok(ToolOutcome::SuccessWithInput {
-      output: json!({"path":args.path,"mime_type":mime_type,"byte_count":bytes.len()}),
+      output: json!({"path":args.path,"mime_type":mime_type,"byte_count":prepared.bytes.len(),"original_byte_count":metadata.len(),"model_image_max_edge":2048}),
       input: vec![
         ContentBlock::Text { text: format!("Image from local file {}", args.path.display()) },
         ContentBlock::Image {
           mime_type: mime_type.into(),
-          data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+          data_base64: base64::engine::general_purpose::STANDARD.encode(&prepared.bytes),
         },
       ],
     })
@@ -82,11 +75,4 @@ impl ToolExecutor for ViewImageTool {
       None => ToolOutcome::Cancelled,
     }
   }
-}
-
-fn conversion_hint(bytes: &[u8]) -> String {
-  format!(
-    "Cannot view image: detected {} from file content. Supported: PNG, JPEG, GIF, WebP. Try converting to a new PNG using an available decoder (for example ImageMagick or ffmpeg), then call view_image with its absolute path. Preserve the original; renaming the extension is not conversion.",
-    crate::utils::image_format::unsupported_format(bytes)
-  )
 }

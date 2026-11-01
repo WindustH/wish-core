@@ -64,7 +64,7 @@ impl RecoveryProtocol {
     let Self::GoogleGeneration { enveloped } = self;
     let request = if enveloped { &mut body["request"] } else { &mut body };
     request["continuationToken"] = Value::String(token.to_owned());
-    call.body = serde_json::to_vec(&body).map_err(|e| Error::Build(e.to_string()))?;
+    call.body = serde_json::to_vec(&body).map_err(|e| Error::Build(e.to_string()))?.into();
     Ok(call)
   }
 

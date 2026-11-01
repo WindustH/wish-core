@@ -137,6 +137,6 @@ pub fn poll_call(protocol: ImageProtocol, initial: &Call, url: &str) -> Result<C
       .filter(|(key, _)| !key.eq_ignore_ascii_case("content-type"))
       .cloned()
       .collect(),
-    body: Vec::new(),
+    body: bytes::Bytes::new(),
   })
 }

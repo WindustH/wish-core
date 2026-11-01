@@ -2,7 +2,6 @@
 //! each with a JSON description beside it, and the images its conversation holds. A blob is named
 //! by the SHA-256 of its bytes, so the same bytes are stored once.
 use crate::storage::repository_error::RepositoryError;
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -138,14 +137,6 @@ pub async fn read_description(directory: &Path, id: &str) -> Result<Blob, Reposi
     .map_err(|_| RepositoryError::not_found())?;
   let blob: Blob = serde_json::from_slice(&bytes).map_err(RepositoryError::internal)?;
   if blob.linked { linked::describe(&blob.id, &blob.path).await } else { Ok(blob) }
-}
-
-/// Stores an image the conversation holds as base64, and returns where it is.
-pub fn save_image(directory: &Path, data: &str) -> Result<PathBuf, RepositoryError> {
-  let bytes = base64::engine::general_purpose::STANDARD
-    .decode(data)
-    .map_err(|e| RepositoryError::Invalid(format!("invalid image: {e}")))?;
-  save_image_bytes(directory, &bytes)
 }
 
 pub fn save_image_bytes(directory: &Path, bytes: &[u8]) -> Result<PathBuf, RepositoryError> {

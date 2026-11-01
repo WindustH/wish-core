@@ -166,6 +166,9 @@ fn render_message_input(
   for block in content {
     match block {
       ContentBlock::Text { text: block_text } => text.push(block_text),
+      ContentBlock::ImageRef { .. } => {
+        return Err(Error::Build("unresolved image reference".into()));
+      }
       ContentBlock::Image { mime_type, data_base64 } => {
         if role == "assistant" {
           return Err(Error::Build(

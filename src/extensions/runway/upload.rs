@@ -63,7 +63,7 @@ pub async fn send(
       method: Method::Post,
       url: target.into(),
       headers: draft.headers,
-      body: draft.body,
+      body: draft.body.into(),
     })
     .await
     .map_err(|e| e.to_string())?;

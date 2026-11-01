@@ -12,6 +12,7 @@
 //! and its first event, so a streamed call is only replaced until that event is in hand - after
 //! that only a protocol checkpoint can authorize a recovery with explicit output rewind.
 pub mod account;
+mod image_payload;
 mod model_catalog;
 mod observer;
 pub(crate) mod retry;
@@ -242,8 +243,13 @@ impl<T: Transport + Send + Sync> Client<T> {
     request: &Request,
   ) -> Result<TokenCount, Error> {
     let path = protocol.resolve_path(&self.endpoint.resolve_path(&request.model))?;
-    let body = crate::protocol::token_count::request::render(protocol, self.model_use, request)?;
-    let call = self.build_json_call(self.call_session_id(), path, &[], body)?;
+    let (projected, images) = image_payload::Images::bind(request)?;
+    let body = crate::protocol::token_count::request::render(protocol, self.model_use, &projected)?;
+    let call = self.endpoint.clone().with_session_id(self.call_session_id()).build_call(
+      Draft::post(Some(path), self.build_headers(&[]), images.serialize(&body)?),
+      &self.credentials,
+      unix_seconds(),
+    )?;
     let (_, body) = self.read_reply(self.transport.execute(&call).await?)?;
     crate::protocol::token_count::response::decode(protocol, &body)
   }
@@ -407,7 +413,8 @@ impl<T: Transport + Send + Sync> Client<T> {
   /// client's identity applied, on the path the request resolves to.
   fn build_model_use_call(&self, request: &Request) -> Result<Call, Error> {
     let session_id = self.call_session_id();
-    let mut body = self.model_use.render(request)?;
+    let (projected, images) = image_payload::Images::bind(request)?;
+    let mut body = self.model_use.render(&projected)?;
     self.apply_code_agent_identity(&mut body, &session_id);
     if self.model_use == ModelUseProtocol::GoogleAntigravityGenerateContent {
       body = crate::protocol::model_use::request::google_antigravity::wrap(
@@ -419,7 +426,12 @@ impl<T: Transport + Send + Sync> Client<T> {
     }
     let path =
       self.model_use.resolve_request_path(request, self.endpoint.resolve_path(&request.model));
-    self.build_json_call(session_id, path, &self.get_code_agent_headers(request), body)
+    let body = images.serialize(&body)?;
+    self.endpoint.clone().with_session_id(session_id).build_call(
+      Draft::post(Some(path), self.build_headers(&self.get_code_agent_headers(request)), body),
+      &self.credentials,
+      unix_seconds(),
+    )
   }
 
   /// Internal: the headers the coding client's identity puts on one model call, which follow what
@@ -452,24 +464,6 @@ impl<T: Transport + Send + Sync> Client<T> {
       .session_id()
       .map(str::to_owned)
       .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
-  }
-
-  /// Internal: a JSON `body` posted to `path` in the session `session_id`, with the protocol's
-  /// headers and `extra` beside them, and the credentials placed.
-  fn build_json_call(
-    &self,
-    session_id: String,
-    path: String,
-    extra: &[(&'static str, &'static str)],
-    body: Value,
-  ) -> Result<Call, Error> {
-    let body = serde_json::to_vec(&body)
-      .map_err(|error| Error::Build(format!("request body is not serializable: {error}")))?;
-    self.endpoint.clone().with_session_id(session_id).build_call(
-      Draft::post(Some(path), self.build_headers(extra), body),
-      &self.credentials,
-      unix_seconds(),
-    )
   }
 
   fn apply_code_agent_identity(&self, body: &mut Value, session_id: &str) {
@@ -563,13 +557,26 @@ impl<T: Transport + Send + Sync> Client<T> {
         ));
       }
     };
-    let mut body = upstream_compaction_wire::openai_responses::render(request, mode)?;
+    let (conversation, images) = image_payload::Images::bind_conversation(&request.conversation)?;
+    let projected = UpstreamCompactionRequest {
+      model: request.model.clone(),
+      conversation,
+      tools: request.tools.clone(),
+      tool_choice: request.tool_choice,
+      reasoning: request.reasoning.clone(),
+      cache: request.cache.clone(),
+    };
+    let mut body = upstream_compaction_wire::openai_responses::render(&projected, mode)?;
     let session_id = self.call_session_id();
     if mode.deployment == ResponsesDeployment::Codex {
       self.apply_code_agent_identity(&mut body, &session_id);
     }
     let extra = upstream_compaction_wire::openai_responses::get_extra_headers(mode);
-    self.build_json_call(session_id, path, extra, body)
+    self.endpoint.clone().with_session_id(session_id).build_call(
+      Draft::post(Some(path), self.build_headers(extra), images.serialize(&body)?),
+      &self.credentials,
+      unix_seconds(),
+    )
   }
 
   /// Internal: one attempt of [`Client::compact_upstream`]: render, resolve, build, execute, then read or report.

@@ -115,17 +115,23 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
       "image" => {
         if !blob.mime_type.starts_with("image/") {
           return Err(ApplicationError::invalid(
-            "attachment is not PNG, JPEG, GIF or WebP; convert HEIF/HEIC or other formats before sending (renaming the extension does not convert an image)",
+            "attachment is not a supported image; supported formats: PNG, JPEG, GIF, WebP, BMP, TIFF; convert HEIF/HEIC and AVIF with a compatible decoder first",
           ));
         }
-        let bytes =
-          crate::utils::bounded_file::read(std::path::Path::new(&blob.path), 100 * 1024 * 1024)
-            .await
-            .map_err(ApplicationError::internal)?;
-        ContentBlock::Image {
-          mime_type: blob.mime_type,
-          data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-        }
+        let prepared = crate::utils::model_image::prepare_file(std::path::Path::new(&blob.path))
+          .await
+          .map_err(ApplicationError::invalid)?;
+        let directory = blob_dir.to_path_buf();
+        crate::utils::blocking::io(move || {
+          blobs::save_image_bytes(&directory, &prepared.bytes)?;
+          Ok::<_, crate::storage::repository_error::RepositoryError>(ContentBlock::ImageRef {
+            mime_type: prepared.mime.into(),
+            blob_id: blobs::blob_id(&prepared.bytes),
+            byte_count: prepared.bytes.len(),
+          })
+        })
+        .await
+        .map_err(ApplicationError::internal)??
       }
       "file" => ContentBlock::Text {
         text: format!(

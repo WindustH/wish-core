@@ -273,7 +273,7 @@ impl Endpoint {
     if let AuthScheme::SigV4 = self.auth {
       sign_sigv4(&mut headers, &url, &draft, credentials)?;
     }
-    Ok(Call { method: draft.method, url, headers, body: draft.body })
+    Ok(Call { method: draft.method, url, headers, body: draft.body.into() })
   }
 
   /// The absolute URL of a draft: the base URL and the path with their placeholders filled, then

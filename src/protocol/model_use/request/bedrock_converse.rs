@@ -230,6 +230,9 @@ fn render_user_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
   for block in content {
     match block {
       ContentBlock::Text { text } => blocks.push(json!({"text": text})),
+      ContentBlock::ImageRef { .. } => {
+        return Err(Error::Build("unresolved image reference".into()));
+      }
       ContentBlock::Image { mime_type, data_base64 } => {
         let Some(format) = resolve_image_format(mime_type) else {
           return Err(Error::Build(format!(
@@ -248,7 +251,7 @@ fn render_assistant_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error
   for block in content {
     match block {
       ContentBlock::Text { text } => blocks.push(json!({"text": text})),
-      ContentBlock::Image { .. } => {
+      ContentBlock::Image { .. } | ContentBlock::ImageRef { .. } => {
         return Err(Error::Build(
           "an assistant turn cannot carry images on the converse wire".to_owned(),
         ));

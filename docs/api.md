@@ -59,7 +59,7 @@ engine's own JSON form: externally tagged enums, for example:
 
 Message variants are `System`, `Developer` (with optional `fixed`), `User`,
 `Assistant`, `Reasoning`, `ToolUse`, `ToolResult` and `UpstreamCompaction`.
-Content blocks are `Text {text}` and `Image {mime_type, data_base64}`. Every
+Content blocks are `Text {text}`, legacy inline `Image {mime_type, data_base64}`, and session-local `ImageRef {mime_type, blob_id, byte_count}`. Every
 variant accepts an optional `metadata` value that is stored but never sent to a
 model.
 
@@ -687,9 +687,20 @@ optional `name` and `placeholder`, and exactly one of `id` or inline `data_base6
 queued before the session becomes visible and automatically starts the run. The response
 includes `first_input_entry`. Replaying an accepted request returns the same session;
 reusing its ID with different input returns `409`, including after a restart.
-Image format is detected from bytes. Unsupported image formats should be sent as
-`file` attachments, preserving their original bytes. `view_image` reports detected
-unsupported formats and suggests conversion to a supported format before retrying.
+Image format is detected and decoded from bytes (PNG, JPEG, GIF, WebP, BMP, TIFF).
+Uploads and `view_image` normalize model inputs before Base64 encoding: EXIF orientation,
+maximum 2048-pixel edge and 2 MiB encoded bytes. Small valid PNG/JPEG files are retained;
+other images prefer lossless PNG, falling back to JPEG for opaque images or further
+resizing for transparency. Animated files use their first frame. Original files remain
+unchanged. New context stores immutable derivative blob references; reconstruction
+preserves content ordering and reads those exact bytes, without recompression. Older
+inline images remain readable and are normalized when projected for a model.
+Decoder allocation is limited to 256 MiB, source files to 100 MiB, and transformed
+results use a bounded 32 MiB/32-entry process cache. Unsupported HEIF/HEIC and AVIF
+require conversion with a compatible decoder, or can be sent as ordinary `file`
+attachments. Request serialization expands image bindings directly into the final
+JSON buffer; HTTP attempts share its bytes. The image portion of a model request is
+limited to 24 MiB of Base64; provider-specific limits may be smaller.
 
 ### `GET /api/sessions/{id}`
 

@@ -316,7 +316,7 @@ fn describe_entry(message: &Message) -> Option<(&'static str, String)> {
       .iter()
       .map(|block| match block {
         ContentBlock::Text { text } => text.as_str(),
-        ContentBlock::Image { .. } => "[image]",
+        ContentBlock::Image { .. } | ContentBlock::ImageRef { .. } => "[image]",
       })
       .collect::<Vec<_>>()
       .join(" ")

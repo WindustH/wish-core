@@ -116,9 +116,9 @@ pub(crate) fn render_items(
   let mut items: Vec<Value> = Vec::new();
   for message in conversation {
     match message {
-      Message::System { content, .. } => items.push(render_input_message("system", content)),
-      Message::Developer { content, .. } => items.push(render_input_message("developer", content)),
-      Message::User { content, .. } => items.push(render_input_message("user", content)),
+      Message::System { content, .. } => items.push(render_input_message("system", content)?),
+      Message::Developer { content, .. } => items.push(render_input_message("developer", content)?),
+      Message::User { content, .. } => items.push(render_input_message("user", content)?),
       Message::ToolUse { call_id, name, arguments, .. } => {
         items.push(render_function_call_item(call_id, name, arguments))
       }
@@ -207,7 +207,7 @@ fn render_assistant_item(content: &[ContentBlock]) -> Result<Option<Value>, Erro
   for block in content {
     match block {
       ContentBlock::Text { text } => parts.push(json!({"type": "output_text", "text": text})),
-      ContentBlock::Image { .. } => {
+      ContentBlock::Image { .. } | ContentBlock::ImageRef { .. } => {
         return Err(Error::Build(
           "assistant content block `image` cannot be expressed on responses wire".to_owned(),
         ));
@@ -242,19 +242,20 @@ fn render_reasoning_item(
   }
 }
 
-fn render_input_part(block: &ContentBlock) -> Value {
-  match block {
+fn render_input_part(block: &ContentBlock) -> Result<Value, Error> {
+  Ok(match block {
     ContentBlock::Text { text } => json!({"type": "input_text", "text": text}),
     // The image travels in the data-URL shape this wire's `input_image` part expects.
+    ContentBlock::ImageRef { .. } => return Err(Error::Build("unresolved image reference".into())),
     ContentBlock::Image { mime_type, data_base64 } => {
       json!({"type": "input_image", "image_url": image_data_url(mime_type, data_base64)})
     }
-  }
+  })
 }
 
-fn render_input_message(role: &str, blocks: &[ContentBlock]) -> Value {
-  let content: Vec<Value> = blocks.iter().map(render_input_part).collect();
-  json!({"role": role, "content": content})
+fn render_input_message(role: &str, blocks: &[ContentBlock]) -> Result<Value, Error> {
+  let content = blocks.iter().map(render_input_part).collect::<Result<Vec<_>, _>>()?;
+  Ok(json!({"role": role, "content": content}))
 }
 
 fn render_function_call_item(call_id: &str, name: &str, arguments: &Value) -> Value {

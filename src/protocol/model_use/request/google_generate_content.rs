@@ -240,7 +240,7 @@ fn render_model_turn(
             ContentBlock::Text { text } => {
               push_part(&mut parts, json!({"text": text}), &mut signature);
             }
-            ContentBlock::Image { .. } => {
+            ContentBlock::Image { .. } | ContentBlock::ImageRef { .. } => {
               return Err(Error::Build(
                 "an assistant message cannot carry images on the generateContent wire".to_owned(),
               ));
@@ -309,6 +309,9 @@ fn render_user_parts(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
   for block in content {
     match block {
       ContentBlock::Text { text } => parts.push(json!({"text": text})),
+      ContentBlock::ImageRef { .. } => {
+        return Err(Error::Build("unresolved image reference".into()));
+      }
       ContentBlock::Image { mime_type, data_base64 } => {
         parts.push(json!({"inlineData": {"mimeType": mime_type, "data": data_base64}}));
       }

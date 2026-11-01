@@ -15,6 +15,8 @@ pub type Conversation = Vec<Message>;
 pub enum ContentBlock {
   /// Plain text.
   Text { text: String },
+  /// Immutable session-local image derivative; resolved before protocol rendering.
+  ImageRef { mime_type: String, blob_id: String, byte_count: usize },
   /// An inline image, base64 encoded, with the media type it was encoded from.
   Image { mime_type: String, data_base64: String },
 }

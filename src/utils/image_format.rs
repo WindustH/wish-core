@@ -8,6 +8,10 @@ pub fn supported_mime(bytes: &[u8]) -> Option<&'static str> {
     Some("image/gif")
   } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
     Some("image/webp")
+  } else if bytes.starts_with(b"BM") {
+    Some("image/bmp")
+  } else if bytes.starts_with(b"II\x2a\x00") || bytes.starts_with(b"MM\x00\x2a") {
+    Some("image/tiff")
   } else {
     None
   }

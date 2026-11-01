@@ -39,7 +39,7 @@ pub struct Call {
   pub method: Method,
   pub url: String,
   pub headers: Vec<(String, String)>,
-  pub body: Vec<u8>,
+  pub body: bytes::Bytes,
 }
 
 /// One raw attempt reply: status, headers and the untouched body bytes.

@@ -36,7 +36,7 @@ impl TokenEstimator {
       | Message::Assistant { content, .. } => content.iter().fold(0u64, |total, block| {
         total.saturating_add(match block {
           ContentBlock::Text { text } => 4u64.saturating_add(self.estimate_text(text)),
-          ContentBlock::Image { .. } => self.image_tokens,
+          ContentBlock::Image { .. } | ContentBlock::ImageRef { .. } => self.image_tokens,
         })
       }),
       // Display summaries and application metadata are never replayed. Opaque material has no

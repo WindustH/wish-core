@@ -379,6 +379,9 @@ fn render_user(content: &[ContentBlock]) -> Result<Value, Error> {
       ContentBlock::Text { text: block_text } => {
         parts.push(json!({ "type": "text", "text": block_text }));
       }
+      ContentBlock::ImageRef { .. } => {
+        return Err(Error::Build("unresolved image reference".into()));
+      }
       ContentBlock::Image { mime_type, data_base64 } => {
         parts.push(json!({
           "type": "image_url",
@@ -402,7 +405,7 @@ fn render_assistant(
   for block in content {
     match block {
       ContentBlock::Text { text: block_text } => text.push(block_text),
-      ContentBlock::Image { .. } => {
+      ContentBlock::Image { .. } | ContentBlock::ImageRef { .. } => {
         return Err(Error::Build(
           "an assistant message cannot carry images on the chat completions wire".to_owned(),
         ));

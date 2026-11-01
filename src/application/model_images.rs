@@ -33,35 +33,64 @@ pub fn project_images(
     };
     let mut projected = Vec::new();
     for block in std::mem::take(content) {
-      if let ContentBlock::Image { ref data_base64, .. } = block {
-        images = true;
-        let bytes = base64::engine::general_purpose::STANDARD
-          .decode(data_base64)
-          .map_err(|error| Error::Build(format!("invalid stored image: {error}")))?;
-        let image_id = blobs::blob_id(&bytes);
-        let path = blob_dir.join(&image_id);
-        if save {
-          blobs::save_image_bytes(blob_dir, &bytes)
-            .map_err(|error| Error::Build(error.to_string()))?;
+      let (bytes, reference) = match block {
+        ContentBlock::ImageRef { blob_id, byte_count, .. } => {
+          if !blobs::is_blob_id(&blob_id)
+            || byte_count > crate::utils::model_image::MAX_OUTPUT_BYTES
+          {
+            return Err(Error::Build("invalid stored image reference".into()));
+          }
+          let bytes = crate::utils::bounded_file::read_sync(&blob_dir.join(&blob_id), byte_count)
+            .map_err(|error| Error::Build(format!("read stored image: {error}")))?;
+          if bytes.len() != byte_count || blobs::blob_id(&bytes) != blob_id {
+            return Err(Error::Build("stored image integrity mismatch".into()));
+          }
+          (bytes, true)
         }
-        let notice = if unsupported {
-          "The selected model's declared capabilities do not support image input. Only this file reference is sent; do not claim to have viewed the image. Use shell for file processing."
-        } else if rejected {
-          "The upstream rejected image input. Only this file reference is sent; do not claim to have viewed the image. Use shell for file processing."
-        } else {
-          "The image is included below. Do not call view_image again merely to confirm an image you have already viewed; use shell when further processing is needed."
-        };
-        projected.push(ContentBlock::Text {
-          text: format!(
-            "[Image sha256:{image_id}]\n{notice}\nSession-local blob path: {}",
-            serde_json::json!(path)
-          ),
-        });
-        if !unsupported && !rejected {
-          projected.push(block);
+        ContentBlock::Image { data_base64, .. } => {
+          if data_base64.len() > crate::utils::model_image::MAX_SOURCE_BYTES.div_ceil(3) * 4 {
+            return Err(Error::Build("stored image exceeds 100 MiB".into()));
+          }
+          let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data_base64)
+            .map_err(|error| Error::Build(format!("invalid stored image: {error}")))?;
+          (bytes, false)
         }
+        other => {
+          projected.push(other);
+          continue;
+        }
+      };
+      images = true;
+      let image_id = blobs::blob_id(&bytes);
+      let path = blob_dir.join(&image_id);
+      if save {
+        blobs::save_image_bytes(blob_dir, &bytes)
+          .map_err(|error| Error::Build(error.to_string()))?;
+      }
+      let notice = if unsupported {
+        "The selected model's declared capabilities do not support image input. Only this file reference is sent; do not claim to have viewed the image. Use shell for file processing."
+      } else if rejected {
+        "The upstream rejected image input. Only this file reference is sent; do not claim to have viewed the image. Use shell for file processing."
       } else {
-        projected.push(block);
+        "The image is included below. Do not call view_image again merely to confirm an image you have already viewed; use shell when further processing is needed."
+      };
+      projected.push(ContentBlock::Text {
+        text: format!(
+          "[Image sha256:{image_id}]\n{notice}\nSession-local blob path: {}",
+          serde_json::json!(path)
+        ),
+      });
+      if !unsupported && !rejected {
+        let (mime_type, data_base64) = if reference {
+          let mime = crate::utils::image_format::supported_mime(&bytes)
+            .ok_or_else(|| Error::Build("invalid stored image format".into()))?;
+          (mime.into(), base64::engine::general_purpose::STANDARD.encode(&bytes))
+        } else {
+          let prepared = crate::utils::model_image::prepare(&bytes).map_err(Error::Build)?;
+          (prepared.mime.into(), base64::engine::general_purpose::STANDARD.encode(&prepared.bytes))
+        };
+        projected.push(ContentBlock::Image { mime_type, data_base64 });
       }
     }
     *content = projected;

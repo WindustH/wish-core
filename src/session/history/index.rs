@@ -74,7 +74,7 @@ fn extract_text(blocks: &[ContentBlock]) -> String {
     .iter()
     .filter_map(|block| match block {
       ContentBlock::Text { text } => Some(text.as_str()),
-      ContentBlock::Image { .. } => None,
+      ContentBlock::Image { .. } | ContentBlock::ImageRef { .. } => None,
     })
     .collect::<Vec<_>>()
     .join("\n")

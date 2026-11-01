@@ -21,6 +21,7 @@ use crate::{
     web_search::{SearchBackend, SearchService},
   },
 };
+use base64::Engine;
 use serde_json::json;
 use std::sync::{
   Arc, Weak,
@@ -213,20 +214,34 @@ impl SessionTools {
     let Some(slot) = self.slot.upgrade() else {
       return ToolOutcome::Failed("the session is closed".into());
     };
-    for block in &input {
+    for block in &mut input {
       if let ContentBlock::Image { data_base64, .. } = block {
-        let (directory, data) = (slot.blob_dir.clone(), data_base64.clone());
+        let (directory, data) = (slot.blob_dir.clone(), std::mem::take(data_base64));
         let saved = blocking(move || {
-          blobs::save_image(&directory, &data).map_err(ApplicationError::internal)
+          let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(ApplicationError::internal)?;
+          let path =
+            blobs::save_image_bytes(&directory, &bytes).map_err(ApplicationError::internal)?;
+          Ok((path, bytes.len()))
         })
         .await;
         match saved {
-          Ok(path) => output["session_path"] = json!(path),
+          Ok((path, byte_count)) => {
+            output["session_path"] = json!(path);
+            let ContentBlock::Image { mime_type, .. } = block else { unreachable!() };
+            *block = ContentBlock::ImageRef {
+              mime_type: mime_type.clone(),
+              blob_id: path.file_name().unwrap().to_string_lossy().into_owned(),
+              byte_count,
+            };
+          }
           Err(error) => return ToolOutcome::Failed(error.to_string()),
         }
       }
     }
-    input.retain(|block| matches!(block, ContentBlock::Image { .. }));
+    input
+      .retain(|block| matches!(block, ContentBlock::Image { .. } | ContentBlock::ImageRef { .. }));
     ToolOutcome::SuccessWithInput { output, input }
   }
 }

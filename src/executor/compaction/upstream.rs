@@ -110,7 +110,7 @@ fn continuation_notice(conversation: &[Message]) -> Message {
           .iter()
           .map(|block| match block {
             ContentBlock::Text { text } => text.clone(),
-            ContentBlock::Image { mime_type, .. } => {
+            ContentBlock::Image { mime_type, .. } | ContentBlock::ImageRef { mime_type, .. } => {
               format!("[Image attachment: {mime_type}; consult the original history if needed]")
             }
           })

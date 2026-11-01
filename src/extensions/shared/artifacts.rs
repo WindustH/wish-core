@@ -21,7 +21,7 @@ pub(crate) async fn download(
         method: Method::Get,
         url: url.to_string(),
         headers: vec![("user-agent".into(), user_agent.into())],
-        body: Vec::new(),
+        body: bytes::Bytes::new(),
       })
       .await
       .map_err(|e| e.to_string())?;
@@ -62,7 +62,7 @@ pub(crate) async fn open_stream(
         method: Method::Get,
         url: target.to_string(),
         headers: Vec::new(),
-        body: Vec::new(),
+        body: bytes::Bytes::new(),
       })
       .await
       .map_err(|_| "artifact download connection failed".to_owned())?;

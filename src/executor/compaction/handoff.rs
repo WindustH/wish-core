@@ -285,7 +285,7 @@ fn read_handoff(response: &Response) -> Result<Vec<ContentBlock>, RunOutcome> {
   let content = collect_assistant_content(response, "handoff")?;
   let text_bytes = content.iter().try_fold(0usize, |total, block| match block {
     ContentBlock::Text { text } => Some(total.saturating_add(text.len())),
-    ContentBlock::Image { .. } => None,
+    ContentBlock::Image { .. } | ContentBlock::ImageRef { .. } => None,
   });
   if !text_bytes.is_some_and(|bytes| bytes > 0 && bytes <= HANDOFF_MAX_TEXT_BYTES)
     || !content

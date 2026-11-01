@@ -399,6 +399,9 @@ fn render_user_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
       ContentBlock::Text { text: block_text } => {
         blocks.push(json!({"type": "text", "text": block_text}));
       }
+      ContentBlock::ImageRef { .. } => {
+        return Err(Error::Build("unresolved image reference".into()));
+      }
       ContentBlock::Image { mime_type, data_base64 } => {
         blocks.push(json!({
           "type": "image",
@@ -417,7 +420,7 @@ fn render_assistant_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error
       ContentBlock::Text { text: block_text } => {
         blocks.push(json!({"type": "text", "text": block_text}));
       }
-      ContentBlock::Image { .. } => {
+      ContentBlock::Image { .. } | ContentBlock::ImageRef { .. } => {
         return Err(Error::Build(
           "an assistant message cannot carry images on the anthropic messages wire".to_owned(),
         ));

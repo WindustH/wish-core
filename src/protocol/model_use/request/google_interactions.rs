@@ -89,7 +89,7 @@ fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
       Message::System { content, .. }
       | Message::Developer { content, .. }
       | Message::User { content, .. } => {
-        steps.push(json!({"type": "user_input", "content": render_content_blocks(content)}))
+        steps.push(json!({"type": "user_input", "content": render_content_blocks(content)?}))
       }
       Message::Reasoning { replay_item, plaintext, opaque_kind, .. } => {
         let replay_item = if *opaque_kind == Some(ReasoningOpaqueKind::GoogleInteractionsThought) {
@@ -134,25 +134,31 @@ fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
 }
 
 fn render_model_output(content: &[ContentBlock]) -> Result<Value, Error> {
-  if content.iter().any(|block| matches!(block, ContentBlock::Image { .. })) {
+  if content
+    .iter()
+    .any(|block| matches!(block, ContentBlock::Image { .. } | ContentBlock::ImageRef { .. }))
+  {
     return Err(Error::Build(
       "model_output cannot carry images on the interactions wire".to_owned(),
     ));
   }
-  Ok(json!({"type": "model_output", "content": render_content_blocks(content)}))
+  Ok(json!({"type": "model_output", "content": render_content_blocks(content)?}))
 }
 
-fn render_content_blocks(content: &[ContentBlock]) -> Vec<Value> {
+fn render_content_blocks(content: &[ContentBlock]) -> Result<Vec<Value>, Error> {
   let mut blocks: Vec<Value> = Vec::new();
   for block in content {
     match block {
       ContentBlock::Text { text } => blocks.push(json!({"type": "text", "text": text})),
+      ContentBlock::ImageRef { .. } => {
+        return Err(Error::Build("unresolved image reference".into()));
+      }
       ContentBlock::Image { mime_type, data_base64 } => {
         blocks.push(json!({"type": "image", "mime_type": mime_type, "data": data_base64}))
       }
     }
   }
-  blocks
+  Ok(blocks)
 }
 
 /// A thought step carrying readable text and no proof, or nothing when there is no text to carry.
