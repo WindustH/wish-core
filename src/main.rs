@@ -16,9 +16,11 @@ mod tool;
 mod transport;
 mod utils;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-  server::run().await
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+  if std::env::args_os().nth(1).is_some_and(|arg| arg == "--blob-worker") {
+    return application::blob_preview::worker::run();
+  }
+  tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(server::run())
 }
 
 mod capability;

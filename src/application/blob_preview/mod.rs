@@ -1,6 +1,7 @@
 //! Blob decoding and preview generation: bounded shared cache and worker budget.
 pub mod image;
 pub mod pdf;
+pub(crate) mod worker;
 use super::error::{ApplicationError, ErrorKind};
 use std::{collections::VecDeque, process::Stdio, sync::LazyLock};
 use tokio::{
@@ -43,21 +44,10 @@ pub(super) async fn remember(key: String, bytes: Vec<u8>) -> bytes::Bytes {
 }
 pub(super) async fn execute(
   mut command: tokio::process::Command,
-  tool: &str,
   limit: u64,
 ) -> Result<Vec<u8>, ApplicationError> {
   command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
-  let mut child = command.spawn().map_err(|error| {
-    if error.kind() == std::io::ErrorKind::NotFound {
-      ApplicationError {
-        kind: ErrorKind::Unsupported,
-        message: format!("Blob previews require {tool} on the Wish server"),
-        details: None,
-      }
-    } else {
-      ApplicationError::internal(error)
-    }
-  })?;
+  let mut child = command.spawn().map_err(ApplicationError::internal)?;
   tokio::time::timeout(std::time::Duration::from_secs(30), async {
     let mut bytes = Vec::new();
     child
@@ -82,4 +72,14 @@ pub(super) async fn execute(
     message: "Blob preview timed out".into(),
     details: None,
   })?
+}
+
+pub(super) fn command(
+  kind: &str,
+  file: &std::path::Path,
+) -> Result<tokio::process::Command, ApplicationError> {
+  let mut command =
+    tokio::process::Command::new(std::env::current_exe().map_err(ApplicationError::internal)?);
+  command.arg("--blob-worker").arg(kind).arg(file);
+  Ok(command)
 }

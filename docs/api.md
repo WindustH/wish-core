@@ -195,7 +195,7 @@ engine error, for example
 | GET | `/api/sessions/{id}/blobs/{blob}` | Download an attachment |
 | GET | `/api/sessions/{id}/blobs/{blob}/meta` | Attachment metadata |
 | GET | `/api/sessions/{id}/blobs/{blob}/pdf` | PDF page count, version and bookmarks (server-side MuPDF) |
-| GET | `/api/sessions/{id}/blobs/{blob}/pdf/page?page=1&width=384` | Render one PDF page as PNG; width 128–2048 |
+| GET | `/api/sessions/{id}/blobs/{blob}/pdf/page?page=1` | Extract one native PDF page with its fonts and resources; rendered in the client |
 | POST | `/api/sessions/{id}/ask` | Side question on the session's context |
 | GET | `/api/usage`, `/api/sessions/{id}/usage` | Usage totals |
 | GET | `/api/usage/series`, `/api/sessions/{id}/usage/series` | Usage over time and streaming speed |
@@ -1481,8 +1481,10 @@ in-process client state. Call records include `stream_recoveries` (default 0 for
 older records), counting scheduled native recovery attempts. Restarting the server
 or running a previously failed session does not restore an old native checkpoint.
 
-PDF previews require `mutool` (the `mupdf-tools` package) on the backend PATH. The original PDF is read locally; these endpoints return JSON or a single page image. Rendering uses two workers, a 30-second execution timeout, and a 128 MiB / 128-entry in-memory LRU cache. Linked-file modification times invalidate cached results. Preview routes require normal API authentication; raw-media playback grants do not authorize them.
+PDF metadata and single-page extraction use the built-in Rust `lopdf` library. `GET …/blobs/{blob}/pdf` returns page count, bookmarks and source version; `GET …/blobs/{blob}/pdf/page?page=1` returns a standalone **application/pdf** file containing that page's original content streams, fonts and resources. The old page-image/width contract is replaced; deploy the frontend and backend together. Page-tree inheritance is flattened and unrelated objects are pruned. Static annotation appearances are retained; document actions, form relationships and cross-page links are not part of the extracted page. Original downloads remain untouched. Frontends render locally with PDF.js, including selectable text where the source contains text; scanned pages do not gain OCR.
 
-Blob previews live in `application/blob_preview/`, sharing a two-worker budget and a 128 MiB / 128-entry cache. `GET /api/sessions/{id}/blobs/{blob}/image?width=384` (also under groups) returns a WebP preview; allowed sizes are 384, 768 and 1536 pixels on the longest edge. Image previews require `magick` (ImageMagick) on the server PATH, apply orientation, preserve aspect ratio, and use the first frame of animated images. Original blob endpoints remain unchanged. Source modification time and size invalidate cached previews.
+Blob previews live in `application/blob_preview/`, sharing two worker slots and a 128 MiB / 128-entry cache. Work runs in the same Wish executable's private `--blob-worker` mode, with kill-on-drop cancellation and a 30-second execution timeout; Unix workers additionally enforce a 3 GiB address-space limit and a CPU-time limit. There is no `magick` or `mutool` installation requirement. Native PDF output is capped at 64 MiB per page, metadata at 2 MiB; sources are capped at 1 GiB. Matching ETags bypass workers. Linked-file modification time and size invalidate cached results. Preview routes require normal API authentication; raw-media grants do not authorize them.
+
+`GET /api/sessions/{id}/blobs/{blob}/image?width=384` (also under groups) uses Rust `image` codecs and returns lossless WebP. Allowed sizes are 384, 768 and 1536 pixels on the longest edge; orientation, aspect ratio and the first frame are preserved. Decoder allocation is limited to 256 MiB. Original blob endpoints remain unchanged.
 
 Preview conditional requests validate authorization and source metadata before rendering. Matching `If-None-Match` validators (including weak validators, lists, and `*`) return 304 even after the render cache is evicted. Cached response bytes are shared without copying. Draft uploads reserve quota before receiving their stream and serialize only with uploads/adoption of the same draft ID.

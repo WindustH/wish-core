@@ -11,21 +11,20 @@ use std::sync::Arc;
 #[derive(serde::Deserialize)]
 pub struct Page {
   page: u32,
-  width: u32,
 }
 
 async fn response(
   app: &Arc<App>,
   owner: &str,
   blob: &str,
-  page: Option<(u32, u32)>,
+  page: Option<u32>,
   request: HeaderMap,
 ) -> Result<Response, ApiError> {
   let source = pdf::prepare(app, owner, blob, page).await?;
   let mut headers = HeaderMap::new();
   headers.insert(
     header::CONTENT_TYPE,
-    if page.is_some() { "image/png" } else { "application/json" }.parse().unwrap(),
+    if page.is_some() { "application/pdf" } else { "application/json" }.parse().unwrap(),
   );
   headers.insert(header::CACHE_CONTROL, "private, no-cache".parse().unwrap());
   headers.insert(header::VARY, "Authorization".parse().unwrap());
@@ -33,7 +32,7 @@ async fn response(
   if super::conditional::not_modified(&request, &source.etag) {
     return Ok((StatusCode::NOT_MODIFIED, headers, Body::empty()).into_response());
   }
-  let result = pdf::render(app, source, page).await?;
+  let result = pdf::extract(app, source, page).await?;
   let bytes = if page.is_none() {
     let mut info: serde_json::Value = serde_json::from_slice(&result.bytes)
       .map_err(crate::application::error::ApplicationError::internal)?;
@@ -59,5 +58,5 @@ pub async fn page(
   Query(query): Query<Page>,
   headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-  response(&app, &owner, &blob, Some((query.page, query.width)), headers).await
+  response(&app, &owner, &blob, Some(query.page), headers).await
 }

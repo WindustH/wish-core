@@ -29,7 +29,7 @@ pub async fn prepare(
     .map(|at| at.as_nanos())
     .unwrap_or(0);
   let key = format!(
-    "image-v1:{:?}:{owner}:{blob}:{}:{modified}:{width}",
+    "image-rust-v2:{:?}:{owner}:{blob}:{}:{modified}:{width}",
     app.data_dir.root(),
     metadata.len()
   );
@@ -56,23 +56,9 @@ pub async fn render(
   if let Some(bytes) = cached(&key).await {
     return Ok(Preview { bytes, etag });
   }
-  let mut command = tokio::process::Command::new("magick");
-  command
-    .args([
-      "-limit", "memory", "128MiB", "-limit", "map", "128MiB", "-limit", "disk", "0", "-limit",
-      "thread", "1",
-    ])
-    .arg(format!("{}[0]", file.display()))
-    .args([
-      "-auto-orient",
-      "-thumbnail",
-      &format!("{width}x{width}>"),
-      "-strip",
-      "-quality",
-      "80",
-      "webp:-",
-    ]);
-  let result = super::execute(command, "magick (ImageMagick)", 16 * 1024 * 1024).await?;
+  let mut command = super::command("image", &file)?;
+  command.arg(width.to_string());
+  let result = super::execute(command, 16 * 1024 * 1024).await?;
   let bytes = super::remember(key, result).await;
   Ok(Preview { bytes, etag })
 }

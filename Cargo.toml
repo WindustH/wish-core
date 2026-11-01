@@ -39,7 +39,8 @@ hex = "0.4"
 # Base64 for inline media and the PKCE challenge of a browser login.
 base64 = "0.22"
 # Bounded reference-image decoding and resizing for provider input requirements.
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+lopdf = { version = "0.46", default-features = false }
 imara-diff = { version = "0.2", features = ["unified_diff"] }
 # MCP client: the protocol, local servers over stdio and the Streamable HTTP session logic. Its own
 # reqwest client stays off: remote servers are reached through wish's, under the same proxy policy.
