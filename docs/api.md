@@ -194,6 +194,8 @@ engine error, for example
 | GET | `/api/sessions/{id}/blobs?start&limit` | Page through stored session files |
 | GET | `/api/sessions/{id}/blobs/{blob}` | Download an attachment |
 | GET | `/api/sessions/{id}/blobs/{blob}/meta` | Attachment metadata |
+| GET | `/api/sessions/{id}/blobs/{blob}/pdf` | PDF page count, version and bookmarks (server-side MuPDF) |
+| GET | `/api/sessions/{id}/blobs/{blob}/pdf/page?page=1&width=384` | Render one PDF page as PNG; width 128–2048 |
 | POST | `/api/sessions/{id}/ask` | Side question on the session's context |
 | GET | `/api/usage`, `/api/sessions/{id}/usage` | Usage totals |
 | GET | `/api/usage/series`, `/api/sessions/{id}/usage/series` | Usage over time and streaming speed |
@@ -1478,3 +1480,5 @@ preview. Both contain only display events; native continuation tokens are privat
 in-process client state. Call records include `stream_recoveries` (default 0 for
 older records), counting scheduled native recovery attempts. Restarting the server
 or running a previously failed session does not restore an old native checkpoint.
+
+PDF previews require `mutool` (the `mupdf-tools` package) on the backend PATH. The original PDF is read locally; these endpoints return JSON or a single page image. Rendering uses two workers, a 30-second execution timeout, and a 128 MiB / 128-entry in-memory LRU cache. Linked-file modification times invalidate cached results. Preview routes require normal API authentication; raw-media playback grants do not authorize them.

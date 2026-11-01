@@ -14,6 +14,7 @@ mod mcp;
 mod media;
 mod media_grant;
 mod naming;
+mod pdf_preview;
 mod peers;
 mod providers;
 mod search;
@@ -129,6 +130,8 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     )
     .route("/sessions/{id}/blobs/{blob}", get(content::download))
     .route("/sessions/{id}/blobs/{blob}/meta", get(content::metadata))
+    .route("/sessions/{id}/blobs/{blob}/pdf", get(pdf_preview::info))
+    .route("/sessions/{id}/blobs/{blob}/pdf/page", get(pdf_preview::page))
     .route("/sessions/{id}/media/{kind}/{job}/status", post(media::status))
     .route("/sessions/{id}/blobs/{blob}/playback", post(media_grant::grant))
     .route("/sessions/{id}/config", put(sessions::set_config))
