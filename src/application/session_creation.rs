@@ -17,6 +17,17 @@ impl App {
     mut input: CreateSession,
   ) -> Result<Arc<SessionSlot>, ApplicationError> {
     self.lifecycle.require_open()?;
+    let id = match input.first_input.as_ref() {
+      Some(first) => uuid::Uuid::parse_str(&first.request_id)
+        .map_err(|_| ApplicationError::invalid("first_input.request_id must be a UUID"))?
+        .to_string(),
+      None => uuid::Uuid::new_v4().to_string(),
+    };
+    let _draft_owner = if input.first_input.is_some() {
+      Some(super::draft_uploads::lock_owner(self, &id).await)
+    } else {
+      None
+    };
     // Adoption and draft cleanup share a lock, acquired BEFORE creation admission so a
     // slow draft scan cannot block unrelated creations through the creation lock.
     let mut drafts =
@@ -32,12 +43,6 @@ impl App {
           .map_err(ApplicationError::internal)
       })
       .transpose()?;
-    let id = match input.first_input.as_ref() {
-      Some(first) => uuid::Uuid::parse_str(&first.request_id)
-        .map_err(|_| ApplicationError::invalid("first_input.request_id must be a UUID"))?
-        .to_string(),
-      None => uuid::Uuid::new_v4().to_string(),
-    };
     if input.first_input.is_some() {
       match self.get_session(&id).await {
         Ok(slot) if slot.get_descriptor().initial_input_digest == initial_input_digest => {

@@ -3,6 +3,7 @@
 //! `/api` except the unauthenticated `/health` and `/version`; other paths are the web app's.
 mod ask;
 mod bridge;
+mod conditional;
 mod config;
 pub(crate) mod content;
 mod directories;
@@ -110,7 +111,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/groups", post(groups::create))
     .route("/groups/{id}", get(groups::get).patch(groups::update).delete(groups::delete))
     .route("/groups/{id}/messages", get(groups::messages).post(groups::post))
-    .route("/groups/{id}/blobs", post(content::upload))
+    .route("/groups/{id}/blobs", get(content::list).post(content::upload))
     .route("/groups/{id}/blobs/{blob}", get(content::download))
     .route("/groups/{id}/blobs/{blob}/meta", get(content::metadata))
     .route("/groups/{id}/blobs/{blob}/image", get(image_preview::preview))

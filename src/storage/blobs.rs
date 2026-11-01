@@ -109,11 +109,26 @@ where
   Ok(blob)
 }
 
-/// The image formats a model reads, by their magic bytes; anything else is octet-stream.
-fn sniff_mime_type(bytes: &[u8]) -> &'static str {
+/// Detect media and UTF-8 text consistently for uploads, catalogs and downloads.
+pub(crate) fn sniff_mime_type(bytes: &[u8]) -> &'static str {
   crate::utils::image_format::supported_mime(bytes)
     .or_else(|| super::media::mime(bytes))
-    .unwrap_or("application/octet-stream")
+    .unwrap_or_else(|| {
+      let text = std::str::from_utf8(bytes).or_else(|error| {
+        if error.error_len().is_none() {
+          std::str::from_utf8(&bytes[..error.valid_up_to()])
+        } else {
+          Err(error)
+        }
+      });
+      if text
+        .is_ok_and(|text| text.chars().all(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t')))
+      {
+        "text/plain"
+      } else {
+        "application/octet-stream"
+      }
+    })
 }
 
 /// An upload's description; one without a readable description is not found.

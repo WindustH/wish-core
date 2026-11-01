@@ -1,8 +1,55 @@
-//! Paged descriptions of published blobs. No file contents or local paths leave this catalog.
+//! Paged blob descriptions, including explicit local links; file contents are never returned.
 use super::is_blob_id;
 use crate::storage::repository_error::RepositoryError;
 use serde::Serialize;
-use std::{io::Read, path::Path, time::UNIX_EPOCH};
+use std::{
+  collections::VecDeque,
+  io::Read,
+  path::{Path, PathBuf},
+  sync::{Arc, LazyLock, Mutex},
+  time::{SystemTime, UNIX_EPOCH},
+};
+type Row = (u64, String, Option<super::Blob>);
+// Blob publication and link registration use atomic renames. Directory revision changes
+// invalidate this bounded index; linked source contents are still inspected on each page.
+struct Index {
+  directory: PathBuf,
+  revision: SystemTime,
+  files: Arc<Vec<Row>>,
+}
+static INDEX: LazyLock<Mutex<VecDeque<Index>>> = LazyLock::new(|| Mutex::new(VecDeque::new()));
+fn revision(directory: &Path) -> Option<SystemTime> {
+  std::fs::metadata(directory).ok()?.modified().ok()
+}
+fn indexed(directory: &Path) -> Result<Arc<Vec<Row>>, RepositoryError> {
+  let before = revision(directory);
+  if let Some(revision) = before {
+    let mut cache =
+      INDEX.lock().map_err(|_| RepositoryError::internal("catalog index lock poisoned"))?;
+    if let Some(position) =
+      cache.iter().position(|item| item.directory == directory && item.revision == revision)
+    {
+      let item = cache.remove(position).expect("located index");
+      let files = item.files.clone();
+      cache.push_back(item);
+      return Ok(files);
+    }
+  }
+  let files = Arc::new(scan(directory)?);
+  if let Some(before) = before
+    && Some(before) == revision(directory)
+    && files.len() <= 8192
+  {
+    let mut cache =
+      INDEX.lock().map_err(|_| RepositoryError::internal("catalog index lock poisoned"))?;
+    cache.retain(|item| item.directory != directory);
+    cache.push_back(Index { directory: directory.into(), revision: before, files: files.clone() });
+    while cache.len() > 64 || cache.iter().map(|item| item.files.len()).sum::<usize>() > 8192 {
+      cache.pop_front();
+    }
+  }
+  Ok(files)
+}
 
 #[derive(Serialize)]
 pub struct Item {
@@ -22,11 +69,11 @@ pub struct Page {
   pub total: usize,
 }
 
-pub fn list(directory: &Path, start: usize, limit: usize) -> Result<Page, RepositoryError> {
+fn scan(directory: &Path) -> Result<Vec<Row>, RepositoryError> {
   let entries = match std::fs::read_dir(directory) {
     Ok(entries) => entries,
     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-      return Ok(Page { items: vec![], next: None, total: 0 });
+      return Ok(vec![]);
     }
     Err(error) => return Err(RepositoryError::internal(error)),
   };
@@ -76,9 +123,13 @@ pub fn list(directory: &Path, start: usize, limit: usize) -> Result<Page, Reposi
     files.push((modified_at, id, linked));
   }
   files.sort_unstable_by(|a, b| (&b.0, &b.1).cmp(&(&a.0, &a.1)));
+  Ok(files)
+}
+pub fn list(directory: &Path, start: usize, limit: usize) -> Result<Page, RepositoryError> {
+  let files = indexed(directory)?;
   let total = files.len();
   let mut items = Vec::new();
-  for (modified_at, id, linked) in files.into_iter().skip(start).take(limit) {
+  for (modified_at, id, linked) in files.iter().skip(start).take(limit).cloned() {
     let path = linked
       .as_ref()
       .map(|blob| std::path::PathBuf::from(&blob.path))
@@ -110,23 +161,7 @@ pub fn list(directory: &Path, start: usize, limit: usize) -> Result<Page, Reposi
     let mut prefix = [0; 512];
     let length = file.read(&mut prefix).map_err(RepositoryError::internal)?;
     let prefix = &prefix[..length];
-    let detected = super::sniff_mime_type(prefix);
-    let text = std::str::from_utf8(prefix).or_else(|error| {
-      if error.error_len().is_none() {
-        std::str::from_utf8(&prefix[..error.valid_up_to()])
-      } else {
-        Err(error)
-      }
-    });
-    let mime_type = if detected == "application/octet-stream"
-      && text
-        .is_ok_and(|text| text.chars().all(|c| !c.is_control() || matches!(c, '\n' | '\r' | '\t')))
-    {
-      "text/plain"
-    } else {
-      detected
-    }
-    .to_owned();
+    let mime_type = super::sniff_mime_type(prefix).to_owned();
     // Model images can exist without an upload sidecar; inspect only a small prefix.
     items.push(Item {
       id,

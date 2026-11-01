@@ -82,10 +82,7 @@ pub async fn open(app: &Arc<App>, owner: &str, blob: &str) -> Result<BlobReader,
   let mut prefix = [0; 512];
   let count = file.read(&mut prefix).await.map_err(ApplicationError::internal)?;
   file.rewind().await.map_err(ApplicationError::internal)?;
-  let mime_type = crate::utils::image_format::supported_mime(&prefix[..count])
-    .or_else(|| crate::storage::media::mime(&prefix[..count]))
-    .unwrap_or("application/octet-stream")
-    .into();
+  let mime_type = blobs::sniff_mime_type(&prefix[..count]).into();
   Ok(BlobReader { file, length, mime_type })
 }
 pub async fn metadata(
@@ -97,8 +94,12 @@ pub async fn metadata(
   if !blobs::is_blob_id(blob) {
     return Err(ApplicationError::not_found());
   }
-  let item = blobs::read_description(&app.data_dir.blobs(owner), blob).await?;
-  Ok(BlobMetadata { id: item.id, mime_type: item.mime_type, byte_count: item.byte_count })
+  let item = open(app, owner, blob).await?;
+  Ok(BlobMetadata {
+    id: blob.into(),
+    mime_type: item.mime_type,
+    byte_count: usize::try_from(item.length).map_err(ApplicationError::internal)?,
+  })
 }
 
 /// Stage bytes under a submission UUID without creating or publishing an empty session.

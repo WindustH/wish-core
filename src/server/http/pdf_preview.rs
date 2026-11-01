@@ -21,7 +21,7 @@ async fn response(
   page: Option<(u32, u32)>,
   request: HeaderMap,
 ) -> Result<Response, ApiError> {
-  let result = pdf::read(app, owner, blob, page).await?;
+  let source = pdf::prepare(app, owner, blob, page).await?;
   let mut headers = HeaderMap::new();
   headers.insert(
     header::CONTENT_TYPE,
@@ -29,17 +29,20 @@ async fn response(
   );
   headers.insert(header::CACHE_CONTROL, "private, no-cache".parse().unwrap());
   headers.insert(header::VARY, "Authorization".parse().unwrap());
-  headers.insert(header::ETAG, result.etag.parse().unwrap());
-  if request.get(header::IF_NONE_MATCH).is_some_and(|value| value == result.etag.as_str()) {
+  headers.insert(header::ETAG, source.etag.parse().unwrap());
+  if super::conditional::not_modified(&request, &source.etag) {
     return Ok((StatusCode::NOT_MODIFIED, headers, Body::empty()).into_response());
   }
+  let result = pdf::render(app, source, page).await?;
   let bytes = if page.is_none() {
     let mut info: serde_json::Value = serde_json::from_slice(&result.bytes)
       .map_err(crate::application::error::ApplicationError::internal)?;
     info["version"] = serde_json::Value::String(result.etag);
-    serde_json::to_vec(&info).map_err(crate::application::error::ApplicationError::internal)?
+    bytes::Bytes::from(
+      serde_json::to_vec(&info).map_err(crate::application::error::ApplicationError::internal)?,
+    )
   } else {
-    result.bytes.as_ref().clone()
+    result.bytes
   };
   Ok((headers, Body::from(bytes)).into_response())
 }

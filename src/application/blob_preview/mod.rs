@@ -2,20 +2,16 @@
 pub mod image;
 pub mod pdf;
 use super::error::{ApplicationError, ErrorKind};
-use std::{
-  collections::VecDeque,
-  process::Stdio,
-  sync::{Arc, LazyLock},
-};
+use std::{collections::VecDeque, process::Stdio, sync::LazyLock};
 use tokio::{
   io::AsyncReadExt,
   sync::{Mutex, Semaphore},
 };
-const LIMIT: usize = 128 * 1024 * 1024;
-type Entries = VecDeque<(String, Arc<Vec<u8>>)>;
+const MAX_CACHE_BYTES: usize = 128 * 1024 * 1024;
+type Entries = VecDeque<(String, bytes::Bytes)>;
 static CACHE: LazyLock<Mutex<Entries>> = LazyLock::new(|| Mutex::new(VecDeque::new()));
 static WORKERS: Semaphore = Semaphore::const_new(2);
-pub(super) async fn cached(key: &str) -> Option<Arc<Vec<u8>>> {
+pub(super) async fn cached(key: &str) -> Option<bytes::Bytes> {
   let mut cache = CACHE.lock().await;
   let position = cache.iter().position(|(id, _)| id == key)?;
   let entry = cache.remove(position)?;
@@ -24,15 +20,23 @@ pub(super) async fn cached(key: &str) -> Option<Arc<Vec<u8>>> {
   Some(data)
 }
 
+pub struct Source {
+  pub etag: String,
+  key: String,
+  file: std::path::PathBuf,
+}
 pub struct Preview {
-  pub bytes: Arc<Vec<u8>>,
+  pub bytes: bytes::Bytes,
   pub etag: String,
 }
-pub(super) async fn remember(key: String, bytes: Vec<u8>) -> Arc<Vec<u8>> {
-  let bytes = Arc::new(bytes);
+pub(super) async fn remember(key: String, bytes: Vec<u8>) -> bytes::Bytes {
+  let bytes = bytes::Bytes::from(bytes);
   let mut cache = CACHE.lock().await;
+  cache.retain(|(existing, _)| existing != &key);
   cache.push_back((key, bytes.clone()));
-  while cache.len() > 128 || cache.iter().map(|(_, bytes)| bytes.len()).sum::<usize>() > LIMIT {
+  while cache.len() > 128
+    || cache.iter().map(|(_, bytes)| bytes.len()).sum::<usize>() > MAX_CACHE_BYTES
+  {
     cache.pop_front();
   }
   bytes

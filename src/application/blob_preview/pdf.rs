@@ -1,4 +1,4 @@
-use super::{Preview, WORKERS, cached};
+use super::{Preview, Source, WORKERS, cached};
 use crate::application::{
   app::App,
   attachments,
@@ -22,12 +22,12 @@ try { walk(d.loadOutline(), 0); } catch(e) {}
 print(JSON.stringify({pages:d.countPages(),bookmarks:rows}));
 "#;
 
-pub async fn read(
+pub async fn prepare(
   app: &Arc<App>,
   owner: &str,
   blob: &str,
   page: Option<(u32, u32)>,
-) -> Result<Preview, ApplicationError> {
+) -> Result<Source, ApplicationError> {
   let opened = attachments::open(app, owner, blob).await?;
   if opened.mime_type != "application/pdf" {
     return Err(ApplicationError::invalid("PDF preview requires a PDF file"));
@@ -48,6 +48,14 @@ pub async fn read(
   let key =
     format!("{:?}:{owner}:{blob}:{}:{modified}:{page:?}", app.data_dir.root(), metadata.len());
   let etag = format!("\"pdf-{:x}\"", Sha256::digest(key.as_bytes()));
+  Ok(Source { etag, key, file })
+}
+pub async fn render(
+  app: &Arc<App>,
+  source: Source,
+  page: Option<(u32, u32)>,
+) -> Result<Preview, ApplicationError> {
+  let Source { etag, key, file } = source;
   if let Some(bytes) = cached(&key).await {
     return Ok(Preview { bytes, etag });
   }

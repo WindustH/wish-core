@@ -1,4 +1,4 @@
-use super::{Preview, WORKERS, cached};
+use super::{Preview, Source, WORKERS, cached};
 use crate::application::{
   app::App,
   attachments,
@@ -7,12 +7,12 @@ use crate::application::{
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
-pub async fn read(
+pub async fn prepare(
   app: &Arc<App>,
   owner: &str,
   blob: &str,
   width: u32,
-) -> Result<Preview, ApplicationError> {
+) -> Result<Source, ApplicationError> {
   if ![384, 768, 1536].contains(&width) {
     return Err(ApplicationError::invalid("Image preview width must be 384, 768 or 1536"));
   }
@@ -34,6 +34,14 @@ pub async fn read(
     metadata.len()
   );
   let etag = format!("\"image-{:x}\"", Sha256::digest(key.as_bytes()));
+  Ok(Source { etag, key, file })
+}
+pub async fn render(
+  _app: &Arc<App>,
+  source: Source,
+  width: u32,
+) -> Result<Preview, ApplicationError> {
+  let Source { etag, key, file } = source;
   if let Some(bytes) = cached(&key).await {
     return Ok(Preview { bytes, etag });
   }

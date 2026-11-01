@@ -17,14 +17,15 @@ pub async fn preview(
   Query(size): Query<Size>,
   request: HeaderMap,
 ) -> Result<Response, ApiError> {
-  let result = image::read(&app, &owner, &blob, size.width).await?;
+  let source = image::prepare(&app, &owner, &blob, size.width).await?;
   let mut headers = HeaderMap::new();
   headers.insert(header::CONTENT_TYPE, "image/webp".parse().unwrap());
   headers.insert(header::CACHE_CONTROL, "private, no-cache".parse().unwrap());
   headers.insert(header::VARY, "Authorization".parse().unwrap());
-  headers.insert(header::ETAG, result.etag.parse().unwrap());
-  if request.get(header::IF_NONE_MATCH).is_some_and(|value| value == result.etag.as_str()) {
+  headers.insert(header::ETAG, source.etag.parse().unwrap());
+  if super::conditional::not_modified(&request, &source.etag) {
     return Ok((StatusCode::NOT_MODIFIED, headers, Body::empty()).into_response());
   }
-  Ok((headers, Body::from(result.bytes.as_ref().clone())).into_response())
+  let result = image::render(&app, source, size.width).await?;
+  Ok((headers, Body::from(result.bytes)).into_response())
 }

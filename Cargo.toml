@@ -13,6 +13,7 @@ name = "wish"
 path = "src/main.rs"
 
 [dependencies]
+bytes = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 lru = "0.18.2"
