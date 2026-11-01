@@ -52,8 +52,8 @@ pub mod tool_commands;
 
 pub mod command_trace;
 
+pub(crate) mod blob_preview;
 mod pagination;
-pub(crate) mod pdf_preview;
 
 mod session_creation;
 

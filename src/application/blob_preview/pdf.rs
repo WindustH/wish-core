@@ -1,25 +1,11 @@
-//! Bounded server-side PDF metadata and page rendering. Originals never leave the
-//! backend for a preview; MuPDF reads the local file and only its output is cached.
-use super::{
+use super::{Preview, WORKERS, cached};
+use crate::application::{
   app::App,
   attachments,
   error::{ApplicationError, ErrorKind},
 };
 use sha2::{Digest, Sha256};
-use std::{
-  collections::VecDeque,
-  process::Stdio,
-  sync::{Arc, LazyLock},
-};
-use tokio::{
-  io::AsyncReadExt,
-  sync::{Mutex, Semaphore},
-};
-
-const LIMIT: usize = 128 * 1024 * 1024;
-type Entries = VecDeque<(String, Arc<Vec<u8>>)>;
-static CACHE: LazyLock<Mutex<Entries>> = LazyLock::new(|| Mutex::new(VecDeque::new()));
-static WORKERS: Semaphore = Semaphore::const_new(2);
+use std::sync::Arc;
 const SCRIPT: &str = r#"
 var d = Document.openDocument(scriptArgs[0]);
 var rows = [];
@@ -36,19 +22,6 @@ try { walk(d.loadOutline(), 0); } catch(e) {}
 print(JSON.stringify({pages:d.countPages(),bookmarks:rows}));
 "#;
 
-async fn cached(key: &str) -> Option<Arc<Vec<u8>>> {
-  let mut cache = CACHE.lock().await;
-  let position = cache.iter().position(|(id, _)| id == key)?;
-  let entry = cache.remove(position)?;
-  let data = entry.1.clone();
-  cache.push_back(entry);
-  Some(data)
-}
-
-pub struct Preview {
-  pub bytes: Arc<Vec<u8>>,
-  pub etag: String,
-}
 pub async fn read(
   app: &Arc<App>,
   owner: &str,
@@ -118,58 +91,19 @@ pub async fn read(
     }
     command.arg("run").arg(script).arg(&file);
   }
-  command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true);
-  let mut child = command.spawn().map_err(|error| {
-    if error.kind() == std::io::ErrorKind::NotFound {
-      ApplicationError {
-        kind: ErrorKind::Unsupported,
-        message: "PDF previews require mutool (mupdf-tools) on the Wish server".into(),
-        details: None,
-      }
-    } else {
-      ApplicationError::internal(error)
+  let result = super::execute(
+    command,
+    "mutool (mupdf-tools)",
+    if page.is_some() { 16 * 1024 * 1024 } else { 2 * 1024 * 1024 },
+  )
+  .await?;
+  if page.is_none() {
+    let info: serde_json::Value =
+      serde_json::from_slice(&result).map_err(ApplicationError::internal)?;
+    if info["pages"].as_u64().unwrap_or(0) == 0 {
+      return Err(ApplicationError::invalid("PDF has no pages"));
     }
-  })?;
-  let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-    let mut bytes = Vec::new();
-    let limit = if page.is_some() { 16 * 1024 * 1024 } else { 2 * 1024 * 1024 };
-    child
-      .stdout
-      .take()
-      .expect("piped output")
-      .take(limit + 1)
-      .read_to_end(&mut bytes)
-      .await
-      .map_err(ApplicationError::internal)?;
-    if bytes.len() as u64 > limit {
-      return Err(ApplicationError::invalid("PDF preview output exceeds limit"));
-    }
-    let status = child.wait().await.map_err(ApplicationError::internal)?;
-    if !status.success() || bytes.is_empty() {
-      return Err(ApplicationError::invalid(
-        "Unable to preview this PDF or page (encrypted, damaged, or invalid page)",
-      ));
-    }
-    if page.is_none() {
-      let info: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(ApplicationError::internal)?;
-      if info["pages"].as_u64().unwrap_or(0) == 0 {
-        return Err(ApplicationError::invalid("PDF has no pages"));
-      }
-    }
-    Ok(bytes)
-  })
-  .await
-  .map_err(|_| ApplicationError {
-    kind: ErrorKind::Timeout,
-    message: "PDF preview timed out".into(),
-    details: None,
-  })??;
-  let bytes = Arc::new(result);
-  let mut cache = CACHE.lock().await;
-  cache.push_back((key, bytes.clone()));
-  while cache.len() > 128 || cache.iter().map(|(_, bytes)| bytes.len()).sum::<usize>() > LIMIT {
-    cache.pop_front();
   }
+  let bytes = super::remember(key, result).await;
   Ok(Preview { bytes, etag })
 }

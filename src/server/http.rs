@@ -9,6 +9,7 @@ mod directories;
 mod folders;
 mod groups;
 mod history;
+mod image_preview;
 mod manage;
 mod mcp;
 mod media;
@@ -112,6 +113,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/groups/{id}/blobs", post(content::upload))
     .route("/groups/{id}/blobs/{blob}", get(content::download))
     .route("/groups/{id}/blobs/{blob}/meta", get(content::metadata))
+    .route("/groups/{id}/blobs/{blob}/image", get(image_preview::preview))
     .route("/sessions/{id}/groups", get(groups::of_session))
     .route("/sessions/{id}/generate-name", post(naming::generate))
     .route("/sessions/{id}/fork", post(manage::fork))
@@ -130,6 +132,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     )
     .route("/sessions/{id}/blobs/{blob}", get(content::download))
     .route("/sessions/{id}/blobs/{blob}/meta", get(content::metadata))
+    .route("/sessions/{id}/blobs/{blob}/image", get(image_preview::preview))
     .route("/sessions/{id}/blobs/{blob}/pdf", get(pdf_preview::info))
     .route("/sessions/{id}/blobs/{blob}/pdf/page", get(pdf_preview::page))
     .route("/sessions/{id}/media/{kind}/{job}/status", post(media::status))

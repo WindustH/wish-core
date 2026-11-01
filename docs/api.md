@@ -1482,3 +1482,5 @@ older records), counting scheduled native recovery attempts. Restarting the serv
 or running a previously failed session does not restore an old native checkpoint.
 
 PDF previews require `mutool` (the `mupdf-tools` package) on the backend PATH. The original PDF is read locally; these endpoints return JSON or a single page image. Rendering uses two workers, a 30-second execution timeout, and a 128 MiB / 128-entry in-memory LRU cache. Linked-file modification times invalidate cached results. Preview routes require normal API authentication; raw-media playback grants do not authorize them.
+
+Blob previews live in `application/blob_preview/`, sharing a two-worker budget and a 128 MiB / 128-entry cache. `GET /api/sessions/{id}/blobs/{blob}/image?width=384` (also under groups) returns a WebP preview; allowed sizes are 384, 768 and 1536 pixels on the longest edge. Image previews require `magick` (ImageMagick) on the server PATH, apply orientation, preserve aspect ratio, and use the first frame of animated images. Original blob endpoints remain unchanged. Source modification time and size invalidate cached previews.

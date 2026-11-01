@@ -1,4 +1,4 @@
-use crate::application::{app::App, pdf_preview};
+use crate::application::{app::App, blob_preview::pdf};
 use crate::server::error::ApiError;
 use axum::{
   body::Body,
@@ -21,7 +21,7 @@ async fn response(
   page: Option<(u32, u32)>,
   request: HeaderMap,
 ) -> Result<Response, ApiError> {
-  let result = pdf_preview::read(app, owner, blob, page).await?;
+  let result = pdf::read(app, owner, blob, page).await?;
   let mut headers = HeaderMap::new();
   headers.insert(
     header::CONTENT_TYPE,
