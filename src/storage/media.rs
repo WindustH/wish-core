@@ -90,6 +90,7 @@ where
   let path = directory.join(&id);
   tokio::fs::rename(&temporary.0, &path).await.map_err(RepositoryError::internal)?;
   let blob = Blob {
+    linked: false,
     id: id.clone(),
     mime_type: mime.into(),
     byte_count: count,

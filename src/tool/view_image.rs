@@ -35,15 +35,15 @@ impl ViewImageTool {
     if !metadata.is_file() {
       return Err("path must refer to a regular file".into());
     }
-    const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+    const MAX_IMAGE_BYTES: u64 = 100 * 1024 * 1024;
     if metadata.len() > MAX_IMAGE_BYTES {
-      return Err("image exceeds 20 MiB; use shell to resize it first".into());
+      return Err("image exceeds 100 MiB; use shell to resize it first".into());
     }
     let file = tokio::fs::File::open(&args.path).await.map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
     file.take(MAX_IMAGE_BYTES + 1).read_to_end(&mut bytes).await.map_err(|e| e.to_string())?;
     if bytes.len() as u64 > MAX_IMAGE_BYTES {
-      return Err("image exceeds 20 MiB; use shell to resize it first".into());
+      return Err("image exceeds 100 MiB; use shell to resize it first".into());
     }
     let mime_type =
       crate::utils::image_format::supported_mime(&bytes).ok_or_else(|| conversion_hint(&bytes))?;

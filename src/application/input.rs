@@ -106,8 +106,8 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
     // Count one retained copy even when a removed editor token no longer references the image.
     if attachment.kind == "image" {
       expanded_bytes = expanded_bytes.saturating_add(blob.byte_count.saturating_mul(uses.max(1)));
-      if expanded_bytes > 32 * 1024 * 1024 {
-        return Err(ApplicationError::invalid("expanded input images exceed 32 MiB"));
+      if expanded_bytes > 128 * 1024 * 1024 {
+        return Err(ApplicationError::invalid("expanded input images exceed 128 MiB"));
       }
     }
     attachment.byte_count = Some(blob.byte_count);
@@ -118,7 +118,10 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
             "attachment is not PNG, JPEG, GIF or WebP; convert HEIF/HEIC or other formats before sending (renaming the extension does not convert an image)",
           ));
         }
-        let bytes = tokio::fs::read(&blob.path).await.map_err(ApplicationError::internal)?;
+        let bytes =
+          crate::utils::bounded_file::read(std::path::Path::new(&blob.path), 100 * 1024 * 1024)
+            .await
+            .map_err(ApplicationError::internal)?;
         ContentBlock::Image {
           mime_type: blob.mime_type,
           data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
@@ -126,7 +129,8 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
       }
       "file" => ContentBlock::Text {
         text: format!(
-          "[File sha256:{}] Attached file {}: {}",
+          "[File {}:{}] Attached file {}: {}",
+          if blob.linked { "reference" } else { "sha256" },
           attachment.id,
           json!(attachment.name),
           json!(blob.path)

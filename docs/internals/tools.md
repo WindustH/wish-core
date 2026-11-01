@@ -270,7 +270,7 @@ and returns `Cancelled`. The tools' own arguments and results are excluded from 
 ## `view_image`
 
 `tool::view_image::ViewImageTool` reads an absolute path to a PNG, JPEG, GIF or WebP file, detected
-by magic bytes, up to 20 MiB. It returns `SuccessWithInput` with output
+by magic bytes, up to 100 MiB. It returns `SuccessWithInput` with output
 `{path, mime_type, byte_count}` and the image as input. The session stores all tool results first,
 then appends the images as one `User` message per call (metadata `tool_call_id`, `tool_name`),
 preserving call/result pairing for parallel batches.

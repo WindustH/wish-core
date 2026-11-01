@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 pub mod catalog;
+pub mod linked;
+pub const MAX_UPLOAD_BYTES: usize = 1024 * 1024 * 1024;
 
 /// An upload's description, saved beside it.
 #[derive(Clone, Serialize, Deserialize)]
@@ -16,6 +18,8 @@ pub struct Blob {
   pub byte_count: usize,
   /// Where the blob is, canonical, for a shell command to read.
   pub path: String,
+  #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+  pub linked: bool,
 }
 
 /// Whether a name is a blob's: a SHA-256 in hex.
@@ -35,19 +39,66 @@ pub fn description_path(directory: &Path, id: &str) -> PathBuf {
 
 /// Stores an upload and its description.
 pub async fn save_upload(directory: &Path, body: &[u8]) -> Result<Blob, RepositoryError> {
-  let id = blob_id(body);
+  save_upload_stream(
+    directory,
+    futures_util::stream::once(async { Ok::<_, std::io::Error>(body) }),
+    MAX_UPLOAD_BYTES,
+  )
+  .await
+}
+
+/// Hash and stage an upload incrementally. Cancellation drops the unpublished temporary file.
+pub async fn save_upload_stream<S, B, E>(
+  directory: &Path,
+  stream: S,
+  limit: usize,
+) -> Result<Blob, RepositoryError>
+where
+  S: futures_util::Stream<Item = Result<B, E>>,
+  B: AsRef<[u8]>,
+  E: std::fmt::Display,
+{
+  use futures_util::StreamExt;
+  use tokio::io::AsyncWriteExt;
   tokio::fs::create_dir_all(directory).await.map_err(RepositoryError::internal)?;
+  struct Remove(PathBuf);
+  impl Drop for Remove {
+    fn drop(&mut self) {
+      let _ = std::fs::remove_file(&self.0);
+    }
+  }
+  let temporary = Remove(directory.join(format!(".{}.tmp", uuid::Uuid::new_v4())));
+  let mut file = tokio::fs::File::create(&temporary.0).await.map_err(RepositoryError::internal)?;
+  let mut hash = Sha256::new();
+  let mut count = 0usize;
+  let mut prefix = Vec::new();
+  futures_util::pin_mut!(stream);
+  while let Some(chunk) = stream.next().await {
+    let chunk = chunk.map_err(RepositoryError::internal)?;
+    let bytes = chunk.as_ref();
+    count = count.saturating_add(bytes.len());
+    if count > limit.min(MAX_UPLOAD_BYTES) {
+      return Err(RepositoryError::invalid("file exceeds upload or pending draft size limit"));
+    }
+    prefix.extend_from_slice(&bytes[..bytes.len().min(512 - prefix.len())]);
+    hash.update(bytes);
+    file.write_all(bytes).await.map_err(RepositoryError::internal)?;
+  }
+  file.sync_all().await.map_err(RepositoryError::internal)?;
+  drop(file);
+  let id = format!("{:x}", hash.finalize());
   let path = directory.join(&id);
-  atomic_write(&path, body).await.map_err(RepositoryError::internal)?;
+  tokio::fs::rename(&temporary.0, &path).await.map_err(RepositoryError::internal)?;
   let blob = Blob {
     id: id.clone(),
-    mime_type: sniff_mime_type(body).into(),
-    byte_count: body.len(),
+    mime_type: sniff_mime_type(&prefix).into(),
+    byte_count: count,
     path: tokio::fs::canonicalize(&path)
       .await
       .map_err(RepositoryError::internal)?
       .to_string_lossy()
       .into_owned(),
+    linked: false,
   };
   atomic_write(
     &description_path(directory, &id),
@@ -70,7 +121,8 @@ pub async fn read_description(directory: &Path, id: &str) -> Result<Blob, Reposi
   let bytes = crate::utils::bounded_file::read(&description_path(directory, id), 64 * 1024)
     .await
     .map_err(|_| RepositoryError::not_found())?;
-  serde_json::from_slice(&bytes).map_err(RepositoryError::internal)
+  let blob: Blob = serde_json::from_slice(&bytes).map_err(RepositoryError::internal)?;
+  if blob.linked { linked::describe(&blob.id, &blob.path).await } else { Ok(blob) }
 }
 
 /// Stores an image the conversation holds as base64, and returns where it is.

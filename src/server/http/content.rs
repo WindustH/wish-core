@@ -8,7 +8,7 @@ use crate::application::{
 use crate::server::error::ApiError;
 use axum::{
   Json,
-  body::Bytes,
+  body::Body,
   extract::{Path, Query, State},
   http::{HeaderMap, StatusCode, header},
 };
@@ -26,9 +26,9 @@ pub async fn list(
 pub async fn upload(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
-  body: Bytes,
+  body: Body,
 ) -> Result<Json<Blob>, ApiError> {
-  Ok(Json(attachments::upload(&app, &id, &body).await?))
+  Ok(Json(attachments::upload_stream(&app, &id, body.into_data_stream()).await?))
 }
 pub async fn download(
   State(app): State<Arc<App>>,
@@ -39,7 +39,16 @@ pub async fn download(
   use tokio::io::{AsyncReadExt, AsyncSeekExt};
   let mut opened = attachments::open(&app, &id, &blob).await?;
   let length = opened.length;
-  let etag = format!("\"{blob}\"");
+  let modified = opened
+    .file
+    .metadata()
+    .await
+    .ok()
+    .and_then(|m| m.modified().ok())
+    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+    .map(|d| d.as_nanos())
+    .unwrap_or(0);
+  let etag = format!("\"{blob}-{length}-{modified}\"");
   let mut headers = HeaderMap::new();
   headers.insert(
     header::CONTENT_TYPE,
@@ -119,7 +128,20 @@ pub async fn input(
 pub async fn upload_draft(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
-  body: Bytes,
+  body: Body,
 ) -> Result<Json<Blob>, ApiError> {
-  Ok(Json(attachments::upload_draft(&app, &id, &body).await?))
+  Ok(Json(attachments::upload_draft_stream(&app, &id, body.into_data_stream()).await?))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalFile {
+  path: String,
+}
+pub async fn link(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Json(input): Json<LocalFile>,
+) -> Result<Json<Blob>, ApiError> {
+  Ok(Json(attachments::link(&app, &id, &input.path).await?))
 }

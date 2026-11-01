@@ -530,11 +530,7 @@ async fn load_references(
     if !blobs::is_blob_id(id) {
       return Err("reference image must be a session blob ID".into());
     }
-    let path =
-      tokio::fs::canonicalize(root.join(id)).await.map_err(|_| "reference image blob not found")?;
-    if path.parent() != Some(root.as_path()) {
-      return Err("reference image must belong to this session".into());
-    }
+    let path = blobs::linked::resolve(root, id).await.map_err(|e| e.to_string())?;
     let file = tokio::fs::File::open(path).await.map_err(|e| e.to_string())?;
     if file.metadata().await.map_err(|e| e.to_string())?.len() > remaining {
       return Err("reference images exceed the combined 12 MiB limit".into());

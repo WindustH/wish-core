@@ -23,10 +23,24 @@ pub struct BlobMetadata {
   byte_count: usize,
 }
 
-pub async fn upload(app: &Arc<App>, owner: &str, body: &[u8]) -> Result<Blob, ApplicationError> {
+pub async fn upload_stream<S, B, E>(
+  app: &Arc<App>,
+  owner: &str,
+  stream: S,
+) -> Result<Blob, ApplicationError>
+where
+  S: futures_util::Stream<Item = Result<B, E>>,
+  B: AsRef<[u8]>,
+  E: std::fmt::Display,
+{
   app.lifecycle.require_open()?;
   require_owner(app, owner).await?;
-  Ok(blobs::save_upload(&app.data_dir.blobs(owner), body).await?)
+  Ok(blobs::save_upload_stream(&app.data_dir.blobs(owner), stream, blobs::MAX_UPLOAD_BYTES).await?)
+}
+pub async fn link(app: &Arc<App>, owner: &str, path: &str) -> Result<Blob, ApplicationError> {
+  app.lifecycle.require_open()?;
+  require_owner(app, owner).await?;
+  Ok(blobs::linked::register(&app.data_dir.blobs(owner), path).await?)
 }
 
 pub async fn list(
@@ -55,13 +69,15 @@ pub async fn open(app: &Arc<App>, owner: &str, blob: &str) -> Result<BlobReader,
     return Err(ApplicationError::not_found());
   }
   let mut file =
-    tokio::fs::File::open(app.data_dir.blobs(owner).join(blob)).await.map_err(|error| {
-      if error.kind() == std::io::ErrorKind::NotFound {
-        ApplicationError::not_found()
-      } else {
-        ApplicationError::internal(error)
-      }
-    })?;
+    tokio::fs::File::open(blobs::linked::resolve(&app.data_dir.blobs(owner), blob).await?)
+      .await
+      .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+          ApplicationError::not_found()
+        } else {
+          ApplicationError::internal(error)
+        }
+      })?;
   let length = file.metadata().await.map_err(ApplicationError::internal)?.len();
   let mut prefix = [0; 512];
   let count = file.read(&mut prefix).await.map_err(ApplicationError::internal)?;
@@ -87,14 +103,19 @@ pub async fn metadata(
 
 /// Stage bytes under a submission UUID without creating or publishing an empty session.
 /// Content-addressed names make retries reuse the same file; acceptance adopts this directory.
-pub async fn upload_draft(
+pub async fn upload_draft_stream<S, B, E>(
   app: &Arc<App>,
   request_id: &str,
-  body: &[u8],
-) -> Result<Blob, ApplicationError> {
+  stream: S,
+) -> Result<Blob, ApplicationError>
+where
+  S: futures_util::Stream<Item = Result<B, E>>,
+  B: AsRef<[u8]>,
+  E: std::fmt::Display,
+{
   app.lifecycle.require_open()?;
   let id = uuid::Uuid::parse_str(request_id)
     .map_err(|_| ApplicationError::invalid("draft request_id must be a UUID"))?
     .to_string();
-  super::draft_uploads::upload(app, id, body).await
+  super::draft_uploads::upload_stream(app, id, stream).await
 }

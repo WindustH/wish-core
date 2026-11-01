@@ -6,7 +6,7 @@ use super::{
 use crate::storage::blobs;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 const MAX_DRAFTS: usize = 128;
-const MAX_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Exact pending-directory sizes. Built once, updated on upload/adoption, and reconciled by
 /// the hourly reaper. Never shares the session creation lock.
@@ -70,11 +70,16 @@ async fn inspect(
   })
   .await
 }
-pub(super) async fn upload(
+pub(super) async fn upload_stream<S, B, E>(
   app: &Arc<App>,
   id: String,
-  body: &[u8],
-) -> Result<blobs::Blob, ApplicationError> {
+  stream: S,
+) -> Result<blobs::Blob, ApplicationError>
+where
+  S: futures_util::Stream<Item = Result<B, E>>,
+  B: AsRef<[u8]>,
+  E: std::fmt::Display,
+{
   let mut inventory = app.drafts.clone().lock_owned().await;
   if !inventory.loaded {
     inventory = inspect(app, Some(id.clone()), inventory).await?;
@@ -86,11 +91,13 @@ pub(super) async fn upload(
   let accepted =
     blocking(move || Ok(management.exists(&owner)? || management.group(&owner)?.is_some())).await?;
   if accepted {
-    return Ok(blobs::save_upload(&app.data_dir.blobs(&id), body).await?);
+    return Ok(
+      blobs::save_upload_stream(&app.data_dir.blobs(&id), stream, blobs::MAX_UPLOAD_BYTES).await?,
+    );
   }
   let count = inventory.sizes.len() - usize::from(inventory.sizes.contains_key(&id));
   let bytes = inventory.sizes.values().copied().fold(0u64, u64::saturating_add);
-  if count >= MAX_DRAFTS || bytes.saturating_add(body.len() as u64) > MAX_BYTES {
+  if count >= MAX_DRAFTS || bytes >= MAX_BYTES {
     return Err(ApplicationError::conflict(
       "pending attachment limit reached; send or remove pending drafts",
     ));
@@ -99,7 +106,7 @@ pub(super) async fn upload(
   // another upload. Cancellation drops this guard but cannot leave an optimistic counter.
   inventory.loaded = false;
   let directory = app.data_dir.blobs(&id);
-  let blob = blobs::save_upload(&directory, body).await?;
+  let blob = blobs::save_upload_stream(&directory, stream, (MAX_BYTES - bytes) as usize).await?;
   let size = blocking(move || {
     let mut size = 0u64;
     for file in std::fs::read_dir(directory).map_err(ApplicationError::internal)? {

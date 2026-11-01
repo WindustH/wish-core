@@ -29,12 +29,7 @@ pub(super) async fn resolve(
       if !blobs::is_blob_id(id) {
         return Err("input must be a session blob ID".into());
       }
-      let root = tokio::fs::canonicalize(directory).await.map_err(|e| e.to_string())?;
-      let path =
-        tokio::fs::canonicalize(root.join(id)).await.map_err(|_| "input blob not found")?;
-      if path.parent() != Some(root.as_path()) {
-        return Err("input blob must belong to this session".into());
-      }
+      let path = blobs::linked::resolve(directory, id).await.map_err(|e| e.to_string())?;
       let needs_url = !protocol
         .video_capabilities(&service.model)
         .ok_or("selected extension has no video input capabilities")?

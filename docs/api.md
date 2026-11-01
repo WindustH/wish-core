@@ -46,8 +46,9 @@ others with `421`, and refuses a `POST`, `PUT`, `PATCH` or `DELETE` whose
 Wish, not even by pointing its own domain at it.
 
 **Bodies.** Request and response bodies are JSON. Most request bodies reject
-unknown fields. Every `/api` request body is limited to 32 MiB; a larger one
-returns `413`.
+unknown fields. JSON request bodies are limited to 32 MiB; a larger one returns `413`.
+Raw blob uploads (session, group, and draft) instead stream to disk with a 1 GiB file limit.
+An over-limit upload is rejected without publishing its partial file.
 
 **Core types.** Messages, session configuration and model responses use the
 engine's own JSON form: externally tagged enums, for example:
@@ -1225,13 +1226,22 @@ each response includes the generation metadata observed with its entries.
   Files are ordered newest first, with content hashes breaking timestamp ties. The catalog
   includes uploads and generated/model images without metadata sidecars. It reads at most
   512 bytes per returned file for type detection and does not scan conversation history.
-  Only published hash-named regular files are listed; sidecars, temporary files, directories
-  and symlinks are excluded. No local paths or file contents are included. Text detection is
+  Published hash-named regular files and explicitly registered local-file descriptors are listed;
+  temporary files, directories and arbitrary symlinks are excluded. Items additionally expose
+  `linked`, `available`, `name`, and `local_path`; name/path are null for ordinary blobs.
+  Missing linked files remain listed with `available: false`. File contents are never included. Text detection is
   a prefix hint; the preview still validates UTF-8 when reading the file.
 - `POST /api/sessions/{id}/blobs` takes the raw file as the body and returns
   `{"id", "mime_type", "byte_count", "path"}`. `id` is the SHA-256 of the
   content. Supported image and media signatures, PDF and ZIP are recognized; unknown formats
   are `application/octet-stream`. `path` is where the file lives on the server.
+- `POST /api/sessions/{id}/blobs/link` accepts `{"path":"/absolute/local/file.pdf"}`.
+  It requires an authenticated request and an existing owner, resolves a regular file on the
+  backend computer, and saves only a descriptor. Its stable ID hashes the canonical path with
+  a separate namespace, not the file contents. Re-registering the same path reuses the entry.
+  Reads use the current original file; moving/deleting it makes the reference unavailable.
+  Removing the session never removes the external source. Registered references also work as
+  tool input assets, subject to each provider's existing upload limits.
 - `GET /api/sessions/{id}/blobs/{blob}` downloads it with a content-sniffed media type and
   `X-Content-Type-Options: nosniff`. Byte ranges and ETags support native media playback and PDF reads.
 - `GET /api/sessions/{id}/blobs/{blob}/meta` returns

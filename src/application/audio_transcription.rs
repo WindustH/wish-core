@@ -32,13 +32,8 @@ async fn execute(
   if !blobs::is_blob_id(request.blob_id()) {
     return Err("blob_id must identify an audio/video file in this session".into());
   }
-  let path = tokio::fs::canonicalize(directory.join(request.blob_id()))
-    .await
-    .map_err(|_| "audio blob not found")?;
-  let root = tokio::fs::canonicalize(directory).await.map_err(|e| e.to_string())?;
-  if path.parent() != Some(root.as_path()) {
-    return Err("audio blob must belong to this session".into());
-  }
+  let path =
+    blobs::linked::resolve(directory, request.blob_id()).await.map_err(|e| e.to_string())?;
   let mut file = tokio::fs::File::open(path).await.map_err(|e| e.to_string())?;
   const LIMIT: u64 = 32 * 1024 * 1024;
   let byte_len = file.metadata().await.map_err(|e| e.to_string())?.len();
