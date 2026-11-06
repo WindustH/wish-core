@@ -22,7 +22,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "deepseek webpage reader",
   tags: &["web", "fetch", "reader"],
   service_presets: &["deepseek_fetch"],
-  accepts_model: |_| true,
+  model_override: false,
   permission: Permission::WebFetch,
   specification,
   examples: || json!([{"url": "https://example.com"}]),

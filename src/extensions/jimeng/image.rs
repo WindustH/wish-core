@@ -2,7 +2,6 @@
 use crate::extensions::shared::images::{ImageReply, ImageSource, ReferenceInput};
 use crate::protocol::{endpoint::Draft, error::Error};
 use serde_json::{Map, Value, json};
-const MODEL: &str = "jimeng_seedream46_cvtob";
 fn invalid(message: &str) -> Error {
   Error::Build(message.into())
 }
@@ -17,9 +16,6 @@ pub(crate) fn submission(
   parameters: &Map<String, Value>,
   images: &[ReferenceInput],
 ) -> Result<Draft, Error> {
-  if model != MODEL {
-    return Err(invalid("unsupported Jimeng model"));
-  }
   for key in parameters.keys() {
     if ![
       "width",

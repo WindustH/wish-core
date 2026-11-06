@@ -13,10 +13,14 @@ impl MediaHub {
     request: Request,
     directory: &Path,
     accounts: &AccountRegistry,
+    model: Option<&str>,
   ) -> Result<Value, crate::tool::paid_operation::Failure> {
+    if let Some(model) = model {
+      crate::extensions::catalog::validate_model(model)?;
+    }
     let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
     let state = self.state.read().unwrap().clone();
-    execute(&state, request, directory, accounts).await
+    execute(&state, request, directory, accounts, model).await
   }
 }
 async fn execute(
@@ -24,6 +28,7 @@ async fn execute(
   request: Request,
   directory: &Path,
   accounts: &AccountRegistry,
+  model_override: Option<&str>,
 ) -> Result<Value, crate::tool::paid_operation::Failure> {
   use tokio::io::AsyncReadExt;
   let config = &state.config;
@@ -91,7 +96,7 @@ async fn execute(
   if bytes.len() as u64 > LIMIT {
     return Err("ASR input exceeds the 32 MiB upload limit".into());
   }
-  let model = service.model.clone();
+  let model = model_override.unwrap_or(&service.model).to_owned();
   let (request, submission) = crate::utils::blocking::cpu(move || {
     let submission = request.submission(&model, &bytes, mime);
     (request, submission)
@@ -124,7 +129,7 @@ async fn execute(
   let artifact =
     blobs::save_upload(directory, &body).await.map_err(|e| Failure::Unknown(e.to_string()))?;
   output["provider"] = selected.into();
-  output["model"] = service.model.clone().into();
+  output["model"] = model_override.unwrap_or(&service.model).into();
   output["transcript"] =
     serde_json::to_value(artifact).map_err(|e| Failure::Unknown(e.to_string()))?;
   Ok(output)

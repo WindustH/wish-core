@@ -6,6 +6,7 @@ impl crate::extensions::invocation::Executable for super::Request {
     Box::pin(async move {
       host
         .image(crate::extensions::image_runtime::ImageRequest {
+          model: None,
           prompt: self.prompt,
           provider: self.service,
           images: self.source_image.into_iter().collect(),

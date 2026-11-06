@@ -75,7 +75,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "Runway Gen-4.5 generation and Aleph 2 video editing",
   tags: &["video", "generation", "image-to-video", "editing", "keyframes", "outpainting"],
   service_presets: &["runway_video", "runway_aleph_video"],
-  accepts_model: |model| matches!(model, "gen4.5" | "aleph2"),
+  model_override: true,
   permission: Permission::VideoGeneration,
   specification,
   examples: || {

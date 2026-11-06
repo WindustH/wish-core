@@ -42,7 +42,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "elevenlabs_music",
   tags: &["audio", "music"],
   service_presets: &["elevenlabs_music"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::AudioGeneration,
   specification,
   examples: || json!([{"prompt": "Soft rain in a forest"}]),

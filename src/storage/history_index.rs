@@ -24,7 +24,60 @@ pub(crate) struct IndexRow {
   pub metadata: String,
   pub text: String,
 }
+pub(crate) struct ReplyIndexHit {
+  pub input: u64,
+  pub finish: Option<u64>,
+  pub reply: Option<u64>,
+  pub metadata: String,
+}
 impl Transaction<'_> {
+  /// Bounded indexed lookups in one snapshot. Return input metadata without loading
+  /// user message bodies; the session layer interprets completion outcomes.
+  pub(crate) fn reply_history_index(
+    &self,
+    list: &ListId,
+    source: &str,
+    end: u64,
+    before: u64,
+    limit: usize,
+  ) -> Result<Vec<ReplyIndexHit>, StorageError> {
+    let mut statement = self.sql.prepare(
+      "WITH inputs AS MATERIALIZED (
+        SELECT list, sequence, metadata FROM wish_history_index
+        WHERE list=(SELECT id FROM wish_list_keys WHERE name=?1)
+          AND sequence < ?2 AND sequence < ?3 AND message_type='user'
+          AND json_type(metadata, ?4) IS NOT NULL
+        ORDER BY sequence DESC LIMIT ?5
+      ), finishes AS MATERIALIZED (
+        SELECT inputs.*, (SELECT sequence FROM wish_history_index f
+          WHERE f.list=inputs.list AND f.sequence>inputs.sequence AND f.sequence<?2
+            AND f.item_kind='event' AND f.event_type='Finished'
+          ORDER BY f.sequence LIMIT 1) AS finish FROM inputs
+      )
+      SELECT sequence, finish, (SELECT sequence FROM wish_history_index a
+        WHERE a.list=finishes.list AND a.sequence>finishes.sequence AND a.sequence<finishes.finish
+          AND a.message_type='assistant' AND a.origin='Model'
+        ORDER BY a.sequence DESC LIMIT 1), metadata FROM finishes ORDER BY sequence DESC",
+    )?;
+    let rows = statement.query_map(
+      params![
+        list.0,
+        to_integer(end)?,
+        to_integer(before)?,
+        format!("$.custom.reply_sources.{source}"),
+        limit as i64,
+      ],
+      |row| {
+        Ok(ReplyIndexHit {
+          input: row.get::<_, i64>(0)? as u64,
+          finish: row.get::<_, Option<i64>>(1)?.map(|value| value as u64),
+          reply: row.get::<_, Option<i64>>(2)?.map(|value| value as u64),
+          metadata: row.get(3)?,
+        })
+      },
+    )?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+  }
   /// Drop the index rows of `sequences` and return the bytes of text and metadata they held.
   pub(crate) fn remove_history_records(
     &self,

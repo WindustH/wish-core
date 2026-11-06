@@ -6,8 +6,8 @@ use serde_json::{Map, Value, json};
 fn invalid(message: &str) -> Error {
   Error::Build(message.into())
 }
-pub fn reference_limit(model: &str) -> usize {
-  if matches!(model, "wan2.7-image" | "wan2.7-image-pro") { 9 } else { 0 }
+pub fn reference_limit(_model: &str) -> usize {
+  9
 }
 pub fn boxes(parameters: &Map<String, Value>) -> Result<Option<Vec<Vec<[u32; 4]>>>, Error> {
   let Some(value) = parameters.get("bbox_list") else {

@@ -48,7 +48,7 @@ impl<'a> Images<'a> {
         .map(|block| {
           if let ContentBlock::Image { mime_type, data_base64 } = block {
             total = total.saturating_add(data_base64.len());
-            if total > 24 * 1024 * 1024 {
+            if total > crate::utils::model_image::MAX_WIRE_BYTES {
               return Err(Error::Build(
                 "model image payload exceeds 24 MiB of Base64; use fewer images or crop them"
                   .into(),

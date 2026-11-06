@@ -74,6 +74,17 @@ it panics. Do not synchronously wait for another admitted job from inside a bloc
 These are conservative resource ceilings, not a measured throughput optimum. Tokio's internal
 filesystem jobs are not governed by these application admission limits.
 
+Session model validation is asynchronous: image reads, integrity checks and decoding use
+the same admitted projection as calls and token counting. Event observers publish transient
+state immediately and coalesce database/index work into a tracked, admitted worker per session.
+Call-index projection serializes its read/write snapshot per session so a delayed boundary
+refresh cannot replace a newer final record.
+
+Library compatibility recovery belongs to `application/library`: the coordinator supplies
+the data-directory layout and owner explicitly. Blob storage receives recovered membership
+under a per-directory initialization lock; normal reads never open other databases. Group image
+copies read and hash each source once, then publish independent immutable member files.
+
 ## Protocol layer
 
 - [protocol](protocol.md): the converter model and how the pieces compose into one call.

@@ -17,7 +17,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
   match std::env::args().nth(1).as_deref() {
     Some("--help" | "-h" | "help") => {
       println!(
-        "Wish: agent service and session commands\n\nServer: wish [--config PATH]\nCommands: extension, history, task, askuser, mcp, skill, session\nRun wish <command> --help for its manual. Commands run inside a Wish session shell."
+        "Wish: agent service and session commands\n\nServer: wish [--config PATH]\nCommands: extension, history, task, blob, askuser, mcp, skill, session\nRun wish <command> --help for its manual. Commands run inside a Wish session shell."
       );
       return Ok(());
     }
@@ -27,6 +27,7 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Some("extension") => std::process::exit(cli::extensions::run(args.skip(1).collect()).await),
     Some("history") => std::process::exit(cli::history::run(args.skip(1).collect()).await),
     Some("task") => std::process::exit(cli::tasks::run(args.skip(1).collect()).await),
+    Some("blob") => std::process::exit(cli::blobs::run(args.skip(1).collect()).await),
     Some("mcp") => std::process::exit(cli::mcp::run(args.skip(1).collect()).await),
     Some("skill") => std::process::exit(cli::skills::run(args.skip(1).collect()).await),
     Some("session") => std::process::exit(cli::sessions::run(args.skip(1).collect()).await),

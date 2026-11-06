@@ -78,9 +78,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "xAI video generation, image/keyframe guidance, editing and extension",
   tags: &["video", "generation", "image-to-video", "references", "editing", "extension"],
   service_presets: &["xai_video", "xai_video_lite", "xai_video_classic"],
-  accepts_model: |m| {
-    matches!(m, "grok-imagine-video" | "grok-imagine-video-1.5" | "grok-imagine-video-1.5-lite")
-  },
+  model_override: true,
   permission: Permission::VideoGeneration,
   specification,
   examples: || {

@@ -13,6 +13,55 @@ use crate::{
 use std::sync::Arc;
 
 impl SessionReader {
+  /// Completed reply links from one bounded history snapshot. Several queued inputs
+  /// may share a finish, which is loaded and decoded only once.
+  pub fn reply_links(
+    &self,
+    source: String,
+    cursor: Option<HistoryCursor>,
+  ) -> Result<(Vec<serde_json::Value>, Option<HistoryCursor>), SessionError> {
+    if source.is_empty()
+      || source.len() > 100
+      || !source.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+      || cursor.as_ref().is_some_and(|cursor| cursor.order != HistoryOrder::NewestFirst)
+    {
+      return Err(SessionError::InvalidHistoryQuery("invalid reply query".into()));
+    }
+    let reader = self.clone();
+    self.storage.transaction(move |tx| {
+      let end = match &cursor {
+        Some(cursor) => cursor.end_sequence,
+        None => tx.list_len::<HistoryRecord>(&reader.history)?,
+      };
+      let hits = tx.reply_history_index(
+        &reader.history, &source, end, cursor.map_or(end, |cursor| cursor.after_sequence), 51,
+      )?;
+      let next = (hits.len() > 50).then(|| HistoryCursor {
+        end_sequence: end, after_sequence: hits[49].input, order: HistoryOrder::NewestFirst,
+      });
+      let mut outcomes = std::collections::HashMap::new();
+      let mut links = Vec::new();
+      for hit in hits.into_iter().take(50) {
+        let (Some(finish), Some(reply)) = (hit.finish, hit.reply) else { continue };
+        let complete = match outcomes.entry(finish) {
+          std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+          std::collections::hash_map::Entry::Vacant(entry) => {
+            let complete = if let Some(record) = tx.get_item::<HistoryRecord>(&reader.history, finish)? {
+              matches!(reader.expand(tx, record)?.content, HistoryContent::Event(event)
+                if matches!(&*event, crate::session::SessionEvent::Finished(crate::session::RunOutcome::Completed)))
+            } else { false };
+            *entry.insert(complete)
+          }
+        };
+        if complete {
+          let metadata: serde_json::Value = serde_json::from_str(&hit.metadata).map_err(StorageError::from)?;
+          links.push(serde_json::json!({"input":hit.input,"reply":reply,
+            "references": metadata["custom"]["reply_references"]}));
+        }
+      }
+      Ok((links, next))
+    })
+  }
   pub fn query_history(
     &self,
     filter: HistoryFilter,

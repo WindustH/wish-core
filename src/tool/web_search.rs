@@ -45,10 +45,12 @@ impl SearchService {
     query: SearchQuery,
     provider: Option<String>,
   ) -> Result<crate::extensions::shared::operation::Report, String> {
+    let model = query.model;
     let mut query = read_query(
       &json!({"query":query.query,"allowed_domains":query.allowed_domains,"blocked_domains":query.blocked_domains,"recency":query.recency,"max_results":query.limit}),
     )?;
     query.conversation = Some(self.conversation.clone());
+    query.model = model;
     let text = query.query.clone();
     let answer = (self.backend)(query, provider).await.map_err(|errors| errors.join("; "))?;
     let rendered = format!("Provider: {}\n{}", answer.provider, render(&text, &answer.results));

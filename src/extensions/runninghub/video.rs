@@ -15,9 +15,6 @@ pub(crate) fn submission(
   if prompt.trim().is_empty() || prompt.chars().count() > 4100 {
     return Err(invalid("prompt must contain 1..4100 characters"));
   }
-  if model != "bytedance/seedance-2.5-token" {
-    return Err(invalid("unsupported RunningHub video model"));
-  }
   let duration = options.duration.unwrap_or(if mode == VideoMode::Edit { -1.0 } else { 5.0 });
   if duration != -1.0 && (!(4.0..=30.0).contains(&duration) || duration.fract() != 0.0) {
     return Err(invalid("RunningHub Seedance duration must be -1 or an integer in 4..30"));

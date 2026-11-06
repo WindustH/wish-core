@@ -25,7 +25,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "tavily web search",
   tags: &["web", "search"],
   service_presets: &["tavily_keyless", "tavily"],
-  accepts_model: |_| true,
+  model_override: false,
   permission: Permission::WebSearch,
   specification,
   examples: || json!([{"query": "Rust documentation"}]),

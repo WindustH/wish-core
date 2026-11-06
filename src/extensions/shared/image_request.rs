@@ -8,6 +8,8 @@ use serde_json::Value;
 pub struct ImageRequest {
   pub prompt: String,
   #[serde(default)]
+  pub model: Option<String>,
+  #[serde(default)]
   pub options: serde_json::Map<String, Value>,
   #[serde(default)]
   pub images: Vec<String>,

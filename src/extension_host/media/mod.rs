@@ -34,8 +34,8 @@ impl MediaProtocol {
   pub fn task_id(self, v: &Value) -> Result<String, String> {
     self.0.task_id(v)
   }
-  pub fn status_request(self, task: &str) -> Result<(String, Draft), Error> {
-    self.0.status_request(task)
+  pub fn status_request(self, model: &str, task: &str) -> Result<(String, Draft), Error> {
+    self.0.model_status_request(model, task)
   }
   pub fn decode_status(self, v: &Value) -> Result<VideoStatus, Error> {
     self.0.decode_status(v)

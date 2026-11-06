@@ -86,14 +86,11 @@ pub(crate) fn submission(
 }
 
 pub fn validate_configuration(
-  model: &str,
+  _model: &str,
   values: &crate::extensions::shared::parameters::Parameters,
 ) -> Result<(), Error> {
   if values.values().any(|value| !value.is_null()) {
     return Err(Error::Build("ASR defaults are specified per tool call".into()));
-  }
-  if model != "grok-voice-transcribe-2.0" {
-    return Err(Error::Build("unsupported xAI ASR model".into()));
   }
   Ok(())
 }

@@ -67,7 +67,7 @@ pub const SPEECH: Registration = Registration {
     "voice-mixing",
   ],
   service_presets: &["minimax_speech"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::AudioGeneration,
   specification,
   examples: || {

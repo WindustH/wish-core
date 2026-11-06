@@ -31,7 +31,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "minimax_video",
   tags: &["video", "generation"],
   service_presets: &["minimax_h3"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::VideoGeneration,
   specification,
   examples: || json!([{"prompt": "A quiet scene"}]),

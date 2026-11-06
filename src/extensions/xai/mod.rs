@@ -46,7 +46,7 @@ pub const TRANSCRIBE: Registration = Registration {
   summary: "xAI file transcription with speakers, timestamps, channels and terminology hints",
   tags: &["audio", "asr", "transcription", "speech-to-text"],
   service_presets: &["xai_asr"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::Transcription,
   specification,
   examples: || json!([{"audio":"<session audio blob ID>","language":"en","diarize":true,"format":true,"keyterms":["Wish"]}]),

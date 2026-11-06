@@ -22,7 +22,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "siliconflow transcription",
   tags: &["audio", "asr", "transcription"],
   service_presets: &["siliconflow_asr"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::Transcription,
   specification,
   examples: || json!([{"audio": "<blob ID>"}]),

@@ -131,6 +131,7 @@ pub struct SessionSlot {
   live: Arc<Mutex<live::LivePreview>>,
   instruction_state: Arc<Mutex<super::model_observation::InstructionState>>,
   status: Mutex<SessionStatus>,
+  observation: Mutex<status::ObservationState>,
   /// The running operation's, while one runs.
   control: Mutex<Option<ExecutionControl>>,
 }
@@ -140,6 +141,9 @@ impl SessionSlot {
     descriptor: Descriptor,
     mut session: Session,
   ) -> Result<Arc<Self>, ApplicationError> {
+    let data = app.data_dir.clone();
+    let owner = descriptor.id.clone();
+    blocking(move || Ok(super::library::ensure(&data, &owner)?)).await?;
     if !session.get_state().is_stable() {
       session.settle_interrupted().map_err(ApplicationError::internal)?;
     }
@@ -181,6 +185,7 @@ impl SessionSlot {
       live: Arc::new(Mutex::new(live::LivePreview::default())),
       instruction_state: Default::default(),
       status,
+      observation: Default::default(),
       control: Mutex::new(None),
     });
     super::background_tools::recover(&slot).await?;

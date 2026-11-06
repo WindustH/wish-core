@@ -14,21 +14,58 @@ use axum::{
 };
 use serde_json::Value;
 use std::sync::Arc;
+#[derive(serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LibraryQuery {
+  start: u64,
+  limit: usize,
+  include_hidden: bool,
+}
+impl Default for LibraryQuery {
+  fn default() -> Self {
+    Self { start: 0, limit: 50, include_hidden: false }
+  }
+}
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UploadQuery {
+  #[serde(default)]
+  temporary: bool,
+  name: Option<String>,
+}
 pub async fn list(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
-  Query(page): Query<crate::application::session_queries::Page>,
+  Query(query): Query<LibraryQuery>,
 ) -> Result<Json<crate::storage::blobs::catalog::Page>, ApiError> {
-  let start = usize::try_from(page.start)
+  let start = usize::try_from(query.start)
     .map_err(|_| crate::application::error::ApplicationError::invalid("start is too large"))?;
-  Ok(Json(attachments::list(&app, &id, start, page.limit).await?))
+  Ok(Json(attachments::list(&app, &id, start, query.limit, query.include_hidden).await?))
+}
+pub async fn update_library(
+  State(app): State<Arc<App>>,
+  Path((id, blob)): Path<(String, String)>,
+  Json(patch): Json<crate::storage::blobs::library::Patch>,
+) -> Result<Json<crate::storage::blobs::library::Entry>, ApiError> {
+  Ok(Json(attachments::update_library(&app, &id, &blob, patch).await?))
+}
+pub async fn delete(
+  State(app): State<Arc<App>>,
+  Path((id, blob)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+  attachments::delete(&app, &id, &blob).await?;
+  Ok(Json(serde_json::json!({"deleted":true})))
 }
 pub async fn upload(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
+  Query(query): Query<UploadQuery>,
   body: Body,
 ) -> Result<Json<Blob>, ApiError> {
-  Ok(Json(attachments::upload_stream(&app, &id, body.into_data_stream()).await?))
+  Ok(Json(
+    attachments::upload_stream(&app, &id, body.into_data_stream(), query.temporary, query.name)
+      .await?,
+  ))
 }
 pub async fn download(
   State(app): State<Arc<App>>,
@@ -39,16 +76,7 @@ pub async fn download(
   use tokio::io::{AsyncReadExt, AsyncSeekExt};
   let mut opened = attachments::open(&app, &id, &blob).await?;
   let length = opened.length;
-  let modified = opened
-    .file
-    .metadata()
-    .await
-    .ok()
-    .and_then(|m| m.modified().ok())
-    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-    .map(|d| d.as_nanos())
-    .unwrap_or(0);
-  let etag = format!("\"{blob}-{length}-{modified}\"");
+  let etag = &opened.version;
   let mut headers = HeaderMap::new();
   headers.insert(
     header::CONTENT_TYPE,
@@ -63,7 +91,7 @@ pub async fn download(
   // revoked access must never be served from a fresh shared/public cache.
   headers.insert(header::CACHE_CONTROL, "private, no-cache".parse().unwrap());
   headers.insert(header::VARY, "Authorization".parse().unwrap());
-  if super::conditional::not_modified(&request, &etag) {
+  if super::conditional::not_modified(&request, etag) {
     return Ok((StatusCode::NOT_MODIFIED, headers, Body::empty()).into_response());
   }
   headers
@@ -144,11 +172,13 @@ pub async fn upload_draft(
 #[serde(deny_unknown_fields)]
 pub struct LocalFile {
   path: String,
+  #[serde(default)]
+  temporary: bool,
 }
 pub async fn link(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Json(input): Json<LocalFile>,
 ) -> Result<Json<Blob>, ApiError> {
-  Ok(Json(attachments::link(&app, &id, &input.path).await?))
+  Ok(Json(attachments::link(&app, &id, &input.path, input.temporary).await?))
 }

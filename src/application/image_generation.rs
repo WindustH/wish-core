@@ -168,19 +168,20 @@ impl ImageConfig {
     Ok(())
   }
 }
+#[derive(Clone)]
 struct Built {
   config: ImageProvider,
   spec: ImagePreset,
   transport: ReqwestTransport,
 }
 impl Built {
-  fn accepts_options(&self, options: &serde_json::Map<String, Value>) -> bool {
-    if !self.spec.protocol.accepts_options(&self.config.model, options) {
+  fn accepts_options(&self, model: &str, options: &serde_json::Map<String, Value>) -> bool {
+    if !self.spec.protocol.accepts_options(model, options) {
       return false;
     }
     let mut parameters = self.spec.parameters.clone();
     parameters.extend(self.config.parameters.clone());
-    self.spec.protocol.merge_options(&self.config.model, parameters, options).is_ok()
+    self.spec.protocol.merge_options(model, parameters, options).is_ok()
   }
 }
 
@@ -263,6 +264,7 @@ impl ImageHub {
   ) -> Result<Value, crate::tool::paid_operation::Failure> {
     let crate::tool::image_generate::ImageRequest {
       prompt,
+      model,
       images: image_ids,
       mask,
       markup,
@@ -270,6 +272,9 @@ impl ImageHub {
       provider,
       references,
     } = request;
+    if let Some(model) = model {
+      crate::extensions::catalog::validate_model(model)?;
+    }
     let only = provider.as_deref();
     if mask.is_some() && markup.is_some() {
       return Err("mask and markup cannot be combined".into());
@@ -321,12 +326,23 @@ impl ImageHub {
                 && accounts
                   .get(&format!("account:{}", p.config.credential_id))
                   .is_some_and(|a| p.spec.protocol.credentials_ready(a.client.get_credentials()))
-                && (mask.is_none() || p.spec.protocol.mask_editing(&p.config.model))
-                && (markup.is_none() || p.spec.protocol.markup_editing(&p.config.model))
-                && (references.is_empty() || p.spec.protocol.precise_references(&p.config.model))
-                && p.accepts_options(options)
-                && p.spec.protocol.accepts_reference_count(&p.config.model, image_ids.len())
-                && image_ids.iter().all(|id| p.spec.protocol.accepts_input(&p.config.model, id))
+                && (mask.is_none()
+                  || p.spec.protocol.mask_editing(model.as_deref().unwrap_or(&p.config.model)))
+                && (markup.is_none()
+                  || p.spec.protocol.markup_editing(model.as_deref().unwrap_or(&p.config.model)))
+                && (references.is_empty()
+                  || p
+                    .spec
+                    .protocol
+                    .precise_references(model.as_deref().unwrap_or(&p.config.model)))
+                && p.accepts_options(model.as_deref().unwrap_or(&p.config.model), options)
+                && p.spec.protocol.accepts_reference_count(
+                  model.as_deref().unwrap_or(&p.config.model),
+                  image_ids.len(),
+                )
+                && image_ids.iter().all(|id| {
+                  p.spec.protocol.accepts_input(model.as_deref().unwrap_or(&p.config.model), id)
+                })
             })
           })
           .map(String::as_str)
@@ -337,6 +353,14 @@ impl ImageHub {
       .get(id)
       .filter(|p| p.config.enabled)
       .ok_or("image generation service is unavailable")?;
+    let mut effective;
+    let service = if let Some(model) = model {
+      effective = service.clone();
+      effective.config.model = model.clone();
+      &effective
+    } else {
+      service
+    };
     let account = accounts
       .get(&format!("account:{}", service.config.credential_id))
       .ok_or("image account is unavailable")?;
@@ -357,10 +381,27 @@ impl ImageHub {
         .protocol
         .merge_options(&service.config.model, parameters, options)
         .map_err(|e| e.to_string())?;
-      if !spec.protocol.accepts_reference_count(&service.config.model, image_ids.len())
-        || image_ids.iter().any(|id| !spec.protocol.accepts_input(&service.config.model, id))
-      {
-        return Err("selected image provider does not support this image count or source type; NovelAI accepts one blob, Jimeng accepts HTTPS URLs".into());
+      let capabilities = spec.protocol.capabilities(&service.config.model);
+      if !spec.protocol.accepts_reference_count(&service.config.model, image_ids.len()) {
+        return Err(format!(
+          "image service '{id}' (model '{}') cannot accept {} reference images: local adapter limit is {}, image required: {}",
+          service.config.model,
+          image_ids.len(),
+          capabilities.reference_limit,
+          capabilities.image_required,
+        ));
+      }
+      if image_ids.iter().any(|image| !spec.protocol.accepts_input(&service.config.model, image)) {
+        let sources = match (capabilities.local_references, capabilities.remote_references) {
+          (true, true) => "session-owned image blob IDs or supported HTTPS URLs",
+          (true, false) => "session-owned image blob IDs",
+          (false, true) => "supported HTTPS URLs",
+          (false, false) => "no reference images",
+        };
+        return Err(format!(
+          "image service '{id}' (model '{}') accepts {sources}; the supplied reference source is unsupported",
+          service.config.model
+        ));
       }
       if !references.is_empty() && !spec.protocol.precise_references(&service.config.model) {
         return Err("selected provider/model does not support precise references".into());

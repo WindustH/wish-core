@@ -1,4 +1,5 @@
 //! Command-line adapters for the running Wish service.
+pub mod blobs;
 mod client;
 pub mod mcp;
 pub mod sessions;

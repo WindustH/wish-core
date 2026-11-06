@@ -71,8 +71,14 @@ impl MediaHub {
     accounts: &AccountRegistry,
     scope: Scope,
   ) -> Result<Value, String> {
+    if let Some(model) = &request.model {
+      crate::extensions::catalog::validate_model(model)?;
+    }
     let video = scope.video;
     let action = request.action.as_deref().unwrap_or("run");
+    if action != "run" && request.model.is_some() {
+      return Err("model is only accepted when submitting a new job; existing jobs retain their original model".into());
+    }
     if action == "run" && scope.presets.is_empty() {
       return Err("generation requires an extension service scope".into());
     }
@@ -193,7 +199,12 @@ impl MediaHub {
           .order
           .iter()
           .find(|service_id| {
-            state.config.providers.get(*service_id).is_some_and(|p| {
+            state.config.providers.get(*service_id).is_some_and(|configured| {
+              let mut effective = configured.clone();
+              if let Some(model) = &request.model {
+                effective.model = model.clone();
+              }
+              let p = &effective;
               p.enabled
                 && scope.accepts(&p.preset)
                 && preset(&p.preset).is_ok_and(|s| {
@@ -217,13 +228,16 @@ impl MediaHub {
           .map(String::as_str)
       })
       .ok_or("no available provider supports this media kind, mode, inputs and options")?;
-    let service = state
+    let mut service = state
       .config
       .providers
       .get(selected)
       .filter(|p| p.enabled && scope.accepts(&p.preset))
       .ok_or("media provider is unknown or disabled")?
       .clone();
+    if let Some(model) = &request.model {
+      service.model = model.clone();
+    }
     let spec = preset(&service.preset).map_err(|e| e.to_string())?;
     if spec.kind != kind {
       return Err("selected provider does not support this media kind".into());
@@ -443,7 +457,8 @@ impl MediaHub {
       let base =
         job.service.base_url.as_deref().filter(|v| !v.is_empty()).unwrap_or(&spec.base_url);
       let task = job.task_id.as_deref().ok_or("missing upstream task ID")?;
-      let (route, draft) = spec.protocol.status_request(task).map_err(|e| e.to_string())?;
+      let (route, draft) =
+        spec.protocol.status_request(&job.service.model, task).map_err(|e| e.to_string())?;
       let call = spec.protocol.call(base, &route, credentials, draft).map_err(|e| e.to_string())?;
       let reply = state
         .transport(job.service.proxy_enabled, TransferProfile::Status)?

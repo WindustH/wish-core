@@ -2,10 +2,7 @@
 use crate::extensions::shared::images::{ImageReply, ImageSource, ReferenceInput};
 use crate::protocol::{endpoint::Draft, error::Error};
 use serde_json::{Map, Value, json};
-pub(crate) fn validate(model: &str, parameters: &Map<String, Value>) -> Result<(), Error> {
-  if model != "seedream-v5-pro" {
-    return Err(Error::Build("unsupported RunningHub image model".into()));
-  }
+pub(crate) fn validate(_model: &str, parameters: &Map<String, Value>) -> Result<(), Error> {
   for (key, value) in parameters {
     let valid = match key.as_str() {
       "width" | "height" => value.as_u64().is_some_and(|v| (240..=8192).contains(&v)),
@@ -133,18 +130,14 @@ pub(crate) fn merge_options(
   Ok(defaults)
 }
 
-pub fn capabilities(model: &str) -> crate::extensions::shared::images::ImageCapabilities {
+pub fn capabilities(_model: &str) -> crate::extensions::shared::images::ImageCapabilities {
   crate::extensions::shared::images::ImageCapabilities {
-    reference_limit: if model == "seedream-v5-pro" { 10 } else { 0 },
+    reference_limit: 10,
     local_references: true,
     remote_references: true,
     image_required: false,
     mask: false,
     markup: false,
-    options: if model == "seedream-v5-pro" {
-      &["width", "height", "image_size", "output_format"]
-    } else {
-      &[]
-    },
+    options: &["width", "height", "image_size", "output_format"],
   }
 }

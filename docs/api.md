@@ -182,6 +182,7 @@ engine error, for example
 | GET | `/api/sessions/{id}/events` | Session event stream (SSE) |
 | GET | `/api/sessions/{id}/history` | Conversation timeline |
 | POST | `/api/sessions/{id}/history/query` | Filtered chronological history |
+| POST | `/api/sessions/{id}/history/replies` | Completed reply backlinks for a quoted source |
 | POST | `/api/sessions/{id}/history/search` | Ranked text search |
 | GET | `/api/sessions/{id}/history/{sequence}` | One history record with neighbours |
 | GET | `/api/sessions/{id}/entries` | Stored messages |
@@ -702,7 +703,9 @@ results use a bounded 32 MiB/32-entry process cache. Unsupported HEIF/HEIC and A
 require conversion with a compatible decoder, or can be sent as ordinary `file`
 attachments. Request serialization expands image bindings directly into the final
 JSON buffer; HTTP attempts share its bytes. The image portion of a model request is
-limited to 24 MiB of Base64; provider-specific limits may be smaller.
+limited to 24 MiB of Base64; provider-specific limits may be smaller. Session projection
+keeps the newest images within this budget. Older images that do not fit become explicit
+file references with a budget notice; stored history and original files are unchanged.
 
 ### `GET /api/sessions/{id}`
 
@@ -1187,6 +1190,28 @@ Conditions combine with AND; values within a list with OR. `page.order` is
 `page.cursor` with the same filter. Items carry `message_type`, `event_type`,
 `tool_name` and `record`.
 
+### `POST /api/sessions/{id}/history/replies`
+
+Body: `{ "source": "message_42", "cursor": null }`. Source keys also accept
+`blob_<sha256>`. Returns `{ "items": [{ "input": 51, "reply": 57,
+"references": [...] }], "next": null }`, paged over at most 50 matching inputs.
+`input` and `reply` are history sequence numbers, not entry IDs.
+
+The web client submits references in `/input` metadata as `reply_references`,
+`reply_sources` (a source-key map), and `reply_draft` (display text with reference tokens).
+Text references retain a message sequence, text-block index, and UTF-16 source range;
+media references retain the file ID, optional one-based PDF page, and a top-left rectangle
+with source dimensions (`px` for original images, `pt` in the displayed/rotated PDF page viewport).
+The model receives quoted text or an attached selected-region image with coordinate context;
+application metadata is not inserted into model instructions.
+
+Backlinks require the first run outcome after consumption to be `Completed`, and target its
+last subsequent model-authored assistant message. Queued, cancelled, interrupted, or failed
+inputs do not create a successful backlink. Metadata queries use the history index; reads
+are bounded and do not load the complete conversation. Input/finish/assistant matching uses
+one storage transaction, reads references from indexed metadata, and decodes each distinct
+finish once. The normal session authorization applies.
+
 ### `POST /api/sessions/{id}/history/search`
 
 ```json
@@ -1238,18 +1263,23 @@ each response includes the generation metadata observed with its entries.
 - `GET /api/sessions/{id}/blobs?start=0&limit=80` returns
   `{"items":[{"id","mime_type","byte_count","modified_at"}],"next":null,"total":0}`.
   `next` is the next start offset or null; `limit` is 1–200 (default 50).
-  Files are ordered newest first, with content hashes breaking timestamp ties. The catalog
-  includes uploads and generated/model images without metadata sidecars. It reads at most
-  512 bytes per returned file for type detection and does not scan conversation history.
+  By default this lists the displayed Library. `include_hidden=true` includes every stored blob,
+  including generated/model images without metadata sidecars. Pinned files come first, then newest
+  files, with content hashes breaking timestamp ties. Filtering and pin ordering precede pagination.
+  It reads at most 512 bytes per returned file for type detection. The first access to an old
+  Library recovers user attachment membership from indexed metadata and local-link descriptors;
+  subsequent reads use persisted membership and a bounded catalog cache.
   Published hash-named regular files and explicitly registered local-file descriptors are listed;
   temporary files, directories and arbitrary symlinks are excluded. Items additionally expose
-  `linked`, `available`, `name`, and `local_path`; name/path are null for ordinary blobs.
+  `linked`, `available`, `visible`, `pinned`, `name`, and `local_path` (null for ordinary blobs).
   Missing linked files remain listed with `available: false`. File contents are never included. Text detection is
   a prefix hint; the preview still validates UTF-8 when reading the file.
 - `POST /api/sessions/{id}/blobs` takes the raw file as the body and returns
   `{"id", "mime_type", "byte_count", "path"}`. `id` is the SHA-256 of the
   content. Supported image and media signatures, PDF and ZIP are recognized; unknown formats
   are `application/octet-stream`. `path` is where the file lives on the server.
+  `?name=...` preserves the filename. Direct user uploads are displayed by default;
+  `?temporary=true` keeps region-reply crops hidden without changing prior membership.
 - `POST /api/sessions/{id}/blobs/link` accepts `{"path":"/absolute/local/file.pdf"}`.
   It requires an authenticated request and an existing owner, resolves a regular file on the
   backend computer, and saves only a descriptor. Its stable ID hashes the canonical path with
@@ -1257,10 +1287,40 @@ each response includes the generation metadata observed with its entries.
   Reads use the current original file; moving/deleting it makes the reference unavailable.
   Removing the session never removes the external source. Registered references also work as
   tool input assets, subject to each provider's existing upload limits.
+  Optional `temporary:true` silently registers a reference without adding to the displayed Library.
+- `PATCH /api/sessions/{id}/blobs/{blob}/library` accepts `{"visible":true}` and/or `{"pinned":true}`.
+  Pinning also shows the file; hiding clears its pin. Membership/names survive repeated model reads,
+  reloads and restarts. Displayed files survive unused-history cleanup. Hiding does not delete bytes.
+- `DELETE /api/sessions/{id}/blobs/{blob}` removes stored bytes and descriptors, returning `{"deleted":true}`.
+  Linked sources are never removed. `409` means an `ImageRef` in the current generation, standby
+  generation or pending input still needs this file. The check is serialized with generation/queue
+  publication; it also applies to model commands. Ordinary textual mentions do not require bytes
+  for model request reconstruction. Group images are copied into each member's private blob store.
 - `GET /api/sessions/{id}/blobs/{blob}` downloads it with a content-sniffed media type and
   `X-Content-Type-Options: nosniff`. Byte ranges and ETags support native media playback and PDF reads.
 - `GET /api/sessions/{id}/blobs/{blob}/meta` returns
-  `{"id", "mime_type", "byte_count"}` without the path.
+  `{"id", "mime_type", "byte_count", "version", "visible", "pinned", "name"}` without the path.
+
+The same catalog, membership and deletion routes exist under `/api/groups/{id}/blobs`.
+
+### `wish blob` and file mentions
+
+`wish blob list` includes hidden files; `--displayed` restricts it to the Library. `add PATH`
+copies a file; `symlink PATH` (alias `link`) registers its canonical local path. Both display it
+unless `--hidden` is supplied. `show|hide|pin|unpin ID` changes Library membership;
+`update ID [--visible|--hidden] [--pinned|--unpinned]` exposes the schema action directly. `delete ID`
+uses the same dependency guard as the HTTP API. Paths resolve against the session working directory.
+
+`wish blob mention ID_OR_PATH [--label TEXT] [--page N] [--time SECONDS] [--visible]` returns a
+structured `mention` and `markdown`, for example `[Document](<wish://blob/SESSION/ID?page=3>)`.
+PDF pages are one-based; audio/video positions are non-negative seconds. A path is silently linked
+and stays hidden unless explicitly shown. The frontend displays a file card for the tool result,
+and opens mentions in the Library sidebar. Local absolute paths in Markdown links/images use the
+same interaction and register a link on activation; rendering never reads local file contents.
+
+`--schema`, `--json` and `--stdin` expose the same contract as the built-in `blob` model tool:
+actions `list`, `add`, `link`, `mention`, `update`, `delete`. With Shell enabled it is advertised
+as `wish blob`; without Shell the direct tool is advertised. Both are scoped to the current session.
 
 Images are sent to models that accept image input. For a model configured
 without `image` in its input modalities, or one that rejects the image before

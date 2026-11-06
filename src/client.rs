@@ -15,7 +15,7 @@ pub mod account;
 mod image_payload;
 mod model_catalog;
 mod observer;
-pub(crate) mod retry;
+pub(crate) use crate::protocol::retry;
 mod stream;
 mod stream_recovery;
 

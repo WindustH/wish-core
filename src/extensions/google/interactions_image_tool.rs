@@ -21,7 +21,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "google_interactions_image generation",
   tags: &["image", "generation", "editing", "reference"],
   service_presets: &["gemini_interactions_images"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::ImageGeneration,
   specification,
   examples: || json!([{"prompt": "A paper crane"}]),
@@ -40,6 +40,7 @@ impl crate::extensions::invocation::Executable for Request {
     Box::pin(async move {
       host
         .image(crate::extensions::image_runtime::ImageRequest {
+          model: None,
           prompt: self.prompt,
           provider: self.service,
           options: self.parameters,

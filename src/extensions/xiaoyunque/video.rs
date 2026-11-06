@@ -3,7 +3,6 @@ use super::video_options::VideoOptions;
 use crate::extensions::shared::video::{InputRole, ResolvedInput, VideoStatus};
 use crate::protocol::{endpoint::Draft, error::Error};
 use serde_json::{Value, json};
-const MODEL: &str = "pippit_iv2v_v20_cvtob_with_vinput";
 fn invalid(message: &str) -> Error {
   Error::Build(message.into())
 }
@@ -18,9 +17,6 @@ pub(crate) fn submission(
   options: &VideoOptions,
   inputs: &[ResolvedInput],
 ) -> Result<(String, Draft), Error> {
-  if model != MODEL {
-    return Err(invalid("unsupported Xiaoyunque model"));
-  }
   if prompt.trim().is_empty() || prompt.chars().count() > 2000 {
     return Err(invalid("Xiaoyunque prompt must contain 1..2000 characters"));
   }
@@ -99,8 +95,8 @@ pub(crate) fn task_id(value: &Value) -> Result<String, String> {
     .map(str::to_owned)
     .ok_or("Xiaoyunque returned no valid task ID; do not automatically resubmit".into())
 }
-pub(crate) fn status_request(task: &str) -> Result<(String, Draft), Error> {
-  request("CVSync2AsyncGetResult", json!({"req_key":MODEL,"task_id":task}))
+pub(crate) fn status_request(model: &str, task: &str) -> Result<(String, Draft), Error> {
+  request("CVSync2AsyncGetResult", json!({"req_key":model,"task_id":task}))
 }
 pub(crate) fn status(value: &Value) -> Result<VideoStatus, Error> {
   if matches!(value["code"].as_u64(), Some(50411 | 50412 | 50413 | 50511 | 50512 | 50513 | 50514)) {

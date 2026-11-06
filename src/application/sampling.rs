@@ -107,6 +107,12 @@ pub fn persist_model_calls(
   provider: &str,
   calls: &crate::storage::ReadList<crate::session::statistics::ModelCallRecord>,
 ) -> Result<(), super::error::ApplicationError> {
+  // The background boundary refresh and final operation flush can overlap. Read and
+  // publish under one per-session lock so an older snapshot cannot replace a newer call.
+  static WRITES: std::sync::LazyLock<crate::utils::keyed_lock::KeyedLocks<(usize, String)>> =
+    std::sync::LazyLock::new(Default::default);
+  let lock = WRITES.get((std::ptr::from_ref(management) as usize, session.to_owned()));
+  let _guard = lock.lock().map_err(super::error::ApplicationError::internal)?;
   let position = management.last_call_position(session)?;
   for page in calls.pages(position) {
     let records = page?

@@ -155,6 +155,9 @@ impl App {
     attached: Option<Input>,
   ) -> Result<Posted, ApplicationError> {
     self.lifecycle.require_open()?;
+    let data = self.data_dir.clone();
+    let owner = group.id.clone();
+    blocking(move || Ok(super::library::ensure(&data, &owner)?)).await?;
     let author_id = match &author {
       Author::Session { id, .. } => Some(id.clone()),
       _ => None,
@@ -187,6 +190,27 @@ impl App {
       }
       None => (vec![ContentBlock::Text { text: format!("{heading}{text}") }], text, Value::Null),
     };
+    // ImageRef is session-local. Materialize each member's immutable copy before publishing
+    // the group input, so removing a group blob cannot invalidate a member's model context.
+    let source = self.data_dir.blobs(&group.id);
+    let targets: Vec<_> =
+      members.iter().map(|member| self.data_dir.blobs(&member.get_descriptor().id)).collect();
+    let images: Vec<_> = content
+      .iter()
+      .filter_map(|block| match block {
+        ContentBlock::ImageRef { blob_id, byte_count, .. } => Some((blob_id.clone(), *byte_count)),
+        _ => None,
+      })
+      .collect();
+    if !images.is_empty() && !targets.is_empty() {
+      blocking(move || {
+        for (id, count) in images {
+          crate::storage::blobs::copy_image(&source, &targets, &id, count)?;
+        }
+        Ok(())
+      })
+      .await?;
+    }
     let now = Timestamp::now().0;
     let message = NewGroupMessage { author: author.clone(), text, attachments };
     let management = self.management.clone();

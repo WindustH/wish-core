@@ -84,7 +84,7 @@ impl SessionModel {
   ) -> Result<(Request, bool), Error> {
     let mut request = request.clone();
     compaction_item::project(&mut request.conversation, &self.provider.id);
-    // File writes run outside the async runtime workers; validation below performs no I/O.
+    // Reads, integrity hashing and image decoding all run outside async runtime workers.
     let (mut messages, model, provider, blob_dir, rejected) = (
       request.conversation,
       request.model.clone(),
@@ -130,20 +130,9 @@ impl ModelCaller for SessionModel {
   fn supports_upstream_compaction(&self) -> bool {
     self.client().supports_upstream_compaction()
   }
-  fn validate_request(&self, request: &Request) -> Result<(), Error> {
-    let mut request = request.clone();
-    compaction_item::project(&mut request.conversation, &self.provider.id);
-    let rejected = self.rejected.load(Ordering::Relaxed);
-    let models = &self.provider.config.models;
-    project_images(
-      models,
-      &request.model,
-      &self.blob_dir,
-      rejected,
-      &mut request.conversation,
-      false,
-    )?;
-    self.client().validate_request(&request)
+  async fn validate_request(&self, request: &Request) -> Result<(), Error> {
+    let (request, _) = self.prepare_projection(request, false).await?;
+    self.client().validate_request(&request).await
   }
   async fn count_tokens(&self, request: &Request) -> Result<Option<TokenCount>, Error> {
     let (request, _) = self.prepare(request).await?;

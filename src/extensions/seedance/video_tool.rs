@@ -31,7 +31,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "seedance_video",
   tags: &["video", "generation"],
   service_presets: &["seedance_video", "seedance25_video"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::VideoGeneration,
   specification,
   examples: || json!([{"prompt": "A quiet scene"}]),

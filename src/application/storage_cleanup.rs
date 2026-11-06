@@ -179,6 +179,15 @@ fn release_unreferenced_files(
   let executions = data_dir.shell(id);
   let mut job_resources = Vec::new();
   let mut retained_artifacts = HashSet::new();
+  // Explicit Library membership outlives the messages which first referred to the file.
+  // Hidden artifacts retain the ordinary unused-history cleanup behavior.
+  retained_artifacts.extend(
+    crate::storage::blobs::library::entries(&blobs)
+      .map_err(std::io::Error::other)?
+      .into_iter()
+      .filter(|(_, item)| item.visible)
+      .map(|(id, _)| id),
+  );
   if let Ok(entries) = std::fs::read_dir(blobs.join(".media-jobs")) {
     for entry in entries.flatten() {
       let path = entry.path();

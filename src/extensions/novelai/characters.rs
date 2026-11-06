@@ -20,7 +20,15 @@ struct Center {
 }
 
 pub(crate) fn supported(model: &str) -> bool {
-  matches!(model, "nai-diffusion-4-5-full" | "nai-diffusion-4-5-curated")
+  !matches!(
+    model,
+    "nai-diffusion-3"
+      | "nai-diffusion-2"
+      | "nai-diffusion"
+      | "safe-diffusion"
+      | "nai-diffusion-furry"
+      | "nai-diffusion-furry-3"
+  )
 }
 
 fn parse(model: &str, value: Option<&Value>) -> Result<Vec<Character>, Error> {

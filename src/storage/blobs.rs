@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 pub mod catalog;
+pub mod library;
 pub mod linked;
 pub const MAX_UPLOAD_BYTES: usize = 1024 * 1024 * 1024;
 
@@ -140,7 +141,32 @@ pub async fn read_description(directory: &Path, id: &str) -> Result<Blob, Reposi
 }
 
 pub fn save_image_bytes(directory: &Path, bytes: &[u8]) -> Result<PathBuf, RepositoryError> {
-  let path = directory.join(blob_id(bytes));
+  write_image(directory, &blob_id(bytes), bytes)
+}
+
+/// Read and verify an immutable image once before materializing independent owner copies.
+pub fn copy_image(
+  source: &Path,
+  targets: &[PathBuf],
+  id: &str,
+  count: usize,
+) -> Result<(), RepositoryError> {
+  if !is_blob_id(id) || count > crate::utils::model_image::MAX_OUTPUT_BYTES {
+    return Err(RepositoryError::invalid("invalid image reference"));
+  }
+  let bytes = crate::utils::bounded_file::read_sync(&source.join(id), count)
+    .map_err(RepositoryError::internal)?;
+  if bytes.len() != count || blob_id(&bytes) != id {
+    return Err(RepositoryError::invalid("image integrity mismatch"));
+  }
+  for target in targets {
+    write_image(target, id, &bytes)?;
+  }
+  Ok(())
+}
+
+fn write_image(directory: &Path, id: &str, bytes: &[u8]) -> Result<PathBuf, RepositoryError> {
+  let path = directory.join(id);
   // Content-addressed blobs are immutable; avoid rewriting every image on every model call.
   if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == bytes.len() as u64) {
     return Ok(path);

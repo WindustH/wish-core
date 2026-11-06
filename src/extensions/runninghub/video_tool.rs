@@ -31,7 +31,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "runninghub_video",
   tags: &["video", "generation"],
   service_presets: &["runninghub_seedance_video"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::VideoGeneration,
   specification,
   examples: || json!([{"prompt": "A quiet scene"}]),

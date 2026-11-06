@@ -17,7 +17,16 @@ pub(crate) fn request_options(model: &str) -> &'static [&'static str] {
       &["aspect_ratio", "seed", "output_format", "prompt_upsampling"]
     }
     "flux-pro-1.0-fill" => &["seed", "output_format", "prompt_upsampling", "steps", "guidance"],
-    _ => &[],
+    _ => &[
+      "width",
+      "height",
+      "aspect_ratio",
+      "seed",
+      "output_format",
+      "prompt_upsampling",
+      "steps",
+      "guidance",
+    ],
   }
 }
 pub(crate) fn validate(model: &str, parameters: &Map<String, Value>) -> Result<(), Error> {
@@ -76,7 +85,7 @@ pub(crate) fn reference_limit(model: &str) -> usize {
     | "flux-kontext-pro"
     | "flux-kontext-max" => 4,
     "flux-pro-1.0-fill" => 1,
-    _ => 0,
+    _ => 8,
   }
 }
 pub(crate) fn edit(

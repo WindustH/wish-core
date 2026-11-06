@@ -13,6 +13,7 @@ pub fn agent_instructions(switches: super::session::ToolSwitches) -> String {
     for capability in [
       Capability::Sessions,
       Capability::Task,
+      Capability::Blob,
       Capability::WebFetch,
       Capability::ImageGenerate,
       Capability::VideoGenerate,

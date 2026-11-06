@@ -39,14 +39,11 @@ pub(crate) fn submission(
 }
 
 pub fn validate_configuration(
-  model: &str,
+  _model: &str,
   values: &crate::extensions::shared::parameters::Parameters,
 ) -> Result<(), Error> {
   if values.values().any(|value| !value.is_null()) {
     return Err(Error::Build("ASR defaults are specified per tool call".into()));
-  }
-  if !matches!(model, "scribe_v1" | "scribe_v2") {
-    return Err(Error::Build("unsupported ASR model".into()));
   }
   Ok(())
 }

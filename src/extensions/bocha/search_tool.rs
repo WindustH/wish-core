@@ -25,7 +25,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "bocha web search",
   tags: &["web", "search"],
   service_presets: &["bocha"],
-  accepts_model: |_| true,
+  model_override: false,
   permission: Permission::WebSearch,
   specification,
   examples: || json!([{"query": "Rust documentation"}]),

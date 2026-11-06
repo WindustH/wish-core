@@ -89,9 +89,6 @@ impl Plan {
         (route, body, seed)
       }
       Self::Edit { seed, target_aspect_ratio, frames, output_format, prores_profile } => {
-        if model != "aleph2" {
-          return Err(invalid("Runway editing requires Aleph 2"));
-        }
         if frames.len() > 5
           || inputs.len() != frames.len() + 1
           || inputs[0].role != InputRole::SourceVideo

@@ -11,4 +11,5 @@ pub mod control;
 
 pub mod resource_id;
 
+pub mod keyed_lock;
 pub mod model_image;

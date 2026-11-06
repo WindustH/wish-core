@@ -17,6 +17,13 @@ pub async fn timeline(
 ) -> Result<Json<Value>, ApiError> {
   Ok(Json(history_queries::timeline(app, id, query).await?))
 }
+pub async fn replies(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Json(query): Json<history_queries::replies::Query>,
+) -> Result<Json<Value>, ApiError> {
+  Ok(Json(history_queries::replies::read(app, id, query).await?))
+}
 pub async fn query(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,

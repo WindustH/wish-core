@@ -55,6 +55,7 @@ impl SessionTools {
     match capability {
       Capability::History => self.history.get_specifications(),
       Capability::Image => vec![ViewImageTool.get_specification()],
+      Capability::Blob => vec![crate::application::blob_access::specification()],
       Capability::Sessions => vec![crate::application::session_access::specification()],
       Capability::Task => vec![crate::application::task_access::specification()],
       Capability::Shell => self.shell().map(|shell| shell.get_specifications()).unwrap_or_default(),
@@ -312,6 +313,26 @@ impl ToolExecutor for SessionTools {
     }
     match Capability::from_tool(&call.name) {
       Some(Capability::Image) => self.view_image(call, control).await,
+      Some(Capability::Blob) => {
+        let Some(slot) = self.slot.upgrade() else {
+          return ToolOutcome::Failed("session is closed".into());
+        };
+        let Some(app) = slot.app.upgrade() else {
+          return ToolOutcome::Failed("server is closed".into());
+        };
+        let request = match crate::application::blob_access::parse_request(&call.arguments) {
+          Ok(request) => request,
+          Err(error) => return ToolOutcome::Failed(error.to_string()),
+        };
+        match control
+          .run_until_cancelled(crate::application::blob_access::execute(&app, slot, request))
+          .await
+        {
+          Some(Ok(output)) => ToolOutcome::Success(output),
+          Some(Err(error)) => ToolOutcome::Failed(error.to_string()),
+          None => ToolOutcome::Cancelled,
+        }
+      }
       Some(Capability::Sessions) => {
         let Some(slot) = self.slot.upgrade() else {
           return ToolOutcome::Failed("session is closed".into());

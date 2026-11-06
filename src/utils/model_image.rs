@@ -8,6 +8,8 @@ use std::{
 };
 
 pub const MAX_SOURCE_BYTES: usize = 100 * 1024 * 1024;
+/// Total Base64 image bytes allowed in one model request.
+pub const MAX_WIRE_BYTES: usize = 24 * 1024 * 1024;
 pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_EDGE: u32 = 2048;
 pub struct Prepared {

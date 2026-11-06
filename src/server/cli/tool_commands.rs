@@ -18,7 +18,9 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
   if args.is_empty() || args.iter().any(|arg| matches!(arg.as_str(), "--help" | "-h")) {
     println!(
       "{}",
-      if name.starts_with("history_") {
+      if name == "blob" {
+        include_str!("help/blob.txt")
+      } else if name.starts_with("history_") {
         include_str!("help/history.txt")
       } else if crate::extensions::catalog::is_tool(name) {
         "Use wish extension search, wish extension inspect TOOL, or wish extension call TOOL --json '<arguments>'."

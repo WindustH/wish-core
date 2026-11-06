@@ -28,7 +28,7 @@ pub(crate) fn submission(
       "MiniMax-H3" => &["768P", "2K"],
       "MiniMax-H3-Highspeed" => &["768P"],
       "MiniMax-H3-Lite" | "MiniMax-H3-Max" => &["480P", "768P"],
-      _ => return Err(invalid("unsupported H3 model")),
+      _ => &[resolution],
     };
     if !resolutions.contains(&resolution) {
       return Err(invalid("resolution is not supported by this H3 model"));

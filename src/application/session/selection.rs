@@ -56,8 +56,8 @@ impl ModelCaller for SwitchingModel {
   fn supports_upstream_compaction(&self) -> bool {
     self.current().supports_upstream_compaction()
   }
-  fn validate_request(&self, request: &Request) -> Result<(), Error> {
-    self.current().validate_request(request)
+  async fn validate_request(&self, request: &Request) -> Result<(), Error> {
+    self.current().validate_request(request).await
   }
   async fn count_tokens(&self, request: &Request) -> Result<Option<TokenCount>, Error> {
     self.current().count_tokens(request).await
@@ -276,11 +276,13 @@ impl SessionSlot {
     // sent, not just its instruction-only compacted prefix. Keep these inputs out of the
     // translated generation: start_turn remains their sole consumer.
     conversation.extend(session.pending_input_messages()?);
-    switch.model.validate_request(&switch.pending.config.build_request(conversation)).map_err(
-      |error| {
+    switch
+      .model
+      .validate_request(&switch.pending.config.build_request(conversation))
+      .await
+      .map_err(|error| {
         boundary_error(format!("translated context is invalid for the selected provider: {error}"))
-      },
-    )?;
+      })?;
     Ok(Prepared::Ready(Some(Box::new(context))))
   }
   /// Switches the session's config (with the translation, if any), the descriptor's provider and

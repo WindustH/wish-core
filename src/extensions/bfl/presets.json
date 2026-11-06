@@ -18,7 +18,7 @@
       "id": "bfl_fill_images",
       "name": "Black Forest Labs · Fill",
       "brand": "BFL",
-      "protocol": "bfl",
+      "protocol": "bfl_fill",
       "base_url": "https://api.bfl.ai/v1",
       "path": "/{model}",
       "model": "flux-pro-1.0-fill",

@@ -33,7 +33,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "luma_video",
   tags: &["video", "generation"],
   service_presets: &["luma_video"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::VideoGeneration,
   specification,
   examples: || json!([{"prompt": "A quiet scene"}]),

@@ -18,9 +18,6 @@ pub(crate) fn submission(
     return Err(invalid("prompt is empty or exceeds the service limit"));
   }
   Ok({
-    if !["ray-2", "ray-flash-2"].contains(&model) {
-      return Err(invalid("unsupported Luma Dream Machine model"));
-    }
     let duration = options.duration.unwrap_or(5.0);
     if ![5.0, 9.0].contains(&duration) {
       return Err(invalid("Luma duration must be 5 or 9 seconds"));
@@ -76,9 +73,6 @@ pub(crate) fn with_inputs(
     .contains(&modify)
     {
       return Err(invalid("invalid Luma modify_mode"));
-    }
-    if !["ray-2", "ray-flash-2"].contains(&model) {
-      return Err(invalid("unsupported Luma model"));
     }
     let mut body = json!({"generation_type":"modify_video","model":model,"prompt":prompt,"mode":modify,"media":{"url":uri(SourceVideo).ok_or_else(|| invalid("missing source_video"))?}});
     if let Some(first) = uri(FirstFrame) {

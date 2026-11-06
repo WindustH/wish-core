@@ -70,6 +70,13 @@ pub struct StatusView {
   selection_pending: bool,
 }
 
+#[derive(Default)]
+pub(super) struct ObservationState {
+  running: bool,
+  calls: bool,
+  index: bool,
+}
+
 impl SessionSlot {
   /// Retry progress is transient and snapshot-backed, never added to model context/history.
   pub fn retry_observer(&self) -> crate::client::RetryObserver {
@@ -111,10 +118,28 @@ impl SessionSlot {
   }
   /// Follows an engine event: the status, the live preview, and the event's web form to live
   /// clients. A phase change is saved to the index.
-  pub fn observe(&self, event: &SessionEvent) {
+  pub fn observe(self: &std::sync::Arc<Self>, event: &SessionEvent) {
+    // These events are delivered after the call record commits. Publish usage at call
+    // boundaries, not only after an entire multi-turn operation finishes (nor per delta).
+    let calls_changed = matches!(
+      event,
+      SessionEvent::TurnStarted { .. }
+        | SessionEvent::ResponseAccepted { .. }
+        | SessionEvent::ResponseInterrupted(_)
+        | SessionEvent::ResponseRejected(_)
+        | SessionEvent::CompactionSummary { .. }
+        | SessionEvent::CompactionSummaryFailed { .. }
+        | SessionEvent::UpstreamCompactionCompleted(_)
+        | SessionEvent::CompactionTranslationCompleted { .. }
+        | SessionEvent::Finished(_)
+    );
     let phase_changed = {
       let mut status = self.status.lock().unwrap();
       match event {
+        SessionEvent::GenerationActivated { active, .. } => {
+          status.active_generation = Some(*active);
+          status.context_tokens = None;
+        }
         SessionEvent::InputsConsumed { queue_end, .. } => status.queue_head = *queue_end,
         SessionEvent::StateChanged { to, .. } => status.phase = *to,
         SessionEvent::CompactionSummaryStarted { .. } => status.standby_preparing = true,
@@ -125,8 +150,8 @@ impl SessionSlot {
       }
       matches!(event, SessionEvent::StateChanged { .. })
     };
-    if phase_changed && let Err(error) = self.persist_index() {
-      eprintln!("session index: {error}");
+    if calls_changed || phase_changed {
+      self.schedule_observation(calls_changed, phase_changed);
     }
     let mut live = self.live.lock().unwrap();
     live.observe(event);
@@ -134,6 +159,62 @@ impl SessionSlot {
       let _ =
         self.events.send(json!({"type":"session_event","event":event,"revision":live.revision}));
     }
+  }
+  fn schedule_observation(self: &std::sync::Arc<Self>, calls: bool, index: bool) {
+    let mut state = self.observation.lock().unwrap();
+    state.calls |= calls;
+    state.index |= index;
+    if state.running {
+      return;
+    }
+    state.running = true;
+    let slot = self.clone();
+    self.tasks.spawn(async move {
+      loop {
+        let (calls, index) = {
+          let mut state = slot.observation.lock().unwrap();
+          if !state.calls && !state.index {
+            state.running = false;
+            return;
+          }
+          (std::mem::take(&mut state.calls), std::mem::take(&mut state.index))
+        };
+        let current = slot.clone();
+        let result = crate::application::error::blocking(move || {
+          current.require_live()?;
+          if calls {
+            // Serialize against provider changes, which flush the old provider's calls.
+            let descriptor = current.descriptor.read().unwrap();
+            current.require_live()?;
+            let records = current.reader.get_model_calls();
+            crate::application::sampling::persist_model_calls(
+              &current.management,
+              &descriptor.id,
+              &descriptor.provider,
+              &records,
+            )?;
+            let (generation, model) = {
+              let status = current.status.lock().unwrap();
+              (status.active_generation, status.config.model.clone())
+            };
+            let tokens =
+              generation.and_then(|generation| latest_context_tokens(&records, generation, &model));
+            let mut status = current.status.lock().unwrap();
+            if status.active_generation == generation && status.config.model == model {
+              status.context_tokens = tokens;
+            }
+          }
+          if index {
+            current.persist_index()?;
+          }
+          Ok(())
+        })
+        .await;
+        if let Err(error) = result {
+          eprintln!("session observation: {error}");
+        }
+      }
+    });
   }
   /// Notes that a selection applied at a boundary: its config is the session's now, and a standby
   /// prepared for the old model is gone.
@@ -193,13 +274,19 @@ pub(super) fn web_outcome(outcome: &RunOutcome) -> Value {
 fn context_tokens(session: &Session) -> Option<u64> {
   let active = session.get_active_generation().ok()?.id;
   let model = &session.get_config().model;
-  let calls = session.reader().get_model_calls();
+  latest_context_tokens(&session.reader().get_model_calls(), active, model)
+}
+fn latest_context_tokens(
+  calls: &crate::storage::ReadList<crate::session::statistics::ModelCallRecord>,
+  active: GenerationId,
+  model: &str,
+) -> Option<u64> {
   for position in (0..calls.len().ok()?).rev() {
     let Some(call) = calls.get(position).ok()? else { continue };
     if call.generation != active {
       break;
     }
-    if &call.model == model
+    if call.model == model
       && call.purpose == ModelCallPurpose::Conversation
       && matches!(call.status, ModelCallStatus::Completed)
     {

@@ -3,29 +3,13 @@ use crate::extensions::shared::images::{EditOverlay, ReferenceInput};
 use crate::protocol::{endpoint::Draft, error::Error};
 use serde_json::{Map, Value, json};
 
-pub(crate) fn reference_limit(model: &str) -> usize {
-  match model {
-    "gpt-image-1.5"
-    | "gpt-image-1-mini"
-    | "gpt-image-2"
-    | "gpt-image-2-2026-04-21"
-    | "gpt-image-2.5-sunburst"
-    | "gpt-image-2.5-sunburst-2026-09-08"
-    | "gpt-image-2.5-flare"
-    | "gpt-image-2.5-flare-2026-09-08"
-    | "chatgpt-image-latest" => 16,
-    _ => 0,
-  }
+/// Local resource bound, not a catalog of models available to the account.
+pub(crate) fn reference_limit(_model: &str) -> usize {
+  16
 }
 
 pub(crate) fn markup_supported(model: &str) -> bool {
-  matches!(
-    model,
-    "gpt-image-2.5-sunburst"
-      | "gpt-image-2.5-sunburst-2026-09-08"
-      | "gpt-image-2.5-flare"
-      | "gpt-image-2.5-flare-2026-09-08"
-  )
+  !matches!(model, "gpt-image-1.5" | "gpt-image-1-mini" | "gpt-image-2" | "gpt-image-2-2026-04-21")
 }
 pub(crate) fn edit(
   model: &str,
@@ -35,7 +19,7 @@ pub(crate) fn edit(
   overlay: Option<&EditOverlay>,
 ) -> Result<Draft, Error> {
   if images.is_empty() || images.len() > reference_limit(model) {
-    return Err(Error::Build("unsupported GPT Image edit model or reference count".into()));
+    return Err(Error::Build("GPT Image edits require 1..16 reference images".into()));
   }
   if prompt.chars().count() > 32000 {
     return Err(Error::Build("OpenAI image edit prompt exceeds 32000 characters".into()));
@@ -96,7 +80,7 @@ pub(crate) fn validate_parameters(
   parameters: &Map<String, Value>,
 ) -> Result<(), Error> {
   // OpenAI-compatible presets can use other vendors' models and parameter contracts.
-  if reference_limit(model) == 0 {
+  if !model.starts_with("gpt-image-") && model != "chatgpt-image-latest" {
     return Ok(());
   }
   let value = |key: &str| parameters.get(key).filter(|v| !v.is_null());

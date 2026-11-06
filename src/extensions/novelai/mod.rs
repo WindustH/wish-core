@@ -71,7 +71,7 @@ pub const REGISTRATION: super::catalog::Registration = super::catalog::Registrat
   summary: "NovelAI illustrations, image-to-image edits and precise character/style references",
   tags: TAGS,
   service_presets: &["novelai_images"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: super::catalog::Permission::ImageGeneration,
   specification,
   examples: || {

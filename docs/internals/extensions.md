@@ -85,6 +85,22 @@ returns the selected schema, examples, service IDs and capabilities in configure
 `service` pins an authorized service; omitted selection follows compatible configured priority
 within the extension. Discovery never probes a remote provider.
 
+Tools whose upstream API accepts a model advertise an optional top-level `model` string.
+For example, `wish extension call chatgpt_image --json '{"prompt":"Edit the photograph","model":"my-image-alias","reference_images":["<session blob ID>"]}'`.
+The override applies only to this invocation; omitting it uses the selected service's configured
+model. IDs are not checked against a bundled model catalog. Availability and account entitlement
+are determined upstream; local input/file limits and parameter shapes still apply. This does not
+translate an arbitrary model into another API protocol. BFL Fill uses the dedicated Fill service
+preset so an alias retains the Fill wire format. APIs without a model field (such as xAI TTS)
+do not advertise an override.
+
+Registration declares whether it accepts the common model envelope. The dispatcher removes that
+field before supplier argument parsing and passes it to the runtime without modifying shared
+configuration. Video/audio jobs persist the effective model and reuse it during status queries,
+including after restart; status/list operations cannot replace a job's model. Tool inspection
+returns the same augmented schema used by CLI calls. This also applies to OpenAI search, whose
+request names a model.
+
 Calls require session bridge credentials and the corresponding capability. Model calls use
 `extension_tools` for discovery and the selected tool's own name/schema for execution. The old
 `websearch`, `webfetch`, `imagegen`, `videogen`, `audiogen` and `asr` CLI entries and unified model

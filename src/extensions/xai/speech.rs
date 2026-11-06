@@ -61,7 +61,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "xAI speech synthesis with pronunciation, output formats and character timing",
   tags: &["audio", "speech", "tts", "generation", "timestamps"],
   service_presets: &["xai_speech"],
-  accepts_model: |_| true,
+  model_override: false,
   permission: Permission::AudioGeneration,
   specification,
   examples: || {

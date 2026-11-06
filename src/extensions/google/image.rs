@@ -2,7 +2,7 @@
 use crate::protocol::error::Error;
 use serde_json::{Map, Value};
 fn modern(model: &str) -> bool {
-  matches!(model, "gemini-3.1-flash-image-preview" | "gemini-3.1-flash-image")
+  model != "gemini-2.5-flash-image" && !pro(model)
 }
 fn pro(model: &str) -> bool {
   matches!(model, "gemini-3-pro-image-preview" | "gemini-3-pro-image")

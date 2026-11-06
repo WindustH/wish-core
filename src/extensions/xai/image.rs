@@ -5,13 +5,13 @@ use serde_json::{Map, Value, json};
 fn invalid(message: &str) -> Error {
   Error::Build(message.into())
 }
-pub(crate) fn reference_limit(model: &str) -> usize {
-  if model == "grok-imagine-image-2.0" { 5 } else { 0 }
+pub(crate) fn reference_limit(_model: &str) -> usize {
+  5
 }
 pub(crate) fn request_options(model: &str) -> &'static [&'static str] {
   if reference_limit(model) > 0 { &["aspect_ratio", "image_size", "quality", "n"] } else { &[] }
 }
-pub(crate) fn validate(model: &str, parameters: &Map<String, Value>) -> Result<(), Error> {
+pub(crate) fn validate(_model: &str, parameters: &Map<String, Value>) -> Result<(), Error> {
   for key in parameters.keys() {
     if !["aspect_ratio", "resolution", "quality", "n", "response_format"].contains(&key.as_str()) {
       return Err(invalid("unsupported xAI image parameter"));
@@ -35,8 +35,7 @@ pub(crate) fn validate(model: &str, parameters: &Map<String, Value>) -> Result<(
     return Err(invalid("xAI resolution must be 1k or 2k"));
   }
   if let Some(quality) = parameters.get("quality")
-    && (model != "grok-imagine-image-2.0"
-      || !matches!(quality.as_str(), Some("auto" | "low" | "medium")))
+    && !matches!(quality.as_str(), Some("auto" | "low" | "medium"))
   {
     return Err(invalid(
       "xAI image quality requires grok-imagine-image-2.0 and auto, low or medium",

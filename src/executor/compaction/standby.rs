@@ -112,7 +112,7 @@ async fn plan_standby_summaries(
   // Count the first complete span once, then calibrate local probes of larger spans.
   // A whole-tail ratio would dilute the fixed framing cost of a small summary segment.
   let span = build_span_request(&request, &request.conversation[processed..first_end]);
-  caller.validate_request(&span)?;
+  caller.validate_request(&span).await?;
   let measured = measure(caller, control, &config, &span, calibration).await?;
   let local = config.estimator.estimate_request(&span);
   let calibration = if matches!(
@@ -128,7 +128,7 @@ async fn plan_standby_summaries(
   for end in boundaries.into_iter().filter(|end| *end > processed && *end <= eligible) {
     check_cancelled(control)?;
     let span_request = build_span_request(&request, &request.conversation[start..end]);
-    caller.validate_request(&span_request)?;
+    caller.validate_request(&span_request).await?;
     let measurement = if start == processed && end == first_end {
       measured
     } else {
@@ -138,7 +138,7 @@ async fn plan_standby_summaries(
       continue;
     }
     let summary_request = build_summary_request(&request, eligible, start, end);
-    caller.validate_request(&summary_request)?;
+    caller.validate_request(&summary_request).await?;
     plans.push(StandbySummaryPlan {
       summary_request,
       input_entry_count: eligible as u64,

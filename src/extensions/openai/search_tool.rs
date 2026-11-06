@@ -25,7 +25,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "openai web search",
   tags: &["web", "search"],
   service_presets: &["openai_codex_search"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::WebSearch,
   specification,
   examples: || json!([{"query": "Rust documentation"}]),

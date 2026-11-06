@@ -3,7 +3,7 @@ use crate::extensions::package::Package;
 pub const PACKAGE: Package = Package {
   id: "bfl",
   tools: &[&super::GENERATE, &super::FILL],
-  images: &[&super::image_driver::DRIVER],
+  images: &[&super::image_driver::DRIVER, &super::image_driver::FILL_DRIVER],
   media: &[],
   search: &[],
   fetch: &[],

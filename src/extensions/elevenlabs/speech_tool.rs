@@ -42,7 +42,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "elevenlabs_speech",
   tags: &["audio", "speech"],
   service_presets: &["elevenlabs_speech"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::AudioGeneration,
   specification,
   examples: || json!([{"text": "Hello world"}]),

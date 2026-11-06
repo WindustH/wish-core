@@ -14,7 +14,7 @@ pub(crate) fn generation(
   }
 
   let duration = options.duration.unwrap_or(5.0);
-  if model != "gen4.5" || !(2.0..=10.0).contains(&duration) || duration.fract() != 0.0 {
+  if !(2.0..=10.0).contains(&duration) || duration.fract() != 0.0 {
     return Err(invalid("Runway gen4.5 requires an integer duration of 2..10 seconds"));
   }
   if prompt.encode_utf16().count() > 1000 {
@@ -43,11 +43,7 @@ pub(crate) fn edit(
   let invalid = |s: &str| Error::Build(s.into());
   let uri = |role| inputs.iter().find(|i| i.role == role).map(|i| i.uri.as_str());
 
-  if model != "aleph2"
-    || options.duration.is_some()
-    || options.resolution.is_some()
-    || options.aspect_ratio.is_some()
-  {
+  if options.duration.is_some() || options.resolution.is_some() || options.aspect_ratio.is_some() {
     return Err(invalid(
       "Aleph 2 editing preserves input length/framing; omit duration, resolution and aspect_ratio",
     ));

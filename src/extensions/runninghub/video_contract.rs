@@ -1,15 +1,13 @@
 //! Supplier-owned video model capabilities and input policy.
 use crate::extensions::shared::video::{InputRole::*, VideoCapabilities, VideoMode::*};
-pub fn capabilities(model: &str) -> Option<VideoCapabilities> {
-  let (modes, roles, blobs, notes) = if model == "bytedance/seedance-2.5-token" {
+pub fn capabilities(_model: &str) -> Option<VideoCapabilities> {
+  let (modes, roles, blobs, notes) = {
     (
       vec![Text, Frames, Reference, Edit, Extend],
       vec![FirstFrame, LastFrame, ReferenceImage, ReferenceVideo, ReferenceAudio, SourceVideo],
       vec!["image", "video", "audio"],
       "RunningHub Seedance 2.5: local assets are uploaded before generation. Up to 30 images, 10 videos and 10 audio references. Edit preserves duration and ratio; extension uses adaptive ratio.",
     )
-  } else {
-    return None;
   };
   Some(VideoCapabilities {
     modes,

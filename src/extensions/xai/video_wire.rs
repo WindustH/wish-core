@@ -26,9 +26,6 @@ pub(crate) fn submission(
   }
   let modern = model == "grok-imagine-video-1.5";
   let lite = model == "grok-imagine-video-1.5-lite";
-  if !modern && !lite && model != "grok-imagine-video" {
-    return Err(invalid("unsupported xAI video model"));
-  }
   let mut body = json!({"model":model});
   if !prompt.trim().is_empty() {
     body["prompt"] = json!(prompt);
@@ -188,7 +185,12 @@ pub(crate) fn capabilities(
       "Classic Grok Imagine: up to 7 image references, no mixing with first frame; references up to 10s, generation up to 15s, 720p maximum. Edit source up to 8.7s; extend source 2..15s by another 2..10s. Source duration/codec checked upstream. Local MP4 data URLs supported; no framing controls in edit/extend.",
     ),
 
-    _ => return None,
+    _ => (
+      vec![Text, Frames, Reference, Edit, Extend],
+      vec![FirstFrame, ReferenceImage, SourceVideo],
+      vec!["image", "video"],
+      "Custom model: uses the classic xAI video wire contract; upstream validates model availability.",
+    ),
   };
   Some(VideoCapabilities {
     modes,

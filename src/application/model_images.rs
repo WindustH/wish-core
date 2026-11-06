@@ -23,7 +23,9 @@ pub fn project_images(
     .and_then(|value| value["input_modalities"].as_array())
     .is_some_and(|values| !values.iter().any(|value| value == "image"));
   let mut images = false;
-  for message in messages {
+  let mut remaining = crate::utils::model_image::MAX_WIRE_BYTES;
+  // Prefer the newest images; older ones remain accessible through their file references.
+  for message in messages.iter_mut().rev() {
     let content = match message {
       Message::User { content, .. }
       | Message::Assistant { content, .. }
@@ -32,7 +34,7 @@ pub fn project_images(
       _ => continue,
     };
     let mut projected = Vec::new();
-    for block in std::mem::take(content) {
+    for block in std::mem::take(content).into_iter().rev() {
       let (bytes, reference) = match block {
         ContentBlock::ImageRef { blob_id, byte_count, .. } => {
           if !blobs::is_blob_id(&blob_id)
@@ -61,27 +63,13 @@ pub fn project_images(
           continue;
         }
       };
-      images = true;
       let image_id = blobs::blob_id(&bytes);
       let path = blob_dir.join(&image_id);
-      if save {
+      if save && !reference {
         blobs::save_image_bytes(blob_dir, &bytes)
           .map_err(|error| Error::Build(error.to_string()))?;
       }
-      let notice = if unsupported {
-        "The selected model's declared capabilities do not support image input. Only this file reference is sent; do not claim to have viewed the image. Use shell for file processing."
-      } else if rejected {
-        "The upstream rejected image input. Only this file reference is sent; do not claim to have viewed the image. Use shell for file processing."
-      } else {
-        "The image is included below. Do not call view_image again merely to confirm an image you have already viewed; use shell when further processing is needed."
-      };
-      projected.push(ContentBlock::Text {
-        text: format!(
-          "[Image sha256:{image_id}]\n{notice}\nSession-local blob path: {}",
-          serde_json::json!(path)
-        ),
-      });
-      if !unsupported && !rejected {
+      let image = if !unsupported && !rejected {
         let (mime_type, data_base64) = if reference {
           let mime = crate::utils::image_format::supported_mime(&bytes)
             .ok_or_else(|| Error::Build("invalid stored image format".into()))?;
@@ -90,10 +78,38 @@ pub fn project_images(
           let prepared = crate::utils::model_image::prepare(&bytes).map_err(Error::Build)?;
           (prepared.mime.into(), base64::engine::general_purpose::STANDARD.encode(&prepared.bytes))
         };
-        projected.push(ContentBlock::Image { mime_type, data_base64 });
+        if data_base64.len() <= remaining {
+          remaining -= data_base64.len();
+          Some(ContentBlock::Image { mime_type, data_base64 })
+        } else {
+          None
+        }
+      } else {
+        None
+      };
+      let notice = if unsupported {
+        "The selected model's declared capabilities do not support image input. Only this file reference is sent; do not claim to have viewed the image. Use shell for file processing."
+      } else if rejected {
+        "The upstream rejected image input. Only this file reference is sent; do not claim to have viewed the image. Use shell for file processing."
+      } else if image.is_none() {
+        "This older image exceeds the request's image budget. Only this file reference is sent; do not claim to have viewed the image. Use shell or view_image if its contents are needed."
+      } else {
+        "The image is included below. Do not call view_image again merely to confirm an image you have already viewed; use shell when further processing is needed."
+      };
+      // Blocks are assembled backwards, then restored to their original order below.
+      if let Some(image) = image {
+        images = true;
+        projected.push(image);
       }
+      projected.push(ContentBlock::Text {
+        text: format!(
+          "[Image sha256:{image_id}]\n{notice}\nSession-local blob path: {}",
+          serde_json::json!(path)
+        ),
+      });
     }
+    projected.reverse();
     *content = projected;
   }
-  Ok(images && !unsupported && !rejected)
+  Ok(images)
 }

@@ -25,7 +25,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "deepseek web search",
   tags: &["web", "search"],
   service_presets: &["deepseek_search"],
-  accepts_model: |_| true,
+  model_override: false,
   permission: Permission::WebSearch,
   specification,
   examples: || json!([{"query": "Rust documentation"}]),

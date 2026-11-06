@@ -91,7 +91,7 @@ pub(super) async fn trim_context(
         .chain(&initial.conversation[boundaries[index]..])
         .cloned()
         .collect();
-      if caller.validate_request(&request).is_ok() {
+      if caller.validate_request(&request).await.is_ok() {
         break Some(request);
       }
       // Invalid candidates cost no network requests. Exhausting the right half leaves

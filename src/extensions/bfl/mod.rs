@@ -29,20 +29,6 @@ pub struct Fill {
   #[serde(default)]
   pub parameters: Map<String, Value>,
 }
-pub fn generation_model(model: &str) -> bool {
-  matches!(
-    model,
-    "flux-2-pro"
-      | "flux-2-pro-preview"
-      | "flux-2-max"
-      | "flux-2-flex"
-      | "flux-2-klein-4b"
-      | "flux-2-klein-9b"
-      | "flux-2-klein-9b-preview"
-      | "flux-kontext-pro"
-      | "flux-kontext-max"
-  )
-}
 fn parameters(fill: bool) -> Value {
   let mut properties = json!({
     "seed":{"type":"integer"},
@@ -85,8 +71,8 @@ pub const GENERATE: Registration = Registration {
   name: "bfl_generate",
   summary: "FLUX image generation and multi-reference editing",
   tags: &["image", "generation", "editing", "reference"],
-  service_presets: &["bfl_images", "bfl_fill_images"],
-  accepts_model: generation_model,
+  service_presets: &["bfl_images"],
+  model_override: true,
   permission: Permission::ImageGeneration,
   specification: generation_specification,
   examples: || json!([{"service":"<configured BFL service ID>","prompt":"product photograph of the object in image 1, on a wooden table","reference_images":["<session blob ID>"],"parameters":{"seed":42}}]),
@@ -99,8 +85,8 @@ pub const FILL: Registration = Registration {
   name: "bfl_fill",
   summary: "FLUX Fill masked inpainting and transparent-canvas outpainting",
   tags: &["image", "editing", "inpainting", "outpainting", "mask"],
-  service_presets: &["bfl_images", "bfl_fill_images"],
-  accepts_model: |model| model == "flux-pro-1.0-fill",
+  service_presets: &["bfl_fill_images"],
+  model_override: true,
   permission: Permission::ImageGeneration,
   specification: fill_specification,
   examples: || json!([{"service":"<configured BFL Fill service ID>","prompt":"replace the masked jacket with a red coat","source_image":"<session blob ID>","mask":"<session black/white mask blob ID>","parameters":{"steps":30,"guidance":30}}]),

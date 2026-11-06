@@ -4,6 +4,7 @@
 pub enum Capability {
   History,
   Image,
+  Blob,
   Sessions,
   Shell,
   Task,
@@ -18,9 +19,10 @@ pub enum Capability {
 }
 impl Capability {
   /// Stable advertisement order for a newly built generation.
-  pub const ALL: [Self; 13] = [
+  pub const ALL: [Self; 14] = [
     Self::History,
     Self::Image,
+    Self::Blob,
     Self::Sessions,
     Self::Shell,
     Self::Task,
@@ -37,6 +39,7 @@ impl Capability {
     Some(match name {
       "history_search" | "history_read" | "history_query" => Self::History,
       "view_image" => Self::Image,
+      "blob" => Self::Blob,
       "session" => Self::Sessions,
       "shell" | "shell_start" | "shell_edit" | "shell_poll" | "shell_write" | "shell_kill" => {
         Self::Shell
@@ -71,6 +74,9 @@ impl Capability {
     Some(match self {
       Self::Sessions => "`wish session` — sessions and groups",
       Self::Task => "`wish task` — task management",
+      Self::Blob => {
+        "`wish blob` — add/link, mention, organize and delete session files; mentions can open a PDF page or video timestamp in the user's sidebar"
+      }
       Self::ExtensionDiscovery => {
         "`wish extension search [TAG ...]`, `wish extension inspect TOOL`, `wish extension call TOOL --json '<arguments>'` — discover and invoke extension-owned tools"
       }

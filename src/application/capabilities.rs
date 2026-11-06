@@ -95,7 +95,7 @@ impl ToolSwitches {
             .is_some_and(|capability| self.enabled(capability))
         })
       }
-      Capability::Image => true,
+      Capability::Image | Capability::Blob => true,
       Capability::History => self.history_search,
       Capability::Shell | Capability::Task => self.shell,
       Capability::Sessions => self.sessions,
@@ -123,6 +123,7 @@ impl ToolSwitches {
       Capability::History => self.history_search_delivery,
       Capability::Sessions => self.sessions_delivery,
       Capability::Task => self.task_delivery,
+      Capability::Blob => ToolDelivery::Command,
       Capability::AskUser => self.ask_user_delivery,
       Capability::WebFetch => self.web_fetch_delivery,
       Capability::ImageGenerate => self.image_generate_delivery,

@@ -38,12 +38,14 @@ pub trait ModelCaller: Sync {
     async { Ok(None) }
   }
   /// Validate a replacement context with the same renderer used for actual model calls.
-  fn validate_request(&self, request: &Request) -> Result<(), Error> {
-    find_replay_unit_boundaries(&request.conversation)?;
-    match self.get_model_use_protocol() {
-      Some(protocol) => protocol.render(request).map(|_| ()),
-      None => {
-        Err(Error::Build("compaction requires a protocol or a custom request validator".into()))
+  fn validate_request(&self, request: &Request) -> impl Future<Output = Result<(), Error>> + Send {
+    async move {
+      find_replay_unit_boundaries(&request.conversation)?;
+      match self.get_model_use_protocol() {
+        Some(protocol) => protocol.render(request).map(|_| ()),
+        None => {
+          Err(Error::Build("compaction requires a protocol or a custom request validator".into()))
+        }
       }
     }
   }

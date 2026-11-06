@@ -82,11 +82,21 @@ Official product documentation establishes subscription image generation in Code
 that is different from an OpenAI API key. The implementation was also checked
 against OpenAI's Codex source: `codex-rs/codex-api/src/endpoint/images.rs`,
 `codex-api/src/images.rs`, and `ext/image-generation/src/{backend,tool}.rs`.
-The inspected implementation uses `images/generations`, `gpt-image-2`, the active
+The inspected implementation uses `images/generations` for new images and
+`images/edits` with JSON `images: [{image_url: "data:image/...;base64,..."}]` for
+reference edits, `gpt-image-2`, the active
 provider's authentication, and an image-turn identifier. Wish therefore uses its
 existing `openai_codex` account runtime, Bearer access token and
 `chatgpt-account-id`, with the Codex base URL. Account renewal remains in the shared
 account lifecycle; this feature never creates a second login store.
+`chatgpt_image.reference_images` accepts up to 14 session-owned image blob IDs;
+Wish resolves and uploads their bytes. Local paths in a prompt are not image input.
+The subscription adapter does not advertise remote URLs, masks or markup.
+Its 14-image bound is a local admission limit, independent of model names.
+Custom model IDs are forwarded unchanged; the upstream validates model availability
+and account access. Local capability metadata is not remote entitlement verification.
+Wire contract: https://github.com/openai/codex/blob/main/codex-rs/codex-api/src/endpoint/images.rs
+(`edit_posts_typed_request_and_parses_image_response`).
 
 This is a Codex integration surface, not an assurance that the public OpenAI API
 accepts subscription tokens. Wish refuses a subscription account on ordinary API

@@ -24,7 +24,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "openai transcription",
   tags: &["audio", "asr", "transcription"],
   service_presets: &["openai_asr", "groq_asr"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::Transcription,
   specification,
   examples: || json!([{"audio": "<blob ID>"}]),

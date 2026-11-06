@@ -26,7 +26,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "elevenlabs transcription",
   tags: &["audio", "asr", "transcription"],
   service_presets: &["elevenlabs_asr"],
-  accepts_model: |_| true,
+  model_override: true,
   permission: Permission::Transcription,
   specification,
   examples: || json!([{"audio": "<blob ID>"}]),

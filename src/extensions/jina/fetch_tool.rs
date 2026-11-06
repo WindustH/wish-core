@@ -22,7 +22,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "jina webpage reader",
   tags: &["web", "fetch", "reader"],
   service_presets: &["jina_reader"],
-  accepts_model: |_| true,
+  model_override: false,
   permission: Permission::WebFetch,
   specification,
   examples: || json!([{"url": "https://example.com"}]),

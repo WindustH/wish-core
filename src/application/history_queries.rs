@@ -9,6 +9,7 @@ use crate::session::history::query::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+pub(crate) mod replies;
 
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]

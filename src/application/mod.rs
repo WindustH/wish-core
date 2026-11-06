@@ -3,6 +3,7 @@ pub(crate) mod accounts;
 pub(crate) mod app;
 pub(crate) mod attachments;
 pub(crate) mod background_tools;
+pub(crate) mod blob_access;
 pub(crate) mod bridge;
 pub(crate) mod bridge_access;
 pub(crate) mod browser_login;
@@ -74,3 +75,5 @@ pub mod media_status;
 pub mod audio_transcription;
 
 pub(crate) mod google_login;
+
+pub(crate) mod library;

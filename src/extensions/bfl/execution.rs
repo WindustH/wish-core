@@ -6,6 +6,7 @@ impl crate::extensions::invocation::Executable for super::Generate {
     Box::pin(async move {
       host
         .image(crate::extensions::image_runtime::ImageRequest {
+          model: None,
           prompt: self.prompt,
           provider: self.service,
           images: self.reference_images,
@@ -26,6 +27,7 @@ impl crate::extensions::invocation::Executable for super::Fill {
     Box::pin(async move {
       host
         .image(crate::extensions::image_runtime::ImageRequest {
+          model: None,
           prompt: self.prompt,
           provider: self.service,
           images: vec![self.source_image],

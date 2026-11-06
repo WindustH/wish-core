@@ -78,7 +78,7 @@ impl SessionTransaction<'_, '_> {
     })
   }
   /// The entries the context uses: both generations', and the input still waiting.
-  fn used_entries(&mut self) -> Result<HashSet<usize>, SessionError> {
+  pub(in crate::session) fn used_entries(&mut self) -> Result<HashSet<usize>, SessionError> {
     let mut lists = Vec::new();
     for id in [self.record.active, self.record.standby] {
       lists.push((self.load_generation(id)?.entries, 0));

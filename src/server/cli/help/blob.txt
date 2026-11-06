@@ -1,0 +1,22 @@
+wish blob — session files and user-facing references
+
+  wish blob list [--all | --displayed] [--start N] [--limit N]
+  wish blob add PATH [--name NAME] [--hidden]
+  wish blob symlink PATH [--hidden]
+  wish blob mention ID_OR_PATH [--label TEXT] [--page N] [--time SECONDS] [--visible]
+  wish blob show|hide|pin|unpin ID
+  wish blob update ID [--visible | --hidden] [--pinned | --unpinned]
+  wish blob delete ID
+  wish blob --schema
+  wish blob --json '{"action":"mention","source":"/path/document.pdf","page":3}'
+  wish blob --stdin
+
+list includes hidden files by default. add copies bytes; symlink/link registers a
+local path without copying. add/link appear in the displayed Library unless hidden.
+mention silently links local paths, and returns a clickable reference plus Markdown
+to include in your answer. Mentioning alone does not add to the displayed Library.
+PDF pages start at 1; audio/video times use seconds. Paths may be absolute or relative
+to the session working directory. Quote paths with spaces. pin also makes a file visible.
+delete removes stored bytes/the link only, never the original linked file. Images
+needed by current/standby generations or pending messages cannot be deleted; hide them instead.
+All operations use this session's authentication and cannot access another session's blobs.

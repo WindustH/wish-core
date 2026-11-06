@@ -26,6 +26,7 @@ pub async fn execute(
       matches!(
         capability,
         Capability::ExtensionDiscovery
+          | Capability::Blob
           | Capability::History
           | Capability::WebFetch
           | Capability::WebSearch
@@ -39,7 +40,7 @@ pub async fn execute(
     .ok_or_else(ApplicationError::not_found)?;
   let enabled = switches.enabled(capability);
   let specification = if let Some(registration) = crate::extensions::catalog::find(&name) {
-    (registration.specification)()
+    registration.tool()
   } else {
     slot
       .tools

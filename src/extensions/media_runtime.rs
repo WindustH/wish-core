@@ -73,6 +73,9 @@ pub trait MediaDriver: Sync {
   fn status_request(&self, _task: &str) -> Result<(String, Draft), Error> {
     Err(Error::Build("extension has no video status API".into()))
   }
+  fn model_status_request(&self, _model: &str, task: &str) -> Result<(String, Draft), Error> {
+    self.status_request(task)
+  }
   fn decode_status(&self, _v: &Value) -> Result<VideoStatus, Error> {
     Err(Error::Build("extension has no video status API".into()))
   }
@@ -145,6 +148,7 @@ pub trait NativePlan: Send + Sync {
 
 #[derive(Default)]
 pub struct MediaRequest {
+  pub model: Option<String>,
   pub plan: Option<std::sync::Arc<dyn crate::extensions::media_runtime::NativePlan>>,
   pub action: Option<String>,
   pub provider: Option<String>,

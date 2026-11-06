@@ -156,10 +156,14 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
   if content.is_empty() {
     return Err(ApplicationError::invalid("message is empty"));
   }
-  Ok(Message::User {
-    content,
-    metadata: json!({"custom":input.metadata,"attachments":input.attachments,"input_text":input.text,"input_parts":parts}),
+  let metadata = json!({"custom":input.metadata,"attachments":input.attachments,"input_text":input.text,"input_parts":parts});
+  let directory = blob_dir.to_path_buf();
+  let library_metadata = metadata.clone();
+  super::error::blocking(move || {
+    Ok(blobs::library::record_input(&directory, super::library::attachments(&library_metadata))?)
   })
+  .await?;
+  Ok(Message::User { content, metadata })
 }
 
 /// The first input travels with session creation, so rejected uploads cannot leave empty sessions.

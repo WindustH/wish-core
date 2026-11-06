@@ -6,11 +6,19 @@ use crate::protocol::{
   error::Error,
 };
 use serde_json::Value;
-pub struct BflImages;
-pub static DRIVER: BflImages = BflImages;
+pub struct BflImages {
+  fill: bool,
+}
+pub static DRIVER: BflImages = BflImages { fill: false };
+pub static FILL_DRIVER: BflImages = BflImages { fill: true };
+impl BflImages {
+  fn contract_model<'a>(&self, model: &'a str) -> &'a str {
+    if self.fill { "flux-pro-1.0-fill" } else { model }
+  }
+}
 impl ImageDriver for BflImages {
   fn id(&self) -> &'static str {
-    "bfl"
+    if self.fill { "bfl_fill" } else { "bfl" }
   }
   fn credentials_ready(&self, c: &Credentials) -> bool {
     super::endpoint::ready(c)
@@ -36,13 +44,13 @@ impl ImageDriver for BflImages {
     crate::extensions::bfl::image::decode(body, current_url, result_url)
   }
   fn capabilities(&self, model: &str) -> ImageCapabilities {
-    super::image::capabilities(model)
+    super::image::capabilities(self.contract_model(model))
   }
   fn validate(&self, model: &str, parameters: &Parameters) -> Result<(), Error> {
     if parameters.keys().any(|key| key.starts_with("input_image")) {
       return Err(Error::Build("BFL input images are managed by the tool images argument".into()));
     }
-    super::image::validate(model, parameters)
+    super::image::validate(self.contract_model(model), parameters)
   }
   fn merge_options(
     &self,
@@ -50,7 +58,7 @@ impl ImageDriver for BflImages {
     defaults: Parameters,
     options: &Parameters,
   ) -> Result<Parameters, Error> {
-    let values = super::image::merge_options(model, defaults, options)?;
+    let values = super::image::merge_options(self.contract_model(model), defaults, options)?;
     self.validate(model, &values)?;
     Ok(values)
   }

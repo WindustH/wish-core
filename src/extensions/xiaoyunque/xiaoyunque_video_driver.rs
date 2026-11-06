@@ -33,8 +33,8 @@ impl MediaDriver for XiaoyunqueVideo {
   fn task_id(&self, v: &Value) -> Result<String, String> {
     super::video::task_id(v)
   }
-  fn status_request(&self, task: &str) -> Result<(String, Draft), Error> {
-    super::video::status_request(task)
+  fn model_status_request(&self, model: &str, task: &str) -> Result<(String, Draft), Error> {
+    super::video::status_request(model, task)
   }
   fn decode_status(&self, v: &Value) -> Result<VideoStatus, Error> {
     super::video::status(v)

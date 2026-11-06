@@ -73,7 +73,6 @@ impl SessionTools {
           p.available
             && p.enabled
             && registration.service_presets.contains(&p.preset.as_str())
-            && (registration.accepts_model)(p.model.as_deref().unwrap_or_default())
         })
         .map(|p| json!({"id":p.id,"name":p.name,"model":p.model,"preset":p.preset,
           "capabilities":{"video":p.video,"image_options":p.image_options,"reference_images":p.reference_images,
@@ -116,7 +115,7 @@ impl SessionTools {
             return ToolOutcome::Failed("extension tool is unavailable".into());
           }
           json!({"extension":registration.extension,
-            "tool":(registration.specification)(),
+            "tool":registration.tool(),
             "examples":(registration.examples)(), "services":services})
         }
         _ => return ToolOutcome::Failed("invalid discovery request".into()),
@@ -134,7 +133,22 @@ impl SessionTools {
     if !allowed(registration.permission) {
       return ToolOutcome::Failed("extension is disabled for this session".into());
     }
-    let invocation = match (registration.parse)(call.arguments.clone()) {
+    let mut arguments = call.arguments.clone();
+    let model = if registration.model_override {
+      match arguments.as_object_mut().and_then(|args| args.remove("model")) {
+        None => None,
+        Some(Value::String(model)) => {
+          if let Err(error) = catalog::validate_model(&model) {
+            return ToolOutcome::Failed(error);
+          }
+          Some(model)
+        }
+        _ => return ToolOutcome::Failed("model must be a string".into()),
+      }
+    } else {
+      None
+    };
+    let invocation = match (registration.parse)(arguments) {
       Ok(value) => value,
       Err(error) => return ToolOutcome::Failed(error),
     };
@@ -143,6 +157,7 @@ impl SessionTools {
       registration,
       services: services_for(registration),
       call_id: &call.call_id,
+      model: model.as_deref(),
     };
     match control.run_until_cancelled(invocation.execute(&host)).await {
       Some(Ok(report)) => ToolOutcome::Report {

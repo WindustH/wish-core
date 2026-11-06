@@ -124,6 +124,8 @@ is read by `get_account_state`.
 `utils::retry` owns `RetryPolicy` and generic `retry` / `retry_observed` loops. The client
 supplies the decision: model calls use `Error::is_retryable` ([error](protocol/error.md)), mapped by
 `classify_retry`; read-only auxiliary requests also retry transport failures after sending.
+Protocol-aware progress and auxiliary-read classification live in `protocol::retry`, shared
+by clients and extensions. The generic utilities do not depend on protocol error types.
 Nothing in the executor retries, and model retries never repeat tool side
 effects.
 

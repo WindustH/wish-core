@@ -35,6 +35,35 @@ impl ImageDriver for CodexImages {
   ) -> Result<ImageReply, Error> {
     crate::extensions::openai::subscription_image::decode(body)
   }
+  fn capabilities(&self, _model: &str) -> ImageCapabilities {
+    // The subscription endpoint owns model availability. Do not borrow the API
+    // model allowlist: configured aliases/new models use the same edit contract.
+    ImageCapabilities {
+      reference_limit: super::subscription_image::REFERENCE_LIMIT,
+      local_references: true,
+      ..Default::default()
+    }
+  }
+  fn with_images(
+    &self,
+    model: &str,
+    prompt: &str,
+    parameters: &Parameters,
+    images: &[ReferenceInput],
+    references: &[PreciseReference],
+    overlay: Option<&EditOverlay>,
+  ) -> Result<Draft, Error> {
+    if !references.is_empty() || overlay.is_some() {
+      return Err(Error::Build(
+        "ChatGPT image edits do not support masks, markup or precise references".into(),
+      ));
+    }
+    if images.is_empty() {
+      self.submission(model, prompt, parameters)
+    } else {
+      super::subscription_image::edit(model, prompt, parameters, images)
+    }
+  }
   fn subscription(&self) -> bool {
     true
   }

@@ -1,8 +1,5 @@
 //! Per-attempt deadlines and retry policy shared by auxiliary read operations.
-use crate::client::{
-  RetryObserver, RetryOperation,
-  retry::{classify_read_retry, retry_upstream},
-};
+use crate::protocol::retry::{RetryObserver, RetryOperation, classify_read_retry, retry_upstream};
 use crate::{
   protocol::error::{Error, TransportFailure},
   utils::retry::RetryPolicy,

@@ -199,7 +199,7 @@ impl SessionSlot {
   /// Compacts the context, with a pending selection applied first so the model that continues the
   /// session writes the summary.
   async fn compact(
-    &self,
+    self: &Arc<Self>,
     session: &mut Session,
     model: &SwitchingModel,
     control: &ExecutionControl,

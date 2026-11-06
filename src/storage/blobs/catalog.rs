@@ -9,7 +9,13 @@ use std::{
   sync::{Arc, LazyLock, Mutex},
   time::{SystemTime, UNIX_EPOCH},
 };
-type Row = (u64, String, Option<super::Blob>);
+#[derive(Clone)]
+struct Row {
+  modified_at: u64,
+  id: String,
+  linked_blob: Option<super::Blob>,
+  presentation: super::library::Entry,
+}
 // Blob publication and link registration use atomic renames. Directory revision changes
 // invalidate this bounded index; linked source contents are still inspected on each page.
 struct Index {
@@ -61,6 +67,8 @@ pub struct Item {
   pub available: bool,
   pub name: Option<String>,
   pub local_path: Option<String>,
+  pub visible: bool,
+  pub pinned: bool,
 }
 #[derive(Serialize)]
 pub struct Page {
@@ -70,6 +78,7 @@ pub struct Page {
 }
 
 fn scan(directory: &Path) -> Result<Vec<Row>, RepositoryError> {
+  let library = super::library::entries(directory)?;
   let entries = match std::fs::read_dir(directory) {
     Ok(entries) => entries,
     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -120,22 +129,59 @@ fn scan(directory: &Path) -> Result<Vec<Row>, RepositoryError> {
       .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
       .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
       .unwrap_or(0);
-    files.push((modified_at, id, linked_blob));
+    let presentation = library.get(&id).cloned().unwrap_or_default();
+    files.push(Row { modified_at, id, linked_blob, presentation });
   }
-  files.sort_unstable_by(|a, b| (&b.0, &b.1).cmp(&(&a.0, &a.1)));
+  files.sort_unstable_by(|a, b| {
+    (&b.presentation.pinned, &b.modified_at, &b.id).cmp(&(
+      &a.presentation.pinned,
+      &a.modified_at,
+      &a.id,
+    ))
+  });
   Ok(files)
 }
-pub fn list(directory: &Path, start: usize, limit: usize) -> Result<Page, RepositoryError> {
+pub fn contains(directory: &Path, id: &str) -> Result<bool, RepositoryError> {
+  if !is_blob_id(id) {
+    return Ok(false);
+  }
+  match std::fs::symlink_metadata(directory.join(id)) {
+    Ok(metadata) => return Ok(metadata.is_file()),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+    Err(error) => return Err(RepositoryError::internal(error)),
+  }
+  let path = super::description_path(directory, id);
+  match std::fs::symlink_metadata(&path) {
+    Ok(metadata) if metadata.is_file() && metadata.len() <= 64 * 1024 => {}
+    Ok(_) => return Ok(false),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+    Err(error) => return Err(RepositoryError::internal(error)),
+  }
+  let bytes =
+    crate::utils::bounded_file::read_sync(&path, 64 * 1024).map_err(RepositoryError::internal)?;
+  Ok(serde_json::from_slice::<super::Blob>(&bytes).is_ok_and(|blob| blob.linked && blob.id == id))
+}
+pub fn list(
+  directory: &Path,
+  start: usize,
+  limit: usize,
+  include_hidden: bool,
+) -> Result<Page, RepositoryError> {
   let files = indexed(directory)?;
+  let files: Vec<_> =
+    files.iter().filter(|row| include_hidden || row.presentation.visible).collect();
   let total = files.len();
   let mut items = Vec::new();
-  for (modified_at, id, linked_blob) in files.iter().skip(start).take(limit).cloned() {
+  for Row { modified_at, id, linked_blob, presentation } in
+    files.into_iter().skip(start).take(limit).cloned()
+  {
     let path = linked_blob
       .as_ref()
       .map(|blob| std::path::PathBuf::from(&blob.path))
       .unwrap_or_else(|| directory.join(&id));
-    let name =
-      linked_blob.as_ref().and_then(|_| path.file_name()).map(|n| n.to_string_lossy().into_owned());
+    let name = presentation.name.clone().or_else(|| {
+      linked_blob.as_ref().and_then(|_| path.file_name()).map(|n| n.to_string_lossy().into_owned())
+    });
     let local_path = linked_blob.as_ref().map(|blob| blob.path.clone());
     if let Some(blob) = &linked_blob
       && !std::fs::metadata(&path).is_ok_and(|m| m.is_file())
@@ -149,6 +195,8 @@ pub fn list(directory: &Path, start: usize, limit: usize) -> Result<Page, Reposi
         available: false,
         name,
         local_path,
+        visible: presentation.visible,
+        pinned: presentation.pinned,
       });
       continue;
     }
@@ -172,6 +220,8 @@ pub fn list(directory: &Path, start: usize, limit: usize) -> Result<Page, Reposi
       available: true,
       name,
       local_path,
+      visible: presentation.visible,
+      pinned: presentation.pinned,
     });
   }
   let end = start.saturating_add(limit);

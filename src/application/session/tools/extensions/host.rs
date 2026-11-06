@@ -12,6 +12,7 @@ pub(super) struct Adapter<'a> {
   pub registration: &'static Registration,
   pub services: Vec<Value>,
   pub call_id: &'a str,
+  pub model: Option<&'a str>,
 }
 impl Adapter<'_> {
   fn require(&self, permission: Permission) -> Result<(), Failure> {
@@ -43,6 +44,7 @@ impl Host for Adapter<'_> {
   fn image(&self, mut request: ImageRequest) -> Future<'_> {
     Box::pin(async move {
       self.require(Permission::ImageGeneration)?;
+      request.model = self.model.map(str::to_owned);
       let selected = self.services.iter().find(|service| {
         if let Some(id) = &request.provider {
           return service["id"] == *id;
@@ -53,7 +55,7 @@ impl Host for Adapter<'_> {
         else {
           return false;
         };
-        let model = service["model"].as_str().unwrap_or_default();
+        let model = self.model.or_else(|| service["model"].as_str()).unwrap_or_default();
         let protocol = preset.protocol;
         protocol.accepts_options(model, &request.options)
           && protocol.accepts_reference_count(model, request.images.len())
@@ -71,8 +73,9 @@ impl Host for Adapter<'_> {
       (self.tools.image_generate.0)(request).await.map(Report::json).map_err(paid)
     })
   }
-  fn media(&self, request: MediaRequest) -> Future<'_> {
+  fn media(&self, mut request: MediaRequest) -> Future<'_> {
     Box::pin(async move {
+      request.model = self.model.map(str::to_owned);
       let video = match self.registration.permission {
         Permission::VideoGeneration => true,
         Permission::AudioGeneration => false,
@@ -109,7 +112,7 @@ impl Host for Adapter<'_> {
       let accounts = app.get_service_accounts();
       app
         .asr
-        .transcribe_scoped(request, &owner.blob_dir, &accounts)
+        .transcribe_scoped(request, &owner.blob_dir, &accounts, self.model)
         .await
         .map(Report::json)
         .map_err(paid)
@@ -146,9 +149,10 @@ impl Host for Adapter<'_> {
       })
     })
   }
-  fn search(&self, query: SearchQuery, service: Option<String>) -> Future<'_> {
+  fn search(&self, mut query: SearchQuery, service: Option<String>) -> Future<'_> {
     Box::pin(async move {
       self.require(Permission::WebSearch)?;
+      query.model = self.model.map(str::to_owned);
       let provider = self.select(service.as_deref())?;
       Ok(self.tools.web_search.run(query, Some(provider)).await?)
     })

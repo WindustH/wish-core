@@ -1,15 +1,13 @@
 //! Supplier-owned video model capabilities and input policy.
 use crate::extensions::shared::video::{InputRole::*, VideoCapabilities, VideoMode::*};
-pub fn capabilities(model: &str) -> Option<VideoCapabilities> {
-  let (modes, roles, blobs, notes) = if model == "pippit_iv2v_v20_cvtob_with_vinput" {
+pub fn capabilities(_model: &str) -> Option<VideoCapabilities> {
+  let (modes, roles, blobs, notes) = {
     (
       vec![Text, Reference],
       vec![ReferenceImage, ReferenceVideo],
       vec![],
       "Xiaoyunque 2.0 agent accepts up to 50 public HTTPS image/video references. Local files need public hosting; generated video blobs may reuse recorded URLs. Optional duration_hint is ～15s, ～30s, 40～60s or 1min+; duration is approximate. Requires Volcengine visual AK/SK credentials.",
     )
-  } else {
-    return None;
   };
   Some(VideoCapabilities {
     modes,

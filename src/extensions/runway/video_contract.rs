@@ -16,7 +16,12 @@ pub fn capabilities(model: &str) -> Option<VideoCapabilities> {
       "Gen-4.5 supports a first frame only. Use an Aleph 2 service for editing.",
     )
   } else {
-    return None;
+    (
+      vec![Text, Frames, Edit],
+      vec![FirstFrame, LastFrame, SourceVideo],
+      vec!["image", "video"],
+      "Custom model: uses Runway generation/edit wire formats; availability and capabilities are verified upstream.",
+    )
   };
   Some(VideoCapabilities {
     modes,

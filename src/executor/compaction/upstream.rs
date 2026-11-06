@@ -78,7 +78,7 @@ pub(super) async fn replace_with_upstream(
     .chain(std::iter::once(&continuation))
     .cloned()
     .collect();
-  caller.validate_request(&request)?;
+  caller.validate_request(&request).await?;
   let measurement = measure(caller, control, &config, &request, calibration).await?;
   if measurement.tokens > config.target_tokens {
     return Err(Error::Build("compaction target cannot accommodate the fixed prompt, upstream compaction body and continuation notice".into()).into());

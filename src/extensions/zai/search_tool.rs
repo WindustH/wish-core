@@ -23,7 +23,7 @@ pub const REGISTRATION: Registration = Registration {
   summary: "zai web search",
   tags: &["web", "search"],
   service_presets: &["zai_search"],
-  accepts_model: |_| true,
+  model_override: false,
   permission: Permission::WebSearch,
   specification,
   examples: || json!([{"query": "Rust documentation"}]),
