@@ -2,7 +2,7 @@
 
 Status: implemented event-driven input preemption; original audit findings below are retained
 as the pre-change baseline. The executable acceptance tests are `test_preemption_*` in
-`wish-test/tests/test_wish_server.py`.
+`wish-test/tests/server_api/test_tasks.py`.
 The disposable-server probe is `wish-test/tools/probe_input_preemption.py`.
 
 ## State machines

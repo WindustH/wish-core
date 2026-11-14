@@ -92,7 +92,7 @@ run the external suites in CI. Locally run:
 
 ```sh
 cd ../wish-test
-python3 -m unittest tests.test_wish_server tests.test_wish_core_history tests.test_wish_core_shell tests.test_wish_core_agent -q
+python3 run_tests.py server_api core_engine -q
 ```
 
 The fixture update in wish-test must accompany this backend change because its embedded module
@@ -187,7 +187,7 @@ The stored format, historical enum spellings, HTTP routes and tool argument fiel
 ### Regression entry points
 
 The tests remain in the separate `wish-test` repository; no inline Rust tests or production test
-switches were added. `test_wish_core_review` builds copied application source into an independent
+switches were added. `tests.core_engine.test_application` builds copied application source into an independent
 executable and exercises renewal backoff/reset, draft/creation lock ordering, quota accounting,
 cache eviction/reopening and incremental instruction observations. The agent fixture covers
 repeated context refusal, bounded counting, queued-tool crash semantics and ordered-list rollback.
@@ -199,8 +199,8 @@ cargo fmt --check
 CARGO_INCREMENTAL=0 cargo clippy --offline --all-targets -- -D warnings
 python3 ../wish-test/tools/check_architecture.py
 cd ../wish-test
-CARGO_INCREMENTAL=0 python3 -m unittest tests.test_wish_core_review tests.test_wish_core_agent tests.test_wish_core_google -q
-CARGO_INCREMENTAL=0 python3 -m unittest tests.test_wish_server tests.test_wish_core_history tests.test_wish_core_shell tests.test_wish_architecture -q
+CARGO_INCREMENTAL=0 python3 run_tests.py core_engine -q
+CARGO_INCREMENTAL=0 python3 run_tests.py server_api core_engine -q
 ```
 
 Local validation: formatting, zero-warning Clippy and dependency checks passed. The three

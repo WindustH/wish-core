@@ -42,11 +42,17 @@ jobs:
         if: ${{ inputs.test_repository != '' || vars.WISH_TEST_REPOSITORY != '' }}
         with:
           repository: ${{ inputs.test_repository || vars.WISH_TEST_REPOSITORY }}
-          ref: ${{ inputs.test_ref || 'main' }}
+          ref: ${{ inputs.test_ref || vars.WISH_TEST_REF || 'main' }}
           path: wish-test
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Local media fixture dependencies
+        if: ${{ inputs.test_repository != '' || vars.WISH_TEST_REPOSITORY != '' }}
+        run: |
+          python3 -m pip install Pillow
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg poppler-utils
       - name: Architecture boundaries
         if: ${{ inputs.test_repository != '' || vars.WISH_TEST_REPOSITORY != '' }}
         working-directory: wish-test
@@ -58,4 +64,4 @@ jobs:
         working-directory: wish-test
         env:
           WISH_CORE_REPO: ${{ github.workspace }}/wish-core
-        run: python3 -m unittest tests.test_wish_server tests.test_wish_core_history tests.test_wish_core_shell tests.test_wish_core_agent tests.test_wish_core_review tests.test_wish_core_google -q
+        run: python3 run_tests.py core_engine server_api extensions library_media -q
