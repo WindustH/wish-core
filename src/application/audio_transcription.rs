@@ -11,6 +11,7 @@ impl MediaHub {
   pub async fn transcribe_scoped(
     &self,
     request: Request,
+    blob_id: String,
     directory: &Path,
     accounts: &AccountRegistry,
     model: Option<&str>,
@@ -20,12 +21,13 @@ impl MediaHub {
     }
     let _permit = self.permits.acquire().await.map_err(|e| e.to_string())?;
     let state = self.state.read().unwrap().clone();
-    execute(&state, request, directory, accounts, model).await
+    execute(&state, request, &blob_id, directory, accounts, model).await
   }
 }
 async fn execute(
   state: &State,
   request: Request,
+  blob_id: &str,
   directory: &Path,
   accounts: &AccountRegistry,
   model_override: Option<&str>,
@@ -34,11 +36,10 @@ async fn execute(
   let config = &state.config;
   let allowed_presets = request.registration().service_presets;
   let allowed = |preset: &str| allowed_presets.contains(&preset);
-  if !blobs::is_blob_id(request.blob_id()) {
+  if !blobs::is_blob_id(blob_id) {
     return Err("blob_id must identify an audio/video file in this session".into());
   }
-  let path =
-    blobs::linked::resolve(directory, request.blob_id()).await.map_err(|e| e.to_string())?;
+  let path = blobs::linked::resolve(directory, blob_id).await.map_err(|e| e.to_string())?;
   let mut file = tokio::fs::File::open(path).await.map_err(|e| e.to_string())?;
   const LIMIT: u64 = 32 * 1024 * 1024;
   let byte_len = file.metadata().await.map_err(|e| e.to_string())?.len();

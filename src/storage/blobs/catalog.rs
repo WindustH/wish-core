@@ -14,7 +14,6 @@ struct Row {
   modified_at: u64,
   id: String,
   linked_blob: Option<super::Blob>,
-  presentation: super::library::Entry,
 }
 // Blob publication and link registration use atomic renames. Directory revision changes
 // invalidate this bounded index; linked source contents are still inspected on each page.
@@ -69,16 +68,17 @@ pub struct Item {
   pub local_path: Option<String>,
   pub visible: bool,
   pub pinned: bool,
+  pub folder: Option<String>,
 }
 #[derive(Serialize)]
 pub struct Page {
   pub items: Vec<Item>,
   pub next: Option<usize>,
   pub total: usize,
+  pub folders: Vec<super::library::Folder>,
 }
 
 fn scan(directory: &Path) -> Result<Vec<Row>, RepositoryError> {
-  let library = super::library::entries(directory)?;
   let entries = match std::fs::read_dir(directory) {
     Ok(entries) => entries,
     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -129,16 +129,8 @@ fn scan(directory: &Path) -> Result<Vec<Row>, RepositoryError> {
       .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
       .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
       .unwrap_or(0);
-    let presentation = library.get(&id).cloned().unwrap_or_default();
-    files.push(Row { modified_at, id, linked_blob, presentation });
+    files.push(Row { modified_at, id, linked_blob });
   }
-  files.sort_unstable_by(|a, b| {
-    (&b.presentation.pinned, &b.modified_at, &b.id).cmp(&(
-      &a.presentation.pinned,
-      &a.modified_at,
-      &a.id,
-    ))
-  });
   Ok(files)
 }
 pub fn contains(directory: &Path, id: &str) -> Result<bool, RepositoryError> {
@@ -167,14 +159,49 @@ pub fn list(
   limit: usize,
   include_hidden: bool,
 ) -> Result<Page, RepositoryError> {
+  list_in(directory, start, limit, include_hidden, None)
+}
+pub fn list_in(
+  directory: &Path,
+  start: usize,
+  limit: usize,
+  include_hidden: bool,
+  folder: Option<&str>,
+) -> Result<Page, RepositoryError> {
+  // Presentation and organization are one atomic snapshot, never cached by directory mtime.
+  // Two metadata writes can share a filesystem timestamp while changing pins or visibility.
+  let library = super::library::snapshot(directory)?;
+  let folders: Vec<_> = library.folders.into_values().collect();
+  let locations = library.locations;
+  let default = super::library::Entry::default();
+  let presentation = |row: &Row| library.entries.get(&row.id).unwrap_or(&default);
+  if let Some(folder) = folder
+    && folder != "/"
+    && !folders.iter().any(|item| item.id == folder)
+  {
+    return Err(RepositoryError::not_found());
+  }
   let files = indexed(directory)?;
-  let files: Vec<_> =
-    files.iter().filter(|row| include_hidden || row.presentation.visible).collect();
+  let mut files: Vec<_> = files
+    .iter()
+    .filter(|row| {
+      (include_hidden || presentation(row).visible)
+        && folder
+          .is_none_or(|folder| locations.get(&row.id).map(String::as_str).unwrap_or("/") == folder)
+    })
+    .collect();
+  files.sort_unstable_by(|a, b| {
+    (presentation(b).pinned, b.modified_at, &b.id).cmp(&(
+      presentation(a).pinned,
+      a.modified_at,
+      &a.id,
+    ))
+  });
   let total = files.len();
   let mut items = Vec::new();
-  for Row { modified_at, id, linked_blob, presentation } in
-    files.into_iter().skip(start).take(limit).cloned()
-  {
+  for Row { modified_at, id, linked_blob } in files.into_iter().skip(start).take(limit).cloned() {
+    let presentation = library.entries.get(&id).unwrap_or(&default);
+    let folder = locations.get(&id).cloned();
     let path = linked_blob
       .as_ref()
       .map(|blob| std::path::PathBuf::from(&blob.path))
@@ -197,6 +224,7 @@ pub fn list(
         local_path,
         visible: presentation.visible,
         pinned: presentation.pinned,
+        folder,
       });
       continue;
     }
@@ -222,8 +250,9 @@ pub fn list(
       local_path,
       visible: presentation.visible,
       pinned: presentation.pinned,
+      folder,
     });
   }
   let end = start.saturating_add(limit);
-  Ok(Page { next: (end < total).then_some(end), items, total })
+  Ok(Page { next: (end < total).then_some(end), items, total, folders })
 }

@@ -211,3 +211,66 @@ extension commands/tool advertisement and a preset-count assertion). The other t
 for `running=false` before accepted input had drained; their explicit queue-draining waits were
 corrected and their isolated rerun passed. The eight reproduced baseline failures remain outside
 this resource-control change; the broad suite is not reported as entirely green.
+
+## Working-tree audit after v0.2.7 (2026-11-14)
+
+This review checks the supplied findings against the existing uncommitted work. It preserves
+the session/alias/library contracts already being implemented. The draft-lock and credential
+details below supersede the corresponding older descriptions above.
+
+### Confirmed corrections
+
+- Standby compaction gates speculative counting on the pending span's local estimate, raised
+  when calibration predicts a larger size. Small contexts no longer call the remote counter
+  before every turn. Only a selected summary request is protocol-validated. Completed output
+  segments are retained when a later continuation fails with a partial stream.
+- Image decoding and normalization share CPU admission and the two-operation image limit.
+  Unsupported, rejected and over-budget stored images are omitted before reading their bytes.
+  Inspection and structural validation keep blob references; actual model calls and remote
+  token counts still verify and materialize admitted images. Repeated images record both an
+  included newer occurrence and an omitted older occurrence instead of losing the latter notice.
+- Session creation retains the per-draft owner lock, without holding the global inventory lock
+  through normalization and initialization. Reaping skips draft owners in use. Fork resources,
+  aliases and the shell override are prepared before publication. Executor futures are boxed
+  at the operation boundary to keep nested peer dispatch from exhausting debug worker stacks.
+- Image/video extension inputs expand blob aliases while leaving ordinary prompt text literal.
+  Background tool results and bridge success values use the same output projection. Discovery
+  traverses JSON string leaves; path shortening respects component boundaries, and peer delivery
+  rewrites only resources actually copied. No-op outcomes avoid a blocking dispatch.
+- DataDir establishes one absolute root. The physical catalog cache no longer stores library
+  presentation; each listing reads one current library snapshot. Pruning removes metadata for
+  deleted blobs. Storage owner release is local bookkeeping rather than a blocking queue send.
+- Credential renewal writes the configuration and updates shared credential cells without a full
+  hub rebuild or usage merge. Account-backed search definitions and authenticated MCP endpoints
+  still refresh when necessary. Ordinary configuration changes retain the full validation path;
+  shutdown admission now guards the background usage merge.
+- Artifact downloads reuse a transport-owned client for the public-DNS policy. MCP discovery has
+  bounded concurrency. Peer name lookup uses a bounded management query, and idle peer configuration
+  combines name/config/metadata in one revision update.
+- Atomic file publication lives in utils; extension job persistence and media format detection
+  no longer import storage. The architecture guard enforces that boundary. Static web assets
+  stream from disk, header conversion is fallible, CLI skill absence is classified by HTTP status,
+  and bearer comparison uses fixed-size authenticated tags rather than early-exit string equality.
+
+### Findings not applied mechanically
+
+- The client implementing the executor's ModelCaller port is intentional dependency inversion,
+  already documented here. Merely moving the implementation does not repair a boundary defect.
+- The inspected rmcp RunningService owns a cancellation DropGuard. Retired instances still held
+  by active calls close when their last owner is released; failure of Arc::try_unwrap is not a
+  permanent connection leak. Eager cancellation would interrupt those calls.
+- Remote image token counting must see actual images. Empty placeholders are restricted to local
+  structural validation. Header-only image decoding would also remove existing pixel validation
+  and orientation handling, so it is not a safe substitute for bounded CPU admission.
+- Skill scans and cold background-event replay have real cost, but are also freshness/recovery
+  boundaries. They need a measured cache or checkpoint policy; this change does not silently cache
+  stale skill contents or stop replaying unfinished background operations.
+- Mutex poisoning is not universally recoverable. Blanket into_inner calls could expose partially
+  changed alias or instruction state. Naming-only restructures, a new persistence abstraction for
+  every helper, and moving Calendar solely to remove SQLite require separate evidence and scope.
+
+Regression entry points are `tests.test_wish_audit_regressions`, the engine/application executable
+fixtures, image/media alias tests, credential-renewal tests, and the existing MCP, web-serving,
+pruning and skill-command HTTP cases in wish-test. The browser audit and UI disposition are
+recorded in wish-web's architecture documentation. These are functional regressions, not a
+throughput benchmark or proof that every historical integration case passes.

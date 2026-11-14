@@ -72,10 +72,10 @@ impl Capability {
   }
   pub fn command_instruction(self) -> Option<&'static str> {
     Some(match self {
-      Self::Sessions => "`wish session` — sessions and groups",
+      Self::Sessions => "`wish session` — sessions",
       Self::Task => "`wish task` — task management",
       Self::Blob => {
-        "`wish blob` — add/link, mention, organize and delete session files; mentions can open a PDF page or video timestamp in the user's sidebar"
+        "`wish blob` — add/link, mention, organize and delete session files; direct Markdown links also create file mentions (see File references)"
       }
       Self::ExtensionDiscovery => {
         "`wish extension search [TAG ...]`, `wish extension inspect TOOL`, `wish extension call TOOL --json '<arguments>'` — discover and invoke extension-owned tools"

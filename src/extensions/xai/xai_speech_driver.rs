@@ -14,7 +14,7 @@ impl MediaDriver for XaiSpeech {
   }
   fn decode_audio(&self, bytes: &[u8]) -> Result<AudioCompletion, String> {
     let (audio, metadata) = super::speech_output::decode_timed(bytes)?;
-    let mime = crate::storage::media::mime(&audio).ok_or("unrecognized speech audio")?;
+    let mime = crate::utils::media_format::mime(&audio).ok_or("unrecognized speech audio")?;
     let value: serde_json::Value = serde_json::from_slice(&metadata).map_err(|e| e.to_string())?;
     if !["audio/mpeg", "audio/wav"].contains(&mime) || value["content_type"] != mime {
       return Err("speech audio content type does not match its bytes".into());

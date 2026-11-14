@@ -16,8 +16,25 @@ pub struct Prepared {
   pub bytes: Vec<u8>,
   pub mime: &'static str,
 }
-type Cache = VecDeque<([u8; 32], Arc<Prepared>)>;
+const CACHE_IDLE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+type Cache = VecDeque<([u8; 32], Arc<Prepared>, std::time::Instant)>;
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(VecDeque::new()));
+static ADMISSION: LazyLock<Arc<tokio::sync::Semaphore>> =
+  LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
+
+/// Inline/legacy images share the file decoder's admission and CPU pool. Admission
+/// precedes Base64 decoding so queued requests do not also retain decoded buffers.
+pub async fn process<R: Send + 'static>(
+  work: impl FnOnce() -> Result<R, String> + Send + 'static,
+) -> Result<R, String> {
+  let permit = ADMISSION.clone().acquire_owned().await.map_err(|e| e.to_string())?;
+  super::blocking::cpu(move || {
+    let _permit = permit;
+    work()
+  })
+  .await
+  .map_err(|e| e.to_string())?
+}
 
 pub fn prepare(bytes: &[u8]) -> Result<Arc<Prepared>, String> {
   if bytes.len() > MAX_SOURCE_BYTES {
@@ -35,10 +52,10 @@ pub fn prepare(bytes: &[u8]) -> Result<Arc<Prepared>, String> {
   }
   let result = Arc::new(convert(bytes)?);
   let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-  cache.retain(|(id, _)| id != &key);
-  cache.push_back((key, result.clone()));
+  cache.retain(|(id, _, _)| id != &key);
+  cache.push_back((key, result.clone(), std::time::Instant::now()));
   while cache.len() > 32
-    || cache.iter().map(|(_, image)| image.bytes.len()).sum::<usize>() > 32 * 1024 * 1024
+    || cache.iter().map(|(_, image, _)| image.bytes.len()).sum::<usize>() > 32 * 1024 * 1024
   {
     cache.pop_front();
   }
@@ -46,8 +63,9 @@ pub fn prepare(bytes: &[u8]) -> Result<Arc<Prepared>, String> {
 }
 fn cached(key: &[u8; 32]) -> Option<Arc<Prepared>> {
   let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-  let index = cache.iter().position(|(id, _)| id == key)?;
-  let entry = cache.remove(index)?;
+  let index = cache.iter().position(|(id, _, _)| id == key)?;
+  let mut entry = cache.remove(index)?;
+  entry.2 = std::time::Instant::now();
   let result = entry.1.clone();
   cache.push_back(entry);
   Some(result)
@@ -128,8 +146,6 @@ fn convert(bytes: &[u8]) -> Result<Prepared, String> {
 
 /// Admission precedes reading, so concurrent uploads cannot each retain a 100 MiB buffer.
 pub async fn prepare_file(path: &std::path::Path) -> Result<Arc<Prepared>, String> {
-  static ADMISSION: LazyLock<Arc<tokio::sync::Semaphore>> =
-    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
   let permit = ADMISSION.clone().acquire_owned().await.map_err(|error| error.to_string())?;
   let bytes =
     super::bounded_file::read(path, MAX_SOURCE_BYTES).await.map_err(|error| error.to_string())?;
@@ -139,4 +155,12 @@ pub async fn prepare_file(path: &std::path::Path) -> Result<Arc<Prepared>, Strin
   })
   .await
   .map_err(|error| error.to_string())?
+}
+
+/// Call on a blocking worker: releasing image buffers need not burden the async runtime.
+pub fn reap() {
+  CACHE
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+    .retain(|(_, _, used)| used.elapsed() < CACHE_IDLE);
 }

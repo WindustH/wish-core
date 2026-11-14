@@ -172,3 +172,10 @@ pub async fn set_working_directory(
 ) -> Result<Json<Value>, ApiError> {
   Ok(Json(session_commands::set_working_directory(app, id, input).await?))
 }
+
+pub async fn environment(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+  Ok(Json(session_queries::environment(app, id).await?))
+}

@@ -40,6 +40,12 @@ macro_rules! tool_settings {
 }
 tool_settings! {
 
+  /// Session files, enabled for older records that predate this switch.
+  #[serde(default = "enabled_by_default")]
+  pub blob: bool,
+  #[serde(default = "command_delivery")]
+  pub blob_delivery: ToolDelivery,
+
   #[serde(default = "enabled_by_default")]
   pub history_search: bool,
   #[serde(default)]
@@ -77,7 +83,7 @@ tool_settings! {
   /// the tools nor the instructions, so switching it keeps the prompt cache.
   pub skills: bool,
   /// Whether `wish session` in the session's shell may see, make and message other sessions and
-  /// groups, or use the equivalent direct session tool.
+  /// sessions, or use the equivalent direct session tool.
   pub sessions: bool,
   #[serde(default = "command_delivery")]
   pub sessions_delivery: ToolDelivery,
@@ -95,7 +101,8 @@ impl ToolSwitches {
             .is_some_and(|capability| self.enabled(capability))
         })
       }
-      Capability::Image | Capability::Blob => true,
+      Capability::Image => true,
+      Capability::Blob => self.blob,
       Capability::History => self.history_search,
       Capability::Shell | Capability::Task => self.shell,
       Capability::Sessions => self.sessions,
@@ -123,7 +130,7 @@ impl ToolSwitches {
       Capability::History => self.history_search_delivery,
       Capability::Sessions => self.sessions_delivery,
       Capability::Task => self.task_delivery,
-      Capability::Blob => ToolDelivery::Command,
+      Capability::Blob => self.blob_delivery,
       Capability::AskUser => self.ask_user_delivery,
       Capability::WebFetch => self.web_fetch_delivery,
       Capability::ImageGenerate => self.image_generate_delivery,

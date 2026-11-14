@@ -60,9 +60,9 @@ pub async fn timeline(
     )?;
     let mut matches = page.items;
     let mut has_more = page.next.is_some();
-    // Notes of the application's - a message sent to a group - belong in the conversation; each
-    // run's outcome only when asked for.
-    let mut event_types = vec!["Application".to_owned()];
+    // Durable application and compaction facts belong in the timeline; outcomes are optional.
+    let mut event_types = ["Application", "CompactionSummary", "ContextCompacted",
+      "UpstreamCompactionCompleted"].map(str::to_owned).to_vec();
     if query.include_outcomes {
       event_types.push("Finished".into());
     }
@@ -93,17 +93,21 @@ pub async fn timeline(
     for item in &matches {
       let Some(item) = reader.read_history_item(item.record.sequence)? else { continue };
       if let HistoryContent::Event(event) = &item.content {
-        if let Some(event) = web_event(event) {
+        let projected = if let crate::session::SessionEvent::CompactionSummary { response, source_start, source_end, .. } = event.as_ref() {
+          // Read the saved response, never the current generation. Only public summary text
+          // belongs in the timeline, not reasoning or provider replay data.
+          let messages = json!(&response.messages);
+          let content: Vec<Value> = messages.as_array().into_iter().flatten()
+            .filter_map(|message| message.get("Assistant"))
+            .filter_map(|message| message.get("content").and_then(Value::as_array))
+            .flatten().filter(|block| block.get("Text").is_some()).cloned().collect();
+          Some(json!({"CompactionSummary":{"content":content,"source_start":source_start,"source_end":source_end}}))
+        } else { web_event(event) };
+        if let Some(event) = projected {
           items.push(json!({"record":item.record,"content":{"kind":"event","value":event}}));
         }
       } else {
-        let mut value = json!(item);
-        if value["content"]["value"]["id"] == 0
-          && let Some(generation) = reader.get_generations().get(0)?
-        {
-          value["initial_tools"] = json!(generation.config.tools);
-        }
-        items.push(value);
+        items.push(json!(item));
       }
     }
     Ok(json!({"items":items,"next":next,"end_sequence":page.end_sequence}))

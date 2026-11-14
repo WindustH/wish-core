@@ -143,11 +143,16 @@ pub async fn serve(front: &WebFront, request: Request) -> Response {
     _ if segments.last().is_none_or(|last| !last.contains('.')) => root.join("index.html"),
     _ => return not_found(),
   };
-  let Ok(bytes) = tokio::fs::read(&file).await else { return not_found() };
+  let Ok(opened) = tokio::fs::File::open(&file).await else { return not_found() };
+  let Ok(metadata) = opened.metadata().await else { return not_found() };
   let cache =
     if path.starts_with("/assets/") { "public, max-age=31536000, immutable" } else { "no-cache" };
-  let body = if request.method() == Method::HEAD { Body::empty() } else { Body::from(bytes) };
-  (
+  let body = if request.method() == Method::HEAD {
+    Body::empty()
+  } else {
+    Body::from_stream(tokio_util::io::ReaderStream::new(opened))
+  };
+  let mut response = (
     [
       (header::CONTENT_TYPE, content_type(&file)),
       (header::CACHE_CONTROL, cache),
@@ -155,7 +160,9 @@ pub async fn serve(front: &WebFront, request: Request) -> Response {
     ],
     body,
   )
-    .into_response()
+    .into_response();
+  response.headers_mut().insert(header::CONTENT_LENGTH, metadata.len().into());
+  response
 }
 
 fn content_type(file: &Path) -> &'static str {

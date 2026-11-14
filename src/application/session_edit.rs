@@ -156,8 +156,7 @@ async fn update_idle(
   })
   .await
 }
-/// Deletes a session or group: its storage, files and record, and a session's place in its
-/// groups.
+/// Deletes a session's storage, owned files, scratch directory and index record.
 pub async fn delete(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
   app.lifecycle.require_open()?;
   let slot = app.get_session(id).await?;
@@ -179,8 +178,7 @@ pub async fn delete(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
   })
   .await?;
   app.sessions.lock().await.remove(id);
-  let (owner, target) = (app.clone(), id.to_owned());
-  blocking(move || owner.leave_groups(&target)).await?;
+  super::session_temp::remove(id, slot.get_descriptor().temp_dir.as_deref()).await?;
   for directory in [app.data_dir.shell(id), app.data_dir.blobs(id)] {
     match tokio::fs::remove_dir_all(directory).await {
       Ok(()) => {}

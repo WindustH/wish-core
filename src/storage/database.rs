@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use std::{
   collections::{BTreeMap, HashSet},
   path::{Path, PathBuf},
-  sync::{Arc, mpsc},
+  sync::{Arc, Mutex, mpsc},
   thread,
 };
 
@@ -20,7 +20,6 @@ impl Default for StorageOptions {
 struct Database {
   connection: Connection,
   cache: Cache,
-  owners: HashSet<String>,
 }
 type Job = Box<dyn FnOnce(&mut Database) + Send>;
 enum Command {
@@ -28,6 +27,7 @@ enum Command {
   Shutdown(mpsc::SyncSender<Result<(), StorageError>>),
 }
 struct Worker {
+  owners: Mutex<HashSet<String>>,
   sender: Option<mpsc::SyncSender<Command>>,
   thread: Option<thread::JoinHandle<()>>,
   id: thread::ThreadId,
@@ -103,9 +103,14 @@ impl Storage {
       })
       .map_err(StorageError::StartWorker)?;
     match result.recv().map_err(|_| StorageError::Closed)? {
-      Ok(id) => {
-        Ok(Self { worker: Arc::new(Worker { sender: Some(sender), thread: Some(thread), id }) })
-      }
+      Ok(id) => Ok(Self {
+        worker: Arc::new(Worker {
+          sender: Some(sender),
+          thread: Some(thread),
+          id,
+          owners: Mutex::new(HashSet::new()),
+        }),
+      }),
       Err(error) => {
         let _ = thread.join();
         Err(error)
@@ -290,14 +295,12 @@ impl Storage {
 
   pub(crate) fn claim_owner(&self, name: &str) -> Result<OwnerGuard, StorageError> {
     let name = name.to_owned();
-    let target = name.clone();
-    self.dispatch(move |database| {
-      if database.owners.insert(target.clone()) {
-        Ok(())
-      } else {
-        Err(StorageError::AlreadyOpen(target))
-      }
-    })??;
+    if self.worker.thread.as_ref().is_none_or(|thread| thread.is_finished()) {
+      return Err(StorageError::Closed);
+    }
+    if !self.worker.owners.lock().unwrap_or_else(|e| e.into_inner()).insert(name.clone()) {
+      return Err(StorageError::AlreadyOpen(name));
+    }
     Ok(OwnerGuard { storage: self.clone(), name })
   }
 }
@@ -308,12 +311,9 @@ pub(crate) struct OwnerGuard {
 }
 impl Drop for OwnerGuard {
   fn drop(&mut self) {
-    let name = self.name.clone();
-    if let Some(sender) = &self.storage.worker.sender {
-      let _ = sender.send(Command::Run(Box::new(move |database| {
-        database.owners.remove(&name);
-      })));
-    }
+    // Ownership is in-process bookkeeping. Dropping on a runtime thread must not
+    // wait for capacity in SQLite's bounded work queue.
+    self.storage.worker.owners.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.name);
   }
 }
 impl Database {
@@ -359,7 +359,7 @@ impl Database {
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     super::history_index::create_schema(&tx)?;
     tx.commit()?;
-    Ok(Self { connection, cache: Cache::new(options.cache_capacity_bytes), owners: HashSet::new() })
+    Ok(Self { connection, cache: Cache::new(options.cache_capacity_bytes) })
   }
 }
 

@@ -138,6 +138,29 @@ account references, preserving the old effective address and proxy switch. This
 migration is idempotent. Back up the configuration before downgrading to a version
 without account support.
 
+### DeepSeek audio services
+
+In **Audio generation**, add **DeepSeek Text to Speech**; in **Transcription**, add
+**DeepSeek Speech to Text**. Both can reuse the `deepseek-main` account above, and each
+has its own enable and proxy switches. Enable the corresponding session extension
+capability (`audio_generate` / `audio_transcribe`) before invoking it.
+
+For file-based configuration, use `audio_generation` with preset `deepseek_speech` and
+model `tts`, or `audio_transcription` with preset `deepseek_asr` and model `asr`. These
+fixed model labels are internal configuration values; neither API accepts a model parameter.
+The base URL defaults to `https://api.deepseek.com`. Speech defaults are
+`{"voice":"stella","filter_markdown":true}`; transcription takes no defaults.
+
+```sh
+wish extension call deepseek_speech --json '{"text":"Hello, Wish.","parameters":{"voice":"tide"}}'
+wish extension call deepseek_transcribe --json '{"audio":"$WISH_BLOB_ID_0"}'
+```
+
+Speech saves a WAV file; transcription returns text and a downloadable complete JSON
+response. This integration uses whole-text/file requests, without live WebSocket synthesis.
+See DeepSeek's [TTS](https://api-docs.deepseek.com/zh-cn/guides/tts) and
+[ASR](https://api-docs.deepseek.com/zh-cn/guides/asr) documentation for input limits.
+
 ## Providers
 
 Each entry in `providers` connects Wish to one model service. The key is the
@@ -374,7 +397,7 @@ sessions keep their own settings.
 | `provider` | `""` | Default provider ID; must exist in `providers` |
 | `model` | `""` | Default model ID |
 | `cwd` | Wish's start directory | Default working directory, an absolute path |
-| `tools` | `{"shell": true, "ask_user": true, "mcp": true, "web_search": true, "web_fetch": true, "skills": true, "sessions": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell, `web_search` lets it search the web through the [search providers](#web-search), `skills` lets it read [skills](#skills) from the shell, `sessions` lets it see, make and message other sessions and [groups](#groups), through a direct tool or the shell. Each session can switch them later. A new session gets `web_search` only while some search provider can answer |
+| `tools` | `{"shell": true, "ask_user": true, "mcp": true, "web_search": true, "web_fetch": true, "skills": true, "sessions": true}` | The optional tools new sessions get: `shell` runs commands in the working directory, `ask_user` lets the model ask you questions, `mcp` lets it call [MCP servers](#mcp-servers) from the shell, `web_search` lets it search the web through the [search providers](#web-search), `skills` lets it read [skills](#skills) from the shell, `sessions` lets it see, make and message other sessions, through a direct tool or the shell. Each session can switch them later. A new session gets `web_search` only while some search provider can answer |
 | `stream` | `true` | Stream model output |
 | `instructions` | `""` | Extra instructions the web app adds to each new session |
 | `reasoning` | `null` | `{"enabled": bool, "effort": "low", "summary": "Auto"}`. Accepted effort values depend on the provider |
@@ -383,7 +406,12 @@ sessions keep their own settings.
 
 ### Session capability delivery
 
-`defaults.tools.sessions` enables session/group operations; `sessions_delivery` selects
+`defaults.tools.blob` enables session file management (default `true`);
+`blob_delivery` selects `"command"` (default, `wish blob`) or `"tool"` (`blob`).
+Disabling it rejects both model and command calls; Library browsing and uploads remain available.
+Older session records keep Blob enabled with command delivery.
+
+`defaults.tools.sessions` enables session operations; `sessions_delivery` selects
 `"command"` (the default, using `wish session`) or `"tool"` (the direct `session` tool).
 Turning `sessions` off rejects both routes. With Shell disabled, an enabled capability is
 exposed as a direct tool even when its saved delivery preference is `command`, as with the
@@ -391,7 +419,7 @@ other command-capable tools. Delivery chooses the advertised route, not a separa
 
 Defaults are copied into new sessions only. Existing sessions can update these fields through
 `PUT /api/sessions/{id}/tools`. Older records without `sessions_delivery` retain the command
-preference. Both routes enforce the same ownership and group membership checks. Command calls
+preference. Both routes enforce the same ownership checks. Command calls
 and their results appear in the timeline as durable observations, without adding synthetic
 messages to model context; direct calls use normal tool history.
 
@@ -443,6 +471,16 @@ one cmd.exe writes in (GBK on Chinese Windows). A changed shell applies from the
 every session that follows the global setting. A session can also have its
 own shell, set in the web app or with
 [`PUT /api/sessions/{id}/shell`](api.md#put-apisessionsidshell).
+
+Each session also receives a fixed scratch directory, allocated under the server's OS temporary
+directory as `wish-core/<session-id>` (normally `/tmp/wish-core/<session-id>` on Linux).
+Its absolute path is stored in the session descriptor as `temp_dir` and exposed to every Shell
+and Task process as `WISH_TMPDIR`. In sh/bash, use `"$WISH_TMPDIR/output.pdf"` without copying the
+session ID. The agent's execution-environment instructions include both the path and variable.
+This does not change `cwd`. Changing the project directory, Shell, or server's temporary-directory
+environment does not move an existing session's scratch path; forks receive their own path.
+Older sessions acquire one when opened. Missing directories are recreated when a session opens;
+temporary contents are not durable and may be cleaned by the OS. Wish does not erase them on restart.
 
 ## MCP servers
 
@@ -530,27 +568,18 @@ shell when a task may have one, and `wish skill show <name>` to read it.
 Changes apply to the next command; a session's `skills` switch decides whether
 it may read them at all.
 
-## Groups
+## Session communication
 
-A group is a chat among you and several sessions, like a chat app's group
-chat. Each post goes to the group's own transcript and to every other member,
-which reads it as a message headed by the group and the author. The user is
-in every group and sees every message. Deleting a group deletes its messages
-and the files posted to it; its sessions stay.
+The session capability supports direct messages by session name or ID:
+`wish session send reviewer 'Please review the patch'`, or the direct `session` tool
+with `{"action":"send","target":"reviewer","input":{"text":"Please review the patch"}}`.
+Sending wakes the recipient. Reply explicitly with `send`; normal assistant replies are not
+forwarded. Messages use the recipient's input queue and history, with no separate transcript.
+`tools.sessions` and `tools.sessions_delivery` control access as before.
 
-Every post wakes every other member, yours and a session's alike. A session
-takes part as a person would: it reads what was said, and speaks in the group
-only when it has something to say, by sending with `wish session send` from
-its shell - what it answers otherwise stays in its own conversation. A session
-without a shell reads its groups but never speaks there.
-
-Sessions reach one another and the groups with `wish session` in the shell
-(list, show, create, config, delete, send, group create/add/rename/leave). The model
-is told how, and none of them, so it never changes a byte of its request. A
-session sees every session and group and may message any session - which
-makes a group of the two of them and you - but configures and deletes only
-itself and the sessions it made. A session's `sessions` switch decides whether
-the command works at all.
+Groups are removed. Format 15 deletes their records, memberships, independent transcripts
+and group-owned blob directories. Member sessions and their own histories remain intact.
+The standard pre-migration database backup is still made.
 
 ## Usage records
 

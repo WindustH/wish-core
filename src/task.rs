@@ -49,6 +49,7 @@ pub struct TaskConfig {
   pub capture_dir: PathBuf,
   /// Overrides on top of the application's inherited environment.
   pub env: BTreeMap<String, String>,
+  pub live_env: Arc<RwLock<BTreeMap<String, String>>>,
   pub soft_timeout: Duration,
   pub inline_bytes: usize,
   pub poll_bytes: usize,
@@ -62,6 +63,7 @@ impl TaskConfig {
       cwd: Arc::new(RwLock::new(cwd.into())),
       capture_dir: capture_dir.into(),
       env: BTreeMap::new(),
+      live_env: Default::default(),
       soft_timeout: Duration::from_secs(10),
       inline_bytes: 64 * 1024,
       poll_bytes: 64 * 1024,

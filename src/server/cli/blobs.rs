@@ -6,10 +6,11 @@ pub async fn run(args: Vec<String>) -> i32 {
     println!("{HELP}");
     return 0;
   }
-  if args[0].starts_with("--") {
+  let positional = if args[0] == "--output-json" { &args[1..] } else { &args[..] };
+  if positional.is_empty() || positional[0].starts_with("--") {
     return super::tool_commands::run("blob", args).await;
   }
-  match arguments(&args) {
+  match arguments(positional) {
     Ok(value) => super::tool_commands::run("blob", vec!["--json".into(), value.to_string()]).await,
     Err(error) => {
       eprintln!("wish blob: {error}\n{HELP}");

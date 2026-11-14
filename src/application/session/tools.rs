@@ -186,14 +186,8 @@ impl SessionTools {
       };
       let Some(slot) = slot.upgrade().filter(|slot| slot.require_live().is_ok()) else { return };
       let edits = shell.show(&id).ok().map(|task| task["edits"].clone());
-      if let Err(error) = crate::application::background_tools::finish_shell(
-        &slot.sender,
-        &id,
-        command,
-        result,
-        edits,
-      )
-      .await
+      if let Err(error) =
+        crate::application::background_tools::finish_shell(&slot, &id, command, result, edits).await
       {
         eprintln!("background notification: {error}");
         return;
@@ -208,8 +202,32 @@ impl SessionTools {
     });
   }
   async fn view_image(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
-    let outcome = ViewImageTool.execute(call, control).await;
-    let ToolOutcome::SuccessWithInput { mut output, mut input } = outcome else {
+    let mut call = call.clone();
+    if let Some(slot) = self.slot.upgrade()
+      && let Some(path) = call.arguments["path"].as_str()
+    {
+      match slot.aliases.expand(path) {
+        Ok(path) => {
+          let id = std::path::Path::new(&path)
+            .strip_prefix(&slot.blob_dir)
+            .ok()
+            .and_then(|p| p.to_str())
+            .filter(|id| blobs::is_blob_id(id));
+          if let Some(id) = id {
+            match blobs::read_description(&slot.blob_dir, id).await {
+              Ok(blob) => call.arguments["path"] = json!(blob.path),
+              // Normalized image blobs have bytes but no upload sidecar.
+              Err(_) => call.arguments["path"] = json!(path),
+            }
+          } else {
+            call.arguments["path"] = json!(path);
+          }
+        }
+        Err(error) => return ToolOutcome::Failed(error.to_string()),
+      }
+    }
+    let outcome = ViewImageTool.execute(&call, control).await;
+    let ToolOutcome::SuccessWithInput { mut output, mut input, model_text } = outcome else {
       return outcome;
     };
     let Some(slot) = self.slot.upgrade() else {
@@ -224,6 +242,8 @@ impl SessionTools {
             .map_err(ApplicationError::internal)?;
           let path =
             blobs::save_image_bytes(&directory, &bytes).map_err(ApplicationError::internal)?;
+          crate::application::env_aliases::Aliases::open(&directory)?
+            .blob(path.file_name().unwrap().to_str().unwrap())?;
           Ok((path, bytes.len()))
         })
         .await;
@@ -243,7 +263,7 @@ impl SessionTools {
     }
     input
       .retain(|block| matches!(block, ContentBlock::Image { .. } | ContentBlock::ImageRef { .. }));
-    ToolOutcome::SuccessWithInput { output, input }
+    ToolOutcome::SuccessWithInput { output, input, model_text }
   }
 }
 /// Searches with the application's search providers as they stand at the moment of the search.
@@ -299,15 +319,30 @@ impl ToolExecutor for SessionTools {
       if let ToolOutcome::Report { output, .. } = &outcome {
         self.notify_background(output, call.arguments["command"].clone(), epoch).await;
       }
-      return outcome;
+      return if let Some(slot) = self.slot.upgrade() {
+        crate::application::env_aliases::shorten_outcome(&slot, outcome).await
+      } else {
+        outcome
+      };
     }
     let Some(slot) = self.slot.upgrade() else {
       return ToolOutcome::Failed("session is closed".into());
     };
-    self.background.execute(slot, call, control, input).await
+    let outcome = self.background.execute(slot.clone(), call, control, input).await;
+    crate::application::env_aliases::shorten_outcome(&slot, outcome).await
   }
 
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
+    let outcome = self.execute_inner(call, control).await;
+    if let Some(slot) = self.slot.upgrade() {
+      crate::application::env_aliases::shorten_outcome(&slot, outcome).await
+    } else {
+      outcome
+    }
+  }
+}
+impl SessionTools {
+  async fn execute_inner(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
     if crate::extensions::catalog::is_tool(&call.name) {
       return self.execute_extension(call, control).await;
     }
@@ -451,12 +486,16 @@ impl SessionSlot {
     }
     Ok(())
   }
-  fn environment_notice(
+  pub(super) fn environment_notice(
     &self,
     shell: &ShellCommand,
     cwd: &std::path::Path,
   ) -> Result<(), ApplicationError> {
-    let text = crate::application::instructions::environment_instruction(shell, cwd);
+    let text = crate::application::instructions::environment_instruction(
+      shell,
+      cwd,
+      self.get_descriptor().temp_dir.as_deref(),
+    );
     self.sender.enqueue_instruction_update(
       "wish_environment".into(),
       text.clone(),

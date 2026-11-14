@@ -30,6 +30,23 @@ pub struct GenerationStructure {
   pub entries: crate::storage::Page<Entry>,
 }
 impl SessionReader {
+  /// Compatibility reads do not need to claim or open the session's running state machine.
+  pub fn attachment_metadata(
+    storage: &Storage,
+    id: &str,
+  ) -> Result<Vec<serde_json::Value>, SessionError> {
+    let key = Session::build_key(id);
+    storage.transaction(move |tx| {
+      let record = tx.load_object::<SessionRecord>(&key)?;
+      tx.history_metadata(&record.history, "user", "$.attachments")?
+        .into_iter()
+        .map(|text| {
+          serde_json::from_str(&text)
+            .map_err(|error| StorageError::Corrupt(error.to_string()).into())
+        })
+        .collect()
+    })
+  }
   pub(super) fn new(storage: Storage, record: &SessionRecord) -> Self {
     Self {
       storage,

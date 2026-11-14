@@ -127,3 +127,16 @@ prompts; mask/inpainting, Vibe Transfer, Director Tools and V5-specific characte
 outside its implemented schema. Runway currently exposes video generation/editing and durable
 recovery, not Runway image/audio tools. Audio tools do not implement live streaming or voice cloning.
 Actual model-specific constraints beyond local validation remain upstream checks.
+
+DeepSeek's `deepseek_speech` tool uses whole-text `POST /v1/tools/tts`, streams the response
+into a session-owned WAV, and supports `parameters.voice` (`stella` or `tide`) and
+`parameters.filter_markdown`. It enforces the 10,000 billing-character / 64 KiB request limits. Language
+is automatic; the API has no model or speed option. Its WebSocket interface and raw PCM output
+are not exposed by the stored-audio tool.
+
+`deepseek_transcribe` sends a session audio blob as the only multipart `file` field to
+`POST /v1/tools/asr`. Local preflight permits WAV/Ogg containers up to 8 MiB; the upstream
+checks 16-bit PCM / Opus encoding, permitted sample rates and the 120-second limit. Language
+is automatic and stereo uses the left channel. The result includes text and `duration_ms`,
+with the complete JSON response saved as a session blob. Both services reuse DeepSeek API-key
+accounts, are independently configurable, and never replay uncertain paid submissions.

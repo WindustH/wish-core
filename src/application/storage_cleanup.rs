@@ -246,6 +246,13 @@ fn release_unreferenced_files(
     .collect();
   resources.extend(job_resources);
   let released = release_resources(&resources, apply)?;
+  if apply {
+    crate::storage::blobs::library::forget_missing(
+      &blobs,
+      &names.iter().cloned().collect::<Vec<_>>(),
+    )
+    .map_err(std::io::Error::other)?;
+  }
   if apply && let Some(shell) = shell {
     shell.forget_removed();
   }

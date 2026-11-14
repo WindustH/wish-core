@@ -21,7 +21,7 @@ pub struct SessionQuery {
   pub order: String,
   /// The folder whose listing `conversations` gives; none for the root.
   pub folder: Option<String>,
-  /// Every session and group, wherever it is, instead of a folder's listing.
+  /// Every session, wherever it is, instead of a folder's listing.
   pub flat: bool,
 }
 impl Default for SessionQuery {
@@ -102,6 +102,9 @@ pub async fn conversations(app: Arc<App>, query: SessionQuery) -> Result<Value, 
 
 pub async fn get(app: Arc<App>, id: String) -> Result<Value, ApplicationError> {
   Ok(app.get_session(&id).await?.describe())
+}
+pub async fn environment(app: Arc<App>, id: String) -> Result<Value, ApplicationError> {
+  Ok(json!(app.get_session(&id).await?.aliases.snapshot()))
 }
 
 pub async fn entries(app: Arc<App>, id: String, page: Page) -> Result<Value, ApplicationError> {
@@ -215,7 +218,6 @@ fn project_conversation(row: ConversationRow) -> Value {
       record["kind"] = "session".into();
       record
     }
-    ConversationEntry::Group(record) => json!({"kind":"group","group":record}),
     ConversationEntry::Folder { record, size } => {
       let mut folder = json!(record);
       folder["items"] = json!(size);

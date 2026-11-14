@@ -73,7 +73,7 @@ pub async fn delete(app: Arc<App>, id: String) -> Result<(), ApplicationError> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Move {
-  /// Sessions, groups and folders.
+  /// Sessions and folders.
   ids: Vec<String>,
   /// Where they go; none for the root.
   folder: Option<String>,
@@ -90,7 +90,7 @@ pub async fn move_entries(app: Arc<App>, input: Move) -> Result<(), ApplicationE
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pin {
-  /// Sessions, groups and folders.
+  /// Sessions and folders.
   ids: Vec<String>,
   pinned: bool,
 }

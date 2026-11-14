@@ -136,7 +136,8 @@ pub async fn fork(app: Arc<App>, id: String) -> Result<Value, ApplicationError> 
     initial_origins,
   };
   drop(session);
-  Ok(app.create_session(input).await?.describe())
+  let copy = app.create_session_from(input, Some(slot)).await?;
+  Ok(copy.describe())
 }
 
 #[derive(Deserialize)]

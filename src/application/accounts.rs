@@ -251,6 +251,7 @@ impl Config {
 }
 
 /// Credentials and renewal state shared by services; no model endpoint or model protocol.
+#[derive(Clone)]
 pub struct AccountRuntime {
   pub id: String,
   pub config: AccountConfig,

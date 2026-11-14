@@ -3,7 +3,7 @@
 //! their handoff, and its images projected for what the model accepts - the stored conversation
 //! keeps the originals. An upstream that refuses images turns them into file references for the
 //! rest of the model's life.
-use super::model_images::project_images;
+use super::model_images::{ImageDelivery, project_images};
 use crate::application::{
   compaction_item,
   provider::{ModelClient, Provider},
@@ -75,36 +75,37 @@ impl SessionModel {
     Ok(())
   }
   async fn prepare(&self, request: &Request) -> Result<(Request, bool), Error> {
-    self.prepare_projection(request, true).await
+    let (mut request, images, deliveries) = self.prepare_projection(request, true, true).await?;
+    // Sending is a durable lifecycle action. The pure projection below never invents
+    // prompt text; only committed admission events may supply an omission explanation.
+    if let Some(observer) = &self.instruction_observer {
+      request.conversation.extend(observer.record_images(deliveries).await?);
+    }
+    Ok((request, images))
   }
   async fn prepare_projection(
     &self,
     request: &Request,
     save: bool,
-  ) -> Result<(Request, bool), Error> {
+    materialize: bool,
+  ) -> Result<(Request, bool, Vec<ImageDelivery>), Error> {
     let mut request = request.clone();
     compaction_item::project(&mut request.conversation, &self.provider.id);
-    // Reads, integrity hashing and image decoding all run outside async runtime workers.
-    let (mut messages, model, provider, blob_dir, rejected) = (
-      request.conversation,
-      request.model.clone(),
-      self.provider.clone(),
-      self.blob_dir.clone(),
+    let (images, deliveries) = project_images(
+      &self.provider.config.models,
+      &request.model,
+      &self.blob_dir,
       self.rejected.load(Ordering::Relaxed),
-    );
-    let (conversation, images) = crate::utils::blocking::io(move || {
-      let models = &provider.config.models;
-      project_images(models, &model, &blob_dir, rejected, &mut messages, save)
-        .map(|images| (messages, images))
-    })
-    .await
-    .map_err(|e| Error::Build(e.to_string()))??;
-    request.conversation = conversation;
-    Ok((request, images))
+      &mut request.conversation,
+      save,
+      materialize,
+    )
+    .await?;
+    Ok((request, images, deliveries))
   }
   /// Read-only projection for inspection. This is current context, not a past wire request.
   pub async fn inspect(&self, request: &Request) -> Result<Value, Error> {
-    let (projected, _) = self.prepare_projection(request, false).await?;
+    let (projected, _, _) = self.prepare_projection(request, false, false).await?;
     let mut value =
       serde_json::to_value(projected).map_err(|error| Error::Build(error.to_string()))?;
     image_references(&mut value);
@@ -131,12 +132,36 @@ impl ModelCaller for SessionModel {
     self.client().supports_upstream_compaction()
   }
   async fn validate_request(&self, request: &Request) -> Result<(), Error> {
-    let (request, _) = self.prepare_projection(request, false).await?;
+    let (mut request, _, _) = self.prepare_projection(request, false, false).await?;
+    // Compaction validates message structure, tool pairing and protocol capabilities.
+    // Blob integrity is checked when sending; no file reads/Base64 are needed to probe a cut.
+    for message in &mut request.conversation {
+      let content = match message {
+        Message::User { content, .. }
+        | Message::Assistant { content, .. }
+        | Message::System { content, .. }
+        | Message::Developer { content, .. } => content,
+        _ => continue,
+      };
+      for block in content {
+        if let crate::protocol::ContentBlock::ImageRef { mime_type, .. } = block {
+          *block = crate::protocol::ContentBlock::Image {
+            mime_type: mime_type.clone(),
+            data_base64: String::new(),
+          };
+        }
+      }
+    }
     self.client().validate_request(&request).await
   }
   async fn count_tokens(&self, request: &Request) -> Result<Option<TokenCount>, Error> {
-    let (request, _) = self.prepare(request).await?;
-    ModelCaller::count_tokens(&self.client(), &request)
+    let client = self.client();
+    if client.get_token_count_protocol().is_none() {
+      return Ok(None);
+    }
+    // A real provider count still receives actual image bytes; placeholders would change its meaning.
+    let (request, _, _) = self.prepare_projection(request, false, true).await?;
+    ModelCaller::count_tokens(&client, &request)
       .await
       .map_err(|error| self.with_model_context(error, &request.model))
   }
@@ -207,6 +232,13 @@ pub(crate) fn image_references(value: &mut Value) {
         continue;
       };
       for block in blocks {
+        if let Some(image) = block.get("ImageRef") {
+          *block = serde_json::json!({"Image": {
+            "mime_type": image["mime_type"], "image_blob_id": image["blob_id"],
+            "byte_count": image["byte_count"], "data_base64": "[image bytes represented by blob reference]"
+          }});
+          continue;
+        }
         let Some(image) = block.get_mut("Image").and_then(Value::as_object_mut) else { continue };
         let Some(Value::String(encoded)) = image.remove("data_base64") else { continue };
         if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&encoded) {

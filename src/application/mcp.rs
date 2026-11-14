@@ -423,16 +423,16 @@ impl McpHub {
     {
       return Err(McpFailure::NotFound(format!("no MCP server `{only}`")));
     }
-    let listed = futures_util::future::join_all(ids.iter().map(|id| async move {
-      match self.get_tools(id, caller, providers).await {
+    use futures_util::StreamExt;
+    let listed = futures_util::stream::iter(ids.into_iter().map(|id| async move {
+      match self.get_tools(&id, caller, providers).await {
         Ok(tools) => json!({"server": id, "tools": tools.iter().map(|tool| json!({
           "name": tool["name"],
           "description": tool["description"].as_str().and_then(|d| d.lines().map(str::trim).find(|l| !l.is_empty())),
         })).collect::<Vec<_>>()}),
         Err(error) => json!({"server": id, "error": ApplicationError::from(error).message}),
       }
-    }))
-    .await;
+    })).buffered(8).collect().await;
     Ok(listed)
   }
 

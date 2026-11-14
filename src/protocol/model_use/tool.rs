@@ -24,6 +24,9 @@ pub(crate) fn parse_tool_arguments(raw: &str) -> serde_json::Result<Value> {
 /// A tool result as the text the wires that take a string carry: a string payload passes through,
 /// anything else travels as its JSON.
 pub(crate) fn tool_result_text(content: &Value) -> String {
+  if let Some(value) = content.get("model_value") {
+    return value.to_string();
+  }
   if let Some(text) = content.get("model_text").and_then(Value::as_str) {
     return text.to_owned();
   }
@@ -35,8 +38,15 @@ pub(crate) fn tool_result_text(content: &Value) -> String {
 
 /// Only new reports opt into presentation projection; historical payloads stay unchanged.
 pub(crate) fn tool_result_value(content: &Value) -> Value {
+  if let Some(value) = content.get("model_value") {
+    return value.clone();
+  }
   if let Some(text) = content.get("model_text").and_then(Value::as_str) {
-    serde_json::json!({"status":content["status"], "content":text})
+    if text.is_empty() {
+      serde_json::json!({})
+    } else {
+      serde_json::json!({"status":content["status"], "content":text})
+    }
   } else {
     content.clone()
   }

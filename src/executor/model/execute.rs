@@ -73,7 +73,10 @@ pub(in crate::executor) async fn execute_model(
         partial.prepend_replay_messages(continuation.messages);
         partial.usage = usage;
       }
-      SegmentResult::Failed(RunOutcome::StreamFailed(partial)) => partial.usage = usage,
+      SegmentResult::Failed(RunOutcome::StreamFailed(partial)) => {
+        partial.prepend_replay_messages(continuation.messages);
+        partial.usage = usage;
+      }
       _ => {}
     }
     observation.call.stream_recoveries = stream_recoveries;

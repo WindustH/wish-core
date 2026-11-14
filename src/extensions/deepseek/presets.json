@@ -1,4 +1,30 @@
 {
+  "media": [
+    {
+      "id": "deepseek_speech",
+      "name": "DeepSeek Text to Speech",
+      "brand": "DeepSeek",
+      "protocol": "deepseek_speech",
+      "kind": "speech",
+      "model": "tts",
+      "base_url": "https://api.deepseek.com",
+      "account_presets": ["deepseek", "custom"],
+      "docs_url": "https://api-docs.deepseek.com/zh-cn/guides/tts",
+      "defaults": {"voice": "stella", "filter_markdown": true}
+    },
+    {
+      "id": "deepseek_asr",
+      "name": "DeepSeek Speech to Text",
+      "brand": "DeepSeek",
+      "protocol": "deepseek_transcription",
+      "kind": "transcription",
+      "model": "asr",
+      "base_url": "https://api.deepseek.com",
+      "account_presets": ["deepseek", "custom"],
+      "docs_url": "https://api-docs.deepseek.com/zh-cn/guides/asr",
+      "defaults": {}
+    }
+  ],
   "search": [
     {
       "id": "deepseek_search",

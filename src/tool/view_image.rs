@@ -22,7 +22,7 @@ impl ViewImageTool {
   pub fn get_specification(&self) -> Tool {
     Tool {
       name: "view_image".into(),
-      description: "View a local image using its absolute file path. A normalized image (up to 2048 pixels per edge and 2 MiB) is retained in context; the original file is unchanged. Animated images use the first frame. The application sends native image input when supported, otherwise a file notice.".into(),
+      description: "View a local image using its absolute file path or session environment variables such as $WISH_BLOB_ROOT/$WISH_BLOB_ID_0. A normalized image (up to 2048 pixels per edge and 2 MiB) is retained in context; the original file is unchanged. Animated images use the first frame. The application sends native image input when supported, otherwise a file notice.".into(),
       input_schema: json!({"type":"object","additionalProperties":false,"required":["path"],"properties":{"path":{"type":"string","description":"Absolute path to a local image file."}}}),
     }
   }
@@ -41,14 +41,12 @@ impl ViewImageTool {
     let prepared = crate::utils::model_image::prepare_file(&args.path).await?;
     let mime_type = prepared.mime;
     Ok(ToolOutcome::SuccessWithInput {
+      model_text: Some(String::new()),
       output: json!({"path":args.path,"mime_type":mime_type,"byte_count":prepared.bytes.len(),"original_byte_count":metadata.len(),"model_image_max_edge":2048}),
-      input: vec![
-        ContentBlock::Text { text: format!("Image from local file {}", args.path.display()) },
-        ContentBlock::Image {
-          mime_type: mime_type.into(),
-          data_base64: base64::engine::general_purpose::STANDARD.encode(&prepared.bytes),
-        },
-      ],
+      input: vec![ContentBlock::Image {
+        mime_type: mime_type.into(),
+        data_base64: base64::engine::general_purpose::STANDARD.encode(&prepared.bytes),
+      }],
     })
   }
 }
@@ -60,7 +58,7 @@ impl ToolExecutor for ViewImageTool {
     let parsed =
       super::arguments::normalize(&call.arguments, &self.get_specification().input_schema)
         .and_then(|value| serde_json::from_value(value).map_err(|error| error.to_string()));
-    let args = match parsed {
+    let args: Arguments = match parsed {
       Ok(args) => args,
       Err(error) => {
         return ToolOutcome::Failed(super::arguments::error(
@@ -70,8 +68,11 @@ impl ToolExecutor for ViewImageTool {
         ));
       }
     };
+    let path = args.path.clone();
     match control.run_until_cancelled(self.read_image(args)).await {
-      Some(result) => result.unwrap_or_else(ToolOutcome::Failed),
+      Some(result) => result.unwrap_or_else(|error| {
+        ToolOutcome::Failed(format!("Unable to read image {}: {error}", json!(path)))
+      }),
       None => ToolOutcome::Cancelled,
     }
   }

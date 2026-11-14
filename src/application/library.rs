@@ -5,7 +5,6 @@ use crate::storage::{
   data_dir::DataDir,
   repository_error::RepositoryError,
 };
-use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
@@ -31,7 +30,11 @@ pub(crate) fn attachments(metadata: &Value) -> BTreeMap<String, Entry> {
     .collect()
 }
 
-fn recover(data: &DataDir, owner: &str) -> Result<BTreeMap<String, Entry>, RepositoryError> {
+fn recover(
+  data: &DataDir,
+  storage: &crate::storage::Storage,
+  owner: &str,
+) -> Result<BTreeMap<String, Entry>, RepositoryError> {
   let directory = data.blobs(owner);
   let mut entries = BTreeMap::new();
   // Local links have always been explicitly registered by the user, including links whose
@@ -55,33 +58,20 @@ fn recover(data: &DataDir, owner: &str) -> Result<BTreeMap<String, Entry>, Repos
     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
     Err(error) => return Err(RepositoryError::internal(error)),
   }
-  let database = data.database();
-  if database.is_file() {
-    let db = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mut query = db.prepare("SELECT metadata FROM wish_history_index WHERE list=(SELECT id FROM wish_list_keys WHERE name=?1) AND message_type='user' AND json_type(metadata,'$.attachments')='array'")?;
-    for metadata in query
-      .query_map([format!("session/{}/history", hex::encode(owner.as_bytes()))], |row| {
-        row.get::<_, String>(0)
-      })?
-    {
-      let metadata: Value = serde_json::from_str(&metadata?).map_err(RepositoryError::internal)?;
-      entries.extend(attachments(&metadata));
-    }
-  }
-  let database = data.management_database();
-  if database.is_file() {
-    let db = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let mut query = db.prepare("SELECT attachments FROM group_messages WHERE group_id=?1 AND author_kind='user' AND attachments IS NOT NULL")?;
-    for value in query.query_map([owner], |row| row.get::<_, String>(0))? {
-      let value: Value = serde_json::from_str(&value?).map_err(RepositoryError::internal)?;
-      entries.extend(attachments(&serde_json::json!({"attachments":value})));
-    }
+  for metadata in crate::session::SessionReader::attachment_metadata(storage, owner)
+    .map_err(RepositoryError::internal)?
+  {
+    entries.extend(attachments(&metadata));
   }
   Ok(entries)
 }
 
 /// Call in admitted blocking work before a Library operation or existing-session input.
-pub(crate) fn ensure(data: &DataDir, owner: &str) -> Result<(), RepositoryError> {
+pub(crate) fn ensure(
+  data: &DataDir,
+  storage: &crate::storage::Storage,
+  owner: &str,
+) -> Result<(), RepositoryError> {
   let directory = data.blobs(owner);
-  crate::storage::blobs::library::initialize(&directory, || recover(data, owner))
+  crate::storage::blobs::library::initialize(&directory, || recover(data, storage, owner))
 }

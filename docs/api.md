@@ -47,7 +47,7 @@ Wish, not even by pointing its own domain at it.
 
 **Bodies.** Request and response bodies are JSON. Most request bodies reject
 unknown fields. JSON request bodies are limited to 32 MiB; a larger one returns `413`.
-Raw blob uploads (session, group, and draft) instead stream to disk with a 1 GiB file limit.
+Raw blob uploads (session and draft) instead stream to disk with a 1 GiB file limit.
 An over-limit upload is rejected without publishing its partial file.
 
 **Core types.** Messages, session configuration and model responses use the
@@ -69,7 +69,7 @@ integers; a count the provider did not report is `null`, never `0`.
 **Pages.** Lists read with `?start=0&limit=50` return
 `{"start", "items", "next"}`, where `next` is the next `start` or `null`.
 `limit` must be positive. Session/conversation lists, session entry/queue/generation/call
-pages and group transcript pages accept 1–1000; context structure pages accept 1–100.
+pages accept 1–1000; context structure pages accept 1–100.
 Continue using the returned `next` cursor instead of requesting an unbounded page. History endpoints use cursors instead; see
 [History and records](#history-and-records).
 
@@ -111,7 +111,7 @@ engine error, for example
 | GET | `/api/status` | Session count and scheduler activity |
 | GET | `/api/storage` | Bytes on disk |
 | GET | `/api/storage/detail` | Each database by what it holds |
-| GET | `/api/storage/sessions` | What each session and group keeps |
+| GET | `/api/storage/sessions` | What each session keeps |
 | POST | `/api/storage/prune` | Clear history the context no longer uses |
 | POST | `/api/storage/prune-usage` | Clear the usage records deleted sessions left |
 | GET | `/api/events` | Application event stream (SSE) |
@@ -134,17 +134,12 @@ engine error, for example
 | POST | `/api/providers/{id}/call` | Stateless model call |
 | POST | `/api/providers/{id}/count-tokens` | Provider token count |
 | POST | `/api/providers/{id}/compact` | Stateless upstream compaction |
-| GET | `/api/conversations` | A folder's listing, or every session and group that matches |
-| POST | `/api/conversations/move`, `/api/conversations/pin` | Move or pin sessions, groups and folders |
+| GET | `/api/conversations` | A folder's listing, or every session that matches |
+| POST | `/api/conversations/move`, `/api/conversations/pin` | Move or pin sessions and folders |
 | GET, POST | `/api/folders` | The folders; make one |
 | PATCH, DELETE | `/api/folders/{id}` | Rename or delete a folder |
 | GET, POST | `/api/sessions` | List or create sessions |
 | GET, PATCH, DELETE | `/api/sessions/{id}` | Read, update or delete a session |
-| POST | `/api/groups` | Create a group of sessions |
-| GET, PATCH, DELETE | `/api/groups/{id}` | Read, rename, re-member or delete a group |
-| GET, POST | `/api/groups/{id}/messages` | A group's transcript; post to it |
-| POST, GET | `/api/groups/{id}/blobs`, `.../{blob}`, `.../{blob}/meta` | Files posted to a group |
-| GET | `/api/sessions/{id}/groups` | The groups a session is in |
 | POST | `/api/sessions/{id}/fork` | Copy a session's context into a new session |
 | PUT | `/api/sessions/{id}/config` | Replace the session configuration |
 | PUT | `/api/sessions/{id}/metadata` | Replace the session metadata |
@@ -174,11 +169,9 @@ engine error, for example
 | POST | `/api/sessions/{id}/mcp/call` | MCP bridge: call a tool (session token) |
 | GET | `/api/sessions/{id}/skills` | Skills bridge: list or find skills (session token) |
 | GET | `/api/sessions/{id}/skills/{name}` | Skills bridge: one skill's instructions and files (session token) |
-| GET, POST | `/api/sessions/{id}/peers` | Sessions bridge: the sessions and groups; make a session (session token) |
-| GET, PATCH, DELETE | `/api/sessions/{id}/peers/{target}` | Sessions bridge: one session or group; configure or delete one (session token) |
-| POST | `/api/sessions/{id}/peers/{target}/send` | Sessions bridge: message a session or group (session token) |
-| POST | `/api/sessions/{id}/peers/groups` | Sessions bridge: make a group (session token) |
-| POST | `/api/sessions/{id}/peers/{target}/members`, `.../leave` | Sessions bridge: join sessions to a group, or leave it (session token) |
+| GET, POST | `/api/sessions/{id}/peers` | Sessions bridge: the sessions; make a session (session token) |
+| GET, PATCH, DELETE | `/api/sessions/{id}/peers/{target}` | Sessions bridge: one session; configure or delete one (session token) |
+| POST | `/api/sessions/{id}/peers/{target}/send` | Sessions bridge: message a session (session token) |
 | GET | `/api/sessions/{id}/events` | Session event stream (SSE) |
 | GET | `/api/sessions/{id}/history` | Conversation timeline |
 | POST | `/api/sessions/{id}/history/query` | Filtered chronological history |
@@ -254,8 +247,7 @@ columns (`history_index`), the full-text search index (`search_index`), then
 the stored items by kind - `messages`, `events`, `history` records, `context`
 (generations and their entry lists), `model_calls` and the `queue` - whose
 shared table is divided by the bytes each kind's items take; for
-`service_data` the session index (`sessions`), the groups and their members
-(`groups`), their transcripts (`group_messages`), the usage records (`calls`)
+`service_data` the session index (`sessions`), the usage records (`calls`)
 and the speed samples (`stream_samples`), each with its indexes. Every list
 ends with `other` (the schema and small tables), `free` (pages freed but not
 yet given back) and `journal` (what the files take beyond the database's
@@ -275,7 +267,7 @@ shrinks the management index. No body.
 
 ### `GET /api/storage/sessions`
 
-Every session and group with what it keeps, newest first:
+Every session with what it keeps, newest first:
 
 ```json
 {"sessions": [{"id": "8c1f...", "name": "Refactor parser", "provider": "openai", "model": "gpt-5",
@@ -283,10 +275,8 @@ Every session and group with what it keeps, newest first:
   "phase": "Idle", "running": false, "tags": ["work"], "context_tokens": 48210,
   "messages": {"user": 12, "assistant": 12, "tool_calls": 31},
   "bytes": {"history": 812345, "attachments": 20480, "shell": 3072, "total": 835897}}],
- "groups": [{"id": "5d0e...", "name": "Review", "members": 3, "created_at": 1758790000000,
-  "updated_at": 1758790600000, "messages": 42,
-  "bytes": {"history": 18230, "attachments": 0, "shell": 0, "total": 18230}}],
- "bytes": {"history": 830575, "attachments": 20480, "shell": 3072, "total": 854127}}
+
+ "bytes": {"history": 812345, "attachments": 20480, "shell": 3072, "total": 835897}}
 ```
 
 `history` is the session's records in the engine database, counted as stored
@@ -294,10 +284,7 @@ values: the search index built over them and SQLite's own overhead are not
 included, so the sessions' totals stay below the database file's size.
 `attachments` and `shell` are the session's files under `blobs/` and `shell/`.
 `messages` counts the user and assistant messages and the tool calls in the
-session's history. A group's `history` is its transcript's stored values, and
-`attachments` the files posted to it; `members` counts its sessions and
-`messages` its transcript. The top-level `bytes` adds up both lists. No
-conversation is loaded.
+session's history. The top-level `bytes` sums the session list. No conversation is loaded.
 
 ### `POST /api/storage/prune`
 
@@ -547,11 +534,17 @@ Takes `{"model", "conversation"}` and returns the upstream compaction result:
 
 Session endpoints return a session as `{"session": descriptor, "status": status}`.
 
+`session.temp_dir` is a server-assigned, fixed scratch path, exposed to shell commands as
+`WISH_TMPDIR` and included in the agent's environment instructions. Deleting a session removes
+its scratch directory as well as its stored blobs and task captures; its working directory is preserved. It is separate from `cwd`
+and cannot be edited through the API. Older stored descriptors acquire it when opened.
+
 ```json
 {
   "session": {
     "id": "8c1f...", "name": "Refactor parser", "provider": "openai",
     "cwd": "/home/me/project", "tools": {"shell": true, "ask_user": true, "mcp": false, "web_search": true},
+    "temp_dir": "/tmp/wish-core/8c1f...",
     "created_at": 1758790000000, "updated_at": 1758790500000, "revision": 7
   },
   "status": {
@@ -626,18 +619,18 @@ loading any conversation.
 
 What a user browses, arranged in [folders](#folders). Without `query`, `phase`
 or `tag`, it is one folder's listing - `folder` names it, the root without one -
-its folders by name first, then its sessions and [groups](#groups) by
+its folders by name first, then its sessions by
 `updated_at`, pinned ones first in each. With them, or `flat=true`, it is every
-session and group that matches, wherever it is, by the same query as
+session that matches, wherever it is, by the same query as
 `GET /api/sessions`; a `phase` or `tag` selects sessions only. Returns
 `{"items", "next"}`; each item has `kind`, `parent` (the folder it is in, `null`
 for the root) and `pinned`, and is a session as `GET /api/sessions` lists it,
-`{"group": {...}}` or `{"folder": {...}}` with `items`, how many entries the
+or `{"folder": {...}}` with `items`, how many entries the
 folder holds directly.
 
 ### Folders
 
-Folders arrange the list as a file system arranges files. Every session, group
+Folders arrange the list as a file system arranges files. Every session
 and folder is in one folder or the root, and moving one changes only where it
 is. A folder is `{"id", "name", "parent", "pinned", "created_at"}`.
 
@@ -647,11 +640,10 @@ is. A folder is `{"id", "name", "parent", "pinned", "created_at"}`.
 | `POST /api/folders` | `{"name", "parent"}`, `parent` optional | Makes one; `201` with it |
 | `PATCH /api/folders/{id}` | `{"name"}` | Renames it |
 | `DELETE /api/folders/{id}` | | Deletes it; what it held goes to the folder it was in. `204` |
-| `POST /api/conversations/move` | `{"ids", "folder"}`, `folder` `null` for the root | Moves sessions, groups and folders together, or none; `400` for a folder into itself or one inside it. `204` |
+| `POST /api/conversations/move` | `{"ids", "folder"}`, `folder` `null` for the root | Moves sessions and folders together, or none; `400` for a folder into itself or one inside it. `204` |
 | `POST /api/conversations/pin` | `{"ids", "pinned"}` | Pins them to the top of their folders, or unpins them. `204` |
 
-A session made with `folder` in [`POST /api/sessions`](#post-apisessions), or a
-group with `folder` in [`POST /api/groups`](#post-apigroups), goes there; a
+A session made with `folder` in [`POST /api/sessions`](#post-apisessions) goes there; a
 fork goes beside the session it copies, and what a session makes with
 [`wish session`](#wish-session) beside that session.
 
@@ -732,7 +724,7 @@ Returns the updated session.
 ### `DELETE /api/sessions/{id}`
 
 Deletes the session, its attachments and its shell output, takes it out of
-every group, and stops its background commands and its own MCP server instances. Returns `204`, or `409` while it runs. Usage statistics
+its list folder, and stops its background commands and its own MCP server instances. Returns `204`, or `409` while it runs. Usage statistics
 are kept. The room its history took in the database, search index included,
 goes back to the file system before the response.
 
@@ -865,60 +857,6 @@ another; `{"before": null}` moves it to the end. `DELETE` cancels it. Both
 return `204`, work during a run, and return `409` if either entry was already
 consumed or cancelled.
 
-## Groups
-
-A group (see [configuration](configuration.md#groups)) is a chat among the user
-and several sessions. It runs nothing: its members are sessions, each with its
-own history, and the group keeps its own transcript in the management index.
-
-A post joins the transcript and every other member's queue as a `User` message:
-a first text block `[Group "name" · from <author>]` and then the post, with
-`metadata` `{"source": "group", "group": {"id", "name"}, "from": <author>}`, and
-wakes it: every post wakes every other member, the user's and a session's alike.
-A session takes part as a person would. What it answers stays in its own
-conversation; it speaks in the group only by sending, with
-[`wish session send`](#wish-session) in its shell, so a session without a shell
-reads a group but never speaks there. Its own history notes every message it
-sent with an `Application` event
-`{"type": "group_message_sent", "group": {"id", "name"}, "text", "woken"}`.
-
-A group is `{"id", "name", "members", "created_by", "created_at", "updated_at"}`:
-`members` are session ids in the order they joined, and `created_by` the session
-that made it with `wish session` or `null`. A deleted session leaves every group
-by itself.
-
-### `POST /api/groups`
-
-`{"name": "Review", "members": ["8c1f...", "5d0e..."]}` makes a group of those
-sessions and the user, in the [folder](#folders) `folder` names when it is
-given. Returns `201` with the group; `400` names a member that is not a session.
-
-### `GET, PATCH, DELETE /api/groups/{id}`
-
-`PATCH` takes `{"name"}`, `{"members"}` (the whole list) or both, and returns
-the group. `DELETE` deletes its transcript and the files posted to it, not its
-members, and returns `204`.
-
-### `GET /api/groups/{id}/messages`
-
-Query: `before` (a `seq`; the newest when absent), `limit` (default 50) and
-`query` (words a message's text holds). Returns `{"items", "next"}`, newest
-first; `next` is the `before` that continues. A message is
-`{"seq", "at", "author", "text", "attachments"}`: `author` is
-`{"kind": "user"}` or `{"kind": "session", "id", "name"}`, and `attachments`
-`[{"id", "kind", "name"}]` for the user's images and files.
-
-### `POST /api/groups/{id}/messages`
-
-The user's post, as [`input`](#post-apisessionsidinput) takes it, its
-attachments [uploaded](#attachments) to `/api/groups/{id}/blobs`. The members
-are told it with the images in the message and each file by its path in the
-group's files. Returns `201 {"message", "woken"}`.
-
-### `GET /api/sessions/{id}/groups`
-
-The groups a session is in.
-
 ## Questions to the user
 
 With `tools.ask_user` the model can call `ask_user` to put a form of 1 to 8
@@ -1039,44 +977,39 @@ while the session has `tools.skills` off.
 
 ### `wish session`
 
-Other sessions and groups (see [configuration](configuration.md#groups)) are
-reached from the session's shell the same way:
+Sessions communicate directly through the `session` tool or the shell bridge:
 
 ```text
-wish session list                              the sessions and groups
-wish session show <session|group>              one in detail; a group with its recent messages
-wish session create <name> [--instructions <text>] [--model] [--provider] [--cwd] [--no-shell]
-wish session config <session> [--name] [--model] [--provider] [--instructions]
+wish session list
+wish session show <session>
+wish session create <name> [--instructions TEXT] [--model MODEL] [--provider PROVIDER] [--cwd DIR] [--no-shell]
+wish session config <session> [--name NAME] [--model MODEL] [--provider PROVIDER] [--instructions TEXT]
 wish session delete <session>
-wish session send <session|group> <text> [--to <name>...]
-wish session group create <name> <session>...
-wish session group add <group> <session>...
-wish session group rename <group> <name>
-wish session group leave <group>
+wish session send <session> <text>
 ```
 
-Targets are named by name or id. The exit status is `0` when done, `1` when
-refused or nothing has that name, and `2` when nothing was asked. The routes
-take the session's token as above, and answer `409` with a message for the
-model while the session has `tools.sessions` off. A session sees every session
-and group and may message any session, which posts in the group of the two
-and the user, made when there is none; it may configure and delete only itself and the
-sessions it made (`created_by`), never a session the user made (`403`), and
-rename a group it is in. A session's changes follow
-[`PATCH /api/sessions/{id}`](#patch-apisessionsid): a name at any time, a model at
-the next boundary while it runs, and instructions only while it is idle (`409`).
+Targets are IDs or unambiguous names. Sending durably queues a `User` message on the target
+and schedules it. Metadata is `{"source":"session_message","from":{"kind":"session","id","name"}}`;
+the text starts with `[Message from session "name" ($WISH_SESSION_ID_N)]`. No group, membership or separate
+transcript is created. The sender's ordinary tool/command history records the send; the
+recipient's history records the received message. Ordinary replies stay in the recipient's
+conversation; reply explicitly with `send` to message the sender back.
+
+The bridge requires the sending session's token and enabled session capability. A session
+may configure itself or sessions it created, and delete only sessions it created. It cannot
+send to or delete itself. Empty messages and ambiguous names are rejected.
 
 | Route | Body | Returns |
 | --- | --- | --- |
-| `GET /api/sessions/{id}/peers` | | `{"me", "sessions": [{"id", "name", "provider", "model", "cwd", "phase", "running", "queue", "created_by", "groups"}], "groups": [{"id", "name", "members": [{"id", "name"}]}]}` |
-| `GET /api/sessions/{id}/peers/{target}` | | A session as above with its `instructions`, or a group with its last 20 `messages` as [the transcript](#get-apigroupsidmessages) shows them |
-| `POST /api/sessions/{id}/peers` | `{"name", "instructions", "model", "provider", "cwd", "shell"}`, all but `name` optional | `201`, the session; the defaults fill what is left out, and the asking session's directory |
-| `PATCH /api/sessions/{id}/peers/{target}` | `{"name", "model", "provider", "instructions"}`; a group takes only `name` | The session as `GET /api/sessions/{id}` shows it, new instructions also queued to it as a `System` message; or the group |
+| `GET /api/sessions/{id}/peers` | | `{"me", "sessions": [{"id", "name", "provider", "model", "cwd", "phase", "running", "queue", "created_by", "instructions"}]}` |
+| `GET /api/sessions/{id}/peers/{target}` | | One session summary |
+| `POST /api/sessions/{id}/peers` | `{"name", "instructions", "model", "provider", "cwd", "shell"}` | `201`, created session summary |
+| `PATCH /api/sessions/{id}/peers/{target}` | `{"name", "model", "provider", "instructions"}` | Updated session view |
 | `DELETE /api/sessions/{id}/peers/{target}` | | `204` |
-| `POST /api/sessions/{id}/peers/{target}/send` | `{"text"}` | `{"group": {"id", "name"}, "seq", "woken": [{"id", "name"}]}` |
-| `POST /api/sessions/{id}/peers/groups` | `{"name", "members": [names]}` | `201`, the group |
-| `POST /api/sessions/{id}/peers/{target}/members` | `{"add": [names]}` | The group |
-| `POST /api/sessions/{id}/peers/{target}/leave` | | `204` |
+| `POST /api/sessions/{id}/peers/{target}/send` | `{"text"}` | `{"sent":true,"from":{"id","name"},"to":{"id","name"},"queued":entry_id}` |
+
+Format 15 removes the retired group tables and their separate histories. Group APIs and
+commands are no longer available. Session histories remain intact.
 
 ### `GET /api/skills`
 
@@ -1123,7 +1056,7 @@ and context clearing. Active context is a separate, smaller projection.
 ### `GET /api/sessions/{id}/history`
 
 The conversation timeline: messages, and the notes Wish writes beside them
-(`Application` events, such as a message sent to a group).
+(`Application` events, such as a traced shell bridge command).
 
 | Query | Default | Meaning |
 | --- | --- | --- |
@@ -1179,7 +1112,7 @@ Chronological, filtered history:
 | --- | --- |
 | `kind` | `message` or `event` |
 | `message_types` | `system`, `developer`, `user`, `assistant`, `reasoning`, `tool_use`, `tool_result`, `upstream_compaction` |
-| `event_types` | Event names such as `Finished`, `StateChanged`, `CompactionSummary`, `Application` (a note of Wish's, such as a message sent to a group) |
+| `event_types` | Event names such as `Finished`, `StateChanged`, `CompactionSummary`, `Application` (a note of Wish's, such as a traced shell bridge command) |
 | `origins` | `Imported`, `Input`, `Model`, `Tool`, `Interrupted`, `Context`, `Summary` |
 | `generation`, `model_call_id`, `tool_name` | Exact match |
 | `since`, `until` | Milliseconds; `since` inclusive, `until` exclusive |
@@ -1261,7 +1194,7 @@ each response includes the generation metadata observed with its entries.
 ## Attachments
 
 - `GET /api/sessions/{id}/blobs?start=0&limit=80` returns
-  `{"items":[{"id","mime_type","byte_count","modified_at"}],"next":null,"total":0}`.
+  `{"items":[{"id","mime_type","byte_count","modified_at","folder"}],"next":null,"total":0,"folders":[]}`.
   `next` is the next start offset or null; `limit` is 1–200 (default 50).
   By default this lists the displayed Library. `include_hidden=true` includes every stored blob,
   including generated/model images without metadata sidecars. Pinned files come first, then newest
@@ -1274,6 +1207,19 @@ each response includes the generation metadata observed with its entries.
   `linked`, `available`, `visible`, `pinned`, `name`, and `local_path` (null for ordinary blobs).
   Missing linked files remain listed with `available: false`. File contents are never included. Text detection is
   a prefix hint; the preview still validates UTF-8 when reading the file.
+  Optional `folder=/` lists the root; `folder=<folder-id>` lists that folder's files.
+  Without `folder`, the existing flat listing includes files in all folders. Folder filtering
+  precedes pagination. `folders` contains the owner's folder tree as `{id,name,parent}` records;
+  `parent: null` and a file's `folder: null` mean root. Folder IDs are opaque.
+- `POST /api/sessions/{id}/library/folders` accepts `{"name":"Documents","parent":null}`
+  and returns the new folder. Names must be unique within a parent, 1–255 UTF-8 bytes, and cannot
+  contain slashes or control characters; each Library supports at most 1000 folders.
+- `PATCH /api/sessions/{id}/library/folders/{folder}` accepts `{"name":"New name"}`.
+  `DELETE` on the same route removes an empty folder; nonempty folders are rejected.
+- `POST /api/sessions/{id}/library/move` accepts `{"ids":["<blob-or-folder-id>"],"folder":null}`.
+  It moves 1–2000 entries to a folder or root in one atomic metadata update. Missing entries,
+  cross-owner entries, folder cycles and duplicate sibling folder names reject the entire move.
+  Organization survives restarts and forks without moving file bytes or external linked sources.
 - `POST /api/sessions/{id}/blobs` takes the raw file as the body and returns
   `{"id", "mime_type", "byte_count", "path"}`. `id` is the SHA-256 of the
   content. Supported image and media signatures, PDF and ZIP are recognized; unknown formats
@@ -1295,13 +1241,18 @@ each response includes the generation metadata observed with its entries.
   Linked sources are never removed. `409` means an `ImageRef` in the current generation, standby
   generation or pending input still needs this file. The check is serialized with generation/queue
   publication; it also applies to model commands. Ordinary textual mentions do not require bytes
-  for model request reconstruction. Group images are copied into each member's private blob store.
+  for model request reconstruction. Peer messages translate registered aliases to the receiving session. Referenced stored blobs
+  are shared into its private store; linked files retain their external source.
 - `GET /api/sessions/{id}/blobs/{blob}` downloads it with a content-sniffed media type and
   `X-Content-Type-Options: nosniff`. Byte ranges and ETags support native media playback and PDF reads.
 - `GET /api/sessions/{id}/blobs/{blob}/meta` returns
   `{"id", "mime_type", "byte_count", "version", "visible", "pinned", "name"}` without the path.
 
-The same catalog, membership and deletion routes exist under `/api/groups/{id}/blobs`.
+
+Tool results retain their original execution data in `content.output`. When the model receives
+an abbreviated presentation, `content.model_text` holds its exact text (including an empty
+string), or `content.model_value` holds a structured JSON projection. Inspectors can show both;
+protocol adapters use the projection without stringifying JSON twice.
 
 ### `wish blob` and file mentions
 
@@ -1319,8 +1270,11 @@ and opens mentions in the Library sidebar. Local absolute paths in Markdown link
 same interaction and register a link on activation; rendering never reads local file contents.
 
 `--schema`, `--json` and `--stdin` expose the same contract as the built-in `blob` model tool:
-actions `list`, `add`, `link`, `mention`, `update`, `delete`. With Shell enabled it is advertised
-as `wish blob`; without Shell the direct tool is advertised. Both are scoped to the current session.
+actions `list`, `add`, `link`, `mention`, `update`, `delete`. `tools.blob` enables both routes;
+`tools.blob_delivery` selects `command` (default, `wish blob`) or `tool` (direct `blob`).
+Without Shell, an enabled Blob capability falls back to the direct tool. Both routes are scoped
+to the current session and reject calls when disabled. Older records keep Blob enabled with
+command delivery. These settings do not disable the user's Library or attachment APIs.
 
 Images are sent to models that accept image input. For a model configured
 without `image` in its input modalities, or one that rejects the image before
@@ -1405,8 +1359,6 @@ IDs, and anything missed is recovered by reading state again.
 | `snapshot` | | First record. Read state now |
 | `session_changed` | `id` | A session was created, updated, started or stopped, or received input through `/input` or `/messages` |
 | `session_deleted` | `id` | A session was deleted |
-| `group_changed` | `id` | A group was created, renamed or re-membered, or its transcript grew |
-| `group_deleted` | `id` | A group was deleted |
 | `list_changed` | | Folders changed, or something was moved or pinned. Read the list again |
 | `configuration_changed` | | The configuration was saved or credentials were refreshed |
 | `gap` | | The subscriber fell behind and missed events. Read state again |
@@ -1420,7 +1372,7 @@ IDs, and anything missed is recovered by reading state again.
 | `snapshot` | `data: {session, status}`, `live_events`, `retries`, `server_time`, `revision` | Sent first, and again whenever the subscriber falls behind. Replace the current output preview and outstanding retries with this snapshot |
 | `upstream_retry` | `retry`, `revision` | A retry is waiting, starting, or finished; replace/remove the progress identified by `retry.request_id` |
 | `session_event` | `event`, `revision` | One engine event: state changes, streamed text, reasoning and tool-call deltas, tool starts, accepted responses, compaction progress |
-| `history_changed` | | History was written beside any run: the session noted a message it sent to a group. Read the timeline again |
+| `history_changed` | | History was written beside any run: a shell bridge command was recorded. Read the timeline again |
 | `operation_finished` | `outcome` | A run or compaction ended: `"Completed"`, `"Interrupted"`, `"ToolOutcomeUnknown"`, `{"Failed": error}`, `{"ModelStopped": {"stop_reason"}}` or `{"StreamFailed": {"reason"}}` |
 | `operation_failed` | `error` | The operation could not complete because of a server-side error |
 | `deleted` | | The session was deleted. The stream ends after this record |
@@ -1558,6 +1510,28 @@ PDF metadata and single-page extraction use the built-in Rust `lopdf` library. `
 
 Blob previews live in `application/blob_preview/`, sharing two worker slots and a 128 MiB / 128-entry cache. Work runs in the same Wish executable's private `--blob-worker` mode, with kill-on-drop cancellation and a 30-second execution timeout; Unix workers additionally enforce a 3 GiB address-space limit and a CPU-time limit. There is no `magick` or `mutool` installation requirement. Native PDF output is capped at 64 MiB per page, metadata at 2 MiB; sources are capped at 1 GiB. Matching ETags bypass workers. Linked-file modification time and size invalidate cached results. Preview routes require normal API authentication; raw-media grants do not authorize them.
 
-`GET /api/sessions/{id}/blobs/{blob}/image?width=384` (also under groups) uses Rust `image` codecs and returns lossless WebP. Allowed sizes are 384, 768 and 1536 pixels on the longest edge; orientation, aspect ratio and the first frame are preserved. Decoder allocation is limited to 256 MiB. Original blob endpoints remain unchanged.
+`GET /api/sessions/{id}/blobs/{blob}/image?width=384` uses Rust `image` codecs and returns lossless WebP. Allowed sizes are 384, 768 and 1536 pixels on the longest edge; orientation, aspect ratio and the first frame are preserved. Decoder allocation is limited to 256 MiB. Original blob endpoints remain unchanged.
 
 Preview conditional requests validate authorization and source metadata before rendering. Matching `If-None-Match` validators (including weak validators, lists, and `*`) return 304 even after the render cache is evicted. Cached response bytes are shared without copying. Draft uploads reserve quota before receiving their stream and serialize only with uploads/adoption of the same draft ID.
+
+Session identifier aliases are available through authenticated
+`GET /api/sessions/{id}/environment`. This returns only public variables:
+`WISH_BLOB_ROOT`, `WISH_TMPDIR`, `WISH_BLOB_ID_*` and `WISH_SESSION_ID_*`;
+it never returns bridge credentials or arbitrary process variables.
+The session itself is always `WISH_SESSION_ID_0`. Both identifier families
+use uppercase base-36 suffixes: `0…9, A…Z, 10, 11…`. Assignments persist
+across restarts and context changes and are never recycled after deletion.
+Forks retain the numbering used by copied context while assigning the fork's
+own ID to slot zero.
+
+New shell processes receive the latest values; running processes keep their
+original environment. Blob/session tools accept literal `$NAME` and
+`${NAME}` references in ID/path/target fields. Complete stored tool results
+retain actual IDs, while model-facing results and Wish CLI responses use aliases.
+Linked blobs still use their original local path for shell file access.
+
+Markdown links may use `[file](wish://blob/$WISH_SESSION_ID_0/$WISH_BLOB_ID_A)`
+or `[page]($WISH_BLOB_ROOT/$WISH_BLOB_ID_A#page=3)`.
+The frontend resolves variables using the message's session, not a process or
+global namespace. Unknown/private variables are rejected. Cross-session messages
+translate sender references into the recipient's numbering before persistence.

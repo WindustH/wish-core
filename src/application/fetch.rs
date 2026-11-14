@@ -286,17 +286,6 @@ async fn read(
   let request =
     FetchRequest { url: url.into(), refresh, conversation: Some(conversation.into()), model: None };
   let transport = &service.transport;
-  // Shared-account calls use the same client boundary as subscription web search.
-  if let Some(account) = account {
-    let client = ReadClient::new(
-      transport.clone(),
-      account.client.get_credentials().clone(),
-      crate::utils::retry::RetryPolicy::auxiliary(),
-      observer,
-    );
-    let page = client.fetch(protocol, &request, p.base_url.as_deref(), &headers).await?;
-    return Ok((page.title, page.content));
-  }
   let client = ReadClient::new(
     transport.clone(),
     credentials,

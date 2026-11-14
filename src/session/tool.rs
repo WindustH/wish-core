@@ -25,10 +25,19 @@ pub enum ToolOutcome {
   SuccessWithInput {
     output: Value,
     input: Vec<ContentBlock>,
+    /// Optional model-facing result text; an empty string avoids repeating appended input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_text: Option<String>,
   },
   /// Success with application data kept on the result message and never sent to the model.
   SuccessWithMetadata {
     output: Value,
+    metadata: Value,
+  },
+  /// Structured model presentation alongside the complete, unmodified execution result.
+  SuccessWithProjection {
+    output: Value,
+    model_output: Value,
     metadata: Value,
   },
   /// A presentation separated from program data and UI-only metadata.
@@ -46,19 +55,27 @@ pub enum ToolOutcome {
 impl ToolOutcome {
   pub(crate) fn metadata(&self) -> Value {
     match self {
-      Self::Report { metadata, .. } | Self::SuccessWithMetadata { metadata, .. } => {
-        metadata.clone()
-      }
+      Self::Report { metadata, .. }
+      | Self::SuccessWithMetadata { metadata, .. }
+      | Self::SuccessWithProjection { metadata, .. } => metadata.clone(),
       _ => Value::Null,
     }
   }
   /// Durable result data. Protocol adapters send only model_text for new reports.
   pub(crate) fn encode_content(&self) -> Value {
     match self {
-      Self::Success(value)
-      | Self::SuccessWithInput { output: value, .. }
-      | Self::SuccessWithMetadata { output: value, .. } => {
+      Self::SuccessWithProjection { output, model_output, .. } => json!({
+        "status":"success", "output":output, "model_value":{"status":"success", "output":model_output}
+      }),
+      Self::Success(value) | Self::SuccessWithMetadata { output: value, .. } => {
         json!({"status": "success", "output": value})
+      }
+      Self::SuccessWithInput { output, model_text, .. } => {
+        let mut result = json!({"status":"success","output":output});
+        if let Some(text) = model_text {
+          result["model_text"] = json!(text);
+        }
+        result
       }
       Self::Report { text, output, failed, .. } => json!({
         "status": if *failed { "failed" } else { "success" },

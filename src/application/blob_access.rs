@@ -52,7 +52,7 @@ pub enum Request {
 pub fn specification() -> Tool {
   Tool {
     name: "blob".into(),
-    description: "Manage files belonging to this session. list includes hidden files by default. add copies a local file; link (symlink) records its local path without copying or modifying it. mention accepts a blob ID or local path (silently linked), returns a clickable user-facing reference and Markdown; optional page is a 1-based PDF page and time is video/audio seconds. Include the returned Markdown in your answer. add/link appear in the Library by default; mention alone does not add to the displayed Library. update sets visible/pinned. delete removes stored bytes or the link, NEVER the original linked file; refused for images required by current/standby context or pending input. Hiding is always available.".into(),
+    description: "Manage files belonging to this session. IDs and paths accept session environment aliases such as $WISH_BLOB_ID_0 and $WISH_BLOB_ROOT/$WISH_BLOB_ID_0. Markdown also accepts [file](wish://blob/$WISH_SESSION_ID_0/$WISH_BLOB_ID_0). list includes hidden files by default. add copies a local file; link (symlink) records its local path without copying or modifying it. mention accepts a blob ID or local path (silently linked), returns a clickable user-facing reference and Markdown; optional page is a 1-based PDF page and time is video/audio seconds. Include the returned Markdown in your answer, or write [label](/absolute/path/file) directly without calling mention; append #page=N or #time=SECONDS for a location. add/link appear in the Library by default; mention alone does not add to the displayed Library. update sets visible/pinned. delete removes stored bytes or the link, NEVER the original linked file; refused for images required by current/standby context or pending input. Hiding is always available.".into(),
     input_schema: json!({"type":"object","required":["action"],"properties":{
       "action":{"type":"string","enum":["list","add","link","symlink","mention","update","delete"]},
       "all":{"type":"boolean"},"start":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":200},
@@ -81,11 +81,21 @@ fn path(slot: &SessionSlot, value: &str) -> Result<PathBuf, ApplicationError> {
 pub async fn execute(
   app: &Arc<App>,
   slot: Arc<SessionSlot>,
-  request: Request,
+  mut request: Request,
 ) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
   slot.require_live()?;
-  let owner = slot.get_descriptor().id;
+  match &mut request {
+    Request::Add { path, .. } | Request::Link { path, .. } => *path = slot.aliases.expand(path)?,
+    Request::Mention { source, .. } => *source = slot.aliases.expand(source)?,
+    Request::Update { id, .. } | Request::Delete { id } => *id = slot.aliases.expand(id)?,
+    Request::List { .. } => {}
+  }
+  let descriptor = slot.get_descriptor();
+  if !descriptor.tools.blob {
+    return Err(ApplicationError::conflict("blob is disabled for this session"));
+  }
+  let owner = descriptor.id;
   match request {
     Request::List { all, start, limit } => {
       serde_json::to_value(attachments::list(app, &owner, start, limit, all).await?)
@@ -94,7 +104,23 @@ pub async fn execute(
     Request::Add { path: input, name, visible } => {
       let path = path(&slot, &input)?;
       let name = name.or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()));
-      let file = tokio::fs::File::open(path).await.map_err(ApplicationError::internal)?;
+      let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+          ApplicationError::not_found()
+        } else {
+          ApplicationError::invalid(error.to_string())
+        }
+      })?;
+      if !metadata.is_file() {
+        return Err(ApplicationError::invalid("path must be a regular file"));
+      }
+      let mut options = tokio::fs::OpenOptions::new();
+      options.read(true);
+      // The path may be replaced between metadata and open; a FIFO must never block a worker.
+      #[cfg(unix)]
+      options.custom_flags(libc::O_NONBLOCK);
+      let file =
+        options.open(path).await.map_err(|error| ApplicationError::invalid(error.to_string()))?;
       if !file.metadata().await.map_err(ApplicationError::internal)?.is_file() {
         return Err(ApplicationError::invalid("path must be a regular file"));
       }
@@ -134,6 +160,13 @@ pub async fn execute(
       if label.as_ref().is_some_and(|s| s.len() > 1024) {
         return Err(ApplicationError::invalid("label exceeds 1024 bytes"));
       }
+      let source = std::path::Path::new(&source)
+        .strip_prefix(slot.aliases.root())
+        .ok()
+        .and_then(|path| path.to_str())
+        .filter(|id| blobs::is_blob_id(id))
+        .map(str::to_owned)
+        .unwrap_or(source);
       let (id, file_name) = if blobs::is_blob_id(&source) {
         (source, None)
       } else {

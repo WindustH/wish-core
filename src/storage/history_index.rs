@@ -31,6 +31,20 @@ pub(crate) struct ReplyIndexHit {
   pub metadata: String,
 }
 impl Transaction<'_> {
+  /// Read only indexed metadata carrying a requested field, without materializing message bodies.
+  pub(crate) fn history_metadata(
+    &self,
+    list: &ListId,
+    message_type: &str,
+    field: &str,
+  ) -> Result<Vec<String>, StorageError> {
+    let mut query = self.sql.prepare("SELECT metadata FROM wish_history_index WHERE list=(SELECT id FROM wish_list_keys WHERE name=?1) AND message_type=?2 AND json_type(metadata,?3) IS NOT NULL")?;
+    Ok(
+      query
+        .query_map(params![list.0, message_type, field], |row| row.get(0))?
+        .collect::<Result<_, _>>()?,
+    )
+  }
   /// Bounded indexed lookups in one snapshot. Return input metadata without loading
   /// user message bodies; the session layer interprets completion outcomes.
   pub(crate) fn reply_history_index(

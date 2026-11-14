@@ -36,6 +36,11 @@ pub fn agent_instructions(switches: super::session::ToolSwitches) -> String {
       "\nRun `wish <command> --help` for full usage. Availability follows session settings.",
     );
   }
+  if switches.blob {
+    text.push_str(
+      "\n\n# File references\nIn your Markdown answer, use `[label](/absolute/path/file)` to create a clickable file mention without a tool call. PDF page: `[label](/absolute/path/file.pdf#page=3)` (1-based); video/audio time: `[label](/absolute/path/file.mp4#time=12.5)` (seconds). Existing blob: `[label](wish://blob/OWNER/ID)` with optional `?page=3` or `?time=12.5`. Paths and blob IDs may use the registered $WISH_* session aliases; URL-encode spaces, # and other reserved characters in paths. These links open in the user's sidebar; they do not by themselves add files to the displayed Library.",
+    );
+  }
   text.push_str(&extension_instructions(switches));
   text
 }
@@ -126,14 +131,24 @@ pub fn persist_agent_instructions(
 }
 
 /// A separate managed prefix keeps environment updates independent of capability instructions.
-pub fn environment_instruction(shell: &crate::task::ShellCommand, cwd: &std::path::Path) -> String {
+pub fn environment_instruction(
+  shell: &crate::task::ShellCommand,
+  cwd: &std::path::Path,
+  temp_dir: Option<&std::path::Path>,
+) -> String {
   let kind = shell.program.file_name().unwrap_or_default().to_string_lossy();
-  format!(
+  let mut text = format!(
     "# Execution environment\nShell type: {kind}\nShell program: {}\nShell arguments: {}\nWorking directory: {}\nEach command starts in this working directory. Existing processes retain their original environment.",
     serde_json::json!(shell.program),
     serde_json::json!(shell.args),
     serde_json::json!(cwd)
-  )
+  );
+  if temp_dir.is_some() {
+    text.push_str("\nSession temporary directory: $WISH_TMPDIR. Use \"$WISH_TMPDIR/file\" for scratch files. Its path is fixed for this session; temporary contents may be removed by the operating system.");
+  }
+  text.push_str("\nSession-local environment aliases: $WISH_SESSION_ID_0 is this session; $WISH_SESSION_ID_1, ... identify other sessions. $WISH_BLOB_ROOT is this session's blob directory; $WISH_BLOB_ID_0, ... identify files. Number suffixes use uppercase base 36: 0-9, A-Z, 10, 11, ... . Names are stable and never reused. Prefer aliases over raw IDs. Tools accept $NAME or ${NAME} literally; each new shell command receives their current values. Aliases assigned during an already-running command are available to the next command. For Markdown use [file](wish://blob/$WISH_SESSION_ID_0/$WISH_BLOB_ID_0) or [file]($WISH_BLOB_ROOT/$WISH_BLOB_ID_0); #page=N and #time=SECONDS work on paths. Linked files keep their original local path for shell access.");
+
+  text
 }
 
 /// A tail notice explains the current routes even while the generation keeps its old prefix.
@@ -153,6 +168,7 @@ pub fn delivery_notice(
   };
   let mut changes = Vec::new();
   for (name, was, enabled, old_delivery, delivery) in [
+    ("blob / wish blob", previous.blob, next.blob, previous.blob_delivery, next.blob_delivery),
     (
       "history / wish history",
       previous.history_search,

@@ -147,7 +147,7 @@ async fn callback(
   use crate::application::browser_login::{CallbackFailure, receive_callback};
   match receive_callback(&context.app,&context.attempt_id,&context.grant,&context.provider,
     query.get("state").map(String::as_str),query.get("code").map(String::as_str),query.get("error").map(String::as_str)).await {
-    Ok(()) => Html("<meta charset=\"utf-8\"><h1>登录成功</h1><p>可以返回 Wish。</p><script>window.close()</script>").into_response(),
+    Ok(()) => Html("<meta charset=\"utf-8\"><h1>Sign-in complete</h1><p>You can return to Wish.</p><script>window.close()</script>").into_response(),
     Err(failure)=>{
       let (status,message)=match failure {
        CallbackFailure::StateMismatch=>(StatusCode::BAD_REQUEST,"Authorization state did not match"),

@@ -204,9 +204,13 @@ impl BackgroundTools {
 
 fn completion(id: &str, call: &ToolCall, outcome: &ToolOutcome) -> Message {
   let result = outcome.encode_content();
-  let rendered =
-    result["model_text"].as_str().map(str::to_owned).unwrap_or_else(|| result.to_string());
-  let mut text: String = rendered.chars().take(50 * 1024).collect();
+  let rendered = result
+    .get("model_value")
+    .map(Value::to_string)
+    .or_else(|| result["model_text"].as_str().map(str::to_owned))
+    .unwrap_or_else(|| result.to_string());
+  let end = rendered.floor_char_boundary(rendered.len().min(50 * 1024));
+  let mut text = rendered[..end].to_owned();
   if text.len() < rendered.len() {
     text.push_str("\n[Full result retained in history]");
   }
@@ -282,7 +286,7 @@ pub async fn recover(slot: &SessionSlot) -> Result<(), ApplicationError> {
       |error| json!({"execution_id":id,"error":error.to_string(),"process":{"status":"unknown"}}),
     );
     let edits = shell.show(&id).ok().map(|task| task["edits"].clone());
-    finish_shell(sender, &id, command, result, edits).await?;
+    finish_shell(slot, &id, command, result, edits).await?;
   }
   for (id, call) in unfinished {
     finish(sender, &id, &call, &ToolOutcome::Unknown(
@@ -294,13 +298,13 @@ pub async fn recover(slot: &SessionSlot) -> Result<(), ApplicationError> {
 /// Native shell completions keep their existing UI protocol, with the completion marker and
 /// queued message committed in one transaction just like direct tools.
 pub async fn finish_shell(
-  sender: &SessionSender,
+  slot: &SessionSlot,
   id: &str,
   command: Value,
   result: Value,
   edits: Option<Value>,
 ) -> Result<(), ApplicationError> {
-  let message = Message::Developer {
+  let mut message = Message::Developer {
     metadata: json!({"source":"background_execution_finished","execution_id":id,"completion":{"command":command,"result":result},"edits":edits}),
     fixed: Some(false),
     content: vec![ContentBlock::Text {
@@ -313,8 +317,18 @@ pub async fn finish_shell(
   };
   let event =
     json!({"type":"background_execution_finished","id":id,"command":command,"result":result});
-  let sender = sender.clone();
+  let sender = slot.sender.clone();
+  let aliases = slot.aliases.clone();
+  let management = slot.management.clone();
   blocking(move || {
+    aliases.discover_value(&event, &management)?;
+    if let Message::Developer { content, .. } = &mut message {
+      for block in content {
+        if let ContentBlock::Text { text } = block {
+          *text = aliases.shorten(text);
+        }
+      }
+    }
     sender.record_application_input(event, message)?;
     Ok(())
   })

@@ -83,5 +83,5 @@ pub(crate) async fn write<T: Serialize + Send + 'static>(
   })
   .await
   .map_err(|e| e.to_string())??;
-  crate::storage::blobs::atomic_write(path, &bytes).await.map_err(|e| e.to_string())
+  crate::utils::atomic_file::write(path, &bytes).await.map_err(|e| e.to_string())
 }

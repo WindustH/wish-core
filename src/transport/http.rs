@@ -25,6 +25,8 @@ pub struct ReqwestTransport {
   limits: Limits,
   stream_total: Option<std::time::Duration>,
   deferred_stream_headers: Option<std::time::Duration>,
+  resolver_clients:
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<std::any::TypeId, reqwest::Client>>>,
 }
 
 impl ReqwestTransport {
@@ -47,29 +49,30 @@ impl ReqwestTransport {
       limits,
       stream_total: None,
       deferred_stream_headers: None,
+      resolver_clients: Default::default(),
     })
   }
 
-  /// Use a caller-owned DNS policy while preserving timeout and explicit proxy settings.
-  pub(crate) fn with_resolver(
+  /// Reuse a stateless DNS policy's pool across artifact downloads. The cache belongs
+  /// to this transport, so a changed proxy/connect policy always gets a separate pool.
+  pub(crate) fn with_default_resolver<R: reqwest::dns::Resolve + Default + 'static>(
     &self,
-    resolver: impl reqwest::dns::Resolve + 'static,
   ) -> Result<Self, Error> {
+    let mut clients =
+      self.resolver_clients.lock().map_err(|error| Error::Build(error.to_string()))?;
+    if let Some(client) = clients.get(&std::any::TypeId::of::<R>()) {
+      return Ok(Self { client: client.clone(), ..self.clone() });
+    }
     let builder = pooled_client_builder()
       .connect_timeout(self.limits.connect)
       .redirect(reqwest::redirect::Policy::none())
       .retry(reqwest::retry::never())
-      .dns_resolver(std::sync::Arc::new(resolver));
+      .dns_resolver(std::sync::Arc::new(R::default()));
     let client = apply_proxy(builder, (*self.proxy).clone())?
       .build()
       .map_err(|error| Error::Build(format!("client build failed: {error}")))?;
-    Ok(Self {
-      client,
-      proxy: self.proxy.clone(),
-      limits: self.limits,
-      stream_total: self.stream_total,
-      deferred_stream_headers: self.deferred_stream_headers,
-    })
+    clients.insert(std::any::TypeId::of::<R>(), client.clone());
+    Ok(Self { client, ..self.clone() })
   }
 
   /// Override the wall-clock limit only for streamed responses. Buffered calls keep `limits.total`.

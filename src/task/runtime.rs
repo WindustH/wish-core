@@ -416,6 +416,18 @@ impl TaskManager {
       format!("{}-{timestamp}-{}", std::process::id(), NEXT_ID.fetch_add(1, Ordering::Relaxed));
     let directory = self.inner.config.capture_dir.join(&id);
     tokio::fs::create_dir(&directory).await?;
+    // Before registration, this directory contains only the empty capture. Clean up on
+    // cancellation, admission failure, missing shell, or process-group attachment failure.
+    struct PendingCapture(Option<std::path::PathBuf>);
+    impl Drop for PendingCapture {
+      fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+          let _ = std::fs::remove_file(path.join("output.log"));
+          let _ = std::fs::remove_dir(path);
+        }
+      }
+    }
+    let mut pending_capture = PendingCapture(Some(directory.clone()));
     let output_path = directory.join("output.log");
     let file =
       tokio::fs::OpenOptions::new().write(true).create_new(true).open(&output_path).await?;
@@ -430,6 +442,8 @@ impl TaskManager {
       .stderr(Stdio::piped())
       .stdin(if interactive || data.is_some() { Stdio::piped() } else { Stdio::null() })
       .kill_on_drop(true);
+    builder
+      .envs(self.inner.config.live_env.read().unwrap_or_else(|error| error.into_inner()).iter());
     builder.env("WISH_TASK_ID", &id);
     platform::configure_command(&mut builder, &shell.program, &command);
     // Serialize spawn/registration with shutdown so a successfully spawned process is never missed.
@@ -474,6 +488,7 @@ impl TaskManager {
       write_timeout: self.inner.config.stdin_write_timeout,
     });
     registry.executions.insert(id, execution.clone());
+    pending_capture.0 = None;
     let initial_input = data.map(|bytes| {
       let execution = execution.clone();
       tokio::spawn(async move {

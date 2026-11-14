@@ -4,7 +4,7 @@ use super::{
   bridge_access,
   command_trace::CommandTrace,
   error::ApplicationError,
-  peer_commands::{self as peers, AddMembers, Changes, NewGroup, NewSession, Send},
+  peer_commands::{self as peers, Changes, NewSession, Send},
   session::SessionSlot,
 };
 use crate::{
@@ -24,22 +24,18 @@ pub enum SessionRequest {
   Configure { target: String, input: Changes },
   Delete { target: String },
   Send { target: String, input: Send },
-  CreateGroup { input: NewGroup },
-  AddMembers { target: String, input: AddMembers },
-  Leave { target: String },
 }
 pub fn specification() -> Tool {
   Tool {
     name: "session".into(),
-    description: "Manage sessions and groups: list, show, create, configure, delete, send, create_group, add_members, leave. Targets are names or IDs. Only configure yourself or sessions you created; only delete sessions you created. Sending to a group requires membership and wakes its other members. A reply in your conversation is not a group message; use send. Use input for action-specific fields: create {name,instructions,model,provider,cwd,shell}; configure {name,model,provider,instructions}; send {text}; create_group {name,members}; add_members {add}.".into(),
+    description: "Manage sessions: list, show, create, configure, delete, send. Targets are session names, IDs, or environment aliases such as $WISH_SESSION_ID_1; $WISH_SESSION_ID_0 is yourself. Only configure yourself or sessions you created; only delete sessions you created. send delivers text directly to the target session's input queue and wakes it; no group or separate transcript is created. Replies are not forwarded automatically: use send to reply. Use input for action-specific fields: create {name,instructions,model,provider,cwd,shell}; configure {name,model,provider,instructions}; send {text}.".into(),
     input_schema: json!({"type":"object","properties":{
-      "action":{"type":"string","enum":["list","show","create","configure","delete","send","create_group","add_members","leave"]},
-      "target":{"type":"string","description":"Session or group name or ID"},
+      "action":{"type":"string","enum":["list","show","create","configure","delete","send"]},
+      "target":{"type":"string","description":"Session name or ID"},
       "input":{"type":"object","properties":{
         "name":{"type":"string"},"instructions":{"type":"string"},"model":{"type":"string"},
         "provider":{"type":"string"},"cwd":{"type":"string"},"shell":{"type":"boolean"},
-        "text":{"type":"string","x-preserve-whitespace":true},
-        "members":{"type":"array","items":{"type":"string"}},"add":{"type":"array","items":{"type":"string"}}
+        "text":{"type":"string","x-preserve-whitespace":true}
       },"additionalProperties":false}
     },"required":["action"],"additionalProperties":false}),
   }
@@ -59,8 +55,15 @@ pub fn parse_request(arguments: &Value) -> Result<SessionRequest, ApplicationErr
 pub async fn execute(
   app: Arc<App>,
   slot: Arc<SessionSlot>,
-  request: SessionRequest,
+  mut request: SessionRequest,
 ) -> Result<Value, ApplicationError> {
+  match &mut request {
+    SessionRequest::Show { target }
+    | SessionRequest::Configure { target, .. }
+    | SessionRequest::Delete { target }
+    | SessionRequest::Send { target, .. } => *target = slot.aliases.expand(target)?,
+    _ => {}
+  }
   app.lifecycle.require_open()?;
   slot.require_live()?;
   let id = slot.get_descriptor().id;
@@ -76,13 +79,6 @@ pub async fn execute(
     }
     SessionRequest::Send { target, input } => {
       peers::send_inner(app, (id, target), slot, input).await
-    }
-    SessionRequest::CreateGroup { input } => peers::create_group_inner(app, id, slot, input).await,
-    SessionRequest::AddMembers { target, input } => {
-      peers::add_members_inner(app, (id, target), slot, input).await
-    }
-    SessionRequest::Leave { target } => {
-      peers::leave_inner(app, (id, target), slot).await.map(|()| json!({"left":true}))
     }
   }
 }
@@ -102,13 +98,20 @@ async fn command(
     arguments: serde_json::to_value(&request).map_err(ApplicationError::internal)?,
   };
   let trace = CommandTrace::start(&app, slot.clone(), call).await?;
-  let result = execute(app, slot, request).await;
+  let result = app.lifecycle.until_shutdown(execute(app.clone(), slot.clone(), request)).await?;
   let outcome = match &result {
     Ok(value) => ToolOutcome::Success(value.clone()),
     Err(error) => ToolOutcome::Failed(error.to_string()),
   };
+  let outcome = super::env_aliases::shorten_outcome(&slot, outcome).await;
   trace.finish(&outcome).await?;
-  result
+  match result {
+    Ok(mut value) => {
+      slot.aliases.shorten_value(&mut value);
+      Ok(value)
+    }
+    Err(error) => Err(error),
+  }
 }
 
 pub async fn list(
@@ -160,30 +163,4 @@ pub async fn send(
   input: Send,
 ) -> Result<Value, ApplicationError> {
   command(app, id, token, SessionRequest::Send { target, input }).await
-}
-
-pub async fn create_group(
-  app: Arc<App>,
-  id: String,
-  token: Option<&str>,
-  input: NewGroup,
-) -> Result<Value, ApplicationError> {
-  command(app, id, token, SessionRequest::CreateGroup { input }).await
-}
-
-pub async fn add_members(
-  app: Arc<App>,
-  (id, target): (String, String),
-  token: Option<&str>,
-  input: AddMembers,
-) -> Result<Value, ApplicationError> {
-  command(app, id, token, SessionRequest::AddMembers { target, input }).await
-}
-
-pub async fn leave(
-  app: Arc<App>,
-  (id, target): (String, String),
-  token: Option<&str>,
-) -> Result<(), ApplicationError> {
-  command(app, id, token, SessionRequest::Leave { target }).await.map(|_| ())
 }

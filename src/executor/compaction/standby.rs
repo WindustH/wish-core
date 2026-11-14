@@ -109,10 +109,23 @@ async fn plan_standby_summaries(
   else {
     return Ok(plans);
   };
+  // Standby work is speculative. Small contexts must not wait for an upstream token
+  // count (or image projection) before every conversation/tool turn.
+  let last_end = boundaries.iter().copied().rfind(|end| *end <= eligible).unwrap();
+  let pending = build_span_request(&request, &request.conversation[processed..last_end]);
+  // A whole-conversation ratio can dilute the framing cost of this standalone span.
+  // Use it to raise the admission estimate, never to suppress a locally eligible span.
+  if config
+    .estimator
+    .estimate_request(&pending)
+    .max(estimate(&config, &pending, calibration).tokens)
+    < config.segment_tokens
+  {
+    return Ok(plans);
+  }
   // Count the first complete span once, then calibrate local probes of larger spans.
   // A whole-tail ratio would dilute the fixed framing cost of a small summary segment.
   let span = build_span_request(&request, &request.conversation[processed..first_end]);
-  caller.validate_request(&span).await?;
   let measured = measure(caller, control, &config, &span, calibration).await?;
   let local = config.estimator.estimate_request(&span);
   let calibration = if matches!(
@@ -128,7 +141,6 @@ async fn plan_standby_summaries(
   for end in boundaries.into_iter().filter(|end| *end > processed && *end <= eligible) {
     check_cancelled(control)?;
     let span_request = build_span_request(&request, &request.conversation[start..end]);
-    caller.validate_request(&span_request).await?;
     let measurement = if start == processed && end == first_end {
       measured
     } else {

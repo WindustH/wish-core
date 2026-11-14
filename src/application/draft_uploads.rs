@@ -87,10 +87,7 @@ async fn inspect(
         continue;
       }
       let id = entry.file_name().to_string_lossy().into_owned();
-      if uuid::Uuid::parse_str(&id).is_err()
-        || management.exists(&id)?
-        || management.group(&id)?.is_some()
-      {
+      if uuid::Uuid::parse_str(&id).is_err() || management.exists(&id)? {
         continue;
       }
       if active.contains(&id) {
@@ -98,7 +95,10 @@ async fn inspect(
       }
       let modified =
         entry.metadata().and_then(|m| m.modified()).map_err(ApplicationError::internal)?;
-      if modified.elapsed().is_ok_and(|age| age >= TTL) && incoming.as_deref() != Some(&id) {
+      if modified.elapsed().is_ok_and(|age| age >= TTL)
+        && incoming.as_deref() != Some(&id)
+        && guard.owners.get(&id).is_none_or(|owner| owner.strong_count() == 0)
+      {
         std::fs::remove_dir_all(entry.path()).map_err(ApplicationError::internal)?;
         continue;
       }
@@ -135,8 +135,7 @@ where
   // not another pending draft, and must not poison pending quota accounting.
   let management = app.management.clone();
   let owner = id.clone();
-  let accepted =
-    blocking(move || Ok(management.exists(&owner)? || management.group(&owner)?.is_some())).await?;
+  let accepted = blocking(move || Ok(management.exists(&owner)?)).await?;
   if accepted {
     drop(inventory);
     return Ok(

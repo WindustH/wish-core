@@ -1,19 +1,20 @@
-//! Uploads and reads attachments owned by a session or group.
+//! Uploads and reads attachments owned by a session.
 use super::{app::App, error::ApplicationError};
 use crate::storage::blobs;
 pub use crate::storage::blobs::Blob;
 use serde::Serialize;
 use std::sync::Arc;
-/// Refuses an id that names neither a session nor a group: the owners of `blobs/<id>`.
+/// Requires an existing session: the owners of `blobs/<id>`.
 async fn require_owner(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
   let management = app.management.clone();
   let data = app.data_dir.clone();
+  let storage = app.storage.clone();
   let id = id.to_owned();
   super::error::blocking(move || {
-    if management.group(&id)?.is_none() && !management.exists(&id)? {
+    if !management.exists(&id)? {
       return Err(ApplicationError::not_found());
     }
-    super::library::ensure(&data, &id)?;
+    super::library::ensure(&data, &storage, &id)?;
     Ok(())
   })
   .await
@@ -49,6 +50,7 @@ where
   let blob = blobs::save_upload_stream(&directory, stream, blobs::MAX_UPLOAD_BYTES).await?;
   let id = blob.id.clone();
   super::error::blocking(move || {
+    super::env_aliases::Aliases::open(&directory)?.blob(&id)?;
     Ok(blobs::library::record_upload(&directory, &id, name, temporary)?)
   })
   .await?;
@@ -63,10 +65,15 @@ pub async fn link(
   app.lifecycle.require_open()?;
   require_owner(app, owner).await?;
   let directory = app.data_dir.blobs(owner);
-  let blob = blobs::linked::register(&directory, path).await?;
+  let dir = directory.clone();
+  let input = path.to_owned();
+  let path =
+    super::error::blocking(move || super::env_aliases::Aliases::open(&dir)?.expand(&input)).await?;
+  let blob = blobs::linked::register(&directory, &path).await?;
   let id = blob.id.clone();
   let name = std::path::Path::new(&blob.path).file_name().map(|s| s.to_string_lossy().into_owned());
   super::error::blocking(move || {
+    super::env_aliases::Aliases::open(&directory)?.blob(&id)?;
     Ok(blobs::library::record_upload(&directory, &id, name, temporary)?)
   })
   .await?;
@@ -80,6 +87,16 @@ pub async fn list(
   limit: usize,
   include_hidden: bool,
 ) -> Result<blobs::catalog::Page, ApplicationError> {
+  list_in(app, owner, start, limit, include_hidden, None).await
+}
+pub async fn list_in(
+  app: &Arc<App>,
+  owner: &str,
+  start: usize,
+  limit: usize,
+  include_hidden: bool,
+  folder: Option<String>,
+) -> Result<blobs::catalog::Page, ApplicationError> {
   require_owner(app, owner).await?;
   super::pagination::validate_limit(limit, 200)?;
   if start > i64::MAX as usize {
@@ -87,9 +104,57 @@ pub async fn list(
   }
   let directory = app.data_dir.blobs(owner);
   super::error::blocking(move || {
-    Ok(blobs::catalog::list(&directory, start, limit, include_hidden)?)
+    let page = if let Some(folder) = folder {
+      blobs::catalog::list_in(&directory, start, limit, include_hidden, Some(&folder))?
+    } else {
+      blobs::catalog::list(&directory, start, limit, include_hidden)?
+    };
+    let aliases = super::env_aliases::Aliases::open(&directory)?;
+    aliases.register(&page.items.iter().map(|item| item.id.clone()).collect::<Vec<_>>(), &[])?;
+    Ok(page)
   })
   .await
+}
+pub async fn create_folder(
+  app: &Arc<App>,
+  owner: &str,
+  input: blobs::library::FolderInput,
+) -> Result<blobs::library::Folder, ApplicationError> {
+  app.lifecycle.require_open()?;
+  require_owner(app, owner).await?;
+  let directory = app.data_dir.blobs(owner);
+  super::error::blocking(move || Ok(blobs::library::create_folder(&directory, input)?)).await
+}
+pub async fn rename_folder(
+  app: &Arc<App>,
+  owner: &str,
+  id: String,
+  name: String,
+) -> Result<blobs::library::Folder, ApplicationError> {
+  app.lifecycle.require_open()?;
+  require_owner(app, owner).await?;
+  let directory = app.data_dir.blobs(owner);
+  super::error::blocking(move || Ok(blobs::library::rename_folder(&directory, &id, &name)?)).await
+}
+pub async fn delete_folder(
+  app: &Arc<App>,
+  owner: &str,
+  id: String,
+) -> Result<(), ApplicationError> {
+  app.lifecycle.require_open()?;
+  require_owner(app, owner).await?;
+  let directory = app.data_dir.blobs(owner);
+  super::error::blocking(move || Ok(blobs::library::delete_folder(&directory, &id)?)).await
+}
+pub async fn move_library_items(
+  app: &Arc<App>,
+  owner: &str,
+  input: blobs::library::FolderMove,
+) -> Result<(), ApplicationError> {
+  app.lifecycle.require_open()?;
+  require_owner(app, owner).await?;
+  let directory = app.data_dir.blobs(owner);
+  super::error::blocking(move || Ok(blobs::library::move_items(&directory, input)?)).await
 }
 pub async fn update_library(
   app: &Arc<App>,
@@ -117,13 +182,6 @@ pub async fn delete(app: &Arc<App>, owner: &str, blob: &str) -> Result<(), Appli
   }
   let directory = app.data_dir.blobs(owner);
   let blob = blob.to_owned();
-  let management = app.management.clone();
-  let id = owner.to_owned();
-  let group = super::error::blocking(move || Ok(management.group(&id)?.is_some())).await?;
-  if group {
-    // Group images are materialized into each member's own immutable blob store.
-    return super::error::blocking(move || Ok(blobs::library::delete(&directory, &blob)?)).await;
-  }
   let slot = app.get_session(owner).await?;
   super::error::blocking(move || {
     slot.require_live()?;

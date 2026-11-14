@@ -1,7 +1,7 @@
 //! HTTP adapters; domain operations live in the application layer.
 use crate::application::app::App;
-use crate::application::peer_commands::{AddMembers, Changes, NewGroup, NewSession, Send};
-use crate::application::session_access as peer_commands;
+use crate::application::peer_commands::{Changes, NewSession, Send};
+use crate::application::session_access;
 use crate::server::error::ApiError;
 use axum::{
   Json,
@@ -16,14 +16,14 @@ pub async fn list(
   Path(id): Path<String>,
   headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-  Ok(Json(peer_commands::list(app, id, super::bridge::bearer_token(&headers)).await?))
+  Ok(Json(session_access::list(app, id, super::bridge::bearer_token(&headers)).await?))
 }
 pub async fn show(
   State(app): State<Arc<App>>,
   Path((id, target)): Path<(String, String)>,
   headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-  Ok(Json(peer_commands::show(app, (id, target), super::bridge::bearer_token(&headers)).await?))
+  Ok(Json(session_access::show(app, (id, target), super::bridge::bearer_token(&headers)).await?))
 }
 pub async fn create(
   State(app): State<Arc<App>>,
@@ -33,7 +33,7 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
   Ok((
     StatusCode::CREATED,
-    Json(peer_commands::create(app, id, super::bridge::bearer_token(&headers), input).await?),
+    Json(session_access::create(app, id, super::bridge::bearer_token(&headers), input).await?),
   ))
 }
 pub async fn configure(
@@ -43,7 +43,7 @@ pub async fn configure(
   Json(changes): Json<Changes>,
 ) -> Result<Json<Value>, ApiError> {
   Ok(Json(
-    peer_commands::configure(app, (id, target), super::bridge::bearer_token(&headers), changes)
+    session_access::configure(app, (id, target), super::bridge::bearer_token(&headers), changes)
       .await?,
   ))
 }
@@ -52,7 +52,7 @@ pub async fn delete(
   Path((id, target)): Path<(String, String)>,
   headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
-  peer_commands::delete(app, (id, target), super::bridge::bearer_token(&headers)).await?;
+  session_access::delete(app, (id, target), super::bridge::bearer_token(&headers)).await?;
   Ok(StatusCode::NO_CONTENT)
 }
 pub async fn send(
@@ -62,36 +62,6 @@ pub async fn send(
   Json(input): Json<Send>,
 ) -> Result<Json<Value>, ApiError> {
   Ok(Json(
-    peer_commands::send(app, (id, target), super::bridge::bearer_token(&headers), input).await?,
+    session_access::send(app, (id, target), super::bridge::bearer_token(&headers), input).await?,
   ))
-}
-pub async fn create_group(
-  State(app): State<Arc<App>>,
-  Path(id): Path<String>,
-  headers: HeaderMap,
-  Json(input): Json<NewGroup>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-  Ok((
-    StatusCode::CREATED,
-    Json(peer_commands::create_group(app, id, super::bridge::bearer_token(&headers), input).await?),
-  ))
-}
-pub async fn add_members(
-  State(app): State<Arc<App>>,
-  Path((id, target)): Path<(String, String)>,
-  headers: HeaderMap,
-  Json(input): Json<AddMembers>,
-) -> Result<Json<Value>, ApiError> {
-  Ok(Json(
-    peer_commands::add_members(app, (id, target), super::bridge::bearer_token(&headers), input)
-      .await?,
-  ))
-}
-pub async fn leave(
-  State(app): State<Arc<App>>,
-  Path((id, target)): Path<(String, String)>,
-  headers: HeaderMap,
-) -> Result<StatusCode, ApiError> {
-  peer_commands::leave(app, (id, target), super::bridge::bearer_token(&headers)).await?;
-  Ok(StatusCode::NO_CONTENT)
 }

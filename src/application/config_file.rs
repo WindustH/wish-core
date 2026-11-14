@@ -34,15 +34,20 @@ impl ConfigFile {
     revision: &str,
     mut value: Value,
   ) -> Result<Config, ApplicationError> {
-    let source = tokio::fs::read(&self.path).await.map_err(ApplicationError::internal)?;
-    if revision != self.revision || hash(&source) != revision {
-      return Err(ApplicationError::conflict("configuration changed; reload before saving"));
-    }
+    self.check_revision(revision).await?;
     restore(&mut value, &serde_json::to_value(&self.config).map_err(ApplicationError::internal)?)?;
     let mut config: Config =
       serde_json::from_value(value).map_err(|e| ApplicationError::invalid(e.to_string()))?;
     config.migrate_accounts()?;
     Ok(config)
+  }
+  /// Include external file edits in the optimistic concurrency boundary.
+  pub async fn check_revision(&self, revision: &str) -> Result<(), ApplicationError> {
+    let source = tokio::fs::read(&self.path).await.map_err(ApplicationError::internal)?;
+    if revision != self.revision || hash(&source) != revision {
+      return Err(ApplicationError::conflict("configuration changed; reload before saving"));
+    }
+    Ok(())
   }
   /// A provider a page holds before saving it, with the secrets it sends back redacted put back
   /// from the provider of that id here.
@@ -82,16 +87,11 @@ fn hash(bytes: &[u8]) -> String {
 
 /// Replaces a file whole or not at all, keeping its permissions.
 async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ApplicationError> {
-  let temp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
   let permissions =
     tokio::fs::metadata(path).await.map_err(ApplicationError::internal)?.permissions();
-  tokio::fs::write(&temp, bytes).await.map_err(ApplicationError::internal)?;
-  tokio::fs::set_permissions(&temp, permissions).await.map_err(ApplicationError::internal)?;
-  if let Err(error) = tokio::fs::rename(&temp, path).await {
-    let _ = tokio::fs::remove_file(&temp).await;
-    return Err(ApplicationError::internal(error));
-  }
-  Ok(())
+  crate::utils::atomic_file::write_with_permissions(path, bytes, Some(permissions))
+    .await
+    .map_err(ApplicationError::internal)
 }
 
 /// Where the configuration keeps secrets: items under a path, every entry of the map there or the

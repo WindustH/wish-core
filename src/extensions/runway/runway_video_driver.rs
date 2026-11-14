@@ -10,7 +10,10 @@ use serde_json::Value;
 pub struct RunwayVideo;
 pub static DRIVER: RunwayVideo = RunwayVideo;
 impl MediaDriver for RunwayVideo {
-  fn artifact_validator(&self, mime: Option<&str>) -> Option<crate::storage::media::Validator> {
+  fn artifact_validator(
+    &self,
+    mime: Option<&str>,
+  ) -> Option<crate::extensions::media_runtime::ArtifactValidator> {
     (mime == Some("application/zip")).then_some(super::archive::validate)
   }
 

@@ -133,15 +133,19 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
         .await
         .map_err(ApplicationError::internal)??
       }
-      "file" => ContentBlock::Text {
-        text: format!(
-          "[File {}:{}] Attached file {}: {}",
-          if blob.linked { "reference" } else { "sha256" },
-          attachment.id,
-          json!(attachment.name),
-          json!(blob.path)
-        ),
-      },
+      "file" => {
+        let directory = blob_dir.to_path_buf();
+        let id = attachment.id.clone();
+        let path = blob.path.clone();
+        let (alias, path) = super::error::blocking(move || {
+          let aliases = super::env_aliases::Aliases::open(&directory)?;
+          Ok((aliases.blob(&id)?, aliases.shorten(&path)))
+        })
+        .await?;
+        ContentBlock::Text {
+          text: format!("[File {alias}] Attached file {}: {}", json!(attachment.name), json!(path)),
+        }
+      }
       _ => return Err(ApplicationError::invalid("attachment kind must be image or file")),
     };
     attachments.push(block);
@@ -163,7 +167,9 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
     Ok(blobs::library::record_input(&directory, super::library::attachments(&library_metadata))?)
   })
   .await?;
-  Ok(Message::User { content, metadata })
+  let mut message = Message::User { content, metadata };
+  super::model_images::retain_input(blob_dir, &mut message).await?;
+  Ok(message)
 }
 
 /// The first input travels with session creation, so rejected uploads cannot leave empty sessions.

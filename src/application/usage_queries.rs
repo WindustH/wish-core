@@ -172,16 +172,10 @@ async fn series(
   // the public model ID. Join them at the protocol boundary without rewriting history.
   let providers = app.get_providers();
   let model_id = |provider: &str, model: &str| {
-    if providers
+    providers
       .get(provider)
-      .is_some_and(|p| p.config.protocol == "google_antigravity_generate_content")
-    {
-      crate::protocol::model_list::antigravity::variant(model)
-        .map_or(model, |(base, _)| base)
-        .to_owned()
-    } else {
-      model.to_owned()
-    }
+      .map_or(model, |p| crate::protocol::model_list::public_model_id(&p.config.protocol, model))
+      .to_owned()
   };
   let displayed_samples = samples.len();
   let sample_count: i64 = aggregates.iter().map(|aggregate| aggregate.count).sum();

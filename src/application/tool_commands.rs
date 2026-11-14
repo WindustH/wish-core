@@ -73,9 +73,16 @@ pub async fn execute(
     eprintln!("recording completed command: {error}");
   }
   match outcome {
-    ToolOutcome::Report { output, failed: false, .. } => Ok(output),
+    ToolOutcome::Report { mut output, failed: false, .. } => {
+      slot.aliases.shorten_value(&mut output);
+      Ok(output)
+    }
+    ToolOutcome::SuccessWithProjection { model_output, .. } => Ok(model_output),
     ToolOutcome::Report { text, .. } => Err(ApplicationError::invalid(text)),
-    ToolOutcome::Success(output) | ToolOutcome::SuccessWithMetadata { output, .. } => Ok(output),
+    ToolOutcome::Success(mut output) | ToolOutcome::SuccessWithMetadata { mut output, .. } => {
+      slot.aliases.shorten_value(&mut output);
+      Ok(output)
+    }
     ToolOutcome::Failed(message) => Err(ApplicationError::invalid(message)),
     ToolOutcome::Cancelled => Err(ApplicationError::conflict("command cancelled")),
     ToolOutcome::Unknown(message) => Err(ApplicationError::unknown(message)),

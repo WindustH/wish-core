@@ -1,6 +1,6 @@
 //! The session list's records: one per session, `{"session": descriptor, "status": status}`, as
 //! `SessionSlot::persist_index` saves it; the list's filters read JSON paths out of it. The list a
-//! user browses - folders, sessions and groups, arranged as `folders` tells - is `conversations`.
+//! user browses - folders, sessions, arranged as `folders` tells - is `conversations`.
 use super::{ManagementStore, folders::folder_size};
 use crate::storage::repository_error::RepositoryError;
 use rusqlite::{OptionalExtension, params};
@@ -15,7 +15,7 @@ pub struct SessionFilter {
   pub order: String,
   /// The folder whose listing `conversations` gives; none for the root.
   pub folder: Option<String>,
-  /// Every session and group, wherever it is, instead of a folder's listing.
+  /// Every session, wherever it is, instead of a folder's listing.
   pub flat: bool,
 }
 impl SessionFilter {
@@ -60,6 +60,29 @@ impl ManagementStore {
     let found =
       self.lock()?.query_row("SELECT 1 FROM sessions WHERE id=?1", [id], |_| Ok(())).optional()?;
     Ok(found.is_some())
+  }
+  /// Two matches suffice to distinguish an exact, case-insensitive name from ambiguity.
+  pub fn named_sessions(&self, name: &str) -> Result<Vec<String>, RepositoryError> {
+    let db = self.lock()?;
+    let mut query = db.prepare("SELECT id FROM sessions WHERE json_extract(record,'$.session.name') = ?1 COLLATE NOCASE LIMIT 2")?;
+    query.query_map([name], |row| row.get(0))?.collect::<Result<_, _>>().map_err(Into::into)
+  }
+  /// Resolve unique candidate IDs with bounded SQL batches and one lock.
+  pub fn existing_sessions(&self, ids: &[String]) -> Result<Vec<String>, RepositoryError> {
+    if ids.is_empty() {
+      return Ok(Vec::new());
+    }
+    let db = self.lock()?;
+    let mut found = std::collections::HashSet::<String>::new();
+    for chunk in ids.chunks(200) {
+      let sql =
+        format!("SELECT id FROM sessions WHERE id IN ({})", vec!["?"; chunk.len()].join(","));
+      let mut query = db.prepare(&sql)?;
+      for id in query.query_map(rusqlite::params_from_iter(chunk), |row| row.get(0))? {
+        found.insert(id?);
+      }
+    }
+    Ok(ids.iter().filter(|id| found.contains(*id)).cloned().collect())
   }
   /// A bounded page of persisted session index records.
   pub fn list(&self, q: SessionFilter) -> Result<RecordPage<Value>, RepositoryError> {
@@ -109,9 +132,9 @@ impl ManagementStore {
   }
 
   /// A page of what a user browses. Without words, a phase or a tag to look for, it is one
-  /// folder's listing - its folders by name, then its sessions and groups by time, pinned ones first
+  /// folder's listing - its folders by name, then its sessions by time, pinned ones first
   /// in each - read along the folder indexes, so it costs what that folder holds. With them, or
-  /// `flat`, it is every session and group that matches, wherever it is, newest first. The page is chosen by
+  /// `flat`, it is every session that matches, wherever it is, newest first. The page is chosen by
   /// these columns alone, and only its own records are read. A phase or tag selects sessions only.
   pub fn conversations(
     &self,
@@ -120,14 +143,12 @@ impl ManagementStore {
     let direction = q.direction()?;
     let limit = i64::try_from(q.limit.saturating_add(1)).map_err(RepositoryError::internal)?;
     let searching = q.flat || !(q.query.is_empty() && q.phase.is_empty() && q.tag.is_empty());
+    let db = self.lock()?;
     let rows: Vec<(String, String, Option<String>, bool)> = {
-      let db = self.lock()?;
       let read = |row: &rusqlite::Row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
       if searching {
         let mut statement = db.prepare(&format!(
           "SELECT 'session',id,folder,pinned,updated_at FROM sessions WHERE {SESSION_FILTER} \
-           UNION ALL SELECT 'group',id,folder,pinned,updated_at FROM groups WHERE ?2='' AND ?3='' \
-           AND (?1='' OR instr(lower(name),lower(?1))>0 OR instr(lower(id),lower(?1))>0) \
            ORDER BY 5 {direction},2 {direction} LIMIT ?4 OFFSET ?5"
         ))?;
         statement
@@ -146,8 +167,7 @@ impl ManagementStore {
         let mut statement = db.prepare(&format!(
           "SELECT kind,id,parent,pinned FROM (\
            SELECT 0 AS rank,'folder' AS kind,id,parent,pinned,name,0 AS updated_at FROM folders WHERE parent IS ?1 \
-           UNION ALL SELECT 1,'session',id,folder,pinned,'',updated_at FROM sessions WHERE folder IS ?1 \
-           UNION ALL SELECT 1,'group',id,folder,pinned,'',updated_at FROM groups WHERE folder IS ?1) \
+           UNION ALL SELECT 1,'session',id,folder,pinned,'',updated_at FROM sessions WHERE folder IS ?1) \
            ORDER BY rank,pinned DESC,name COLLATE NOCASE,updated_at {direction},id LIMIT ?2 OFFSET ?3"
         ))?;
         statement
@@ -158,21 +178,34 @@ impl ManagementStore {
           .collect::<Result<_, _>>()?
       }
     };
-    // One deleted since the page was chosen is left out.
+    // Selection and record hydration share one lock and one committed view.
     let mut items = Vec::new();
     for (kind, id, parent, pinned) in rows {
       let entry = match kind.as_str() {
         "folder" => {
-          let Some(folder) = self.folder(&id)? else { continue };
-          let size = folder_size(&*self.lock()?, &id)?;
+          let Some(folder) = db
+            .query_row(
+              "SELECT id,name,parent,pinned,created_at FROM folders WHERE id=?1",
+              [&id],
+              super::folders::folder_row,
+            )
+            .optional()?
+          else {
+            continue;
+          };
+          let size = folder_size(&db, &id)?;
           ConversationEntry::Folder { record: folder, size }
         }
-        "group" => {
-          let Some(group) = self.group(&id)? else { continue };
-          ConversationEntry::Group(group)
-        }
         _ => {
-          let Some(record) = self.record(&id)? else { continue };
+          let Some(record) = db
+            .query_row("SELECT record FROM sessions WHERE id=?1", [&id], |row| {
+              row.get::<_, String>(0)
+            })
+            .optional()?
+          else {
+            continue;
+          };
+          let record = serde_json::from_str(&record).map_err(RepositoryError::internal)?;
           ConversationEntry::Session(record)
         }
       };
@@ -196,6 +229,5 @@ pub struct ConversationRow {
 }
 pub enum ConversationEntry {
   Folder { record: super::FolderRecord, size: u64 },
-  Group(super::GroupRecord),
   Session(Value),
 }

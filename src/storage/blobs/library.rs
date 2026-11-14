@@ -13,6 +13,10 @@ use std::{
 
 const FILE: &str = ".library.json";
 const MAX_BYTES: usize = 16 * 1024 * 1024;
+mod folders;
+pub use folders::{
+  Folder, FolderInput, FolderMove, create_folder, delete_folder, move_items, rename_folder,
+};
 static WRITES: LazyLock<crate::utils::keyed_lock::KeyedLocks<PathBuf>> =
   LazyLock::new(Default::default);
 
@@ -32,9 +36,13 @@ pub struct Patch {
 }
 
 #[derive(Deserialize, Serialize)]
-struct Library {
+pub(super) struct Library {
   version: u8,
-  entries: BTreeMap<String, Entry>,
+  pub(super) entries: BTreeMap<String, Entry>,
+  #[serde(default)]
+  pub(super) folders: BTreeMap<String, Folder>,
+  #[serde(default)]
+  pub(super) locations: BTreeMap<String, String>,
 }
 
 fn read(directory: &Path) -> Result<Library, RepositoryError> {
@@ -42,7 +50,12 @@ fn read(directory: &Path) -> Result<Library, RepositoryError> {
   let bytes = match crate::utils::bounded_file::read_sync(&path, MAX_BYTES) {
     Ok(bytes) => bytes,
     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-      return Ok(Library { version: 1, entries: BTreeMap::new() });
+      return Ok(Library {
+        version: 1,
+        entries: BTreeMap::new(),
+        folders: BTreeMap::new(),
+        locations: BTreeMap::new(),
+      });
     }
     Err(error) => return Err(RepositoryError::internal(error)),
   };
@@ -85,13 +98,33 @@ pub fn initialize(
     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
     Err(error) => return Err(RepositoryError::internal(error)),
   }
-  write(directory, &Library { version: 1, entries: recover()? })
+  write(
+    directory,
+    &Library {
+      version: 1,
+      entries: recover()?,
+      folders: BTreeMap::new(),
+      locations: BTreeMap::new(),
+    },
+  )
 }
 
 pub fn entries(directory: &Path) -> Result<BTreeMap<String, Entry>, RepositoryError> {
   let lock = WRITES.get(directory.to_path_buf());
   let _guard = lock.lock().map_err(RepositoryError::internal)?;
   Ok(read(directory)?.entries)
+}
+
+/// A newly forked owner inherits visibility, names and pins, including files outside context.
+pub fn inherit(source: &Path, target: &Path) -> Result<(), RepositoryError> {
+  let library = {
+    let lock = WRITES.get(source.to_path_buf());
+    let _guard = lock.lock().map_err(RepositoryError::internal)?;
+    read(source)?
+  };
+  let lock = WRITES.get(target.to_path_buf());
+  let _guard = lock.lock().map_err(RepositoryError::internal)?;
+  write(target, &library)
 }
 
 /// A direct upload or link is an explicit add. Temporary crops never change an existing choice.
@@ -200,5 +233,33 @@ pub fn delete(directory: &Path, id: &str) -> Result<(), RepositoryError> {
     return Err(RepositoryError::not_found());
   }
   library.entries.remove(id);
+  library.locations.remove(id);
   write(directory, &library)
+}
+
+/// Reclamation may have removed hidden, unreferenced resources. Forget metadata only
+/// after their bytes and descriptors are gone, preserving concurrently re-added files.
+pub fn forget_missing(directory: &Path, ids: &[String]) -> Result<(), RepositoryError> {
+  let lock = WRITES.get(directory.to_path_buf());
+  let _guard = lock.lock().map_err(RepositoryError::internal)?;
+  let mut library = read(directory)?;
+  let mut changed = false;
+  for id in ids.iter().filter(|id| is_blob_id(id)) {
+    if !directory.join(id).try_exists().map_err(RepositoryError::internal)?
+      && !super::description_path(directory, id).try_exists().map_err(RepositoryError::internal)?
+    {
+      changed |= library.entries.remove(id).is_some();
+      changed |= library.locations.remove(id).is_some();
+    }
+  }
+  if changed {
+    write(directory, &library)?;
+  }
+  Ok(())
+}
+
+pub(super) fn snapshot(directory: &Path) -> Result<Library, RepositoryError> {
+  let lock = WRITES.get(directory.to_path_buf());
+  let _guard = lock.lock().map_err(RepositoryError::internal)?;
+  read(directory)
 }

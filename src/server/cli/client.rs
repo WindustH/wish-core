@@ -43,21 +43,41 @@ impl BridgeClient {
   /// Sends a request as the session, and reads its JSON answer. A refusal comes back as status 2,
   /// with the server's message; one whose outcome is unknown, as 3.
   pub async fn send(&self, request: reqwest::RequestBuilder) -> Result<Value, Failure> {
-    let response = request
+    read_response(self.response(request).await?).await
+  }
+
+  /// A missing resource is distinct from authentication and other refusals, regardless
+  /// of the server's human-readable error wording.
+  pub async fn send_optional(
+    &self,
+    request: reqwest::RequestBuilder,
+  ) -> Result<Option<Value>, Failure> {
+    let response = self.response(request).await?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+      return Ok(None);
+    }
+    read_response(response).await.map(Some)
+  }
+
+  async fn response(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response, Failure> {
+    request
       .bearer_auth(&self.token)
       .send()
       .await
-      .map_err(|error| (2, format!("could not reach wish: {error}")))?;
-    let status = response.status();
-    let body =
-      response.bytes().await.map_err(|error| (3, format!("the answer broke off: {error}")))?;
-    let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
-    if status.is_success() {
-      return Ok(body);
-    }
-    let message =
-      body["error"]["message"].as_str().map_or_else(|| format!("HTTP {status}"), str::to_owned);
-    let code = if body["error"]["details"]["kind"] == "unknown" { 3 } else { 2 };
-    Err((code, message))
+      .map_err(|error| (2, format!("could not reach wish: {error}")))
   }
+}
+
+async fn read_response(response: reqwest::Response) -> Result<Value, Failure> {
+  let status = response.status();
+  let body =
+    response.bytes().await.map_err(|error| (3, format!("the answer broke off: {error}")))?;
+  let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+  if status.is_success() {
+    return Ok(body);
+  }
+  let message =
+    body["error"]["message"].as_str().map_or_else(|| format!("HTTP {status}"), str::to_owned);
+  let code = if body["error"]["details"]["kind"] == "unknown" { 3 } else { 2 };
+  Err((code, message))
 }

@@ -92,7 +92,7 @@ impl Session {
     })?;
     Self::from_record(storage, key, owner, record)
   }
-  fn build_key(id: &str) -> String {
+  pub(super) fn build_key(id: &str) -> String {
     format!("session/{}", hex::encode(id.as_bytes()))
   }
   fn from_record(

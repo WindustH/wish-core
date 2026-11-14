@@ -63,6 +63,9 @@ pub struct Descriptor {
   pub id: String,
   pub provider: String,
   pub cwd: PathBuf,
+  /// Allocated once; old records acquire a scratch directory when first opened.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub temp_dir: Option<PathBuf>,
   /// Which optional built-in tools the session has.
   pub tools: ToolSwitches,
   /// This session's own shell; absent while it follows the application's.
@@ -102,7 +105,7 @@ pub struct CreateSession {
 
 pub struct SessionSlot {
   descriptor: RwLock<Descriptor>,
-  management: Arc<ManagementStore>,
+  pub(super) management: Arc<ManagementStore>,
   /// The application's events, where the session list hears of changes.
   global_events: broadcast::Sender<Value>,
   /// Advanced by every interrupt: a run scheduled before one does not start after it.
@@ -126,6 +129,7 @@ pub struct SessionSlot {
   pub(super) bridge_token: String,
   tasks: tokio_util::task::TaskTracker,
   pub(super) app: Weak<App>,
+  pub(super) aliases: Arc<super::env_aliases::Aliases>,
   /// This session's live events, for `GET /sessions/{id}/events`.
   pub(super) events: broadcast::Sender<Value>,
   live: Arc<Mutex<live::LivePreview>>,
@@ -138,12 +142,20 @@ pub struct SessionSlot {
 impl SessionSlot {
   pub async fn open(
     app: &Arc<App>,
-    descriptor: Descriptor,
+    mut descriptor: Descriptor,
     mut session: Session,
   ) -> Result<Arc<Self>, ApplicationError> {
+    let acquired_temp_dir = descriptor.temp_dir.is_none();
+    let temp_dir = match &descriptor.temp_dir {
+      Some(path) => path.clone(),
+      None => super::session_temp::allocate(&descriptor.id)?,
+    };
+    super::session_temp::ensure(&temp_dir).await?;
+    descriptor.temp_dir = Some(temp_dir.clone());
     let data = app.data_dir.clone();
     let owner = descriptor.id.clone();
-    blocking(move || Ok(super::library::ensure(&data, &owner)?)).await?;
+    let storage = app.storage.clone();
+    blocking(move || Ok(super::library::ensure(&data, &storage, &owner)?)).await?;
     if !session.get_state().is_stable() {
       session.settle_interrupted().map_err(ApplicationError::internal)?;
     }
@@ -159,8 +171,18 @@ impl SessionSlot {
       format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
     // Set whatever the switches say: the bridge checks them, and the environment stays as it is.
     shell_config.env.extend(app.bridge.shell_environment(&descriptor.id, &bridge_token));
+    shell_config.env.insert("WISH_TMPDIR".into(), temp_dir.to_string_lossy().into_owned());
     let blob_dir = std::path::absolute(app.data_dir.blobs(&descriptor.id))
       .map_err(ApplicationError::internal)?;
+    let alias_directory = blob_dir.clone();
+    let aliases = blocking(move || super::env_aliases::Aliases::open(&alias_directory)).await?;
+    aliases
+      .environment
+      .write()
+      .unwrap()
+      .insert("WISH_TMPDIR".into(), temp_dir.to_string_lossy().into_owned());
+    shell_config.live_env = aliases.environment.clone();
+    let alias_notice = aliases.needs_notice();
     let switches = descriptor.tools;
     let status = Mutex::new(SessionStatus::read(&session));
     let (events, _) = broadcast::channel(256);
@@ -178,6 +200,7 @@ impl SessionSlot {
       update_lock: Arc::new(AsyncMutex::new(())),
       effective_shell,
       blob_dir,
+      aliases,
       bridge_token,
       tasks: app.lifecycle.tasks.clone(),
       app: Arc::downgrade(app),
@@ -188,6 +211,13 @@ impl SessionSlot {
       observation: Default::default(),
       control: Mutex::new(None),
     });
+    if acquired_temp_dir || alias_notice {
+      slot.environment_notice(&slot.effective_shell.read().unwrap(), &slot.get_descriptor().cwd)?;
+    }
+    if alias_notice {
+      let aliases = slot.aliases.clone();
+      blocking(move || aliases.mark_announced()).await?;
+    }
     super::background_tools::recover(&slot).await?;
     slot.tools.switch(switches).await?;
     Ok(slot)
@@ -268,8 +298,9 @@ impl SessionSlot {
     Ok(self.describe())
   }
   /// Queues a message for the session's next run.
-  pub async fn enqueue(&self, message: Message) -> Result<EntryId, ApplicationError> {
+  pub async fn enqueue(&self, mut message: Message) -> Result<EntryId, ApplicationError> {
     let sender = self.sender.clone();
+    super::model_images::retain_input(&self.blob_dir, &mut message).await?;
     blocking(move || Ok(sender.enqueue_message(message)?)).await
   }
   pub fn require_live(&self) -> Result<(), ApplicationError> {

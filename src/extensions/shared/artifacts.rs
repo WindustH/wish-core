@@ -10,8 +10,9 @@ pub(crate) async fn download(
   trusted_base: &str,
 ) -> Result<Vec<u8>, String> {
   let mut url = super::artifact_destinations::validate(url, trusted_base)?;
-  let public =
-    transport.with_resolver(super::artifact_destinations::PublicDns).map_err(|e| e.to_string())?;
+  let public = transport
+    .with_default_resolver::<super::artifact_destinations::PublicDns>()
+    .map_err(|e| e.to_string())?;
   // CDN requests and redirects never receive account credentials.
   for _ in 0..5 {
     let selected =
@@ -49,8 +50,9 @@ pub(crate) async fn open_stream(
 ) -> Result<<ReqwestTransport as Transport>::Stream, String> {
   use crate::protocol::attempt::ReplyStream;
   let mut target = super::artifact_destinations::validate(url, trusted_base)?;
-  let public =
-    transport.with_resolver(super::artifact_destinations::PublicDns).map_err(|e| e.to_string())?;
+  let public = transport
+    .with_default_resolver::<super::artifact_destinations::PublicDns>()
+    .map_err(|e| e.to_string())?;
   for _ in 0..5 {
     let selected = if super::artifact_destinations::trusted(&target, trusted_base) {
       transport

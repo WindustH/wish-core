@@ -8,8 +8,8 @@ use crate::storage::{
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
 
-/// Every session and group with what it stores: a session's history in the database, attachments
-/// and commands' output; a group's transcript and the files posted to it; with a few facts to
+/// Every session with what it stores: a session's history in the database, attachments
+/// and commands' output; with a few facts to
 /// recognize each by.
 pub async fn session_storage(app: Arc<App>) -> Result<Value, ApplicationError> {
   let (data_dir, management, storage) =
@@ -43,25 +43,8 @@ pub async fn session_storage(app: Arc<App>) -> Result<Value, ApplicationError> {
         "bytes": {"history": stored.bytes, "attachments": attachments, "shell": shell, "total": stored.bytes + attachments + shell},
       }));
     }
-    let transcripts = management.transcript_sizes()?;
-    let mut groups = Vec::new();
-    for group in management.groups()? {
-      let (messages, history) = transcripts.get(&group.id).copied().unwrap_or_default();
-      let attachments = size(&data_dir.blobs(&group.id)).map_err(ApplicationError::internal)?;
-      totals = (totals.0 + history, totals.1 + attachments, totals.2);
-      groups.push(json!({
-        "id": group.id,
-        "name": group.name,
-        "members": group.members.len(),
-        "created_at": group.created_at,
-        "updated_at": group.updated_at,
-        "messages": messages,
-        "bytes": {"history": history, "attachments": attachments, "shell": 0, "total": history + attachments},
-      }));
-    }
     Ok(json!({
       "sessions": sessions,
-      "groups": groups,
       "bytes": {"history": totals.0, "attachments": totals.1, "shell": totals.2, "total": totals.0 + totals.1 + totals.2},
     }))
   })
@@ -119,8 +102,6 @@ pub async fn detail(app: Arc<App>) -> Result<Value, ApplicationError> {
       &management.shape()?,
       &[
         ("sessions", &["sessions"]),
-        ("groups", &["groups", "group_members"]),
-        ("group_messages", &["group_messages"]),
         ("calls", &["calls"]),
         ("stream_samples", &["stream_samples"]),
       ],

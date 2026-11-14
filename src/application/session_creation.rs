@@ -14,7 +14,15 @@ use std::sync::Arc;
 impl App {
   pub async fn create_session(
     self: &Arc<Self>,
+    input: CreateSession,
+  ) -> Result<Arc<SessionSlot>, ApplicationError> {
+    self.create_session_from(input, None).await
+  }
+  /// Prepare inherited resources before a new owner is published or can run.
+  pub(super) async fn create_session_from(
+    self: &Arc<Self>,
     mut input: CreateSession,
+    source: Option<Arc<SessionSlot>>,
   ) -> Result<Arc<SessionSlot>, ApplicationError> {
     self.lifecycle.require_open()?;
     let id = match input.first_input.as_ref() {
@@ -28,10 +36,8 @@ impl App {
     } else {
       None
     };
-    // Adoption and draft cleanup share a lock, acquired BEFORE creation admission so a
-    // slow draft scan cannot block unrelated creations through the creation lock.
-    let mut drafts =
-      if input.first_input.is_some() { Some(self.drafts.lock().await) } else { None };
+    // The owner guard protects this draft through adoption. Do not retain the global
+    // inventory lock while normalizing images or initializing a session.
     // Serialize creation/replay so a retry after a lost response cannot enqueue the first input twice.
     let _creation = self.creation_lock.lock().await;
     let initial_input_digest = input
@@ -46,9 +52,7 @@ impl App {
     if input.first_input.is_some() {
       match self.get_session(&id).await {
         Ok(slot) if slot.get_descriptor().initial_input_digest == initial_input_digest => {
-          if let Some(drafts) = &mut drafts {
-            drafts.adopted(&id);
-          }
+          self.drafts.lock().await.adopted(&id);
           return Ok(slot);
         }
         Ok(_) => {
@@ -85,6 +89,8 @@ impl App {
     // Delivery defaults are copied once. Existing descriptors never follow global changes.
     let delivery_defaults = self.config_file.lock().await.config.defaults.tools;
     let mut tools = ToolSwitches {
+      blob: delivery_defaults.blob,
+      blob_delivery: delivery_defaults.blob_delivery,
       history_search: delivery_defaults.history_search,
       history_search_delivery: delivery_defaults.history_search_delivery,
       task_delivery: delivery_defaults.task_delivery,
@@ -123,6 +129,7 @@ impl App {
       .await?;
     }
     let descriptor = Descriptor {
+      temp_dir: Some(super::session_temp::allocate(&id)?),
       initial_input_digest,
       pending_selection: None,
       created_by: input.created_by,
@@ -130,7 +137,7 @@ impl App {
       provider: input.provider,
       cwd: input.cwd,
       tools,
-      shell_override: None,
+      shell_override: source.as_ref().and_then(|slot| slot.get_descriptor().shell_override),
       created_at: Timestamp::now().0,
       updated_at: Timestamp::now().0,
       name: input.name,
@@ -154,12 +161,17 @@ impl App {
     }
     // Agent instructions may be inserted at the front; origins line up from the back.
     apply_agent_instructions(&mut input.initial_messages, tools);
+    let effective_shell = match &descriptor.shell_override {
+      Some(shell) => shell.resolve()?,
+      None => self.shell.read().unwrap().clone(),
+    };
     let environment = crate::protocol::Message::System {
       metadata: json!({"source":"wish_environment"}),
       content: vec![crate::protocol::ContentBlock::Text {
         text: super::instructions::environment_instruction(
-          &self.shell.read().unwrap(),
+          &effective_shell,
           &descriptor.cwd,
+          descriptor.temp_dir.as_deref(),
         ),
       }],
     };
@@ -173,15 +185,23 @@ impl App {
     let id = descriptor.id.clone();
     let blob_directory = self.data_dir.blobs(&id);
     let shell_directory = self.data_dir.shell(&id);
+    let aliases_directory = blob_directory.clone();
     let session = blocking(move || {
-      Ok(Session::create_initialized(
+      let aliases = super::env_aliases::Aliases::open(&aliases_directory)?;
+      if let Some(source) = source {
+        aliases.inherit(&source.aliases)?;
+      }
+      let session = Session::create_initialized(
         storage,
         &id,
         input.config,
         Some(input.metadata),
         initial,
         first_message,
-      )?)
+      )?;
+      // Fresh sessions already contain the public environment instruction.
+      aliases.mark_announced()?;
+      Ok(session)
     })
     .await;
     let session = match session {
@@ -192,6 +212,7 @@ impl App {
       }
     };
     let id = descriptor.id.clone();
+    let temporary = (descriptor.id.clone(), descriptor.temp_dir.clone());
     let slot = match self.open_slot(descriptor, session).await {
       Ok(slot) => slot,
       Err(error) => {
@@ -208,6 +229,7 @@ impl App {
         } else {
           let _ = tokio::fs::remove_dir_all(&blob_directory).await;
           let _ = tokio::fs::remove_dir_all(&shell_directory).await;
+          let _ = super::session_temp::remove(&temporary.0, temporary.1.as_deref()).await;
         }
         return Err(error);
       }
@@ -231,13 +253,14 @@ impl App {
         } else {
           let _ = tokio::fs::remove_dir_all(&blob_directory).await;
           let _ = tokio::fs::remove_dir_all(&shell_directory).await;
+          let _ = super::session_temp::remove(&temporary.0, temporary.1.as_deref()).await;
         }
         return Err(error);
       }
     }
     self.sessions.lock().await.insert(slot.get_descriptor().id.clone(), slot.clone());
-    if let Some(drafts) = &mut drafts {
-      drafts.adopted(&slot.get_descriptor().id);
+    if _draft_owner.is_some() {
+      self.drafts.lock().await.adopted(&slot.get_descriptor().id);
     }
     if start_run {
       slot.schedule(self);

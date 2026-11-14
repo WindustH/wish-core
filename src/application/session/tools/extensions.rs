@@ -30,9 +30,11 @@ impl SessionTools {
       Permission::WebSearch => self.web_search_on.load(Ordering::Acquire),
       Permission::WebFetch => self.web_fetch_on.load(Ordering::Acquire),
     };
+    let target = catalog::find(&call.name);
     let mut catalogs = Vec::new();
     for registration in catalog::registrations() {
-      if !allowed(registration.permission)
+      if target.is_some_and(|target| target.permission != registration.permission)
+        || !allowed(registration.permission)
         || catalogs.iter().any(|(permission, _)| *permission == registration.permission)
       {
         continue;

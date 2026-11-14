@@ -68,8 +68,7 @@ async fn save_credentials_if_current(
       account.credentials.insert("project".to_owned(), project.clone());
       account.credentials_env.remove("project");
     }
-    let value = serde_json::to_value(next).map_err(ApplicationError::internal)?;
-    match app.save_config(revision, value).await {
+    match app.save_renewed_credentials(revision, next, &account_id, credentials).await {
       Ok(_) => return Ok(()),
       Err(error) if error.kind == crate::application::error::ErrorKind::Conflict => continue,
       Err(error) => return Err(error),

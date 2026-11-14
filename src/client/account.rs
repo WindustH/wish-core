@@ -17,6 +17,10 @@ impl<T: Transport> AccountClient<T> {
   pub fn get_credentials(&self) -> &Credentials {
     &self.credentials
   }
+  pub fn with_credentials(mut self, credentials: Credentials) -> Self {
+    self.credentials = credentials;
+    self
+  }
   pub fn get_api_key(&self) -> &str {
     &self.credentials.api_key
   }

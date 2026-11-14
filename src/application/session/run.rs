@@ -189,10 +189,19 @@ impl SessionSlot {
       Operation::Run => {
         let boundary = SelectionBoundary { slot: &self, model: &model };
         let observe = |event: &_| self.observe(event);
-        executor::run_with_boundary(&model, &mut session, &self.tools, &control, observe, boundary)
-          .await
+        // A peer tool can schedule another run from within this run's poll stack.
+        // Keep the large executor future off that nested scheduling stack.
+        Box::pin(executor::run_with_boundary(
+          &model,
+          &mut session,
+          &self.tools,
+          &control,
+          observe,
+          boundary,
+        ))
+        .await
       }
-      Operation::Compact => self.compact(&mut session, &model, &control).await,
+      Operation::Compact => Box::pin(self.compact(&mut session, &model, &control)).await,
     };
     self.finish_operation(&mut session, result);
   }

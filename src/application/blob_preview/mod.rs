@@ -9,13 +9,15 @@ use tokio::{
   sync::{Mutex, Semaphore},
 };
 const MAX_CACHE_BYTES: usize = 128 * 1024 * 1024;
-type Entries = VecDeque<(String, bytes::Bytes)>;
+const CACHE_IDLE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+type Entries = VecDeque<(String, bytes::Bytes, std::time::Instant)>;
 static CACHE: LazyLock<Mutex<Entries>> = LazyLock::new(|| Mutex::new(VecDeque::new()));
 static WORKERS: Semaphore = Semaphore::const_new(2);
 pub(super) async fn cached(key: &str) -> Option<bytes::Bytes> {
   let mut cache = CACHE.lock().await;
-  let position = cache.iter().position(|(id, _)| id == key)?;
-  let entry = cache.remove(position)?;
+  let position = cache.iter().position(|(id, _, _)| id == key)?;
+  let mut entry = cache.remove(position)?;
+  entry.2 = std::time::Instant::now();
   let data = entry.1.clone();
   cache.push_back(entry);
   Some(data)
@@ -32,10 +34,10 @@ pub struct Preview {
 pub(super) async fn remember(key: String, bytes: Vec<u8>) -> bytes::Bytes {
   let bytes = bytes::Bytes::from(bytes);
   let mut cache = CACHE.lock().await;
-  cache.retain(|(existing, _)| existing != &key);
-  cache.push_back((key, bytes.clone()));
+  cache.retain(|(existing, _, _)| existing != &key);
+  cache.push_back((key, bytes.clone(), std::time::Instant::now()));
   while cache.len() > 128
-    || cache.iter().map(|(_, bytes)| bytes.len()).sum::<usize>() > MAX_CACHE_BYTES
+    || cache.iter().map(|(_, bytes, _)| bytes.len()).sum::<usize>() > MAX_CACHE_BYTES
   {
     cache.pop_front();
   }
@@ -81,4 +83,9 @@ pub(super) fn command(
     tokio::process::Command::new(std::env::current_exe().map_err(ApplicationError::internal)?);
   command.arg("--blob-worker").arg(kind).arg(file);
   Ok(command)
+}
+
+/// Drop cold previews even when no later request arrives to evict them.
+pub(super) async fn reap() {
+  CACHE.lock().await.retain(|(_, _, used)| used.elapsed() < CACHE_IDLE);
 }

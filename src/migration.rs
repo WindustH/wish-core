@@ -33,6 +33,7 @@ mod m0011_free_groups;
 mod m0012_folders;
 mod m0013_anthropic_user_agent;
 mod m0014_history_delivery;
+mod m0015_remove_groups;
 
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -69,6 +70,7 @@ const STEPS: &[Step] = &[
   Step { summary: m0012_folders::SUMMARY, apply: m0012_folders::apply },
   Step { summary: m0013_anthropic_user_agent::SUMMARY, apply: m0013_anthropic_user_agent::apply },
   Step { summary: m0014_history_delivery::SUMMARY, apply: m0014_history_delivery::apply },
+  Step { summary: m0015_remove_groups::SUMMARY, apply: m0015_remove_groups::apply },
 ];
 
 /// The format this build reads.
@@ -86,7 +88,7 @@ pub fn run(config_path: &Path) -> Result<(), String> {
   let Ok(source) = std::fs::read(config_path) else { return Ok(()) };
   let Ok(mut config) = serde_json::from_slice::<Value>(&source) else { return Ok(()) };
   let data_dir = PathBuf::from(config.get("data_dir").and_then(Value::as_str).unwrap_or("data"));
-  let Some(from) = plan(&data_dir)? else { return Ok(()) };
+  let Some(from) = plan(&data_dir)? else { return m0015_remove_groups::cleanup(&data_dir) };
   eprintln!("migrating {} from format {from} to {LATEST}:", data_dir.display());
   for (index, step) in STEPS.iter().enumerate().skip(from as usize) {
     eprintln!("  {}: {}", index + 1, step.summary);
@@ -105,6 +107,7 @@ pub fn run(config_path: &Path) -> Result<(), String> {
   let before = config.clone();
   apply_steps(from, &mut config, management.as_mut(), wish.as_mut(), &backup)?;
   commit(config_path, (config != before).then_some(&config), &data_dir)?;
+  m0015_remove_groups::cleanup(&data_dir)?;
   eprintln!("migrated; the copy taken before is in {}", backup.display());
   // Steps often delete, and some change how the file is laid out, which only a VACUUM applies. It
   // cannot run inside a transaction, and failing it loses nothing.

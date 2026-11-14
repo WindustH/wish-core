@@ -280,8 +280,12 @@ fn render_tool_choice(choice: ToolChoice) -> Value {
 }
 
 fn render_tool_result_blocks(content: &Value) -> Value {
+  if let Some(value) = content.get("model_value") {
+    return json!([{"json":value}]);
+  }
   if content.get("model_text").is_some() {
-    return json!([{"text":tool_result_text(content)}]);
+    let text = tool_result_text(content);
+    return if text.trim().is_empty() { json!([{"json":{}}]) } else { json!([{"text":text}]) };
   }
   let block = match content {
     Value::Object(_) => json!({"json": content}),

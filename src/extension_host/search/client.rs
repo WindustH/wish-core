@@ -1,8 +1,8 @@
 //! Account-independent read execution for this extension.
 use super::{SearchProtocol, SearchQuery, SearchResults};
 use crate::{
-  client::RetryOperation,
   extensions::shared::read::ReadClient,
+  protocol::retry::RetryOperation,
   protocol::{attempt::Transport, error::Error},
 };
 impl<T: Transport> ReadClient<T> {

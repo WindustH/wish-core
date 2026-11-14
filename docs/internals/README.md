@@ -82,8 +82,7 @@ refresh cannot replace a newer final record.
 
 Library compatibility recovery belongs to `application/library`: the coordinator supplies
 the data-directory layout and owner explicitly. Blob storage receives recovered membership
-under a per-directory initialization lock; normal reads never open other databases. Group image
-copies read and hash each source once, then publish independent immutable member files.
+under a per-directory initialization lock; normal reads never open other databases.
 
 ## Protocol layer
 
@@ -131,7 +130,7 @@ copies read and hash each source once, then publish independent immutable member
 - [mcp](mcp.md): MCP servers reached from a session's shell through `wish mcp`: the client, the
   instances, the bridge.
 - [skills](skills.md): skills found and read from a session's shell through `wish skill`.
-- [groups](groups.md): groups of sessions and the user, and what a session sees of other sessions
+- [peers](peers.md): direct messages and what a session sees of other sessions
 - [folders](folders.md): how the list is arranged in folders, as a file system arranges files
   through `wish session`.
 
@@ -151,3 +150,12 @@ See [image generation](image-generation.md) for provider protocols, subscription
 blob storage, configuration and integration verification.
 
 Independent service capabilities are described in [extensions](extensions.md).
+
+Media caches keep their byte/count ceilings and expire entries after ten minutes without use.
+The application's minute maintenance pass releases these cold buffers. On glibc Linux, when
+sessions are idle it also calls `malloc_trim` on an admitted blocking worker to return free
+allocator pages after image/JSON bursts; live allocations and persisted data are unchanged.
+Before starting runtime workers, glibc Linux builds cap allocator arenas at eight to bound
+retention across blocking threads. Explicit `MALLOC_ARENA_MAX` or
+`GLIBC_TUNABLES=glibc.malloc.arena_max=...` settings take precedence. Other platforms keep
+their allocator's normal policy.

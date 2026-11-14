@@ -44,6 +44,16 @@ impl Host for Adapter<'_> {
   fn image(&self, mut request: ImageRequest) -> Future<'_> {
     Box::pin(async move {
       self.require(Permission::ImageGeneration)?;
+      let owner = self.tools.slot.upgrade().ok_or("session is closed")?;
+      for image in request
+        .images
+        .iter_mut()
+        .chain(request.mask.iter_mut())
+        .chain(request.markup.iter_mut())
+        .chain(request.references.iter_mut().map(|reference| &mut reference.image))
+      {
+        *image = owner.aliases.expand(image).map_err(|e| e.to_string())?;
+      }
       request.model = self.model.map(str::to_owned);
       let selected = self.services.iter().find(|service| {
         if let Some(id) = &request.provider {
@@ -83,6 +93,11 @@ impl Host for Adapter<'_> {
       };
       let owner = self.tools.slot.upgrade().ok_or("session is closed")?;
       let app = owner.app.upgrade().ok_or("server is closed")?;
+      for input in &mut request.inputs {
+        if let Some(blob) = &mut input.blob_id {
+          *blob = owner.aliases.expand(blob).map_err(|e| e.to_string())?;
+        }
+      }
       let accounts = app.get_service_accounts();
       let hub = if video { &app.videos } else { &app.audio };
       hub
@@ -110,9 +125,11 @@ impl Host for Adapter<'_> {
       let owner = self.tools.slot.upgrade().ok_or("session is closed")?;
       let app = owner.app.upgrade().ok_or("server is closed")?;
       let accounts = app.get_service_accounts();
+      // Resolve the session-owned resource before entering the supplier-independent runner.
+      let blob_id = owner.aliases.expand(request.blob_id()).map_err(|e| e.to_string())?;
       app
         .asr
-        .transcribe_scoped(request, &owner.blob_dir, &accounts, self.model)
+        .transcribe_scoped(request, blob_id, &owner.blob_dir, &accounts, self.model)
         .await
         .map(Report::json)
         .map_err(paid)

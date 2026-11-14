@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 pub struct DataDir(PathBuf);
 
 impl DataDir {
-  pub fn new(root: PathBuf) -> Self {
-    Self(root)
+  pub fn new(root: PathBuf) -> std::io::Result<Self> {
+    // All owner locks and caches must use the same key, even with a relative config path.
+    Ok(Self(std::path::absolute(root)?))
   }
   pub fn root(&self) -> &Path {
     &self.0

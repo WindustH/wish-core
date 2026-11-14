@@ -144,27 +144,6 @@ pub fn save_image_bytes(directory: &Path, bytes: &[u8]) -> Result<PathBuf, Repos
   write_image(directory, &blob_id(bytes), bytes)
 }
 
-/// Read and verify an immutable image once before materializing independent owner copies.
-pub fn copy_image(
-  source: &Path,
-  targets: &[PathBuf],
-  id: &str,
-  count: usize,
-) -> Result<(), RepositoryError> {
-  if !is_blob_id(id) || count > crate::utils::model_image::MAX_OUTPUT_BYTES {
-    return Err(RepositoryError::invalid("invalid image reference"));
-  }
-  let bytes = crate::utils::bounded_file::read_sync(&source.join(id), count)
-    .map_err(RepositoryError::internal)?;
-  if bytes.len() != count || blob_id(&bytes) != id {
-    return Err(RepositoryError::invalid("image integrity mismatch"));
-  }
-  for target in targets {
-    write_image(target, id, &bytes)?;
-  }
-  Ok(())
-}
-
 fn write_image(directory: &Path, id: &str, bytes: &[u8]) -> Result<PathBuf, RepositoryError> {
   let path = directory.join(id);
   // Content-addressed blobs are immutable; avoid rewriting every image on every model call.
@@ -182,21 +161,4 @@ fn write_image(directory: &Path, id: &str, bytes: &[u8]) -> Result<PathBuf, Repo
   Ok(path)
 }
 
-/// Publish complete bytes without truncating an existing content-addressed file.
-pub async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-  use tokio::io::AsyncWriteExt;
-  let temporary = path.with_file_name(format!(".{}.tmp", uuid::Uuid::new_v4()));
-  // Guard also removes abandoned files on ordinary cancellation.
-  struct Remove(std::path::PathBuf);
-  impl Drop for Remove {
-    fn drop(&mut self) {
-      let _ = std::fs::remove_file(&self.0);
-    }
-  }
-  let guard = Remove(temporary);
-  let mut file = tokio::fs::File::create(&guard.0).await?;
-  file.write_all(bytes).await?;
-  file.sync_all().await?;
-  drop(file);
-  tokio::fs::rename(&guard.0, path).await
-}
+pub use crate::utils::atomic_file::{write as atomic_write, write_sync as atomic_write_sync};

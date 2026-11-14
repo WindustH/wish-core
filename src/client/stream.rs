@@ -210,7 +210,11 @@ impl<T: Transport + Send + Sync> EventStream<T> {
     .await;
     match result {
       Ok(reply) => {
-        self.records = Some(RecordStream::new(reply, crate::transport::Framing::Sse));
+        let framing = match self.protocol {
+          ModelUseProtocol::BedrockConverse => crate::transport::Framing::AwsEventStream,
+          _ => crate::transport::Framing::Sse,
+        };
+        self.records = Some(RecordStream::new(reply, framing));
         self.decoder =
           r.decoder.as_ref().and_then(StreamDecoder::checkpoint).expect("checkpoint decoder");
         r.previous_usage =

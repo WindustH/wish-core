@@ -1,5 +1,5 @@
 //! Folders: how the user arranges the list, the way a file system arranges files. Every session,
-//! group and folder names the folder it is in - `folder` for sessions and groups, `parent` for
+//! and folder names the folder it is in - `folder` for sessions, `parent` for
 //! folders, none for the root - and a folder's listing is read along the index on that pointer,
 //! so it costs what the folder holds, never what the whole list does. Moving anything changes that
 //! one pointer, as renaming a file moves it; deleting a folder hands what it held to its parent.
@@ -21,8 +21,7 @@ pub struct FolderRecord {
 }
 
 /// The tables that hold the list's entries, and the column naming the folder each is in.
-const ENTRIES: [(&str, &str); 3] =
-  [("sessions", "folder"), ("groups", "folder"), ("folders", "parent")];
+const ENTRIES: [(&str, &str); 2] = [("sessions", "folder"), ("folders", "parent")];
 
 impl ManagementStore {
   pub fn create_folder(&self, folder: &FolderRecord) -> Result<(), RepositoryError> {
@@ -82,7 +81,7 @@ impl ManagementStore {
     Ok(())
   }
 
-  /// Moves sessions, groups and folders, by id, into `folder` (none for the root), together or
+  /// Moves sessions and folders, by id, into `folder` (none for the root), together or
   /// not at all. A folder cannot go into itself or into one inside it.
   pub fn place(&self, ids: &[String], folder: Option<&str>) -> Result<(), RepositoryError> {
     let mut db = self.lock()?;
@@ -108,7 +107,7 @@ impl ManagementStore {
     tx.commit()?;
     Ok(())
   }
-  /// Pins sessions, groups and folders, by id, to the top of their folders, or unpins them.
+  /// Pins sessions and folders, by id, to the top of their folders, or unpins them.
   pub fn pin(&self, ids: &[String], pinned: bool) -> Result<(), RepositoryError> {
     let mut db = self.lock()?;
     let tx = db.transaction()?;
@@ -124,16 +123,11 @@ impl ManagementStore {
     tx.commit()?;
     Ok(())
   }
-  /// The folder a session or group is in; none for the root, or for what is not there.
+  /// The folder a session is in; none for the root, or for what is not there.
   pub fn folder_of(&self, id: &str) -> Result<Option<String>, RepositoryError> {
     let db = self.lock()?;
-    let found: Option<Option<String>> = db
-      .query_row(
-        "SELECT folder FROM sessions WHERE id=?1 UNION ALL SELECT folder FROM groups WHERE id=?1",
-        [id],
-        |row| row.get(0),
-      )
-      .optional()?;
+    let found: Option<Option<String>> =
+      db.query_row("SELECT folder FROM sessions WHERE id=?1", [id], |row| row.get(0)).optional()?;
     Ok(found.flatten())
   }
 }
@@ -151,7 +145,7 @@ pub(super) fn folder_size(db: &rusqlite::Connection, id: &str) -> rusqlite::Resu
   Ok(size)
 }
 
-fn folder_row(row: &Row) -> rusqlite::Result<FolderRecord> {
+pub(super) fn folder_row(row: &Row) -> rusqlite::Result<FolderRecord> {
   Ok(FolderRecord {
     id: row.get(0)?,
     name: row.get(1)?,

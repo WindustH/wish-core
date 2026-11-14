@@ -20,10 +20,11 @@ pub struct LibraryQuery {
   start: u64,
   limit: usize,
   include_hidden: bool,
+  folder: Option<String>,
 }
 impl Default for LibraryQuery {
   fn default() -> Self {
-    Self { start: 0, limit: 50, include_hidden: false }
+    Self { start: 0, limit: 50, include_hidden: false, folder: None }
   }
 }
 #[derive(Default, serde::Deserialize)]
@@ -40,7 +41,43 @@ pub async fn list(
 ) -> Result<Json<crate::storage::blobs::catalog::Page>, ApiError> {
   let start = usize::try_from(query.start)
     .map_err(|_| crate::application::error::ApplicationError::invalid("start is too large"))?;
-  Ok(Json(attachments::list(&app, &id, start, query.limit, query.include_hidden).await?))
+  Ok(Json(
+    attachments::list_in(&app, &id, start, query.limit, query.include_hidden, query.folder).await?,
+  ))
+}
+pub async fn create_folder(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Json(input): Json<crate::storage::blobs::library::FolderInput>,
+) -> Result<Json<crate::storage::blobs::library::Folder>, ApiError> {
+  Ok(Json(attachments::create_folder(&app, &id, input).await?))
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FolderName {
+  name: String,
+}
+pub async fn rename_folder(
+  State(app): State<Arc<App>>,
+  Path((id, folder)): Path<(String, String)>,
+  Json(input): Json<FolderName>,
+) -> Result<Json<crate::storage::blobs::library::Folder>, ApiError> {
+  Ok(Json(attachments::rename_folder(&app, &id, folder, input.name).await?))
+}
+pub async fn delete_folder(
+  State(app): State<Arc<App>>,
+  Path((id, folder)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+  attachments::delete_folder(&app, &id, folder).await?;
+  Ok(Json(serde_json::json!({"deleted":true})))
+}
+pub async fn move_library_items(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Json(input): Json<crate::storage::blobs::library::FolderMove>,
+) -> Result<Json<Value>, ApiError> {
+  attachments::move_library_items(&app, &id, input).await?;
+  Ok(Json(serde_json::json!({"moved":true})))
 }
 pub async fn update_library(
   State(app): State<Arc<App>>,
@@ -86,7 +123,7 @@ pub async fn download(
       .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
   );
   headers.insert(header::ACCEPT_RANGES, "bytes".parse().unwrap());
-  headers.insert(header::ETAG, etag.parse().unwrap());
+  headers.insert(header::ETAG, etag.parse().map_err(ApiError::internal)?);
   // Browser-private storage with validation on reuse: mutable local links and
   // revoked access must never be served from a fresh shared/public cache.
   headers.insert(header::CACHE_CONTROL, "private, no-cache".parse().unwrap());

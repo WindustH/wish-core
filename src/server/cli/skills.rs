@@ -121,13 +121,12 @@ async fn list() -> Result<i32, Failure> {
 async fn show(name: &str) -> Result<i32, Failure> {
   let bridge = BridgeClient::from_environment("skill")?;
   let path = format!("skills/{}", encode(name));
-  let skill = match bridge.send(bridge.client.get(bridge.url(&path, &[])?)).await {
-    Ok(skill) => skill,
-    Err((2, message)) if message == "not found" => {
+  let skill = match bridge.send_optional(bridge.client.get(bridge.url(&path, &[])?)).await? {
+    Some(skill) => skill,
+    None => {
       println!("No skill is named \"{name}\". `wish skill find <words>` looks for one.");
       return Ok(1);
     }
-    Err(failure) => return Err(failure),
   };
   println!("{}", line(&skill));
   println!("Directory: {}", skill["dir"].as_str().unwrap_or_default());

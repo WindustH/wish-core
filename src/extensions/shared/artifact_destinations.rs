@@ -52,6 +52,7 @@ pub(super) fn validate(value: &str, base: &str) -> Result<reqwest::Url, String> 
   }
   Ok(url)
 }
+#[derive(Default)]
 pub(super) struct PublicDns;
 impl reqwest::dns::Resolve for PublicDns {
   fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {

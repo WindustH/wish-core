@@ -8,7 +8,9 @@ pub async fn authenticate_session(
 ) -> Result<Arc<SessionSlot>, ApplicationError> {
   // A shell holding a token belongs to a session that is open, so there is nothing to load.
   let slot = app.sessions.lock().await.get(id).cloned();
-  let Some(slot) = slot.filter(|slot| Some(slot.bridge_token.as_str()) == supplied) else {
+  let Some(slot) = slot.filter(|slot| {
+    supplied.is_some_and(|supplied| crate::utils::token::matches(&slot.bridge_token, supplied))
+  }) else {
     return Err(ApplicationError::unauthorized());
   };
   slot.require_live()?;

@@ -1,17 +1,14 @@
 //! The management index, `management.sqlite`: what the server keeps beside the engine's storage.
 //!
 //! - `sessions`: a record per session, for the session list;
-//! - `groups`: groups, their members and their messages;
 //! - `folders`: the folders the list is arranged in, and where everything is;
 //! - `usage`: every session's model calls and one-second stream samples, for the statistics.
 mod folders;
-mod groups;
 pub mod sampling;
 mod sessions;
 mod usage;
 
 pub use folders::FolderRecord;
-pub use groups::{Author, GroupMessage, GroupRecord, NewGroupMessage};
 pub use sessions::{ConversationEntry, ConversationRow, RecordPage, SessionFilter};
 pub use usage::{IndexedModelCall, StreamAggregate, StreamSample, Usage, UsageBucket};
 
@@ -34,14 +31,8 @@ const SCHEMA: &str = "
   CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL, record TEXT NOT NULL, folder TEXT, pinned INTEGER NOT NULL DEFAULT 0);
   CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at DESC,id);
   CREATE INDEX IF NOT EXISTS sessions_folder ON sessions(folder,pinned DESC,updated_at DESC,id);
-  CREATE TABLE IF NOT EXISTS groups(id TEXT PRIMARY KEY, name TEXT NOT NULL, created_by TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, folder TEXT, pinned INTEGER NOT NULL DEFAULT 0);
-  CREATE INDEX IF NOT EXISTS groups_updated ON groups(updated_at DESC,id);
-  CREATE INDEX IF NOT EXISTS groups_folder ON groups(folder,pinned DESC,updated_at DESC,id);
   CREATE TABLE IF NOT EXISTS folders(id TEXT PRIMARY KEY, name TEXT NOT NULL, parent TEXT, pinned INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
   CREATE INDEX IF NOT EXISTS folders_parent ON folders(parent,pinned DESC,name COLLATE NOCASE);
-  CREATE TABLE IF NOT EXISTS group_members(group_id TEXT NOT NULL, session_id TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY(group_id,session_id)) WITHOUT ROWID;
-  CREATE INDEX IF NOT EXISTS group_members_session ON group_members(session_id);
-  CREATE TABLE IF NOT EXISTS group_messages(group_id TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL, author_kind TEXT NOT NULL, author_id TEXT, author_name TEXT, text TEXT NOT NULL, attachments TEXT, PRIMARY KEY(group_id,seq)) WITHOUT ROWID;
   CREATE TABLE IF NOT EXISTS calls(session TEXT NOT NULL,position INTEGER NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,started_at INTEGER NOT NULL,record TEXT NOT NULL,PRIMARY KEY(session,position));
   CREATE INDEX IF NOT EXISTS calls_time ON calls(started_at);
   CREATE INDEX IF NOT EXISTS calls_session_time ON calls(session,started_at);

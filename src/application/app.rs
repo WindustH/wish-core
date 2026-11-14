@@ -135,7 +135,7 @@ impl App {
     config.validate()?;
     let search = SearchHub::new(&config.resolved_search()?, &config.proxy)?;
     let shell = config.shell.resolve()?;
-    let data_dir = DataDir::new(config.data_dir.clone());
+    let data_dir = DataDir::new(config.data_dir.clone()).map_err(ApplicationError::internal)?;
     tokio::fs::create_dir_all(data_dir.root()).await.map_err(ApplicationError::internal)?;
     let (database, management_database) = (data_dir.database(), data_dir.management_database());
     let sample_limit = config.usage.stream_sample_limit;
@@ -207,12 +207,22 @@ impl App {
     super::draft_uploads::start_reaper(&app);
     let reaper = app.clone();
     app.lifecycle.tasks.spawn(async move {
+      let mut reclaimed_at = std::time::Instant::now();
       loop {
         tokio::select! {
           _ = reaper.lifecycle.stop.cancelled() => break,
           _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
             reaper.mcp.reap();
             reaper.reap_sessions(reaper.started.elapsed().as_secs()).await;
+            if reclaimed_at.elapsed() >= std::time::Duration::from_secs(60) {
+              reclaimed_at = std::time::Instant::now();
+              super::blob_preview::reap().await;
+              let idle = reaper.sessions.lock().await.values().all(|slot| !slot.get_status().status.running);
+              let _ = crate::utils::blocking::io(move || {
+                crate::utils::model_image::reap();
+                if idle { crate::utils::memory::release_unused(); }
+              }).await;
+            }
           },
         }
       }
@@ -381,6 +391,77 @@ impl App {
     let _ = self.events.send(json!({"type":"configuration_changed"}));
     file.redacted()
   }
+
+  /// A renewal changes account material, not service topology. Reuse transports, caches
+  /// and shared credential cells; only authenticated MCP endpoints may need reconnecting.
+  pub(super) async fn save_renewed_credentials(
+    &self,
+    revision: String,
+    next: Config,
+    id: &str,
+    credentials: &crate::protocol::endpoint::Credentials,
+  ) -> Result<(), ApplicationError> {
+    self.lifecycle.require_open()?;
+    let mut file = self.config_file.lock().await;
+    file.check_revision(&revision).await?;
+    let config = next.accounts.get(id).ok_or_else(ApplicationError::not_found)?;
+    let account_key = format!("account:{id}");
+    let mut account = self
+      .accounts
+      .read()
+      .unwrap()
+      .get(&account_key)
+      .map(|account| account.as_ref().clone())
+      .ok_or_else(ApplicationError::not_found)?;
+    let mut renewed = account.client.get_credentials().clone();
+    renewed.api_key = credentials.api_key.clone();
+    renewed.refresh_token = config.refresh_token.clone();
+    renewed.expires_at = config.expires_at;
+    if credentials.account_id.is_some() {
+      renewed.account_id = credentials.account_id.clone();
+    }
+    if credentials.project.is_some() {
+      renewed.project = credentials.project.clone();
+    }
+    account.config = config.clone();
+    account.client = account.client.with_credentials(renewed.clone());
+    let mut providers = self.providers.read().unwrap().clone();
+    for provider in
+      providers.values_mut().filter(|provider| provider.config.credential_id.as_deref() == Some(id))
+    {
+      let provider = Arc::make_mut(provider);
+      config.apply(&mut provider.config);
+      provider.client = provider.client.clone().with_credentials(renewed.clone());
+    }
+    // Search adapters with an embedded account key are the only service definitions
+    // that need rebuilding; media/fetch runners receive the account registry per call.
+    let search = next
+      .search
+      .providers
+      .values()
+      .any(|provider| provider.credential_id.as_deref() == Some(id))
+      .then(|| SearchHub::prepare(&next.resolved_search()?, &next.proxy))
+      .transpose()?;
+    file.write(next).await?;
+    for provider in
+      providers.values().filter(|provider| provider.config.credential_id.as_deref() == Some(id))
+    {
+      *provider.credentials.write().unwrap() = renewed.clone();
+    }
+    self.accounts.write().unwrap().insert(account_key, Arc::new(account));
+    if let Some(search) = search {
+      self.search.apply(search);
+    }
+    self.mcp.apply(
+      file.config.mcp.clone(),
+      file.config.proxy.clone(),
+      file.config.defaults.cwd.clone(),
+      &providers,
+    );
+    *self.providers.write().unwrap() = providers;
+    let _ = self.events.send(json!({"type":"configuration_changed"}));
+    Ok(())
+  }
   /// Checks a configuration a save sends against the current one, and builds what it describes.
   fn prepare_config(
     &self,
@@ -457,11 +538,13 @@ impl App {
     self.asr.apply(asr);
     self.management.set_stream_sample_limit(config.usage.stream_sample_limit);
     let management = self.management.clone();
-    self.lifecycle.tasks.spawn(async move {
-      let result = crate::utils::blocking::io(move || management.merge_stream_samples()).await;
-      if !matches!(result, Ok(Ok(_))) {
-        eprintln!("merging stream samples failed: {result:?}");
-      }
+    self.lifecycle.while_open(|| {
+      self.lifecycle.tasks.spawn(async move {
+        let result = crate::utils::blocking::io(move || management.merge_stream_samples()).await;
+        if !matches!(result, Ok(Ok(_))) {
+          eprintln!("merging stream samples failed: {result:?}");
+        }
+      })
     });
     *self.accounts.write().unwrap() = accounts;
     *self.providers.write().unwrap() = providers;

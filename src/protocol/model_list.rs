@@ -38,6 +38,16 @@ mod source;
 
 pub use fetch::{ModelListQuery, fetch};
 
+/// Public identity used to join historical deployment samples with current catalog records.
+pub fn public_model_id<'a>(protocol: &str, model: &'a str) -> &'a str {
+  match protocol {
+    "google_antigravity_generate_content" => {
+      antigravity::variant(model).map_or(model, |(base, _)| base)
+    }
+    _ => model,
+  }
+}
+
 /// One model a service offers.
 #[derive(Clone, Debug)]
 pub struct Model {

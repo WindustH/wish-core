@@ -8,7 +8,6 @@ mod config;
 pub(crate) mod content;
 mod directories;
 mod folders;
-mod groups;
 mod history;
 mod image_preview;
 mod manage;
@@ -108,27 +107,22 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/conversations/pin", post(folders::pin))
     .route("/folders", get(folders::list).post(folders::create))
     .route("/folders/{id}", patch(folders::rename).delete(folders::delete))
-    .route("/groups", post(groups::create))
-    .route("/groups/{id}", get(groups::get).patch(groups::update).delete(groups::delete))
-    .route("/groups/{id}/messages", get(groups::messages).post(groups::post))
-    .route("/groups/{id}/blobs", get(content::list).post(content::upload))
-    .route("/groups/{id}/blobs/link", post(content::link))
-    .route("/groups/{id}/blobs/{blob}", get(content::download).delete(content::delete))
-    .route("/groups/{id}/blobs/{blob}/meta", get(content::metadata))
-    .route("/groups/{id}/blobs/{blob}/library", patch(content::update_library))
-    .route("/groups/{id}/blobs/{blob}/image", get(image_preview::preview))
-    .route("/groups/{id}/blobs/{blob}/pdf", get(pdf_preview::info))
-    .route("/groups/{id}/blobs/{blob}/pdf/page", get(pdf_preview::page))
-    .route("/sessions/{id}/groups", get(groups::of_session))
     .route("/sessions/{id}/generate-name", post(naming::generate))
     .route("/sessions/{id}/fork", post(manage::fork))
     .route("/sessions/{id}/context/clear", post(manage::clear_context))
     .route("/sessions/{id}/context/inspect", get(sessions::inspect_context))
+    .route("/sessions/{id}/environment", get(sessions::environment))
     .route("/sessions/{id}/messages", post(sessions::enqueue))
     .route("/sessions/{id}/input", post(content::input))
     .route("/sessions/{id}/queue/{entry}", delete(manage::cancel_input).patch(manage::move_input))
     .route("/sessions/{id}/blobs/link", post(content::link))
     .route("/sessions/{id}/blobs", get(content::list).post(content::upload))
+    .route("/sessions/{id}/library/folders", post(content::create_folder))
+    .route(
+      "/sessions/{id}/library/folders/{folder}",
+      patch(content::rename_folder).delete(content::delete_folder),
+    )
+    .route("/sessions/{id}/library/move", post(content::move_library_items))
     .route(
       "/media-presets",
       get(|| async {
@@ -185,14 +179,11 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/skills", get(skills::session_list))
     .route("/sessions/{id}/skills/{name}", get(skills::session_show))
     .route("/sessions/{id}/peers", get(peers::list).post(peers::create))
-    .route("/sessions/{id}/peers/groups", post(peers::create_group))
     .route(
       "/sessions/{id}/peers/{target}",
       get(peers::show).patch(peers::configure).delete(peers::delete),
     )
     .route("/sessions/{id}/peers/{target}/send", post(peers::send))
-    .route("/sessions/{id}/peers/{target}/members", post(peers::add_members))
-    .route("/sessions/{id}/peers/{target}/leave", post(peers::leave))
     .layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024));
   Router::new()
     .nest("/api", api)
@@ -247,7 +238,9 @@ async fn authorize(State(app): State<Arc<App>>, request: Request, next: Next) ->
       .get("authorization")
       .and_then(|h| h.to_str().ok())
       .and_then(|h| h.strip_prefix("Bearer "));
-    if supplied != Some(token.as_str()) && !media_grant::authorized(&request, token) {
+    if !supplied.is_some_and(|supplied| crate::utils::token::matches(token, supplied))
+      && !media_grant::authorized(&request, token)
+    {
       return (StatusCode::UNAUTHORIZED, Json(json!({"error":{"message":"unauthorized"}})))
         .into_response();
     }

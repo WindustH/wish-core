@@ -35,6 +35,7 @@ impl MediaKind {
 }
 
 pub type Upload<'a> = Pin<Box<dyn Future<Output = Result<Option<String>, String>> + Send + 'a>>;
+pub type ArtifactValidator = fn(&std::path::Path) -> Result<(), String>;
 pub trait MediaDriver: Sync {
   fn buffered_audio(&self, _p: &Parameters) -> bool {
     false
@@ -45,7 +46,7 @@ pub trait MediaDriver: Sync {
   fn validate_subtitles(&self, _bytes: &[u8]) -> Result<(), String> {
     Err("extension does not accept subtitles".into())
   }
-  fn artifact_validator(&self, _mime: Option<&str>) -> Option<crate::storage::media::Validator> {
+  fn artifact_validator(&self, _mime: Option<&str>) -> Option<ArtifactValidator> {
     None
   }
 
