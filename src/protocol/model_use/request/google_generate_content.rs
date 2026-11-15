@@ -36,7 +36,7 @@
 //!   (`cachedContents`) is not modeled.
 
 use crate::protocol::error::Error;
-use crate::protocol::model_use::request::{AlternatingTurns, split_leading_instructions};
+use crate::protocol::model_use::request::{AlternatingTurns, split_turn_instructions};
 use crate::protocol::{
   ContentBlock, Message, ReasoningConfig, ReasoningOpaqueKind, ReasoningSummary, Request, Tool,
   ToolChoice,
@@ -47,7 +47,7 @@ use serde_json::{Map, Value, json};
 pub const HEADERS: &[(&str, &str)] = &[];
 
 pub fn render(request: &Request) -> Result<Value, Error> {
-  let (system, rest) = split_leading_instructions(
+  let (system, rest) = split_turn_instructions(
     &request.conversation,
     "a system instruction can only carry text blocks on the generateContent wire",
   )?;

@@ -59,7 +59,7 @@
 use crate::protocol::error::Error;
 use crate::protocol::model_use::request::{
   AlternatingTurns, lift_cap_above_budget, render_claude_thinking, render_thinking_switch,
-  split_leading_instructions,
+  split_turn_instructions,
 };
 use crate::protocol::model_use::tool::tool_result_text;
 use crate::protocol::{
@@ -95,17 +95,10 @@ fn render_body(
     ));
   }
 
-  let (mut system, mut rest) = split_leading_instructions(
+  let (system, rest) = split_turn_instructions(
     &request.conversation,
     "a system instruction can only carry text blocks on the anthropic messages wire",
   )?;
-  // Anthropic requires a conversation turn. For instruction-only context, keep the
-  // earlier instructions in system and render the last one verbatim as user input.
-  // This is a wire projection; the stored message and its role remain unchanged.
-  if rest.is_empty() && !system.is_empty() {
-    system.pop();
-    rest = &request.conversation[request.conversation.len() - 1..];
-  }
   let messages = render_messages(rest)?;
   if messages.is_empty() {
     return Err(Error::Build("request has no messages".to_owned()));

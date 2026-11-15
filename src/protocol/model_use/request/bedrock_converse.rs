@@ -43,7 +43,7 @@
 
 use crate::protocol::error::Error;
 use crate::protocol::model_use::request::{
-  AlternatingTurns, lift_cap_above_budget, render_claude_thinking, split_leading_instructions,
+  AlternatingTurns, lift_cap_above_budget, render_claude_thinking, split_turn_instructions,
 };
 use crate::protocol::model_use::tool::tool_result_text;
 use crate::protocol::{
@@ -61,7 +61,7 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   let breakpoints = request.cache.as_ref().is_some_and(|cache| cache.breakpoints)
     && request.model.contains("anthropic");
   let mut body = Map::new();
-  let (system, conversation) = split_leading_instructions(
+  let (system, conversation) = split_turn_instructions(
     &request.conversation,
     "a system block can only carry text on the converse wire",
   )?;

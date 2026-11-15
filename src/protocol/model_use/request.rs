@@ -222,6 +222,36 @@ pub(crate) fn split_leading_instructions<'a>(
   Ok((run, rest))
 }
 
+/// Turn-based wires need user input before the first model turn. Compaction can leave
+/// a continuation instruction followed directly by retained tool calls or assistant text.
+/// Keep the last unpinned instruction in the conversation in that case, where these
+/// wires already render instructions as user input. Never invent a message, discard the
+/// retained tail, or demote a pinned instruction to repair an otherwise invalid history.
+pub(crate) fn split_turn_instructions<'a>(
+  conversation: &'a [Message],
+  refusal: &str,
+) -> Result<(Vec<Vec<&'a str>>, &'a [Message]), Error> {
+  let (mut run, rest) = split_leading_instructions(conversation, refusal)?;
+  if rest.is_empty()
+    || matches!(
+      rest.first(),
+      Some(Message::Assistant { .. } | Message::ToolUse { .. } | Message::Reasoning { .. })
+    )
+  {
+    let prefix = conversation.len() - rest.len();
+    let boundary = conversation[..prefix]
+      .iter()
+      .rposition(|message| !message.is_fixed_instruction())
+      // Instruction-only requests still need a turn, even when all instructions are fixed.
+      .or_else(|| rest.is_empty().then(|| prefix.checked_sub(1)).flatten());
+    if let Some(boundary) = boundary {
+      run.truncate(boundary);
+      return Ok((run, &conversation[boundary..]));
+    }
+  }
+  Ok((run, rest))
+}
+
 /// The text blocks of one instruction message, in order; any other block is refused with
 /// `refusal`, because instructions only travel as text.
 pub(crate) fn collect_instruction_text<'a>(
