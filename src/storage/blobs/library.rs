@@ -13,8 +13,10 @@ use std::{
 
 const FILE: &str = ".library.json";
 const MAX_BYTES: usize = 16 * 1024 * 1024;
+pub mod bookmarks;
 mod cleanup;
 mod folders;
+pub mod linked_folders;
 pub use cleanup::{Cleanup, CleanupOptions, cleanup, release_hidden};
 pub use folders::{
   Folder, FolderInput, FolderMove, create_folder, delete_folder, move_items, rename_folder,
@@ -28,6 +30,8 @@ pub struct Entry {
   pub pinned: bool,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub name: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub display_name: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -35,6 +39,7 @@ pub struct Entry {
 pub struct Patch {
   pub visible: Option<bool>,
   pub pinned: Option<bool>,
+  pub display_name: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -45,6 +50,8 @@ pub(super) struct Library {
   pub(super) folders: BTreeMap<String, Folder>,
   #[serde(default)]
   pub(super) locations: BTreeMap<String, String>,
+  #[serde(default)]
+  bookmarks: BTreeMap<String, bookmarks::Bookmark>,
 }
 
 fn read(directory: &Path) -> Result<Library, RepositoryError> {
@@ -57,6 +64,7 @@ fn read(directory: &Path) -> Result<Library, RepositoryError> {
         entries: BTreeMap::new(),
         folders: BTreeMap::new(),
         locations: BTreeMap::new(),
+        bookmarks: BTreeMap::new(),
       });
     }
     Err(error) => return Err(RepositoryError::internal(error)),
@@ -107,23 +115,27 @@ pub fn initialize(
       entries: recover()?,
       folders: BTreeMap::new(),
       locations: BTreeMap::new(),
+      bookmarks: BTreeMap::new(),
     },
   )
 }
 
-pub fn entries(directory: &Path) -> Result<BTreeMap<String, Entry>, RepositoryError> {
-  let lock = WRITES.get(directory.to_path_buf());
-  let _guard = lock.lock().map_err(RepositoryError::internal)?;
-  Ok(read(directory)?.entries)
+/// Read an item's presentation and virtual folder from the same metadata revision.
+pub fn item(directory: &Path, id: &str) -> Result<(Entry, Option<String>), RepositoryError> {
+  let mut library = snapshot(directory)?;
+  Ok((library.entries.remove(id).unwrap_or_default(), library.locations.remove(id)))
 }
 
 /// A newly forked owner inherits visibility, names and pins, including files outside context.
 pub fn inherit(source: &Path, target: &Path) -> Result<(), RepositoryError> {
-  let library = {
+  let mut library = {
     let lock = WRITES.get(source.to_path_buf());
     let _guard = lock.lock().map_err(RepositoryError::internal)?;
     read(source)?
   };
+  // A fork imports the current context into new history sequences. Old bookmarks must not
+  // accidentally navigate to unrelated records in that newly numbered transcript.
+  library.bookmarks.clear();
   let lock = WRITES.get(target.to_path_buf());
   let _guard = lock.lock().map_err(RepositoryError::internal)?;
   write(target, &library)
@@ -136,6 +148,23 @@ pub fn record_upload(
   name: Option<String>,
   temporary: bool,
 ) -> Result<(), RepositoryError> {
+  record_file(directory, id, name, temporary, None)
+}
+pub fn record_link_preview(
+  directory: &Path,
+  id: &str,
+  name: Option<String>,
+  display_name: Option<String>,
+) -> Result<(), RepositoryError> {
+  record_file(directory, id, name, true, display_name)
+}
+fn record_file(
+  directory: &Path,
+  id: &str,
+  name: Option<String>,
+  temporary: bool,
+  display_name: Option<String>,
+) -> Result<(), RepositoryError> {
   let lock = WRITES.get(directory.to_path_buf());
   let _guard = lock.lock().map_err(RepositoryError::internal)?;
   let mut library = read(directory)?;
@@ -145,6 +174,9 @@ pub fn record_upload(
   }
   if name.is_some() && (!temporary || entry.name.is_none()) {
     entry.name = name;
+  }
+  if entry.display_name.is_none() {
+    entry.display_name = display_name;
   }
   write(directory, &library)
 }
@@ -187,9 +219,10 @@ pub fn update(directory: &Path, id: &str, patch: Patch) -> Result<Entry, Reposit
   if !is_blob_id(id) {
     return Err(RepositoryError::not_found());
   }
-  if patch.visible.is_none() && patch.pinned.is_none() {
-    return Err(RepositoryError::invalid("supply visible or pinned"));
+  if patch.visible.is_none() && patch.pinned.is_none() && patch.display_name.is_none() {
+    return Err(RepositoryError::invalid("supply visible, pinned or display_name"));
   }
+  let display_name = patch.display_name.as_deref().map(display_name).transpose()?;
   if patch.visible == Some(false) && patch.pinned == Some(true) {
     return Err(RepositoryError::invalid("a hidden Library item cannot be pinned"));
   }
@@ -197,6 +230,9 @@ pub fn update(directory: &Path, id: &str, patch: Patch) -> Result<Entry, Reposit
   let _guard = lock.lock().map_err(RepositoryError::internal)?;
   let mut library = read(directory)?;
   let entry = library.entries.entry(id.into()).or_default();
+  if let Some(name) = display_name {
+    entry.display_name = Some(name);
+  }
   if let Some(visible) = patch.visible {
     entry.visible = visible;
     if !visible {
@@ -244,4 +280,14 @@ pub(super) fn snapshot(directory: &Path) -> Result<Library, RepositoryError> {
   let lock = WRITES.get(directory.to_path_buf());
   let _guard = lock.lock().map_err(RepositoryError::internal)?;
   read(directory)
+}
+
+pub fn display_name(value: &str) -> Result<String, RepositoryError> {
+  let value = value.trim();
+  if value.is_empty() || value.len() > 1024 || value.chars().any(char::is_control) {
+    return Err(RepositoryError::invalid(
+      "display name must be 1–1024 bytes without control characters",
+    ));
+  }
+  Ok(value.to_owned())
 }

@@ -77,5 +77,6 @@ pub(crate) mod google_login;
 
 pub(crate) mod library;
 pub(crate) mod library_cleanup;
+pub(crate) mod library_items;
 
 mod env_aliases;

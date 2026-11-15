@@ -24,7 +24,12 @@ pub(crate) fn attachments(metadata: &Value) -> BTreeMap<String, Entry> {
       let id = attachment["id"].as_str().filter(|id| is_blob_id(id) && !crops.contains(id))?;
       Some((
         id.into(),
-        Entry { visible: true, pinned: false, name: attachment["name"].as_str().map(String::from) },
+        Entry {
+          visible: true,
+          pinned: false,
+          name: attachment["name"].as_str().map(String::from),
+          ..Default::default()
+        },
       ))
     })
     .collect()
@@ -51,7 +56,10 @@ fn recover(
           && blob.linked
           && blob.id == id
         {
-          entries.insert(id.into(), Entry { visible: true, pinned: false, name: None });
+          entries.insert(
+            id.into(),
+            Entry { visible: true, pinned: false, name: None, ..Default::default() },
+          );
         }
       }
     }

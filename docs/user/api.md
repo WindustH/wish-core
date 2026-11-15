@@ -123,9 +123,13 @@ While a session runs, `PATCH /api/sessions/{id}` (with `If-Match: <revision>`) s
 - `POST /api/sessions/{id}/history/search` takes `{"query": {"text": "...", "mode": "terms"|"substring", "limit": 20}, "filter": {...}}`.
 - `POST /api/sessions/{id}/tasks` runs task management actions (`{"action": "list"}`, `show`, `background`, `remove`, or `execute` with `start`/`poll`/`write`/`kill`).
 
-### Library links, previews, and cleanup
+### Library links, bookmarks, previews, and cleanup
 
 - `POST /api/sessions/{id}/blobs` writes content-addressed blobs by SHA-256 (`?name=...&temporary=false`); `POST /api/sessions/{id}/blobs/link` registers `{"path": "/abs/path", "temporary": false}` without copying bytes.
+- `PATCH /api/sessions/{id}/blobs/{blob}/library` accepts `display_name` alongside `visible` and `pinned`. Display names do not change blob IDs, source paths, original filenames or contents; repeated uploads/links preserve them.
+- `POST /api/sessions/{id}/library/folders/link` accepts `{"path": "/absolute/directory", "parent": null, "name": "Optional display name"}`. `GET .../folders/{folder}/children?path=relative/subdir&limit=80&after=last-name` lists one level with a lexical cursor (maximum 200 items). Paths must remain within the linked directory; external symlinks and special files are excluded. Browsing does not import the tree.
+- `POST .../folders/{folder}/open` with `{"path": "relative/file"}` registers a hidden file link for preview. `PATCH .../folders/{folder}/children` with `{"path": "relative/item", "name": "Display name"}` renames its Library label. Folder links are read-only: uploads/moves into them are rejected, and deleting a link leaves the original tree intact.
+- `GET`/`POST /api/sessions/{id}/library/bookmarks` lists/adds message bookmarks. Send `{"seq": 42}` for the whole message or `{"seq": 42, "block": 0, "start": 6, "end": 10}` for a text excerpt. Ranges are UTF-16 offsets, start-inclusive/end-exclusive; the server validates and saves the original text. Duplicate targets return the existing bookmark. `PATCH .../bookmarks/{bookmark}` accepts `{"name": "Display name"}`; `DELETE` removes only the bookmark. Each session supports up to 1,000 bookmarks. A fork starts without bookmarks because its history sequences are newly assigned; pruning history can leave a bookmark whose original record is no longer available.
 - `/image?width=384|768|1536` serves lossless WebP thumbnails, `/pdf/page?page=1` extracts standalone single-page PDFs (both support `ETag`/`304`), and `POST .../playback` issues short-lived signed URLs for `<audio>`/`<video>` tags.
 - `POST /api/sessions/{id}/library/cleanup` previews (`{"missing_links": true, "unused_hidden": true, "dry_run": true}`) or deletes eligible files while protecting files referenced by active/standby contexts, pending inputs, or unfinished media jobs (`unreadable_jobs > 0` protects hidden files until damaged job records are fixed).
 

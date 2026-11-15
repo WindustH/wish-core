@@ -7,6 +7,10 @@ pub struct Folder {
   pub id: String,
   pub name: String,
   pub parent: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub linked_path: Option<String>,
+  #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+  pub(super) aliases: BTreeMap<String, String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,7 +24,7 @@ pub struct FolderMove {
   pub ids: Vec<String>,
   pub folder: Option<String>,
 }
-fn name(value: &str) -> Result<String, RepositoryError> {
+pub(super) fn name(value: &str) -> Result<String, RepositoryError> {
   let value = value.trim();
   if value.is_empty()
     || value.len() > 255
@@ -34,13 +38,17 @@ fn name(value: &str) -> Result<String, RepositoryError> {
   }
   Ok(value.into())
 }
-fn parent(library: &Library, value: Option<&str>) -> Result<(), RepositoryError> {
+pub(super) fn parent(library: &Library, value: Option<&str>) -> Result<(), RepositoryError> {
   if value.is_some_and(|id| !library.folders.contains_key(id)) {
     return Err(RepositoryError::not_found());
   }
+  if value.and_then(|id| library.folders.get(id)).is_some_and(|folder| folder.linked_path.is_some())
+  {
+    return Err(RepositoryError::invalid("linked folders are read-only"));
+  }
   Ok(())
 }
-fn unique(
+pub(super) fn unique(
   library: &Library,
   name: &str,
   parent: Option<&str>,
@@ -63,8 +71,13 @@ pub fn create_folder(directory: &Path, input: FolderInput) -> Result<Folder, Rep
   if library.folders.len() >= 1000 {
     return Err(RepositoryError::invalid("Library folder limit reached"));
   }
-  let folder =
-    Folder { id: format!("folder_{}", uuid::Uuid::new_v4()), name, parent: input.parent };
+  let folder = Folder {
+    id: format!("folder_{}", uuid::Uuid::new_v4()),
+    name,
+    parent: input.parent,
+    linked_path: None,
+    aliases: BTreeMap::new(),
+  };
   library.folders.insert(folder.id.clone(), folder.clone());
   write(directory, &library)?;
   Ok(folder)

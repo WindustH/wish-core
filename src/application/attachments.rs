@@ -5,7 +5,7 @@ pub use crate::storage::blobs::Blob;
 use serde::Serialize;
 use std::sync::Arc;
 /// Requires an existing session: the owners of `blobs/<id>`.
-async fn require_owner(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
+pub(super) async fn require_owner(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
   let management = app.management.clone();
   let data = app.data_dir.clone();
   let storage = app.storage.clone();
@@ -25,6 +25,7 @@ pub struct BlobMetadata {
   mime_type: String,
   byte_count: usize,
   version: String,
+  folder: Option<String>,
   #[serde(flatten)]
   library: blobs::library::Entry,
 }
@@ -254,15 +255,14 @@ pub async fn metadata(
   let item = open(app, owner, blob).await?;
   let directory = app.data_dir.blobs(owner);
   let id = blob.to_owned();
-  let library = super::error::blocking(move || {
-    Ok(blobs::library::entries(&directory)?.remove(&id).unwrap_or_default())
-  })
-  .await?;
+  let (library, folder) =
+    super::error::blocking(move || Ok(blobs::library::item(&directory, &id)?)).await?;
   Ok(BlobMetadata {
     id: blob.into(),
     mime_type: item.mime_type,
     byte_count: usize::try_from(item.length).map_err(ApplicationError::internal)?,
     version: item.version,
+    folder,
     library,
   })
 }

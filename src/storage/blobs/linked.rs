@@ -26,7 +26,7 @@ pub async fn register(directory: &Path, path: &str) -> Result<Blob, RepositoryEr
   let path = tokio::fs::canonicalize(path).await.map_err(|_| RepositoryError::not_found())?;
   let path =
     path.to_str().ok_or_else(|| RepositoryError::invalid("file path must be valid UTF-8"))?;
-  let id = blob_id(format!("wish-local-file\0{path}").as_bytes());
+  let id = id_for_path(path);
   let blob = describe(&id, path).await?;
   tokio::fs::create_dir_all(directory).await.map_err(RepositoryError::internal)?;
   let _catalog = catalog::Mutation(directory);
@@ -37,6 +37,10 @@ pub async fn register(directory: &Path, path: &str) -> Result<Blob, RepositoryEr
   .await
   .map_err(RepositoryError::internal)?;
   Ok(blob)
+}
+
+pub(super) fn id_for_path(canonical: &str) -> String {
+  blob_id(format!("wish-local-file\0{canonical}").as_bytes())
 }
 
 /// Ordinary blob paths retain their directory boundary; registered references opt in to external paths.

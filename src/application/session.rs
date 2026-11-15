@@ -124,7 +124,7 @@ pub struct SessionSlot {
   /// The command this session's shell tool starts, whether or not the tool is on.
   effective_shell: Arc<RwLock<ShellCommand>>,
   /// The session's blobs: attachments, generated media and transcripts.
-  blob_dir: PathBuf,
+  pub(super) blob_dir: PathBuf,
   /// What this session's shell shows the MCP bridge; made anew each time the session opens, since
   /// its shells do not outlive the process.
   pub(super) bridge_token: String,

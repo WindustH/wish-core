@@ -17,7 +17,7 @@ Wish stores durable state in two SQLite databases inside `data_dir` (`wish.sqlit
 
 - Uploaded files are content-addressed by 64-hex SHA-256 ID; model images are normalized into bounded derivative blobs (`<= 2048px`, `<= 2 MiB`) leaving originals intact.
 - Linked local files (`blobs/linked.rs`) hash the canonical host path into an independent ID namespace and read directly from the host file without duplicating bytes or deleting external files.
-- Library metadata (`blobs/library.rs`, `cleanup.rs`) persists folders, visibility, pin flags, and display names; cleanup protects files referenced by active/standby contexts, queued inputs, and `.media-jobs/*.json` (preserving hidden files when any job file is unreadable).
+- Library metadata (`blobs/library.rs`, `cleanup.rs`) persists virtual/linked folders, visibility, pin flags, display-only names, and owner-local conversation bookmarks; cleanup protects files referenced by active/standby contexts, queued inputs, and `.media-jobs/*.json` (preserving hidden files when any job file is unreadable).
 - Environment aliases (`application/env_aliases.rs`) persist `.env-aliases.json` mapping `$WISH_BLOB_ID_*` and `$WISH_SESSION_ID_*` using monotonic, never-recycled uppercase base-36 suffixes (`0`–`9`, `A`–`Z`, `10`, ...). Cross-session messages translate aliases and share immutable blobs under `blob_publication` synchronization.
 
 ## Startup migration pipeline (`src/migration.rs`)

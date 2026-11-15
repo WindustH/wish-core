@@ -10,6 +10,7 @@ mod directories;
 mod folders;
 mod history;
 mod image_preview;
+mod library;
 mod manage;
 mod mcp;
 mod media;
@@ -118,6 +119,17 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/blobs/link", post(content::link))
     .route("/sessions/{id}/blobs", get(content::list).post(content::upload))
     .route("/sessions/{id}/library/folders", post(content::create_folder))
+    .route("/sessions/{id}/library/folders/link", post(library::link))
+    .route(
+      "/sessions/{id}/library/folders/{folder}/children",
+      get(library::browse).patch(library::rename_child),
+    )
+    .route("/sessions/{id}/library/folders/{folder}/open", post(library::open_child))
+    .route("/sessions/{id}/library/bookmarks", get(library::bookmarks).post(library::add_bookmark))
+    .route(
+      "/sessions/{id}/library/bookmarks/{bookmark}",
+      patch(library::rename_bookmark).delete(library::delete_bookmark),
+    )
     .route(
       "/sessions/{id}/library/folders/{folder}",
       patch(content::rename_folder).delete(content::delete_folder),

@@ -144,8 +144,13 @@ pub async fn execute(
       ))
     }
     Request::Update { id, visible, pinned } => Ok(json!(
-      attachments::update_library(app, &owner, &id, blobs::library::Patch { visible, pinned })
-        .await?
+      attachments::update_library(
+        app,
+        &owner,
+        &id,
+        blobs::library::Patch { visible, pinned, ..Default::default() }
+      )
+      .await?
     )),
     Request::Delete { id } => {
       attachments::delete(app, &owner, &id).await?;
@@ -181,7 +186,7 @@ pub async fn execute(
           app,
           &owner,
           &id,
-          blobs::library::Patch { visible: Some(visible), pinned: None },
+          blobs::library::Patch { visible: Some(visible), pinned: None, ..Default::default() },
         )
         .await?;
       }
