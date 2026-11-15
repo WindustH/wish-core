@@ -105,7 +105,7 @@ impl TaskManager {
         started_at: record["started_at"].as_u64().unwrap_or_default(),
         background,
         notification_claimed: false.into(),
-        record_lock: tokio::sync::Mutex::new(()),
+        record_lock: tokio::sync::Mutex::new(false),
         output_path: config.capture_dir.join(id).join("output.log"),
         stdin: tokio::sync::Mutex::new(None),
         state,
@@ -272,11 +272,9 @@ impl TaskManager {
   }
   pub async fn background(&self, id: &str) -> Result<Value, TaskError> {
     let task = self.get_execution(id)?;
-    if task.get_snapshot().status != Status::Running {
+    if !task.try_background(None).await? {
       return Err(TaskError::InvalidArguments("only a running task can be backgrounded".into()));
     }
-    task.background.send_replace(true);
-    task.persist().await?;
     Ok(task.describe())
   }
   #[allow(dead_code)] // standalone engine/tool fixtures
@@ -339,15 +337,28 @@ impl TaskManager {
       });
     }
     let mut yielded_for_input = false;
-    let reason = loop {
+    let mut reason = loop {
       tokio::select! {
         biased;
-        _ = control.wait_for_cancellation() => { task.terminate(KillMode::Graceful).await?; break "interrupted"; }
+        _ = control.wait_for_cancellation() => {
+          // A committed explicit handoff no longer belongs to this waiter. Input
+          // cancellation immediately after `background` returns must not kill it.
+          if !task.interrupt_foreground(deadline).await? {
+            break "backgrounded";
+          }
+          break if timed_out.load(Ordering::Acquire) { "timeout" } else { "interrupted" };
+        }
         result = task.wait_for_exit() => {
           result?;
           break if timed_out.load(Ordering::Acquire) { "timeout" } else { "exited" };
         }
-        _ = async { let _ = detached.wait_for(|value| *value).await; } => break "backgrounded",
+        _ = async { let _ = detached.wait_for(|value| *value).await; } => {
+          if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+            task.wait_for_exit().await?;
+            break if timed_out.load(Ordering::Acquire) { "timeout" } else { "exited" };
+          }
+          break "backgrounded";
+        }
         arrived = async {
           match input.as_mut() {
             Some(input) => {
@@ -362,16 +373,43 @@ impl TaskManager {
           }
         } => {
           match arrived {
-            Ok(()) => { self.background(&task.id).await?; yielded_for_input = true; break "backgrounded"; }
+            Ok(()) => {
+              // Do not reinterpret an exit or an already-expired hard timeout as a
+              // successful detachment. In particular, SIGTERM can take longer than
+              // the input grace period to finish terminating the process.
+              input = None;
+              if !task.try_background(deadline).await? {
+                continue;
+              }
+              if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                task.wait_for_exit().await?;
+                break if timed_out.load(Ordering::Acquire) { "timeout" } else { "exited" };
+              }
+              yielded_for_input = true;
+              break "backgrounded";
+            }
             Err(error) => { eprintln!("input notification: {error}"); input = None; }
           }
         }
       }
     };
     guard.returned = true;
-    let total = tokio::fs::metadata(&task.output_path).await?.len();
+    let mut total = tokio::fs::metadata(&task.output_path).await?.len();
     let mut output =
       read_output(&task, total.saturating_sub(50 * 1024), 50 * 1024, DataEncoding::Utf8).await?;
+    let snapshot = task.get_snapshot();
+    if snapshot.status == Status::Unknown {
+      return Err(TaskError::Unknown(snapshot.error.unwrap_or_default()));
+    }
+    if reason == "backgrounded" && snapshot.status != Status::Running {
+      reason = if timed_out.load(Ordering::Acquire) { "timeout" } else { "exited" };
+      yielded_for_input = false;
+      // The process may have finished while output was being read. Include its final
+      // tail and edits when returning a completed result rather than a handoff.
+      total = tokio::fs::metadata(&task.output_path).await?.len();
+      output =
+        read_output(&task, total.saturating_sub(50 * 1024), 50 * 1024, DataEncoding::Utf8).await?;
+    }
     let text = output["text"].as_str().unwrap_or_default().to_owned();
     let lines: Vec<_> = text.split_inclusive('\n').collect();
     if lines.len() > 2000 {
@@ -384,7 +422,7 @@ impl TaskManager {
     output["task_id"] = task.id.clone().into();
     output["background"] = json!(*task.background.borrow());
     output["yielded_for_input"] = json!(yielded_for_input);
-    let edits = json!(*task.get_snapshot().edits);
+    let edits = json!(*snapshot.edits);
     let mut summaries = edits.clone();
     if !check_diff {
       for item in summaries.as_array_mut().into_iter().flatten() {
@@ -397,9 +435,7 @@ impl TaskManager {
     // Preserve captured diagnostics and the task identifier even when the command fails.
     output["success"] = json!(
       reason == "backgrounded"
-        || (reason == "exited"
-          && task.get_snapshot().exit_code == Some(0)
-          && task.get_snapshot().error.is_none())
+        || (reason == "exited" && snapshot.exit_code == Some(0) && snapshot.error.is_none())
     );
     if !edits.as_array().is_none_or(Vec::is_empty) {
       // The supervisor persists final edits here before publishing completion.
@@ -491,7 +527,7 @@ impl TaskManager {
       started_at: (timestamp / 1_000_000) as u64,
       background: watch::channel(false).0,
       notification_claimed: false.into(),
-      record_lock: tokio::sync::Mutex::new(()),
+      record_lock: tokio::sync::Mutex::new(false),
       output_path,
       stdin: tokio::sync::Mutex::new(child.stdin.take()),
       state,

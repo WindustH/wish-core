@@ -119,6 +119,9 @@ impl SessionSlot {
   /// Follows an engine event: the status, the live preview, and the event's web form to live
   /// clients. A phase change is saved to the index.
   pub fn observe(self: &std::sync::Arc<Self>, event: &SessionEvent) {
+    if let SessionEvent::ToolFinished { call, .. } = event {
+      self.tools.published(call);
+    }
     // These events are delivered after the call record commits. Publish usage at call
     // boundaries, not only after an entire multi-turn operation finishes (nor per delta).
     let calls_changed = matches!(

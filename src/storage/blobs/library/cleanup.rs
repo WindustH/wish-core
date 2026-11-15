@@ -10,6 +10,7 @@ use std::{
 pub struct Cleanup {
   pub missing_links: u64,
   pub unused_hidden: u64,
+  pub stale_entries: u64,
   pub bytes: u64,
   pub protected: u64,
   pub ids: Vec<String>,
@@ -106,9 +107,10 @@ pub fn cleanup(
       continue;
     }
     if options.retain_all || retained.contains(&id) {
-      result.protected += 1;
+      result.protected += u64::from(!paths.is_empty());
       continue;
     }
+    let stale = paths.is_empty();
     for (path, bytes) in paths {
       result.bytes += bytes;
       if apply {
@@ -119,7 +121,9 @@ pub fn cleanup(
         }
       }
     }
-    if broken {
+    if stale {
+      result.stale_entries += 1
+    } else if broken {
       result.missing_links += 1
     } else {
       result.unused_hidden += 1

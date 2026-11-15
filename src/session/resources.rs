@@ -60,6 +60,18 @@ impl super::SessionSender {
           .ok_or(super::SessionError::InvalidEntry(super::EntryId(id)))?;
         references(&entry.message, &mut resources);
       }
+      // Settled tool inputs are durable before the batch drains into entries. A
+      // slow sibling must not leave those images deletable in the meantime.
+      if let super::SessionState::ExecutingTools { batch, .. } = &transaction.record.state {
+        for execution in transaction.store.read_from::<super::machine::ToolExecution>(batch, 0)? {
+          if let Some(super::ToolOutcome::SuccessWithInput { input, .. }) = &execution.outcome {
+            references(
+              &Message::User { metadata: Value::Null, content: input.clone() },
+              &mut resources,
+            );
+          }
+        }
+      }
       Ok(apply(resources))
     })
   }

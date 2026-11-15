@@ -39,6 +39,8 @@ struct CleanupSummary {
   messages: u64,
   events: u64,
   files: u64,
+  stale_entries: u64,
+  unreadable_jobs: u64,
   history_bytes: u64,
   file_bytes: u64,
 }
@@ -47,6 +49,8 @@ impl CleanupSummary {
     self.messages += other.messages;
     self.events += other.events;
     self.files += other.files;
+    self.stale_entries += other.stale_entries;
+    self.unreadable_jobs += other.unreadable_jobs;
     self.history_bytes += other.history_bytes;
     self.file_bytes += other.file_bytes;
   }
@@ -55,6 +59,8 @@ impl CleanupSummary {
       "messages": self.messages,
       "events": self.events,
       "files": self.files,
+      "stale_entries": self.stale_entries,
+      "unreadable_jobs": self.unreadable_jobs,
       "bytes": {"history": self.history_bytes, "files": self.file_bytes, "total": self.history_bytes + self.file_bytes},
     })
   }
@@ -132,27 +138,25 @@ pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, Applicat
       };
       let resources = history.resources.clone();
       let tool_slot = slot.clone();
-      let (files, file_bytes) =
-        super::library_cleanup::with_dependencies(&slot, move |protected| {
-          release_unreferenced_files(
-            &data_dir,
-            &target,
-            &resources,
-            &protected,
-            tool_slot.tools.tasks(),
-            apply,
-          )
-        })?
-        .map_err(ApplicationError::internal)?;
+      let released = super::library_cleanup::with_dependencies(&slot, move |protected| {
+        release_unreferenced_files(
+          &data_dir,
+          &target,
+          &resources,
+          &protected,
+          tool_slot.tools.tasks(),
+          apply,
+        )
+      })?
+      .map_err(ApplicationError::internal)?;
       if apply && (history.messages > 0 || history.events > 0) {
         let _ = slot.events.send(json!({"type": "history_pruned"}));
       }
       Ok(Some(CleanupSummary {
         messages: history.messages,
         events: history.events,
-        files,
         history_bytes: history.bytes,
-        file_bytes,
+        ..released
       }))
     })
     .await?;
@@ -186,12 +190,12 @@ fn release_unreferenced_files(
   protected: &HashSet<String>,
   shell: Option<&crate::task::TaskManager>,
   apply: bool,
-) -> std::io::Result<(u64, u64)> {
+) -> std::io::Result<CleanupSummary> {
   let blobs = data_dir.blobs(id);
   let executions = data_dir.shell(id);
   let mut job_resources = Vec::new();
   let mut retained_artifacts = protected.clone();
-  let mut unreadable_job = false;
+  let mut unreadable_jobs = 0;
   if let Ok(entries) = std::fs::read_dir(blobs.join(".media-jobs")) {
     for entry in entries.flatten() {
       let path = entry.path();
@@ -203,7 +207,7 @@ fn release_unreferenced_files(
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
         .filter(|job| job["phase"].is_string() && job["artifacts"].is_array());
       let Some(job) = job else {
-        unreadable_job = true;
+        unreadable_jobs += 1;
         continue;
       };
       let terminal =
@@ -218,6 +222,11 @@ fn release_unreferenced_files(
         }
       }
     }
+  }
+  // Keep recoverable job records alongside their artifacts when ownership could
+  // not be established. Independent task/MCP history can still be reclaimed.
+  if unreadable_jobs > 0 {
+    job_resources.clear();
   }
   // MCP results use hash.ext rather than the regular blob directory.
   if let Ok(entries) = std::fs::read_dir(data_dir.mcp_files(id)) {
@@ -251,7 +260,7 @@ fn release_unreferenced_files(
   // metadata with the bytes. A concurrent add-to-Library operation cannot be lost.
   let candidates = names
     .iter()
-    .filter(|name| !unreadable_job && is_blob_id(name) && !retained_artifacts.contains(*name))
+    .filter(|name| unreadable_jobs == 0 && is_blob_id(name) && !retained_artifacts.contains(*name))
     .cloned()
     .collect();
   let blobs_released = crate::storage::blobs::library::release_hidden(&blobs, &candidates, apply)
@@ -259,5 +268,11 @@ fn release_unreferenced_files(
   if apply && let Some(shell) = shell {
     shell.forget_removed();
   }
-  Ok((released.resources + blobs_released.unused_hidden, released.bytes + blobs_released.bytes))
+  Ok(CleanupSummary {
+    files: released.resources + blobs_released.unused_hidden,
+    stale_entries: blobs_released.stale_entries,
+    unreadable_jobs,
+    file_bytes: released.bytes + blobs_released.bytes,
+    ..Default::default()
+  })
 }

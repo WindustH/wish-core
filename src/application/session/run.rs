@@ -233,6 +233,7 @@ impl SessionSlot {
     if result.is_err() && !session.get_state().is_stable() {
       let _ = session.settle_interrupted();
     }
+    self.tools.clear_publications();
     let ending = match result {
       Ok(outcome) => json!({"type":"operation_finished","outcome":web_outcome(&outcome)}),
       Err(error) => json!({"type":"operation_failed","error":error.to_string()}),

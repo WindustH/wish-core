@@ -50,7 +50,8 @@ pub(super) struct Execution {
   pub started_at: u64,
   pub background: watch::Sender<bool>,
   pub notification_claimed: std::sync::atomic::AtomicBool,
-  pub record_lock: Mutex<()>,
+  /// Serializes record writes and handoff; true once termination is requested.
+  pub record_lock: Mutex<bool>,
   pub output_path: PathBuf,
   pub stdin: Mutex<Option<ChildStdin>>,
   pub state: watch::Sender<Snapshot>,
@@ -67,6 +68,52 @@ impl Execution {
     crate::storage::task_records::save(self.output_path.parent().unwrap(), &self.describe())
       .await?;
     Ok(())
+  }
+
+  /// Serialize the foreground handoff with the supervisor's final record. A task
+  /// that finished while waiting for this lock keeps its ordinary exit result.
+  pub async fn try_background(
+    &self,
+    deadline: Option<tokio::time::Instant>,
+  ) -> Result<bool, TaskError> {
+    let stopping = self.record_lock.lock().await;
+    if *stopping
+      || self.get_snapshot().status != Status::Running
+      || deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+    {
+      return Ok(false);
+    }
+    let mut record = self.describe();
+    record["background"] = true.into();
+    crate::storage::task_records::save(self.output_path.parent().unwrap(), &record).await?;
+    // I/O can outlast the deadline. Roll back the unpublished handoff before
+    // releasing the lock so the supervisor's final record remains consistent.
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+      record["background"] = (*self.background.borrow()).into();
+      crate::storage::task_records::save(self.output_path.parent().unwrap(), &record).await?;
+      return Ok(false);
+    }
+    self.background.send_replace(true);
+    Ok(true)
+  }
+
+  /// Cancellation and explicit backgrounding have one ordering, even while a
+  /// handoff is being persisted. Never hold the record lock while waiting for exit.
+  pub async fn interrupt_foreground(
+    &self,
+    deadline: Option<tokio::time::Instant>,
+  ) -> Result<bool, TaskError> {
+    {
+      let mut stopping = self.record_lock.lock().await;
+      if *self.background.borrow()
+        && deadline.is_none_or(|deadline| tokio::time::Instant::now() < deadline)
+      {
+        return Ok(false);
+      }
+      self.request_stop(&mut stopping, KillMode::Graceful)?;
+    }
+    self.wait_for_exit().await?;
+    Ok(true)
   }
 
   pub fn get_snapshot(&self) -> Snapshot {
@@ -86,13 +133,21 @@ impl Execution {
     }
   }
   pub async fn terminate(&self, mode: KillMode) -> Result<Snapshot, TaskError> {
+    {
+      let mut stopping = self.record_lock.lock().await;
+      self.request_stop(&mut stopping, mode)?;
+    }
+    self.wait_for_exit().await
+  }
+  fn request_stop(&self, stopping: &mut bool, mode: KillMode) -> Result<(), TaskError> {
     if self.get_snapshot().status == Status::Running {
+      *stopping = true;
       // A concurrent natural exit may have closed the mailbox; the retained state is authoritative.
       if self.kills.send(mode).is_err() && self.get_snapshot().status == Status::Running {
         return Err(TaskError::Unknown("process supervisor stopped".into()));
       }
     }
-    self.wait_for_exit().await
+    Ok(())
   }
   pub async fn write_bytes(
     &self,

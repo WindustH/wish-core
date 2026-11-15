@@ -2,13 +2,10 @@
 //! Detached work has a session/service lifetime, not the model run's cancellation lifetime.
 use super::{
   error::{ApplicationError, blocking},
-  session::SessionSlot,
+  session::{PublishedOutcome, SessionSlot},
 };
 use crate::{
-  executor::{
-    ExecutionControl,
-    tool::{ToolExecutor, ToolInput},
-  },
+  executor::{ExecutionControl, tool::ToolInput},
   protocol::{ContentBlock, Message},
   session::{SessionEvent, SessionSender, ToolCall, ToolOutcome},
 };
@@ -97,15 +94,15 @@ impl BackgroundTools {
     call: &ToolCall,
     control: &ExecutionControl,
     mut input: ToolInput,
-  ) -> ToolOutcome {
+  ) -> PublishedOutcome {
     if control.is_cancelled() {
-      return ToolOutcome::Cancelled;
+      return ToolOutcome::Cancelled.into();
     }
     let Some(app) = slot.app.upgrade() else {
-      return ToolOutcome::Failed("server is closed".into());
+      return ToolOutcome::Failed("server is closed".into()).into();
     };
     let Ok(permit) = self.0.capacity.clone().try_acquire_owned() else {
-      return ToolOutcome::Failed("Too many running tools in this session; wait for background work to finish before starting more.".into());
+      return ToolOutcome::Failed("Too many running tools in this session; wait for background work to finish before starting more.".into()).into();
     };
     let id = uuid::Uuid::new_v4().to_string();
     let worker_control = ExecutionControl::new();
@@ -115,7 +112,7 @@ impl BackgroundTools {
     {
       let mut registry = self.0.registry.lock().unwrap();
       if registry.closed {
-        return ToolOutcome::Cancelled;
+        return ToolOutcome::Cancelled.into();
       }
       registry.jobs.insert(
         id.clone(),
@@ -132,16 +129,16 @@ impl BackgroundTools {
       (slot.clone(), call.clone(), id.clone(), phase.clone(), app.clone());
     app.lifecycle.tasks.spawn(async move {
       let (_permit, _registration, _task_token) = (permit, registration, task_token);
-      let work = owner.tools.execute(&caller, &worker);
+      let work = owner.tools.execute_published(&caller, &worker);
       tokio::pin!(work);
-      let outcome = tokio::select! {
+      let mut result = tokio::select! {
         biased;
         _ = server.lifecycle.stop.cancelled() => { worker.cancel(); work.await }
         outcome = &mut work => outcome,
       };
       let mut phase = gate.lock().await;
       if matches!(*phase, Phase::Detached) {
-        if let Err(error) = finish(&owner.sender, &job_id, &caller, &outcome).await {
+        if let Err(error) = finish(&owner.sender, &job_id, &caller, &result.outcome).await {
           // The durable detached marker remains unresolved. Reopening reports Unknown, never replays.
           eprintln!("background tool completion: {error}");
         } else if owner.require_live().is_ok() {
@@ -153,15 +150,19 @@ impl BackgroundTools {
           }
         }
       }
+      if matches!(*phase, Phase::Detached) {
+        result.publication.take();
+      }
       *phase = Phase::Completed;
-      let _ = tx.send(outcome);
+      let _ = tx.send(result);
     });
-    let wait_result = |result: Result<ToolOutcome, oneshot::error::RecvError>| {
+    let wait_result = |result: Result<PublishedOutcome, oneshot::error::RecvError>| {
       result.unwrap_or_else(|_| {
         ToolOutcome::Unknown(
           "Tool worker stopped without a confirmed result; inspect its effects before retrying."
             .into(),
         )
+        .into()
       })
     };
     tokio::select! {
@@ -185,7 +186,7 @@ impl BackgroundTools {
                   text: format!("Tool {} continues in background (job {id}). Read the newly queued input now. Do not repeat this operation; its result will be delivered when it finishes.", call.name),
                   output: json!({"background":true,"yielded_for_input":true,"job_id":id,"status":"running","call_id":call.call_id}),
                   metadata: json!({"background_tool":true,"job_id":id}), failed: false,
-                };
+                }.into();
               }
               Err(error) => eprintln!("background transfer refused: {error}"),
             }

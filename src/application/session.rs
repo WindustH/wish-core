@@ -12,6 +12,7 @@ mod run;
 pub mod selection;
 mod status;
 mod tools;
+pub(crate) use tools::PublishedOutcome;
 
 pub use super::capabilities::{ToolChanges, ToolDelivery, ToolSwitches};
 use crate::storage::management::ManagementStore;

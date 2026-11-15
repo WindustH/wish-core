@@ -23,10 +23,24 @@ use crate::{
 };
 use base64::Engine;
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::{
-  Arc, Weak,
+  Arc, Mutex, Weak,
   atomic::{AtomicBool, Ordering},
 };
+
+/// Bytes remain protected until their ImageRef is committed either to a tool
+/// batch or, for detached work, to the input queue.
+type BlobPublication = Arc<tokio::sync::OwnedRwLockReadGuard<()>>;
+pub(crate) struct PublishedOutcome {
+  pub outcome: ToolOutcome,
+  pub publication: Option<BlobPublication>,
+}
+impl From<ToolOutcome> for PublishedOutcome {
+  fn from(outcome: ToolOutcome) -> Self {
+    Self { outcome, publication: None }
+  }
+}
 
 pub struct SessionTools {
   pub background: crate::application::background_tools::BackgroundTools,
@@ -49,6 +63,7 @@ pub struct SessionTools {
   pub history: HistoryTools,
   history_on: AtomicBool,
   slot: Weak<SessionSlot>,
+  publications: Mutex<HashMap<String, BlobPublication>>,
 }
 impl SessionTools {
   pub(crate) fn specifications(&self, capability: Capability) -> Vec<crate::protocol::Tool> {
@@ -97,7 +112,45 @@ impl SessionTools {
       history: HistoryTools::new(session),
       history_on: AtomicBool::new(true),
       slot,
+      publications: Mutex::new(HashMap::new()),
     }
+  }
+  pub(crate) async fn execute_published(
+    &self,
+    call: &ToolCall,
+    control: &ExecutionControl,
+  ) -> PublishedOutcome {
+    let publication = if Capability::from_tool(&call.name) == Some(Capability::Image) {
+      let Some(slot) = self.slot.upgrade() else {
+        return ToolOutcome::Failed("the session is closed".into()).into();
+      };
+      let guard = slot.blob_publication.clone().read_owned().await;
+      if let Err(error) = slot.require_live() {
+        return ToolOutcome::Failed(error.to_string()).into();
+      }
+      Some(Arc::new(guard))
+    } else {
+      None
+    };
+    let mut outcome = self.execute_inner(call, control, publication.clone()).await;
+    if let Some(slot) = self.slot.upgrade() {
+      outcome = crate::application::env_aliases::shorten_outcome(&slot, outcome).await;
+    }
+    PublishedOutcome { outcome, publication }
+  }
+  fn retain_publication(&self, call: &ToolCall, result: PublishedOutcome) -> ToolOutcome {
+    if matches!(result.outcome, ToolOutcome::SuccessWithInput { .. })
+      && let Some(guard) = result.publication
+    {
+      self.publications.lock().unwrap().insert(call.call_id.clone(), guard);
+    }
+    result.outcome
+  }
+  pub(super) fn published(&self, call: &ToolCall) {
+    self.publications.lock().unwrap().remove(&call.call_id);
+  }
+  pub(super) fn clear_publications(&self) {
+    self.publications.lock().unwrap().clear();
   }
   pub fn tasks(&self) -> Option<&crate::task::TaskManager> {
     self.tasks.get()
@@ -155,7 +208,7 @@ impl SessionTools {
     command: serde_json::Value,
     epoch: Option<u64>,
   ) {
-    if output["process"]["status"] != "running" {
+    if output["process"]["status"] != "running" && output["return_reason"] != "backgrounded" {
       return;
     }
     let Some(shell) = self.tasks.get() else { return };
@@ -201,7 +254,12 @@ impl SessionTools {
       }
     });
   }
-  async fn view_image(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
+  async fn view_image(
+    &self,
+    call: &ToolCall,
+    control: &ExecutionControl,
+    publication: Option<BlobPublication>,
+  ) -> ToolOutcome {
     let mut call = call.clone();
     if let Some(slot) = self.slot.upgrade()
       && let Some(path) = call.arguments["path"].as_str()
@@ -236,10 +294,18 @@ impl SessionTools {
     for block in &mut input {
       if let ContentBlock::Image { data_base64, .. } = block {
         let (directory, data) = (slot.blob_dir.clone(), std::mem::take(data_base64));
+        let decoded = crate::utils::blocking::cpu(move || {
+          base64::engine::general_purpose::STANDARD.decode(data)
+        })
+        .await;
+        let bytes = match decoded {
+          Ok(Ok(bytes)) => bytes,
+          Ok(Err(error)) => return ToolOutcome::Failed(error.to_string()),
+          Err(error) => return ToolOutcome::Failed(error.to_string()),
+        };
+        let publication = publication.clone();
         let saved = blocking(move || {
-          let bytes = base64::engine::general_purpose::STANDARD
-            .decode(data)
-            .map_err(ApplicationError::internal)?;
+          let _publication = publication;
           let path =
             blobs::save_image_bytes(&directory, &bytes).map_err(ApplicationError::internal)?;
           crate::application::env_aliases::Aliases::open(&directory)?
@@ -308,7 +374,7 @@ impl ToolExecutor for SessionTools {
     input: Option<crate::executor::tool::ToolInput>,
   ) -> ToolOutcome {
     let Some(input) = input else {
-      return self.execute(call, control).await;
+      return self.retain_publication(call, self.execute_published(call, control).await);
     };
     if matches!(call.name.as_str(), "shell" | "shell_edit") {
       let Some(shell) = self.shell().filter(|_| self.shell_on.load(Ordering::Acquire)) else {
@@ -328,26 +394,26 @@ impl ToolExecutor for SessionTools {
     let Some(slot) = self.slot.upgrade() else {
       return ToolOutcome::Failed("session is closed".into());
     };
-    let outcome = self.background.execute(slot.clone(), call, control, input).await;
-    crate::application::env_aliases::shorten_outcome(&slot, outcome).await
+    let result = self.background.execute(slot, call, control, input).await;
+    self.retain_publication(call, result)
   }
 
   async fn execute(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
-    let outcome = self.execute_inner(call, control).await;
-    if let Some(slot) = self.slot.upgrade() {
-      crate::application::env_aliases::shorten_outcome(&slot, outcome).await
-    } else {
-      outcome
-    }
+    self.execute_published(call, control).await.outcome
   }
 }
 impl SessionTools {
-  async fn execute_inner(&self, call: &ToolCall, control: &ExecutionControl) -> ToolOutcome {
+  async fn execute_inner(
+    &self,
+    call: &ToolCall,
+    control: &ExecutionControl,
+    publication: Option<BlobPublication>,
+  ) -> ToolOutcome {
     if crate::extensions::catalog::is_tool(&call.name) {
       return self.execute_extension(call, control).await;
     }
     match Capability::from_tool(&call.name) {
-      Some(Capability::Image) => self.view_image(call, control).await,
+      Some(Capability::Image) => self.view_image(call, control, publication).await,
       Some(Capability::Blob) => {
         let Some(slot) = self.slot.upgrade() else {
           return ToolOutcome::Failed("session is closed".into());
