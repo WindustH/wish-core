@@ -44,6 +44,25 @@ pub(crate) fn collect(value: &Value, found: &mut HashSet<String>) {
 pub use crate::utils::resource_id::is_execution_id;
 
 impl super::SessionSender {
+  /// Inspect the active/standby contexts and pending input while serializing a resource
+  /// operation with context/queue publication. The caller defines resource identity.
+  pub fn with_resource_dependencies<R: Send + 'static>(
+    &self,
+    references: impl Fn(&Message, &mut HashSet<String>) + Send + 'static,
+    apply: impl FnOnce(HashSet<String>) -> R + Send + 'static,
+  ) -> Result<R, super::SessionError> {
+    self.transact(move |transaction| {
+      let mut resources = HashSet::new();
+      for id in transaction.used_entries()? {
+        let entry = transaction
+          .store
+          .get_item::<super::Entry>(&transaction.record.entries, id as u64)?
+          .ok_or(super::SessionError::InvalidEntry(super::EntryId(id)))?;
+        references(&entry.message, &mut resources);
+      }
+      Ok(apply(resources))
+    })
+  }
   /// Run a resource operation against the committed active/standby generations and pending
   /// inputs, serialized with context/queue publication. Only ImageRef needs bytes from disk;
   /// text mentions and inline images do not create that dependency.
@@ -51,27 +70,22 @@ impl super::SessionSender {
     &self,
     apply: impl FnOnce(HashSet<String>) -> R + Send + 'static,
   ) -> Result<R, super::SessionError> {
-    self.transact(move |transaction| {
-      let mut images = HashSet::new();
-      for id in transaction.used_entries()? {
-        let entry = transaction
-          .store
-          .get_item::<super::Entry>(&transaction.record.entries, id as u64)?
-          .ok_or(super::SessionError::InvalidEntry(super::EntryId(id)))?;
-        let content = match &entry.message {
+    self.with_resource_dependencies(
+      |message, images| {
+        let content = match message {
           Message::User { content, .. }
           | Message::Assistant { content, .. }
           | Message::System { content, .. }
           | Message::Developer { content, .. } => content,
-          _ => continue,
+          _ => return,
         };
         for block in content {
           if let crate::protocol::ContentBlock::ImageRef { blob_id, .. } = block {
             images.insert(blob_id.clone());
           }
         }
-      }
-      Ok(apply(images))
-    })
+      },
+      apply,
+    )
   }
 }

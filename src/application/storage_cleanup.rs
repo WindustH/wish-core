@@ -11,7 +11,7 @@ use crate::{
 use crate::{
   session::resources::{collect_references, is_execution_id},
   storage::{
-    blobs::{description_path, is_blob_id},
+    blobs::is_blob_id,
     data_dir::DataDir,
     files::{ResourceFiles, release_resources, size, with_suffix},
   },
@@ -101,10 +101,15 @@ pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, Applicat
       skipped.push(json!({"id": id, "reason": "running"}));
       continue;
     };
+    let Ok(publication) = slot.blob_publication.clone().try_write_owned() else {
+      skipped.push(json!({"id": id, "reason": "uploading"}));
+      continue;
+    };
     let data_dir = app.data_dir.clone();
     let target = id.clone();
     let result = blocking(move || {
       let mut session = session;
+      let _publication = publication;
       slot.require_live()?;
       if slot.tools.background.is_active() {
         return Ok(None);
@@ -125,14 +130,20 @@ pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, Applicat
         Err(SessionError::Busy) => return Ok(None),
         Err(error) => return Err(error.into()),
       };
-      let (files, file_bytes) = release_unreferenced_files(
-        &data_dir,
-        &target,
-        &history.resources,
-        slot.tools.tasks(),
-        apply,
-      )
-      .map_err(ApplicationError::internal)?;
+      let resources = history.resources.clone();
+      let tool_slot = slot.clone();
+      let (files, file_bytes) =
+        super::library_cleanup::with_dependencies(&slot, move |protected| {
+          release_unreferenced_files(
+            &data_dir,
+            &target,
+            &resources,
+            &protected,
+            tool_slot.tools.tasks(),
+            apply,
+          )
+        })?
+        .map_err(ApplicationError::internal)?;
       if apply && (history.messages > 0 || history.events > 0) {
         let _ = slot.events.send(json!({"type": "history_pruned"}));
       }
@@ -172,22 +183,14 @@ fn release_unreferenced_files(
   data_dir: &DataDir,
   id: &str,
   names: &HashSet<String>,
+  protected: &HashSet<String>,
   shell: Option<&crate::task::TaskManager>,
   apply: bool,
 ) -> std::io::Result<(u64, u64)> {
   let blobs = data_dir.blobs(id);
   let executions = data_dir.shell(id);
   let mut job_resources = Vec::new();
-  let mut retained_artifacts = HashSet::new();
-  // Explicit Library membership outlives the messages which first referred to the file.
-  // Hidden artifacts retain the ordinary unused-history cleanup behavior.
-  retained_artifacts.extend(
-    crate::storage::blobs::library::entries(&blobs)
-      .map_err(std::io::Error::other)?
-      .into_iter()
-      .filter(|(_, item)| item.visible)
-      .map(|(id, _)| id),
-  );
+  let mut retained_artifacts = protected.clone();
   if let Ok(entries) = std::fs::read_dir(blobs.join(".media-jobs")) {
     for entry in entries.flatten() {
       let path = entry.path();
@@ -225,12 +228,7 @@ fn release_unreferenced_files(
   let mut resources: Vec<_> = names
     .iter()
     .filter_map(|name| {
-      if is_blob_id(name) && !retained_artifacts.contains(name) {
-        Some(ResourceFiles::File {
-          path: blobs.join(name),
-          companions: vec![description_path(&blobs, name)],
-        })
-      } else if let Some(snapshot) =
+      if let Some(snapshot) =
         name.strip_prefix("snapshot:").filter(|id| uuid::Uuid::parse_str(id).is_ok())
       {
         Some(ResourceFiles::File {
@@ -246,15 +244,17 @@ fn release_unreferenced_files(
     .collect();
   resources.extend(job_resources);
   let released = release_resources(&resources, apply)?;
-  if apply {
-    crate::storage::blobs::library::forget_missing(
-      &blobs,
-      &names.iter().cloned().collect::<Vec<_>>(),
-    )
+  // Re-check visibility while holding the same lock as show/pin and remove the
+  // metadata with the bytes. A concurrent add-to-Library operation cannot be lost.
+  let candidates = names
+    .iter()
+    .filter(|name| is_blob_id(name) && !retained_artifacts.contains(*name))
+    .cloned()
+    .collect();
+  let blobs_released = crate::storage::blobs::library::release_hidden(&blobs, &candidates, apply)
     .map_err(std::io::Error::other)?;
-  }
   if apply && let Some(shell) = shell {
     shell.forget_removed();
   }
-  Ok((released.resources, released.bytes))
+  Ok((released.resources + blobs_released.unused_hidden, released.bytes + blobs_released.bytes))
 }

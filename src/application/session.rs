@@ -130,6 +130,8 @@ pub struct SessionSlot {
   tasks: tokio_util::task::TaskTracker,
   pub(super) app: Weak<App>,
   pub(super) aliases: Arc<super::env_aliases::Aliases>,
+  /// Upload/link publication (including visible membership) must finish before reclamation.
+  pub(super) blob_publication: Arc<tokio::sync::RwLock<()>>,
   /// This session's live events, for `GET /sessions/{id}/events`.
   pub(super) events: broadcast::Sender<Value>,
   live: Arc<Mutex<live::LivePreview>>,
@@ -201,6 +203,7 @@ impl SessionSlot {
       effective_shell,
       blob_dir,
       aliases,
+      blob_publication: Default::default(),
       bridge_token,
       tasks: app.lifecycle.tasks.clone(),
       app: Arc::downgrade(app),

@@ -300,7 +300,8 @@ What goes, per session:
 - events, except a suspended run's outcome;
 - the history records and search index of both;
 - the attachments, images and command output that only those messages named.
-  Uploads never sent, and commands still running, stay.
+  Files visible in the Library, uploads never sent, and commands still running stay.
+  Removing a hidden local link only removes its descriptor, never the original file.
 
 What the context uses stays, so the conversation carries on. Entry IDs and
 history sequences keep their numbers: a cleared position is skipped when read.
@@ -314,7 +315,8 @@ The timeline and history search no longer show what was cleared.
  "database": {"before": 106714016, "after": 38690816}}
 ```
 
-A running session is skipped rather than waited for. With `dry_run` nothing
+A running session or one receiving files is skipped rather than waited for
+(`reason: "running"` or `"uploading"`). With `dry_run` nothing
 changes and the counts tell what would go. Otherwise the database is compacted
 once at the end: `database` gives its size on disk before and after, and each
 pruned session's event stream gets `{"type": "history_pruned"}`.
@@ -1220,6 +1222,15 @@ each response includes the generation metadata observed with its entries.
   It moves 1–2000 entries to a folder or root in one atomic metadata update. Missing entries,
   cross-owner entries, folder cycles and duplicate sibling folder names reject the entire move.
   Organization survives restarts and forks without moving file bytes or external linked sources.
+- `POST /api/sessions/{id}/library/cleanup` accepts `{"missing_links":true,"unused_hidden":true,"dry_run":true}`.
+  At least one cleanup option must be enabled. It checks all folders and returns
+  `{missing_links,unused_hidden,bytes,protected,ids}`. `missing_links` includes visible broken links;
+  `unused_hidden` preserves all visible files. Both preserve files referenced by active/standby
+  context, queued input, or unfinished media jobs. Linked originals are never removed.
+  Send `dry_run:false` with the preview's `ids` to apply only that reviewed set; eligibility,
+  references and visibility are checked again. Without `ids`, all currently eligible files are
+  considered. Running sessions, background work and active uploads return `409`.
+  This operation removes files and their Library metadata, without changing conversation history.
 - `POST /api/sessions/{id}/blobs` takes the raw file as the body and returns
   `{"id", "mime_type", "byte_count", "path"}`. `id` is the SHA-256 of the
   content. Supported image and media signatures, PDF and ZIP are recognized; unknown formats

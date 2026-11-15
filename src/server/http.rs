@@ -123,6 +123,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
       patch(content::rename_folder).delete(content::delete_folder),
     )
     .route("/sessions/{id}/library/move", post(content::move_library_items))
+    .route("/sessions/{id}/library/cleanup", post(content::cleanup_library))
     .route(
       "/media-presets",
       get(|| async {

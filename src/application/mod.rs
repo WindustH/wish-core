@@ -76,5 +76,6 @@ pub mod audio_transcription;
 pub(crate) mod google_login;
 
 pub(crate) mod library;
+pub(crate) mod library_cleanup;
 
 mod env_aliases;

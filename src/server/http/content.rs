@@ -86,6 +86,13 @@ pub async fn update_library(
 ) -> Result<Json<crate::storage::blobs::library::Entry>, ApiError> {
   Ok(Json(attachments::update_library(&app, &id, &blob, patch).await?))
 }
+pub async fn cleanup_library(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Json(input): Json<crate::application::library_cleanup::CleanupRequest>,
+) -> Result<Json<crate::storage::blobs::library::Cleanup>, ApiError> {
+  Ok(Json(crate::application::library_cleanup::cleanup(&app, &id, input).await?))
+}
 pub async fn delete(
   State(app): State<Arc<App>>,
   Path((id, blob)): Path<(String, String)>,

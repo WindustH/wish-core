@@ -13,7 +13,9 @@ use std::{
 
 const FILE: &str = ".library.json";
 const MAX_BYTES: usize = 16 * 1024 * 1024;
+mod cleanup;
 mod folders;
+pub use cleanup::{Cleanup, CleanupOptions, cleanup, release_hidden};
 pub use folders::{
   Folder, FolderInput, FolderMove, create_folder, delete_folder, move_items, rename_folder,
 };
@@ -235,27 +237,6 @@ pub fn delete(directory: &Path, id: &str) -> Result<(), RepositoryError> {
   library.entries.remove(id);
   library.locations.remove(id);
   write(directory, &library)
-}
-
-/// Reclamation may have removed hidden, unreferenced resources. Forget metadata only
-/// after their bytes and descriptors are gone, preserving concurrently re-added files.
-pub fn forget_missing(directory: &Path, ids: &[String]) -> Result<(), RepositoryError> {
-  let lock = WRITES.get(directory.to_path_buf());
-  let _guard = lock.lock().map_err(RepositoryError::internal)?;
-  let mut library = read(directory)?;
-  let mut changed = false;
-  for id in ids.iter().filter(|id| is_blob_id(id)) {
-    if !directory.join(id).try_exists().map_err(RepositoryError::internal)?
-      && !super::description_path(directory, id).try_exists().map_err(RepositoryError::internal)?
-    {
-      changed |= library.entries.remove(id).is_some();
-      changed |= library.locations.remove(id).is_some();
-    }
-  }
-  if changed {
-    write(directory, &library)?;
-  }
-  Ok(())
 }
 
 pub(super) fn snapshot(directory: &Path) -> Result<Library, RepositoryError> {

@@ -47,9 +47,13 @@ where
     return Err(ApplicationError::invalid("file name exceeds 1024 bytes"));
   }
   let directory = app.data_dir.blobs(owner);
+  let slot = app.get_session(owner).await?;
+  let publication = slot.blob_publication.clone().read_owned().await;
   let blob = blobs::save_upload_stream(&directory, stream, blobs::MAX_UPLOAD_BYTES).await?;
   let id = blob.id.clone();
   super::error::blocking(move || {
+    let _publication = publication;
+    slot.require_live()?;
     super::env_aliases::Aliases::open(&directory)?.blob(&id)?;
     Ok(blobs::library::record_upload(&directory, &id, name, temporary)?)
   })
@@ -69,10 +73,14 @@ pub async fn link(
   let input = path.to_owned();
   let path =
     super::error::blocking(move || super::env_aliases::Aliases::open(&dir)?.expand(&input)).await?;
+  let slot = app.get_session(owner).await?;
+  let publication = slot.blob_publication.clone().read_owned().await;
   let blob = blobs::linked::register(&directory, &path).await?;
   let id = blob.id.clone();
   let name = std::path::Path::new(&blob.path).file_name().map(|s| s.to_string_lossy().into_owned());
   super::error::blocking(move || {
+    let _publication = publication;
+    slot.require_live()?;
     super::env_aliases::Aliases::open(&directory)?.blob(&id)?;
     Ok(blobs::library::record_upload(&directory, &id, name, temporary)?)
   })
