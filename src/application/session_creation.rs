@@ -148,7 +148,7 @@ impl App {
       match first_input.prepare(&directory).await {
         Ok(message) => Some(message),
         Err(error) => {
-          let _ = tokio::fs::remove_dir_all(&directory).await;
+          super::draft_uploads::discard(self, &descriptor.id).await;
           return Err(error);
         }
       }
@@ -207,7 +207,7 @@ impl App {
     let session = match session {
       Ok(session) => session,
       Err(error) => {
-        let _ = tokio::fs::remove_dir_all(&blob_directory).await;
+        super::draft_uploads::discard(self, &descriptor.id).await;
         return Err(error);
       }
     };
@@ -227,7 +227,7 @@ impl App {
         {
           eprintln!("rolling back session initialization: {cleanup}");
         } else {
-          let _ = tokio::fs::remove_dir_all(&blob_directory).await;
+          super::draft_uploads::discard(self, &temporary.0).await;
           let _ = tokio::fs::remove_dir_all(&shell_directory).await;
           let _ = super::session_temp::remove(&temporary.0, temporary.1.as_deref()).await;
         }
@@ -251,7 +251,7 @@ impl App {
         {
           eprintln!("rolling back session placement: {cleanup}");
         } else {
-          let _ = tokio::fs::remove_dir_all(&blob_directory).await;
+          super::draft_uploads::discard(self, &temporary.0).await;
           let _ = tokio::fs::remove_dir_all(&shell_directory).await;
           let _ = super::session_temp::remove(&temporary.0, temporary.1.as_deref()).await;
         }

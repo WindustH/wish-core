@@ -301,10 +301,25 @@ impl SessionSlot {
     Ok(self.describe())
   }
   /// Queues a message for the session's next run.
-  pub async fn enqueue(&self, mut message: Message) -> Result<EntryId, ApplicationError> {
+  pub async fn enqueue(&self, message: Message) -> Result<EntryId, ApplicationError> {
+    let publication = self.blob_publication.clone().read_owned().await;
+    self.enqueue_published(message, publication).await
+  }
+  /// Keep the caller's publication guard through durable enqueue. Reacquiring a read
+  /// guard after copying peer resources could deadlock behind a waiting cleanup writer.
+  pub(super) async fn enqueue_published(
+    &self,
+    mut message: Message,
+    publication: tokio::sync::OwnedRwLockReadGuard<()>,
+  ) -> Result<EntryId, ApplicationError> {
+    self.require_live()?;
     let sender = self.sender.clone();
     super::model_images::retain_input(&self.blob_dir, &mut message).await?;
-    blocking(move || Ok(sender.enqueue_message(message)?)).await
+    blocking(move || {
+      let _publication = publication;
+      Ok(sender.enqueue_message(message)?)
+    })
+    .await
   }
   pub fn require_live(&self) -> Result<(), ApplicationError> {
     if self.deleted.load(Ordering::Acquire) { Err(ApplicationError::not_found()) } else { Ok(()) }

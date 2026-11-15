@@ -99,7 +99,7 @@ fn render_body(
     &request.conversation,
     "a system instruction can only carry text blocks on the anthropic messages wire",
   )?;
-  let messages = render_messages(rest)?;
+  let messages = render_messages(&rest)?;
   if messages.is_empty() {
     return Err(Error::Build("request has no messages".to_owned()));
   }

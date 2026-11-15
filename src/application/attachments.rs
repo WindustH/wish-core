@@ -49,6 +49,7 @@ where
   let directory = app.data_dir.blobs(owner);
   let slot = app.get_session(owner).await?;
   let publication = slot.blob_publication.clone().read_owned().await;
+  slot.require_live()?;
   let blob = blobs::save_upload_stream(&directory, stream, blobs::MAX_UPLOAD_BYTES).await?;
   let id = blob.id.clone();
   super::error::blocking(move || {
@@ -75,6 +76,7 @@ pub async fn link(
     super::error::blocking(move || super::env_aliases::Aliases::open(&dir)?.expand(&input)).await?;
   let slot = app.get_session(owner).await?;
   let publication = slot.blob_publication.clone().read_owned().await;
+  slot.require_live()?;
   let blob = blobs::linked::register(&directory, &path).await?;
   let id = blob.id.clone();
   let name = std::path::Path::new(&blob.path).file_name().map(|s| s.to_string_lossy().into_owned());
@@ -191,7 +193,13 @@ pub async fn delete(app: &Arc<App>, owner: &str, blob: &str) -> Result<(), Appli
   let directory = app.data_dir.blobs(owner);
   let blob = blob.to_owned();
   let slot = app.get_session(owner).await?;
+  let publication = slot
+    .blob_publication
+    .clone()
+    .try_write_owned()
+    .map_err(|_| ApplicationError::conflict("files are being added to this session"))?;
   super::error::blocking(move || {
+    let _publication = publication;
     slot.require_live()?;
     slot.sender.with_image_dependencies(move |images| {
       if images.contains(&blob) {

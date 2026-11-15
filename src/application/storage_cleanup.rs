@@ -191,16 +191,19 @@ fn release_unreferenced_files(
   let executions = data_dir.shell(id);
   let mut job_resources = Vec::new();
   let mut retained_artifacts = protected.clone();
+  let mut unreadable_job = false;
   if let Ok(entries) = std::fs::read_dir(blobs.join(".media-jobs")) {
     for entry in entries.flatten() {
       let path = entry.path();
       if path.extension().is_none_or(|ext| ext != "json") {
         continue;
       }
-      let Ok(bytes) = crate::utils::bounded_file::read_sync(&path, 2 * 1024 * 1024) else {
-        continue;
-      };
-      let Ok(job) = serde_json::from_slice::<Value>(&bytes) else {
+      let job = crate::utils::bounded_file::read_sync(&path, 2 * 1024 * 1024)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter(|job| job["phase"].is_string() && job["artifacts"].is_array());
+      let Some(job) = job else {
+        unreadable_job = true;
         continue;
       };
       let terminal =
@@ -248,7 +251,7 @@ fn release_unreferenced_files(
   // metadata with the bytes. A concurrent add-to-Library operation cannot be lost.
   let candidates = names
     .iter()
-    .filter(|name| is_blob_id(name) && !retained_artifacts.contains(*name))
+    .filter(|name| !unreadable_job && is_blob_id(name) && !retained_artifacts.contains(*name))
     .cloned()
     .collect();
   let blobs_released = crate::storage::blobs::library::release_hidden(&blobs, &candidates, apply)

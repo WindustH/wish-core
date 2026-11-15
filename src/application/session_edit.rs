@@ -163,6 +163,11 @@ pub async fn delete(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
   let mut session = slot.lock_idle().await.ok_or_else(|| {
     ApplicationError::conflict("interrupt and wait for the session before deleting")
   })?;
+  let publication = slot
+    .blob_publication
+    .clone()
+    .try_write_owned()
+    .map_err(|_| ApplicationError::conflict("files are being added to this session"))?;
   slot.require_live()?;
   slot.tools.background.shutdown().await;
   if let Some(shell) = slot.tools.tasks() {
@@ -170,11 +175,11 @@ pub async fn delete(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
   }
   app.mcp.close_session(id);
   let (management, target, deleted) = (app.management.clone(), id.to_owned(), slot.clone());
-  blocking(move || {
+  let _publication = blocking(move || {
     session.delete()?;
     deleted.mark_deleted();
     management.delete(&target)?;
-    Ok(())
+    Ok(publication)
   })
   .await?;
   app.sessions.lock().await.remove(id);

@@ -15,42 +15,67 @@ struct Row {
   id: String,
   linked_blob: Option<super::Blob>,
 }
-// Blob publication and link registration use atomic renames. Directory revision changes
-// invalidate this bounded index; linked source contents are still inspected on each page.
+// Explicit invalidation complements directory mtime on filesystems with coarse timestamps.
 struct Index {
   directory: PathBuf,
   revision: SystemTime,
   files: Arc<Vec<Row>>,
 }
-static INDEX: LazyLock<Mutex<VecDeque<Index>>> = LazyLock::new(|| Mutex::new(VecDeque::new()));
+#[derive(Default)]
+struct Cache {
+  epoch: u64,
+  entries: VecDeque<Index>,
+}
+static INDEX: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(Cache::default()));
+
+/// Invalidate even after a partially completed mutation. The epoch prevents an older
+/// concurrent scan from republishing stale rows after this guard has been dropped.
+pub(crate) struct Mutation<'a>(pub &'a Path);
+impl Drop for Mutation<'_> {
+  fn drop(&mut self) {
+    let mut cache = INDEX.lock().unwrap_or_else(|error| error.into_inner());
+    cache.epoch = cache.epoch.wrapping_add(1);
+    cache.entries.retain(|item| item.directory != self.0);
+  }
+}
 fn revision(directory: &Path) -> Option<SystemTime> {
   std::fs::metadata(directory).ok()?.modified().ok()
 }
 fn indexed(directory: &Path) -> Result<Arc<Vec<Row>>, RepositoryError> {
   let before = revision(directory);
-  if let Some(revision) = before {
-    let mut cache =
-      INDEX.lock().map_err(|_| RepositoryError::internal("catalog index lock poisoned"))?;
-    if let Some(position) =
-      cache.iter().position(|item| item.directory == directory && item.revision == revision)
+  let epoch = {
+    let mut cache = INDEX.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(revision) = before
+      && let Some(position) = cache
+        .entries
+        .iter()
+        .position(|item| item.directory == directory && item.revision == revision)
     {
-      let item = cache.remove(position).expect("located index");
+      let item = cache.entries.remove(position).expect("located index");
       let files = item.files.clone();
-      cache.push_back(item);
+      cache.entries.push_back(item);
       return Ok(files);
     }
-  }
+    cache.epoch
+  };
   let files = Arc::new(scan(directory)?);
   if let Some(before) = before
     && Some(before) == revision(directory)
     && files.len() <= 8192
   {
-    let mut cache =
-      INDEX.lock().map_err(|_| RepositoryError::internal("catalog index lock poisoned"))?;
-    cache.retain(|item| item.directory != directory);
-    cache.push_back(Index { directory: directory.into(), revision: before, files: files.clone() });
-    while cache.len() > 64 || cache.iter().map(|item| item.files.len()).sum::<usize>() > 8192 {
-      cache.pop_front();
+    let mut cache = INDEX.lock().unwrap_or_else(|error| error.into_inner());
+    if cache.epoch == epoch {
+      cache.entries.retain(|item| item.directory != directory);
+      cache.entries.push_back(Index {
+        directory: directory.into(),
+        revision: before,
+        files: files.clone(),
+      });
+      while cache.entries.len() > 64
+        || cache.entries.iter().map(|item| item.files.len()).sum::<usize>() > 8192
+      {
+        cache.entries.pop_front();
+      }
     }
   }
   Ok(files)

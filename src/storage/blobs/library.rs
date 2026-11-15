@@ -223,6 +223,7 @@ pub fn delete(directory: &Path, id: &str) -> Result<(), RepositoryError> {
   let lock = WRITES.get(directory.to_path_buf());
   let _guard = lock.lock().map_err(RepositoryError::internal)?;
   let mut library = read(directory)?;
+  let _catalog = super::catalog::Mutation(directory);
   let mut removed = false;
   for path in [directory.join(id), super::description_path(directory, id)] {
     match std::fs::remove_file(path) {

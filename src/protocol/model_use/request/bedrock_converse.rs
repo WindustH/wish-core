@@ -69,7 +69,7 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   if !system.is_empty() {
     body.insert("system".into(), Value::Array(system));
   }
-  body.insert("messages".into(), Value::Array(render_messages(conversation)?));
+  body.insert("messages".into(), Value::Array(render_messages(&conversation)?));
   if !request.tools.is_empty() {
     let mut tool_config = Map::new();
     tool_config

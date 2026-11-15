@@ -147,6 +147,7 @@ impl Aliases {
   /// Share immutable stored bytes (hard-link when possible) and preserve linked-file descriptors.
   /// The recipient's blob variables must resolve to files in its own namespace.
   fn copy_blob(&self, source: &Aliases, id: &str) -> Result<bool, ApplicationError> {
+    let _catalog = blobs::catalog::Mutation(&self.directory);
     let from = source.directory.join(id);
     let to = self.directory.join(id);
     let mut found = false;

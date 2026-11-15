@@ -39,7 +39,7 @@
 //!   modeled.
 
 use crate::protocol::error::Error;
-use crate::protocol::model_use::request::split_leading_instructions;
+use crate::protocol::model_use::request::split_turn_instructions;
 use crate::protocol::{
   ContentBlock, Message, ReasoningConfig, ReasoningOpaqueKind, ReasoningSummary, Request, Tool,
   ToolChoice,
@@ -55,11 +55,11 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   body.insert("stream".into(), json!(request.stream));
   // The wire takes the leading instruction run at the top level; an instruction past it becomes
   // user input inside `render_steps`.
-  let (instruction, rest) = split_leading_instructions(
+  let (instruction, rest) = split_turn_instructions(
     &request.conversation,
     "instruction can only carry text blocks on the interactions wire",
   )?;
-  body.insert("input".into(), Value::Array(render_steps(rest)?));
+  body.insert("input".into(), Value::Array(render_steps(&rest)?));
   let instruction: Vec<&str> = instruction.into_iter().flatten().collect();
   if !instruction.is_empty() {
     body.insert("system_instruction".into(), json!(instruction.join("\n")));

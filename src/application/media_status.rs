@@ -8,12 +8,14 @@ pub async fn status(
   kind: String,
   job: String,
 ) -> Result<Value, ApplicationError> {
-  let _slot = app.get_session(&session).await?;
+  let slot = app.get_session(&session).await?;
   let (hub, video) = match kind.as_str() {
     "video" => (&app.videos, true),
     "audio" => (&app.audio, false),
     _ => return Err(ApplicationError::not_found()),
   };
+  let _publication = slot.blob_publication.clone().read_owned().await;
+  slot.require_live()?;
   let directory = app.data_dir.blobs(&session);
   let accounts = app.get_service_accounts();
   app

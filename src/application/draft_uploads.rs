@@ -30,6 +30,17 @@ impl DraftInventory {
     self.sizes.remove(id);
   }
 }
+/// Session initialization can fail after normalizing or adopting draft files. Reconcile
+/// the ledger immediately on successful removal, or on the next admission after an I/O error.
+pub(super) async fn discard(app: &App, id: &str) {
+  let removed = tokio::fs::remove_dir_all(app.data_dir.blobs(id)).await;
+  let mut inventory = app.drafts.lock().await;
+  match removed {
+    Ok(()) => inventory.adopted(id),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => inventory.adopted(id),
+    Err(_) => inventory.dirty.store(true, Ordering::SeqCst),
+  }
+}
 // Only uploads/adoption for the same UUID wait for its network stream.
 pub(super) async fn lock_owner(app: &Arc<App>, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
   let lock = {
@@ -138,9 +149,7 @@ where
   let accepted = blocking(move || Ok(management.exists(&owner)?)).await?;
   if accepted {
     drop(inventory);
-    return Ok(
-      blobs::save_upload_stream(&app.data_dir.blobs(&id), stream, blobs::MAX_UPLOAD_BYTES).await?,
-    );
+    return super::attachments::upload_stream(app, &id, stream, false, None).await;
   }
   let count = inventory.sizes.len() - usize::from(inventory.sizes.contains_key(&id));
   let bytes = inventory.sizes.values().copied().fold(0u64, u64::saturating_add).saturating_add(

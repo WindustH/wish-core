@@ -341,9 +341,11 @@ pub async fn submit_input(
 ) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
+  let publication = slot.blob_publication.clone().read_owned().await;
+  slot.require_live()?;
   let message = input::message(&app.data_dir.blobs(&id), input).await?;
   // Queue the message before releasing the foreground wait, so the next model step sees it.
-  let entry = slot.enqueue(message).await?;
+  let entry = slot.enqueue_published(message, publication).await?;
   let touched = slot.clone();
   if let Err(error) = blocking(move || touched.touch()).await {
     eprintln!("indexing queued input: {error}");

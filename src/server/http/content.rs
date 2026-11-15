@@ -90,7 +90,7 @@ pub async fn cleanup_library(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
   Json(input): Json<crate::application::library_cleanup::CleanupRequest>,
-) -> Result<Json<crate::storage::blobs::library::Cleanup>, ApiError> {
+) -> Result<Json<crate::application::library_cleanup::CleanupResult>, ApiError> {
   Ok(Json(crate::application::library_cleanup::cleanup(&app, &id, input).await?))
 }
 pub async fn delete(

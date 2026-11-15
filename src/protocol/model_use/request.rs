@@ -222,6 +222,8 @@ pub(crate) fn split_leading_instructions<'a>(
   Ok((run, rest))
 }
 
+type TurnInstructions<'a> = (Vec<Vec<&'a str>>, std::borrow::Cow<'a, [Message]>);
+
 /// Turn-based wires need user input before the first model turn. Compaction can leave
 /// a continuation instruction followed directly by retained tool calls or assistant text.
 /// Keep the last unpinned instruction in the conversation in that case, where these
@@ -230,7 +232,7 @@ pub(crate) fn split_leading_instructions<'a>(
 pub(crate) fn split_turn_instructions<'a>(
   conversation: &'a [Message],
   refusal: &str,
-) -> Result<(Vec<Vec<&'a str>>, &'a [Message]), Error> {
+) -> Result<TurnInstructions<'a>, Error> {
   let (mut run, rest) = split_leading_instructions(conversation, refusal)?;
   if rest.is_empty()
     || matches!(
@@ -245,11 +247,19 @@ pub(crate) fn split_turn_instructions<'a>(
       // Instruction-only requests still need a turn, even when all instructions are fixed.
       .or_else(|| rest.is_empty().then(|| prefix.checked_sub(1)).flatten());
     if let Some(boundary) = boundary {
-      run.truncate(boundary);
-      return Ok((run, &conversation[boundary..]));
+      run.remove(boundary);
+      let turns = if boundary + 1 == prefix {
+        std::borrow::Cow::Borrowed(&conversation[boundary..])
+      } else {
+        // A fixed instruction following the continuation stays in the system field.
+        std::borrow::Cow::Owned(
+          std::iter::once(conversation[boundary].clone()).chain(rest.iter().cloned()).collect(),
+        )
+      };
+      return Ok((run, turns));
     }
   }
-  Ok((run, rest))
+  Ok((run, std::borrow::Cow::Borrowed(rest)))
 }
 
 /// The text blocks of one instruction message, in order; any other block is refused with

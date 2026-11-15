@@ -51,7 +51,7 @@ pub fn render(request: &Request) -> Result<Value, Error> {
     &request.conversation,
     "a system instruction can only carry text blocks on the generateContent wire",
   )?;
-  let mut contents = render_contents(rest)?;
+  let mut contents = render_contents(&rest)?;
   // Gemini 3+ validates the first call of each tool step. Imported history has no
   // Google proof; use its documented migration marker only where that proof is
   // absent. Never overwrite a signature or stamp the unsigned parallel siblings.

@@ -5,7 +5,7 @@ use super::{
   session::SessionSlot,
 };
 use crate::{protocol::Message, storage::blobs::library};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
   collections::{BTreeMap, HashSet},
@@ -20,6 +20,13 @@ pub struct CleanupRequest {
   #[serde(default)]
   pub dry_run: bool,
   pub ids: Option<HashSet<String>>,
+}
+
+#[derive(Serialize)]
+pub struct CleanupResult {
+  #[serde(flatten)]
+  files: library::Cleanup,
+  unreadable_jobs: u64,
 }
 
 fn collect_aliases(
@@ -72,7 +79,7 @@ pub async fn cleanup(
   app: &Arc<App>,
   owner: &str,
   request: CleanupRequest,
-) -> Result<library::Cleanup, ApplicationError> {
+) -> Result<CleanupResult, ApplicationError> {
   app.lifecycle.require_open()?;
   if !request.missing_links && !request.unused_hidden {
     return Err(ApplicationError::invalid("choose at least one Library cleanup option"));
@@ -111,6 +118,7 @@ pub async fn cleanup(
       return Err(ApplicationError::conflict("session is running"));
     }
     with_dependencies(&slot, move |mut retained| {
+      let mut unreadable_jobs = 0;
       match std::fs::read_dir(directory.join(".media-jobs")) {
         Ok(entries) => {
           for entry in entries {
@@ -118,9 +126,15 @@ pub async fn cleanup(
             if path.extension().is_none_or(|ext| ext != "json") {
               continue;
             }
-            let bytes = crate::utils::bounded_file::read_sync(&path, 2 * 1024 * 1024)
-              .map_err(ApplicationError::internal)?;
-            let job: Value = serde_json::from_slice(&bytes).map_err(ApplicationError::internal)?;
+            let job = crate::utils::bounded_file::read_sync(&path, 2 * 1024 * 1024)
+              .ok()
+              .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+              .filter(|job| job["phase"].is_string() && job["artifacts"].is_array());
+            let Some(job) = job else {
+              // Ignoring a damaged record's dependencies could erase an unfinished result.
+              unreadable_jobs += 1;
+              continue;
+            };
             if !matches!(job["phase"].as_str(), Some("succeeded" | "failed" | "outcome_unknown")) {
               for artifact in job["artifacts"].as_array().into_iter().flatten() {
                 if let Some(id) = artifact["id"].as_str() {
@@ -133,16 +147,18 @@ pub async fn cleanup(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(ApplicationError::internal(error)),
       }
-      Ok(library::cleanup(
+      let files = library::cleanup(
         &directory,
         &retained,
         library::CleanupOptions {
           missing_links: request.missing_links,
           unused_hidden: request.unused_hidden,
+          retain_all: unreadable_jobs > 0,
           ids: request.ids.as_ref(),
         },
         !request.dry_run,
-      )?)
+      )?;
+      Ok(CleanupResult { files, unreadable_jobs })
     })?
   })
   .await

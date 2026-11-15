@@ -337,15 +337,18 @@ pub(super) async fn send_inner(
   let sender_id = mine.id.clone();
   let source_aliases = slot.aliases.clone();
   let text = input.text;
-  let (sender_alias, text) =
-    blocking(move || Ok((aliases.session(&sender_id)?, aliases.receive(&source_aliases, &text)?)))
-      .await?;
+  let publication = recipient.blob_publication.clone().read_owned().await;
+  recipient.require_live()?;
+  let (sender_alias, text, publication) = blocking(move || {
+    Ok((aliases.session(&sender_id)?, aliases.receive(&source_aliases, &text)?, publication))
+  })
+  .await?;
   let heading =
     format!("[Message from session {} ({sender_alias})]\n", serde_json::json!(display_name(&mine)));
-  let queued = recipient.enqueue(Message::User {
+  let queued = recipient.enqueue_published(Message::User {
     metadata: json!({"source":"session_message", "from": {"kind":"session", "id":mine.id, "name":display_name(&mine)}}),
     content: vec![ContentBlock::Text { text: format!("{heading}{text}") }],
-  }).await?;
+  }, publication).await?;
   // Schedule immediately after durable enqueue; optional index refresh must not lose delivery.
   recipient.schedule(&app);
   let touched = recipient.clone();

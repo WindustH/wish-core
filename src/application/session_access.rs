@@ -106,10 +106,10 @@ async fn command(
   let outcome = super::env_aliases::shorten_outcome(&slot, outcome).await;
   trace.finish(&outcome).await?;
   match result {
-    Ok(mut value) => {
-      slot.aliases.shorten_value(&mut value);
-      Ok(value)
-    }
+    Ok(value) => Ok(match outcome {
+      ToolOutcome::SuccessWithProjection { model_output, .. } => model_output,
+      _ => value,
+    }),
     Err(error) => Err(error),
   }
 }

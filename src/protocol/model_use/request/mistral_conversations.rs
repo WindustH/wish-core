@@ -43,7 +43,7 @@ use serde_json::{Map, Value, json};
 use crate::protocol::error::Error;
 use crate::protocol::model_use::message::image_data_url;
 use crate::protocol::model_use::mistral_chunks::render_thinking_chunk;
-use crate::protocol::model_use::request::split_leading_instructions;
+use crate::protocol::model_use::request::split_turn_instructions;
 use crate::protocol::model_use::tool::tool_result_text;
 use crate::protocol::{ContentBlock, Message, ReasoningConfig, Request, Tool, ToolChoice};
 
@@ -60,7 +60,7 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   if request.stream {
     body.insert("stream".into(), json!(true));
   }
-  let (instructions, rest) = split_leading_instructions(
+  let (instructions, rest) = split_turn_instructions(
     &request.conversation,
     "a system or developer message can only carry text blocks on the conversations wire",
   )?;
@@ -82,7 +82,7 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   if !completion.is_empty() {
     body.insert("completion_args".into(), Value::Object(completion));
   }
-  body.insert("inputs".into(), Value::Array(render_inputs(rest)?));
+  body.insert("inputs".into(), Value::Array(render_inputs(&rest)?));
   Ok(Value::Object(body))
 }
 

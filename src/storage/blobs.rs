@@ -87,6 +87,7 @@ where
   file.sync_all().await.map_err(RepositoryError::internal)?;
   drop(file);
   let id = format!("{:x}", hash.finalize());
+  let _catalog = catalog::Mutation(directory);
   let path = directory.join(&id);
   tokio::fs::rename(&temporary.0, &path).await.map_err(RepositoryError::internal)?;
   let blob = Blob {
@@ -150,6 +151,7 @@ fn write_image(directory: &Path, id: &str, bytes: &[u8]) -> Result<PathBuf, Repo
   if std::fs::metadata(&path).is_ok_and(|meta| meta.len() == bytes.len() as u64) {
     return Ok(path);
   }
+  let _catalog = catalog::Mutation(directory);
   let temporary = directory.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
   std::fs::create_dir_all(directory)
     .and_then(|_| std::fs::write(&temporary, bytes))

@@ -60,6 +60,7 @@ where
       .map_err(RepositoryError::invalid)?;
   }
   let id = format!("{:x}", hash.finalize());
+  let _catalog = super::blobs::catalog::Mutation(directory);
   let path = directory.join(&id);
   tokio::fs::rename(&temporary.0, &path).await.map_err(RepositoryError::internal)?;
   let blob = Blob {
@@ -73,12 +74,11 @@ where
       .to_string_lossy()
       .into_owned(),
   };
-  let meta = Temporary(directory.join(format!(".{}.json.tmp", uuid::Uuid::new_v4())));
-  tokio::fs::write(&meta.0, serde_json::to_vec(&blob).map_err(RepositoryError::internal)?)
-    .await
-    .map_err(RepositoryError::internal)?;
-  tokio::fs::rename(&meta.0, description_path(directory, &id))
-    .await
-    .map_err(RepositoryError::internal)?;
+  super::blobs::atomic_write(
+    &description_path(directory, &id),
+    &serde_json::to_vec(&blob).map_err(RepositoryError::internal)?,
+  )
+  .await
+  .map_err(RepositoryError::internal)?;
   Ok(blob)
 }

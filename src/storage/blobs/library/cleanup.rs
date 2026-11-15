@@ -17,6 +17,8 @@ pub struct Cleanup {
 pub struct CleanupOptions<'a> {
   pub missing_links: bool,
   pub unused_hidden: bool,
+  /// The caller could not establish resource ownership; preserve every candidate.
+  pub retain_all: bool,
   /// Restrict application to the reviewed set; eligibility is still checked again.
   pub ids: Option<&'a HashSet<String>>,
 }
@@ -30,6 +32,7 @@ pub fn cleanup(
   let lock = WRITES.get(directory.to_path_buf());
   let _guard = lock.lock().map_err(RepositoryError::internal)?;
   let mut library = read(directory)?;
+  let _catalog = apply.then(|| crate::storage::blobs::catalog::Mutation(directory));
   let mut ids = BTreeSet::new();
   match std::fs::read_dir(directory) {
     Ok(entries) => {
@@ -45,6 +48,14 @@ pub fn cleanup(
     Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Cleanup::default()),
     Err(error) => return Err(RepositoryError::internal(error)),
   }
+  ids.extend(
+    library
+      .entries
+      .keys()
+      .chain(library.locations.keys())
+      .filter(|id| is_blob_id(id) && options.ids.is_none_or(|ids| ids.contains(*id)))
+      .cloned(),
+  );
   let mut result = Cleanup::default();
   for id in ids {
     let path = directory.join(&id);
@@ -88,16 +99,13 @@ pub fn cleanup(
       Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
       Err(error) => return Err(RepositoryError::internal(error)),
     }
-    if paths.is_empty() {
-      continue;
-    }
     let broken = options.missing_links && missing_link;
     let hidden =
       options.unused_hidden && !library.entries.get(&id).is_some_and(|entry| entry.visible);
     if !broken && !hidden {
       continue;
     }
-    if retained.contains(&id) {
+    if options.retain_all || retained.contains(&id) {
       result.protected += 1;
       continue;
     }
@@ -138,7 +146,7 @@ pub fn release_hidden(
   cleanup(
     directory,
     &HashSet::new(),
-    CleanupOptions { missing_links: false, unused_hidden: true, ids: Some(ids) },
+    CleanupOptions { missing_links: false, unused_hidden: true, retain_all: false, ids: Some(ids) },
     apply,
   )
 }

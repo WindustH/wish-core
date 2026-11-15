@@ -29,6 +29,7 @@ pub async fn register(directory: &Path, path: &str) -> Result<Blob, RepositoryEr
   let id = blob_id(format!("wish-local-file\0{path}").as_bytes());
   let blob = describe(&id, path).await?;
   tokio::fs::create_dir_all(directory).await.map_err(RepositoryError::internal)?;
+  let _catalog = catalog::Mutation(directory);
   atomic_write(
     &description_path(directory, &id),
     &serde_json::to_vec(&blob).map_err(RepositoryError::internal)?,
