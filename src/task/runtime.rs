@@ -25,6 +25,8 @@ use tokio::{
   sync::{mpsc, watch},
 };
 
+const INPUT_BACKGROUND_GRACE: Duration = Duration::from_secs(1);
+
 /// Share one instance within a session, including across executor::run invocations. Its registry
 /// lock covers lookup, and spawn plus registration so shutdown never misses a started process; no
 /// asynchronous I/O runs under that lock.
@@ -347,7 +349,17 @@ impl TaskManager {
         }
         _ = async { let _ = detached.wait_for(|value| *value).await; } => break "backgrounded",
         arrived = async {
-          match input.as_mut() { Some(input) => input.await, None => std::future::pending().await }
+          match input.as_mut() {
+            Some(input) => {
+              input.await?;
+              // Give a short read/write time to finish inline after new input arrives.
+              // Exit, cancellation, explicit detachment and the hard deadline still race
+              // this single grace timer; later arrivals do not restart it.
+              tokio::time::sleep(INPUT_BACKGROUND_GRACE).await;
+              Ok::<(), String>(())
+            }
+            None => std::future::pending().await,
+          }
         } => {
           match arrived {
             Ok(()) => { self.background(&task.id).await?; yielded_for_input = true; break "backgrounded"; }
