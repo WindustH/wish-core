@@ -136,9 +136,7 @@ under a per-directory initialization lock; normal reads never open other databas
 
 ## Architecture maintenance and validation
 
-See [the audit follow-up](architecture-audit-followup.md) for capability registration, explicit
-process-runtime ownership, typed list read models, queue-size publication and compatibility
-choices. The serialized session/protocol IR belongs to the storage format contract; incompatible
+The serialized session/protocol IR belongs to the storage format contract; incompatible
 changes require migration, even when the Rust type is under `protocol/`.
 
 Validation uses formatting, Clippy, builds, dependency-boundary checks and the separate `wish-test`
