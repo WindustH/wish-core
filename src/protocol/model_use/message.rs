@@ -86,6 +86,11 @@ pub enum Message {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     opaque_kind: Option<ReasoningOpaqueKind>,
 
+    /// The model that produced this reasoning. Sessions recover this from the originating
+    /// call for older entries. Local provenance only; never part of an upstream message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_model: Option<String>,
+
     /// The readable thinking text the wire gave and gets back: `thinking`, `reasoningText.text`,
     /// `reasoning_content`, `reasoning_text` content, a thought part.
     plaintext: String,
@@ -159,6 +164,7 @@ impl Message {
       metadata: Value::Null,
       replay_item: None,
       opaque_kind: None,
+      source_model: None,
       display: text.clone(),
       plaintext: text,
       signature: String::new(),
@@ -177,6 +183,7 @@ impl Message {
       metadata: Value::Null,
       replay_item: None,
       opaque_kind: (!signature.is_empty()).then_some(kind),
+      source_model: None,
       display: text.clone(),
       plaintext: text,
       signature,
@@ -191,6 +198,7 @@ impl Message {
       metadata: Value::Null,
       replay_item: None,
       opaque_kind: Some(kind),
+      source_model: None,
       plaintext: String::new(),
       display: String::new(),
       signature: String::new(),

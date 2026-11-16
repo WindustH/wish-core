@@ -5,7 +5,7 @@ use crate::executor::{ExecutionControl, model::ModelCaller};
 use crate::{
   protocol::error::Error,
   protocol::{Request, model_use::context::find_replay_unit_boundaries},
-  session::{CompactionReason, EntryId, GenerationId, Session, SessionError},
+  session::{CompactionReason, EntryId, GenerationId, Session},
 };
 
 const MAX_COUNT_PROBES: usize = 8;
@@ -40,16 +40,7 @@ fn build_candidate(
   } else {
     (original.clone(), (active.compaction_cursor as usize).max(kept))
   };
-  request.conversation = entries
-    .iter()
-    .map(|id| {
-      session
-        .reader()
-        .get_entry(*id)?
-        .map(|entry| entry.message.clone())
-        .ok_or(SessionError::InvalidEntry(*id))
-    })
-    .collect::<Result<Vec<_>, _>>()?;
+  request.conversation = session.build_request_from_entries(entries.clone())?.conversation;
   Ok(Candidate { generation: active.id, original, entries, compaction_cursor, request })
 }
 

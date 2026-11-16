@@ -87,6 +87,7 @@ pub(crate) fn decode_reasoning(item: &Value) -> Option<Message> {
     metadata: Default::default(),
     replay_item: None,
     opaque_kind: (!ciphertext.is_empty()).then_some(ReasoningOpaqueKind::OpenAiEncrypted),
+    source_model: None,
     plaintext,
     display,
     signature: String::new(),

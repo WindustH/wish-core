@@ -9,7 +9,7 @@ pub use entry::{Entry, EntryId, EntryOrigin};
 pub use event::SessionEvent;
 
 use super::persistence::SessionTransaction;
-use super::statistics::ModelCallId;
+use super::statistics::{ModelCallId, ModelCallRecord};
 use super::{GenerationId, Session, SessionError};
 use crate::protocol::Message;
 use crate::utils::time::Timestamp;
@@ -99,13 +99,24 @@ impl SessionTransaction<'_, '_> {
   ) -> Result<EntryId, SessionError> {
     Ok(self.create_entry(message, origin)?.id)
   }
-  fn create_entry(&mut self, message: Message, origin: EntryOrigin) -> Result<Entry, SessionError> {
+  fn create_entry(
+    &mut self,
+    mut message: Message,
+    origin: EntryOrigin,
+  ) -> Result<Entry, SessionError> {
+    let model_call_id = if origin.carries_call() { self.record.active_model_call } else { None };
+    if let Message::Reasoning { source_model, .. } = &mut message
+      && let Some(id) = model_call_id
+      && let Some(call) = self.store.get_item::<ModelCallRecord>(&self.record.model_calls, id.0)?
+    {
+      *source_model = Some(call.model.clone());
+    }
     let entry = Entry {
       id: EntryId(self.store.list_len::<Entry>(&self.record.entries)? as usize),
       origin,
       message,
       recorded_at: self.recorded_at,
-      model_call_id: if origin.carries_call() { self.record.active_model_call } else { None },
+      model_call_id,
     };
     self.store.append_item(&self.record.entries, &entry)?;
     Ok(entry)

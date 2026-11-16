@@ -80,6 +80,7 @@ fn decode_thought(step: &Value) -> Message {
     metadata: Default::default(),
     replay_item: Some(step.clone()),
     opaque_kind: Some(ReasoningOpaqueKind::GoogleInteractionsThought),
+    source_model: None,
     plaintext: plaintext.clone(),
     display: plaintext,
     signature: step.get("signature").and_then(Value::as_str).unwrap_or("").to_owned(),

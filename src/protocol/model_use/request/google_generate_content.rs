@@ -51,7 +51,7 @@ pub fn render(request: &Request) -> Result<Value, Error> {
     &request.conversation,
     "a system instruction can only carry text blocks on the generateContent wire",
   )?;
-  let mut contents = render_contents(&rest)?;
+  let mut contents = render_contents(&rest, &request.model)?;
   // Gemini 3+ validates the first call of each tool step. Imported history has no
   // Google proof; use its documented migration marker only where that proof is
   // absent. Never overwrite a signature or stamp the unsigned parallel siblings.
@@ -146,7 +146,7 @@ fn render_thinking_config(config: &ReasoningConfig) -> Result<Option<Value>, Err
   Ok(Some(Value::Object(thinking)))
 }
 
-fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
+fn render_contents(conversation: &[Message], model: &str) -> Result<Vec<Value>, Error> {
   let mut contents = AlternatingTurns::default();
   // The calls of the last model turn that still wait for their results, as (id, name).
   let mut pending: Vec<(String, String)> = Vec::new();
@@ -173,7 +173,7 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
         if let Some((_, name)) = pending.first() {
           return Err(build_missing_result_error(name));
         }
-        let (parts, used) = render_model_turn(rest, &mut pending)?;
+        let (parts, used) = render_model_turn(rest, &mut pending, model)?;
         contents.push("model", parts);
         used
       }
@@ -202,6 +202,7 @@ fn render_contents(conversation: &[Message]) -> Result<Vec<Value>, Error> {
 fn render_model_turn(
   messages: &[Message],
   pending: &mut Vec<(String, String)>,
+  model: &str,
 ) -> Result<(Vec<Value>, usize), Error> {
   let mut parts: Vec<Value> = Vec::new();
   let mut signature: Option<String> = None;
@@ -216,7 +217,17 @@ fn render_model_turn(
   let mut used = 0;
   for message in messages {
     match message {
-      Message::Reasoning { plaintext, signature: proof, opaque_kind, .. } => {
+      Message::Reasoning { plaintext, signature: proof, opaque_kind, source_model, .. } => {
+        // A shared wire is not a shared signing authority: Antigravity serves
+        // Gemini, Claude and GPT-OSS. Keep each model's proofs on its own history.
+        if source_model
+          .as_deref()
+          .is_some_and(|source| model_identity(source) != model_identity(model))
+        {
+          signature = None;
+          used += 1;
+          continue;
+        }
         let proof = ReasoningOpaqueKind::material_if_kind(
           *opaque_kind,
           ReasoningOpaqueKind::GoogleSignature,
@@ -261,6 +272,12 @@ fn render_model_turn(
     used += 1;
   }
   Ok((parts, used))
+}
+
+fn model_identity(model: &str) -> &str {
+  let model = model.rsplit('/').next().unwrap_or(model);
+  // The catalog exposes these deployments as reasoning modes of one logical model.
+  crate::protocol::model_list::antigravity::variant(model).map_or(model, |(base, _)| base)
 }
 
 /// The results at the head of `results`, which must answer the `pending` calls one by one and in

@@ -251,6 +251,7 @@ impl Block {
   /// format of its opaque material is what `replay` - the producing protocol's rules - says it is.
   fn into_reasoning(self, replay: &ReasoningReplay) -> Message {
     Message::Reasoning {
+      source_model: None,
       metadata: Default::default(),
       opaque_kind: replay.classify_material(
         &self.signature,
