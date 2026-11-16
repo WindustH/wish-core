@@ -155,6 +155,9 @@ impl SessionTools {
   pub fn tasks(&self) -> Option<&crate::task::TaskManager> {
     self.tasks.get()
   }
+  pub(super) fn update_working_directory(&self, cwd: std::path::PathBuf) {
+    *self.shell_config.cwd.write().unwrap() = cwd;
+  }
   /// The shell tool, once it has been switched on.
   pub fn shell(&self) -> Option<ShellTool> {
     self.tasks.get().cloned().map(ShellTool::from_tasks)
@@ -192,7 +195,13 @@ impl SessionTools {
     let Some(shell) = self.shell().filter(|_| self.shell_on.load(Ordering::Acquire)) else {
       return ToolOutcome::Failed("shell is not enabled for this session".into());
     };
-    let epoch = self.slot.upgrade().map(|slot| slot.get_schedule_epoch());
+    let Some(slot) = self.slot.upgrade() else {
+      return ToolOutcome::Failed("the session is closed".into());
+    };
+    if let Err(error) = slot.ensure_working_directory().await {
+      return ToolOutcome::Failed(error.to_string());
+    }
+    let epoch = Some(slot.get_schedule_epoch());
     let outcome = shell.execute(call, control).await;
     if let ToolOutcome::Success(output)
     | ToolOutcome::SuccessWithMetadata { output, .. }
@@ -603,23 +612,6 @@ impl SessionSlot {
       self.environment_notice(&next, &self.get_descriptor().cwd)?;
     }
     *self.effective_shell.write().unwrap() = next;
-    Ok(())
-  }
-  pub fn set_working_directory(&self, cwd: std::path::PathBuf) -> Result<(), ApplicationError> {
-    let cwd =
-      std::fs::canonicalize(cwd).map_err(|error| ApplicationError::invalid(error.to_string()))?;
-    if !cwd.is_dir() {
-      return Err(ApplicationError::invalid("cwd must be a directory"));
-    }
-    if self.get_descriptor().cwd == cwd {
-      return Ok(());
-    }
-    self.edit_descriptor(None, |descriptor| {
-      descriptor.cwd = cwd.clone();
-      Ok(())
-    })?;
-    self.environment_notice(&self.effective_shell.read().unwrap(), &cwd)?;
-    *self.tools.shell_config.cwd.write().unwrap() = cwd;
     Ok(())
   }
 }

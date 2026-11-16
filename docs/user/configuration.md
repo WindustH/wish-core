@@ -131,6 +131,8 @@ New sessions copy their starting settings from `defaults`:
 - **Execution policy (`defaults.run`)**: `tools` (`"Parallel"` by default, or `"Serial"`) and `background_tools_on_input` (`true`). When you send new input, foreground shell commands get up to one second to finish and return their results inline; commands still running then continue in the background. Explicit background requests, interruption, and hard timeouts remain immediate.
 - **Compaction (`defaults.compaction`)**: Set `trigger_tokens`, `target_tokens` (`< trigger_tokens`), `segment_tokens`, and optional fallback `estimator` (`bytes_per_token: 4.0`, `image_tokens: 2048`). Leave unset (`null`) to disable automatic compaction.
 
+If a session's working directory disappears, Wish checks it when reopening the session, before model turns, and before starting shell commands. It switches the session to the current `defaults.cwd`, saves that change, and tells the model which directory disappeared and where subsequent commands will run. It does not recreate the missing directory. If the default is also unavailable, execution reports an error; history remains accessible and you can choose an existing directory in session settings.
+
 ### Tools and delivery modes (`defaults.tools`)
 
 Each capability has an enable toggle and, for CLI-capable tools, a delivery mode (`"command"` for `wish <subcommand>` inside the shell, or `"tool"` for a direct model function tool). If `shell` is turned off, enabled capabilities automatically fall back to direct tool delivery.

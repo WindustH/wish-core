@@ -74,7 +74,7 @@ impl ModelCaller for SwitchingModel {
 }
 
 pub struct SelectionBoundary<'a> {
-  pub slot: &'a SessionSlot,
+  pub slot: &'a Arc<SessionSlot>,
   pub model: &'a SwitchingModel,
 }
 impl RunBoundary for SelectionBoundary<'_> {
@@ -85,7 +85,14 @@ impl RunBoundary for SelectionBoundary<'_> {
     delivered: &mut u64,
     observe: &mut (impl FnMut(&SessionEvent) + Send),
   ) -> Result<BoundaryResult, SessionError> {
-    self.slot.apply_selection(session, self.model, control, delivered, observe).await
+    if control.is_cancelled() {
+      return Ok(BoundaryResult::Interrupted);
+    }
+    let migrated = self.slot.ensure_working_directory().await.map_err(boundary_error)?;
+    match self.slot.apply_selection(session, self.model, control, delivered, observe).await? {
+      BoundaryResult::Unchanged if migrated => Ok(BoundaryResult::Changed),
+      result => Ok(result),
+    }
   }
 }
 

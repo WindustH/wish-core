@@ -88,6 +88,9 @@ pub(crate) async fn execute(
   if !slot.get_descriptor().tools.shell && (!user_request || launches) {
     return Err(ApplicationError::conflict("shell is disabled for this session"));
   }
+  if launches {
+    slot.ensure_working_directory().await?;
+  }
   let shell = slot.tools.task_manager().await?;
   let epoch = slot.get_schedule_epoch();
   let result = match request {

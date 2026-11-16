@@ -12,6 +12,7 @@ mod run;
 pub mod selection;
 mod status;
 mod tools;
+mod working_directory;
 pub(crate) use tools::PublishedOutcome;
 
 pub use super::capabilities::{ToolChanges, ToolDelivery, ToolSwitches};
@@ -224,6 +225,11 @@ impl SessionSlot {
     }
     super::background_tools::recover(&slot).await?;
     slot.tools.switch(switches).await?;
+    // History must remain accessible even if both the checkout and the default are gone.
+    // Execution reports the recovery error; a valid default is adopted here immediately.
+    if let Err(error) = slot.ensure_working_directory().await {
+      eprintln!("session working directory: {error}");
+    }
     Ok(slot)
   }
   /// Called under the application's cache lock, with no external slot or session owner.
