@@ -169,6 +169,8 @@ For **Skills**, `wish skill` scans `SKILL.md` directories in priority order: `<s
 
 You can browse every supported preset and its fields in the web UI under **Settings → Extension tools**, or query `/api/*-presets`.
 
+Image and media catalog entries may include `service: {id, name}` to group model templates under one service in the UI. For example, xAI video models share one service, while regional endpoints and different account types remain separate. The underlying template `id` still selects its wire contract; existing `preset` values and durable media jobs remain valid. Selecting another model template changes both `preset` and `model`, retaining the configured account and endpoint override.
+
 ## Secrets and data directory
 
 Keep secrets in environment variables (`bearer_token_env`, `api_key_env`, `credentials_env`, or `${ENV_VAR}` in headers). When reading `/api/config`, Wish masks stored secrets as `"<redacted>"`; sending `"<redacted>"` back preserves the saved values on disk.

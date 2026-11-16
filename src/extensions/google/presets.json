@@ -3,6 +3,10 @@
     {
       "id": "gemini_images",
       "name": "Google Gemini",
+      "service": {
+        "id": "gemini_images",
+        "name": "Google Gemini"
+      },
       "brand": "Google Gemini",
       "protocol": "gemini",
       "base_url": "https://generativelanguage.googleapis.com/v1beta",
@@ -22,6 +26,10 @@
     {
       "id": "gemini_interactions_images",
       "name": "Google Nano Banana",
+      "service": {
+        "id": "gemini_images",
+        "name": "Google Gemini"
+      },
       "brand": "Google Gemini",
       "protocol": "gemini_interactions",
       "base_url": "https://generativelanguage.googleapis.com/v1beta",

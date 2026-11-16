@@ -19,6 +19,10 @@
     {
       "id": "xai_video",
       "name": "xAI Grok Imagine 1.5",
+      "service": {
+        "id": "xai_video",
+        "name": "xAI Grok Imagine"
+      },
       "brand": "xAI",
       "protocol": "xai_video",
       "kind": "video",
@@ -49,6 +53,10 @@
     {
       "id": "xai_video_lite",
       "name": "xAI Grok Imagine 1.5 Lite",
+      "service": {
+        "id": "xai_video",
+        "name": "xAI Grok Imagine"
+      },
       "brand": "xAI",
       "protocol": "xai_video",
       "kind": "video",
@@ -79,6 +87,10 @@
     {
       "id": "xai_video_classic",
       "name": "xAI Grok Imagine · Edit & Extend",
+      "service": {
+        "id": "xai_video",
+        "name": "xAI Grok Imagine"
+      },
       "brand": "xAI",
       "protocol": "xai_video",
       "kind": "video",

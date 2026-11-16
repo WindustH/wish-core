@@ -25,6 +25,8 @@ pub struct MediaProvider {
 pub struct MediaPreset {
   pub id: String,
   pub name: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub service: Option<crate::application::presets::PresetService>,
   pub brand: String,
   pub protocol: MediaProtocol,
   pub kind: MediaKind,

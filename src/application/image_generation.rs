@@ -41,6 +41,8 @@ pub struct ImageProvider {
 pub struct ImagePreset {
   pub id: String,
   pub name: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub service: Option<super::presets::PresetService>,
   pub brand: String,
   pub protocol: ImageProtocol,
   pub base_url: String,

@@ -3,6 +3,10 @@
     {
       "id": "minimax_h3",
       "name": "MiniMax H3",
+      "service": {
+        "id": "minimax_h3",
+        "name": "MiniMax"
+      },
       "brand": "minimax",
       "protocol": "minimax_h3",
       "kind": "video",

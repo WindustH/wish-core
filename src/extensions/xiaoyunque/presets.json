@@ -3,6 +3,10 @@
     {
       "id": "xiaoyunque_video",
       "name": "小云雀 2.0",
+      "service": {
+        "id": "xiaoyunque_video",
+        "name": "小云雀"
+      },
       "brand": "Volcengine Visual",
       "protocol": "xiaoyunque_video",
       "kind": "video",

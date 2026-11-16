@@ -4,6 +4,14 @@
 use serde_json::Value;
 use std::sync::OnceLock;
 
+/// One user-facing service can offer model templates with different wire contracts.
+/// Template IDs remain stable for stored configurations and durable media jobs.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+pub struct PresetService {
+  pub id: String,
+  pub name: String,
+}
+
 pub fn provider_presets() -> &'static Value {
   static PRESETS: OnceLock<Value> = OnceLock::new();
   PRESETS.get_or_init(|| {

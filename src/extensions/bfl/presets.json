@@ -3,6 +3,10 @@
     {
       "id": "bfl_images",
       "name": "Black Forest Labs",
+      "service": {
+        "id": "bfl_images",
+        "name": "Black Forest Labs"
+      },
       "brand": "BFL",
       "protocol": "bfl",
       "base_url": "https://api.bfl.ai/v1",
@@ -17,6 +21,10 @@
     {
       "id": "bfl_fill_images",
       "name": "Black Forest Labs · Fill",
+      "service": {
+        "id": "bfl_images",
+        "name": "Black Forest Labs"
+      },
       "brand": "BFL",
       "protocol": "bfl_fill",
       "base_url": "https://api.bfl.ai/v1",

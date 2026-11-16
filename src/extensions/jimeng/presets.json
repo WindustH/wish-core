@@ -3,6 +3,10 @@
     {
       "id": "jimeng_images",
       "name": "即梦 4.6",
+      "service": {
+        "id": "jimeng_images",
+        "name": "即梦"
+      },
       "brand": "Jimeng",
       "protocol": "jimeng",
       "model": "jimeng_seedream46_cvtob",

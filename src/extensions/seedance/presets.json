@@ -39,6 +39,10 @@
     {
       "id": "seedance_video",
       "name": "Seedance 2.0 · 火山方舟",
+      "service": {
+        "id": "seedance_video",
+        "name": "火山方舟 Seedance"
+      },
       "brand": "Volcengine Ark",
       "protocol": "seedance_video",
       "kind": "video",
@@ -69,6 +73,10 @@
     {
       "id": "seedance25_video",
       "name": "Seedance 2.5 · 火山方舟",
+      "service": {
+        "id": "seedance_video",
+        "name": "火山方舟 Seedance"
+      },
       "brand": "Volcengine Ark",
       "protocol": "seedance25_video",
       "kind": "video",

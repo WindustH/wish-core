@@ -3,6 +3,10 @@
     {
       "id": "runninghub_images",
       "name": "RunningHub Seedream 5 Pro",
+      "service": {
+        "id": "runninghub_images",
+        "name": "RunningHub"
+      },
       "brand": "RunningHub",
       "protocol": "runninghub",
       "base_url": "https://www.runninghub.ai",
@@ -23,6 +27,10 @@
     {
       "id": "runninghub_seedance_video",
       "name": "RunningHub Seedance 2.5",
+      "service": {
+        "id": "runninghub_seedance_video",
+        "name": "RunningHub"
+      },
       "brand": "RunningHub",
       "protocol": "runninghub_video",
       "kind": "video",
