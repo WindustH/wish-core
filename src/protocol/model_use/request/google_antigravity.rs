@@ -1,12 +1,23 @@
 //! Antigravity serves Gemini contents inside a Cloud Code envelope. Account and
 //! session fields join the rendered request in the client, where both are available.
-use crate::protocol::{Request, error::Error};
+use crate::protocol::{Message, ReasoningOpaqueKind, Request, error::Error};
 use serde_json::{Value, json};
 
 pub fn render(request: &Request) -> Result<Value, Error> {
   let mut normalized = request.clone();
   if crate::protocol::model_list::antigravity::variant(&request.model).is_some() {
     normalized.reasoning = None;
+  }
+  if request.model.contains("claude") {
+    // Gemini can return unsigned thought summaries with a separate signature on
+    // its answer or tool call. Claude requires a signature on every thinking
+    // block: omit incompatible reasoning, keeping native proofs on their parts.
+    normalized.conversation.retain(|message| match message {
+      Message::Reasoning { signature, opaque_kind, .. } => {
+        *opaque_kind == Some(ReasoningOpaqueKind::GoogleSignature) && !signature.is_empty()
+      }
+      _ => true,
+    });
   }
   let mut body = super::google_generate_content::render(&normalized)?;
   if let Some(declarations) =

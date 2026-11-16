@@ -18,6 +18,8 @@
 
 Every `Message` carries an optional `metadata` JSON value that stays local to Wish (decoders initialize it to `null`, renderers omit it). `Message::Developer` adds `fixed: Option<bool>`; `normalize_new_input()` sets omitted `fixed` to `false` on HTTP ingestion so only explicitly fixed instructions survive compaction and context clears. `Message::Reasoning.opaque_kind` tags encrypted signatures/ciphertexts by origin wire so they replay only on a matching protocol family.
 
+Antigravity's Claude deployments require a signature on every replayed thinking block. Their request projection omits unsigned reasoning and reasoning with foreign or untyped signatures, including Gemini summaries whose signature belongs to a separate answer or tool-call part. Matching `GoogleSignature` proofs remain attached to their original parts; normal messages, tool results, and stored history are unchanged. Gemini requests keep their existing reasoning projection.
+
 ## Interrupted streams and output limits
 
 `EventStream::create_accumulator()` tracks protocol-level completion signals (`BlockComplete` vs syntactic `BlockEnd`) so `StreamAccumulator::finalize` decides safely what can enter context when a stream stops early:
