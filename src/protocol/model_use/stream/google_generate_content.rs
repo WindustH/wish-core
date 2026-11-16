@@ -174,7 +174,12 @@ impl Decoder {
         self.close_text(out);
         self.signature_only(signature, out);
       }
-      if !text.is_empty() {
+      if text.is_empty() && signature.is_some() {
+        // A terminal proof often rides an empty text part. Preserve the part
+        // boundary so it cannot disappear or attach to later streamed text.
+        let index = self.counter.open(BlockKind::Text, out);
+        out.push(StreamEvent::BlockEnd { index });
+      } else if !text.is_empty() {
         let index = match self.open_text {
           Some(index) => index,
           None => *self.open_text.insert(self.counter.open(BlockKind::Text, out)),

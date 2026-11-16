@@ -20,6 +20,8 @@ Every `Message` carries an optional `metadata` JSON value that stays local to Wi
 
 The Google contents wire is also used by Antigravity's Gemini, Claude and GPT-OSS models, whose signatures are not interchangeable. Sessions store `Reasoning.source_model` from the originating call. For older entries, request construction recovers it from `model_call_id` without rewriting history, including context inspection, compaction candidates and forks. Google request rendering omits reasoning from a known different model; native signatures remain attached to their original thought, answer or tool-call parts. Resource-name prefixes and the catalog's reasoning-mode suffixes normalize to the same logical model, while distinct models remain separate. Imported messages without a known source retain the existing wire-kind compatibility rule.
 
+Gemini can finish a streamed answer with a signed, empty text part. The decoder preserves that part even if more text follows, and the renderer restores the empty part for older replies stored with a trailing signature-only message. It never merges that proof into the preceding answer.
+
 Antigravity's Claude deployments additionally require a signature on every replayed thinking block. Their request projection omits unsigned reasoning and reasoning with foreign or untyped signatures, including Gemini summaries whose signature belongs to a separate answer or tool-call part. Normal messages and tool results remain in the request. When foreign tool history has no native proof, Gemini 3+ uses its documented import marker on the first function call of each step; Claude and GPT-OSS do not receive that marker.
 
 ## Interrupted streams and output limits

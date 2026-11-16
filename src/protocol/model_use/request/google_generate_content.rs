@@ -271,6 +271,11 @@ fn render_model_turn(
     }
     used += 1;
   }
+  // Older streamed replies can end with a signature-only message: the wire sent
+  // its proof on an empty text part. Keep that part separate from the answer.
+  if let Some(proof) = signature {
+    parts.push(json!({"text": "", "thoughtSignature": proof}));
+  }
   Ok((parts, used))
 }
 
