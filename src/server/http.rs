@@ -119,6 +119,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/blobs/link", post(content::link))
     .route("/sessions/{id}/blobs", get(content::list).post(content::upload))
     .route("/sessions/{id}/library/folders", post(content::create_folder))
+    .route("/sessions/{id}/library/link", post(library::link_path))
     .route("/sessions/{id}/library/folders/link", post(library::link))
     .route(
       "/sessions/{id}/library/folders/{folder}/children",

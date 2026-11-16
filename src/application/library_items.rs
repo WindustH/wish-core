@@ -16,7 +16,7 @@ use crate::{
     },
   },
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 mod bookmark_text;
 
@@ -24,6 +24,74 @@ async fn owner(app: &Arc<App>, id: &str) -> Result<Arc<SessionSlot>, Application
   app.lifecycle.require_open()?;
   attachments::require_owner(app, id).await?;
   app.get_session(id).await
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkPath {
+  pub path: String,
+  pub parent: Option<String>,
+}
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LinkedItem {
+  File { blob: blobs::Blob },
+  Folder { folder: library::Folder },
+}
+/// One user-facing link operation; file-only tool/CLI contracts remain unchanged.
+pub async fn link_path(
+  app: &Arc<App>,
+  id: &str,
+  input: LinkPath,
+) -> Result<LinkedItem, ApplicationError> {
+  if input.path.is_empty() || input.path.len() > 4096 {
+    return Err(ApplicationError::invalid("path must be 1–4096 bytes"));
+  }
+  let slot = owner(app, id).await?;
+  let publication = slot.blob_publication.clone().read_owned().await;
+  slot.require_live()?;
+  let resolve_slot = slot.clone();
+  let parent = input.parent;
+  let destination = parent.clone();
+  let path = blocking(move || {
+    resolve_slot.require_live()?;
+    library::check_parent(&resolve_slot.blob_dir, destination.as_deref())?;
+    resolve_slot.aliases.expand(&input.path)
+  })
+  .await?;
+  if !std::path::Path::new(&path).is_absolute() {
+    return Err(ApplicationError::invalid("local path must be absolute"));
+  }
+  let metadata = tokio::fs::metadata(&path).await.map_err(|error| {
+    if error.kind() == std::io::ErrorKind::NotFound {
+      ApplicationError::not_found()
+    } else {
+      ApplicationError::invalid(format!("cannot access path: {error}"))
+    }
+  })?;
+  if metadata.is_dir() {
+    return blocking(move || {
+      let _publication = publication;
+      slot.require_live()?;
+      let folder =
+        linked_folders::create(&slot.blob_dir, linked_folders::Link { path, name: None, parent })?;
+      Ok(LinkedItem::Folder { folder })
+    })
+    .await;
+  }
+  if !metadata.is_file() {
+    return Err(ApplicationError::invalid("path must be a regular file or directory"));
+  }
+  let blob = blobs::linked::register(&slot.blob_dir, &path).await?;
+  blocking(move || {
+    let _publication = publication;
+    slot.require_live()?;
+    slot.aliases.blob(&blob.id)?;
+    let name =
+      std::path::Path::new(&blob.path).file_name().map(|name| name.to_string_lossy().into_owned());
+    library::record_link(&slot.blob_dir, &blob.id, name, parent)?;
+    Ok(LinkedItem::File { blob })
+  })
+  .await
 }
 pub async fn link_folder(
   app: &Arc<App>,

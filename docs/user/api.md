@@ -125,6 +125,8 @@ While a session runs, `PATCH /api/sessions/{id}` (with `If-Match: <revision>`) s
 
 ### Library links, bookmarks, previews, and cleanup
 
+- `POST /api/sessions/{id}/library/link` accepts `{"path": "/absolute/file-or-folder", "parent": null}` and detects the path type. It returns `{"kind":"file","blob":...}` or `{"kind":"folder","folder":...}`. Files become visible in the selected virtual Library folder; folder links let you browse their live children without importing the tree. Repeated links preserve display names and reuse the same folder link within the same parent. Clients can submit mixed batches one path at a time and retry only failures. The file-only `/blobs/link` and folder-only `/library/folders/link` endpoints remain available.
+
 - `POST /api/sessions/{id}/blobs` writes content-addressed blobs by SHA-256 (`?name=...&temporary=false`); `POST /api/sessions/{id}/blobs/link` registers `{"path": "/abs/path", "temporary": false}` without copying bytes.
 - `PATCH /api/sessions/{id}/blobs/{blob}/library` accepts `display_name` alongside `visible` and `pinned`. Display names do not change blob IDs, source paths, original filenames or contents; repeated uploads/links preserve them.
 - `POST /api/sessions/{id}/library/folders/link` accepts `{"path": "/absolute/directory", "parent": null, "name": "Optional display name"}`. `GET .../folders/{folder}/children?path=relative/subdir&limit=80&after=last-name` lists one level with a lexical cursor (maximum 200 items). Paths must remain within the linked directory; external symlinks and special files are excluded. Browsing does not import the tree.

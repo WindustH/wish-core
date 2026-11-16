@@ -10,6 +10,13 @@ use axum::{
 };
 use std::sync::Arc;
 
+pub async fn link_path(
+  State(app): State<Arc<App>>,
+  Path(id): Path<String>,
+  Json(input): Json<items::LinkPath>,
+) -> Result<Json<items::LinkedItem>, ApiError> {
+  Ok(Json(items::link_path(&app, &id, input).await?))
+}
 pub async fn link(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,

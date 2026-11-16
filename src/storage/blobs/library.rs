@@ -148,7 +148,20 @@ pub fn record_upload(
   name: Option<String>,
   temporary: bool,
 ) -> Result<(), RepositoryError> {
-  record_file(directory, id, name, temporary, None)
+  record_file(directory, id, name, temporary, None, None)
+}
+/// Check a destination before registering a local file; record_link repeats the
+/// check under the metadata write lock in case the folder changes concurrently.
+pub fn check_parent(directory: &Path, parent: Option<&str>) -> Result<(), RepositoryError> {
+  folders::parent(&snapshot(directory)?, parent)
+}
+pub fn record_link(
+  directory: &Path,
+  id: &str,
+  name: Option<String>,
+  parent: Option<String>,
+) -> Result<(), RepositoryError> {
+  record_file(directory, id, name, false, None, Some(parent))
 }
 pub fn record_link_preview(
   directory: &Path,
@@ -156,7 +169,7 @@ pub fn record_link_preview(
   name: Option<String>,
   display_name: Option<String>,
 ) -> Result<(), RepositoryError> {
-  record_file(directory, id, name, true, display_name)
+  record_file(directory, id, name, true, display_name, None)
 }
 fn record_file(
   directory: &Path,
@@ -164,10 +177,19 @@ fn record_file(
   name: Option<String>,
   temporary: bool,
   display_name: Option<String>,
+  parent: Option<Option<String>>,
 ) -> Result<(), RepositoryError> {
   let lock = WRITES.get(directory.to_path_buf());
   let _guard = lock.lock().map_err(RepositoryError::internal)?;
   let mut library = read(directory)?;
+  if let Some(parent) = parent {
+    folders::parent(&library, parent.as_deref())?;
+    if let Some(parent) = parent {
+      library.locations.insert(id.into(), parent);
+    } else {
+      library.locations.remove(id);
+    }
+  }
   let entry = library.entries.entry(id.into()).or_default();
   if !temporary {
     entry.visible = true;

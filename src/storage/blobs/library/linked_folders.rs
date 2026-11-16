@@ -48,6 +48,15 @@ pub fn create(directory: &Path, input: Link) -> Result<Folder, RepositoryError> 
   let _guard = lock.lock().map_err(RepositoryError::internal)?;
   let mut library = read(directory)?;
   folders::parent(&library, input.parent.as_deref())?;
+  // Retrying a mixed batch must not duplicate a link or reset its display name.
+  if input.name.is_none()
+    && let Some(existing) = library
+      .folders
+      .values()
+      .find(|folder| folder.parent == input.parent && folder.linked_path.as_deref() == Some(path))
+  {
+    return Ok(existing.clone());
+  }
   folders::unique(&library, &name, input.parent.as_deref(), None)?;
   if library.folders.len() >= 1000 {
     return Err(RepositoryError::invalid("Library folder limit reached"));
