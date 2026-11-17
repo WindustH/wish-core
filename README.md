@@ -37,6 +37,8 @@ wish
 - **User guides**: [Getting Started](docs/user/getting-started.md) · [Configuration](docs/user/configuration.md) · [Deployment](docs/user/deployment.md) · [HTTP API](docs/user/api.md)
 - **Developer notes**: [Architecture & Internals](docs/developer/README.md)
 
+The complete offline manual is embedded in the executable: run `wish docs`, `wish docs configuration`, or `wish docs architecture`. Search with `wish docs search <words>`. No server or network is required.
+
 ## License
 
 [MIT](LICENSE)

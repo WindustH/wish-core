@@ -8,7 +8,11 @@ pub fn agent_instructions(switches: super::session::ToolSwitches) -> String {
   use super::session::ToolDelivery;
   let mut text = AGENT_INSTRUCTIONS.to_owned();
   if switches.shell {
-    let mut commands = vec!["`wish mcp` — MCP services", "`wish skill` — discover/read skills"];
+    let mut commands = vec![
+      "`wish docs` — offline manual: configuration, architecture and operation (list/show/search)",
+      "`wish mcp` — MCP services",
+      "`wish skill` — discover/read skills",
+    ];
     use crate::capability::Capability;
     for capability in [
       Capability::Sessions,

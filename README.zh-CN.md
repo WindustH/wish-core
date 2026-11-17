@@ -37,6 +37,8 @@ wish
 - **用户文档**（英文）：[快速上手](docs/user/getting-started.md) · [配置说明](docs/user/configuration.md) · [部署指南](docs/user/deployment.md) · [HTTP API](docs/user/api.md)
 - **开发者文档**（英文）：[架构与实现](docs/developer/README.md)
 
+完整离线手册已编入二进制：运行 `wish docs` 查看目录，`wish docs configuration` 阅读配置，`wish docs architecture` 阅读工作原理，`wish docs search <关键词>` 搜索全文。无需启动服务或联网。
+
 ## 许可协议
 
 [MIT](LICENSE)

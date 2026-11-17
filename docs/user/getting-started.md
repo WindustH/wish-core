@@ -50,6 +50,10 @@ If you turn off a session's shell (or switch a specific capability to direct too
 
 Every session has a file library (`$WISH_BLOB_ROOT` in its shell) alongside a scratch directory (`$WISH_TMPDIR`). You can upload files into a session or link existing files on your machine without duplicating bytes. When the model cites a file using a Markdown link or `wish://blob/...` reference, clicking it in the web app opens the image, jumps to the referenced PDF page, or seeks to the timestamp in audio or video.
 
+## Built-in offline manual
+
+Run `wish docs` for the chapter index, `wish docs configuration` for configuration details, or `wish docs architecture` for the engine’s design. `wish docs search <words>` searches the embedded text. These commands work outside a session and before the server is configured or started. See [Offline manual](../README.md#offline-manual) for all forms.
+
 ## Next steps
 
 - Need to add more providers, proxies, MCP servers, or media generators? Head to [Configuration](configuration.md).
