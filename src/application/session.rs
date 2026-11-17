@@ -166,7 +166,8 @@ impl SessionSlot {
     // A session's own shell wins; otherwise it starts from the application's and
     // follows later saves (see `follow_global_shell`). An override that no longer
     // resolves (the program was removed) falls back to the application's.
-    let own = descriptor.shell_override.as_ref().and_then(|settings| settings.resolve().ok());
+    let proxy = app.config_file.lock().await.config.proxy.clone();
+    let own = descriptor.shell_override.as_ref().and_then(|settings| settings.resolve(&proxy).ok());
     let effective_shell =
       Arc::new(RwLock::new(own.unwrap_or_else(|| app.shell.read().unwrap().clone())));
     let mut shell_config = TaskConfig::new(&descriptor.cwd, app.data_dir.shell(&descriptor.id));
@@ -278,7 +279,7 @@ impl SessionSlot {
   /// The session as the API shows it.
   pub fn describe(&self) -> Value {
     let mut record = self.index_record(&self.get_descriptor());
-    preview_pending_selection(&mut record);
+    project_record(&mut record);
     record
   }
   /// The session as the index keeps it: the provider it actually uses, which a restart may still
@@ -339,9 +340,17 @@ impl SessionSlot {
   }
 }
 
-/// Shows a pending model selection in an index record as made: its provider in place of the
-/// session's. The status shows its config already.
-pub fn preview_pending_selection(record: &mut Value) {
+/// Projects persisted records for API readers, hiding environment values and showing pending
+/// model selections. The durable record retains the actual shell values for restart and fork.
+pub fn project_record(record: &mut Value) {
+  if let Some(env) = record.pointer_mut("/session/shell_command/env").and_then(Value::as_object_mut)
+  {
+    for value in env.values_mut() {
+      if value.as_str().is_some_and(|value| !value.is_empty()) {
+        *value = json!("<redacted>");
+      }
+    }
+  }
   if let Some(provider) = record.pointer("/session/pending_selection/provider").cloned() {
     record["session"]["provider"] = provider;
   }

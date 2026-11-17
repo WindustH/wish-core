@@ -20,16 +20,22 @@ pub struct ShellCommand {
   pub program: PathBuf,
   /// Arguments before the command text, which is passed as one final argument.
   pub args: Vec<String>,
+  /// Per-command environment overrides. `None` removes an inherited variable.
+  pub env: BTreeMap<String, Option<String>>,
 }
 impl ShellCommand {
   /// `/bin/sh -c` on Unix, `%COMSPEC% /D /S /C` on Windows.
   pub fn platform_default() -> Self {
-    Self { program: platform::default_program(), args: platform::default_args() }
+    Self {
+      program: platform::default_program(),
+      args: platform::default_args(),
+      env: BTreeMap::new(),
+    }
   }
   /// The shell at `program` with the arguments its family takes before command text.
   pub fn for_program(program: PathBuf) -> Self {
     let args = platform::family_args(&program);
-    Self { program, args }
+    Self { program, args, env: BTreeMap::new() }
   }
   /// Shells found on `PATH`, one per known name, in a fixed order.
   pub fn installed() -> Vec<Self> {

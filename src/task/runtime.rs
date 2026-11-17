@@ -482,6 +482,12 @@ impl TaskManager {
     let shell =
       self.inner.config.command.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
     let mut builder = Command::new(&shell.program);
+    for (name, value) in &shell.env {
+      match value {
+        Some(value) => builder.env(name, value),
+        None => builder.env_remove(name),
+      };
+    }
     builder
       .args(&shell.args)
       .current_dir(self.inner.config.cwd.read().unwrap_or_else(|e| e.into_inner()).clone())

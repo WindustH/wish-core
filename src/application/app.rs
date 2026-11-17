@@ -134,7 +134,7 @@ impl App {
     let config = &canonical;
     config.validate()?;
     let search = SearchHub::new(&config.resolved_search()?, &config.proxy)?;
-    let shell = config.shell.resolve()?;
+    let shell = config.shell.resolve(&config.proxy)?;
     let data_dir = DataDir::new(config.data_dir.clone()).map_err(ApplicationError::internal)?;
     tokio::fs::create_dir_all(data_dir.root()).await.map_err(ApplicationError::internal)?;
     let (database, management_database) = (data_dir.database(), data_dir.management_database());
@@ -475,7 +475,7 @@ impl App {
     let videos = super::media_generation::MediaHub::prepare(&next.video_generation, &next.proxy);
     let audio = super::media_generation::MediaHub::prepare(&next.audio_generation, &next.proxy);
     let asr = super::media_generation::MediaHub::prepare(&next.audio_transcription, &next.proxy);
-    let shell = next.shell.resolve()?;
+    let shell = next.shell.resolve(&next.proxy)?;
     if next.listen != current.listen
       || next.data_dir != current.data_dir
       || next.bearer_token_env != current.bearer_token_env
@@ -550,7 +550,7 @@ impl App {
     *self.providers.write().unwrap() = providers;
     *self.shell.write().unwrap() = shell.clone();
     for slot in self.sessions.lock().await.values() {
-      slot.follow_global_shell(&shell);
+      slot.follow_global_shell(&shell, &config.proxy);
     }
   }
 

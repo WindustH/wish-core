@@ -154,6 +154,21 @@ Each capability has an enable toggle and, for CLI-capable tools, a delivery mode
 - **`proxy`**: `mode` can be `"environment"` (reads `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY`), `"manual"` (`url` plus optional `username` and `password`), or `"direct"`. Individual providers, accounts, extension services, and HTTP MCP servers can opt out via `proxy_enabled: false`.
 - **`shell`**: Set `program` to an absolute path (empty picks the OS default) and optionally override `args` (omitted picks defaults for that shell family, such as `["-lc"]` for `bash`/`zsh`). Each session shell receives `$WISH_TMPDIR` and `$WISH_BLOB_*` / `$WISH_SESSION_ID_*` aliases automatically.
 
+`shell.env` is a map of preset environment variables for new commands, layered over the server process's inherited environment. Values are passed literally, including spaces and newlines; `$NAME` is not expanded. Names must match `[A-Za-z_][A-Za-z0-9_]*`; `WISH_*` names are reserved. Removing a preset restores the inherited value, while an empty string sets an empty value. Existing processes retain their environment.
+
+Set `shell.use_network_proxy` to `true` to follow network settings (default: `false`). Manual mode sets `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and their lowercase forms, including URL-encoded proxy credentials. Environment mode inherits the server's proxy variables; direct mode removes those six inherited variables. `NO_PROXY`/`no_proxy` remain inherited. Explicit `shell.env` entries take priority over these generated values. Changes to either shell or network settings apply to the next command without restarting Wish.
+
+```json
+"shell": {
+  "program": "",
+  "args": null,
+  "env": { "LANG": "en_US.UTF-8", "PROJECT_MODE": "development" },
+  "use_network_proxy": true
+}
+```
+
+A session's `shell_command` override supports the same fields and replaces the global Shell configuration. Its proxy-following option still tracks network settings. Configuration and session APIs mask nonempty environment values as `<redacted>`; sending those placeholders back preserves the stored values. Model environment instructions list variable names only, never their configured values.
+
 ## MCP and skills
 
 Configure MCP servers under `mcp.servers.<id>`:

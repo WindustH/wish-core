@@ -208,7 +208,7 @@ pub async fn generation_structure(
 
 fn project_list(mut page: RecordPage<Value>) -> Value {
   for record in &mut page.items {
-    crate::application::session::preview_pending_selection(record);
+    crate::application::session::project_record(record);
   }
   json!({"items":page.items,"next":page.next})
 }

@@ -162,7 +162,7 @@ impl App {
     // Agent instructions may be inserted at the front; origins line up from the back.
     apply_agent_instructions(&mut input.initial_messages, tools);
     let effective_shell = match &descriptor.shell_override {
-      Some(shell) => shell.resolve()?,
+      Some(shell) => shell.resolve(&self.config_file.lock().await.config.proxy)?,
       None => self.shell.read().unwrap().clone(),
     };
     let environment = crate::protocol::Message::System {

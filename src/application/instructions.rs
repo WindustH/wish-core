@@ -143,6 +143,11 @@ pub fn environment_instruction(
     serde_json::json!(shell.args),
     serde_json::json!(cwd)
   );
+  let names: Vec<_> =
+    shell.env.iter().filter(|(_, value)| value.is_some()).map(|(name, _)| name.as_str()).collect();
+  if !names.is_empty() {
+    text.push_str(&format!("\nPreset environment variables: {}. Values are provided to new commands without being included in these instructions.", names.join(", ")));
+  }
   if temp_dir.is_some() {
     text.push_str("\nSession temporary directory: $WISH_TMPDIR. Use \"$WISH_TMPDIR/file\" for scratch files. Its path is fixed for this session; temporary contents may be removed by the operating system.");
   }

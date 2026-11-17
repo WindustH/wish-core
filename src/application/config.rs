@@ -111,10 +111,20 @@ pub struct ShellSettings {
   pub program: String,
   /// Arguments before the command text; absent for the ones the shell's family takes.
   pub args: Option<Vec<String>>,
+  /// Overrides inherited variables for new commands. Values may contain credentials.
+  #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+  pub env: BTreeMap<String, String>,
+  /// Derive proxy variables from network settings before applying explicit `env` overrides.
+  #[serde(skip_serializing_if = "is_false")]
+  pub use_network_proxy: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+  !value
 }
 
 impl ShellSettings {
-  pub fn resolve(&self) -> Result<ShellCommand, ApplicationError> {
+  pub fn resolve(&self, proxy: &ProxyConfig) -> Result<ShellCommand, ApplicationError> {
     let mut command = if self.program.is_empty() {
       ShellCommand::platform_default()
     } else {
@@ -133,7 +143,70 @@ impl ShellSettings {
     if let Some(args) = &self.args {
       command.args = args.clone();
     }
+    if self.use_network_proxy {
+      const NAMES: &[&str] =
+        &["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"];
+      match proxy.mode {
+        ProxyMode::Environment => {} // Inherit the server's actual environment, including NO_PROXY.
+        ProxyMode::Direct => {
+          command.env.extend(NAMES.iter().map(|name| ((*name).into(), None)));
+        }
+        ProxyMode::Manual => {
+          proxy.validate()?;
+          let mut url = reqwest::Url::parse(&proxy.url)
+            .map_err(|_| ApplicationError::invalid("proxy URL must be valid"))?;
+          if !proxy.username.is_empty() {
+            url
+              .set_username(&proxy.username)
+              .map_err(|_| ApplicationError::invalid("proxy URL cannot contain credentials"))?;
+            url
+              .set_password(Some(&proxy.password))
+              .map_err(|_| ApplicationError::invalid("proxy URL cannot contain credentials"))?;
+          }
+          command.env.extend(NAMES.iter().map(|name| ((*name).into(), Some(url.to_string()))));
+        }
+      }
+    }
+    for (name, value) in &self.env {
+      if name.is_empty()
+        || !name
+          .bytes()
+          .enumerate()
+          .all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+      {
+        return Err(ApplicationError::invalid(
+          "shell environment names must start with a letter or underscore and contain only letters, digits and underscores",
+        ));
+      }
+      if name.to_ascii_uppercase().starts_with("WISH_") {
+        return Err(ApplicationError::invalid(
+          "shell environment names starting with WISH_ are reserved",
+        ));
+      }
+      if value.contains('\0') {
+        return Err(ApplicationError::invalid("shell environment values cannot contain NUL"));
+      }
+      // Windows treats names case-insensitively; a generated lowercase alias must not replace
+      // an explicit uppercase override later while constructing the process environment.
+      #[cfg(windows)]
+      command.env.retain(|key, _| !key.eq_ignore_ascii_case(name));
+      command.env.insert(name.clone(), Some(value.clone()));
+    }
     Ok(command)
+  }
+
+  /// A session override can retain its own values, or copy the global settings on first use.
+  pub fn restore_env(&mut self, stored: &Self) -> Result<(), ApplicationError> {
+    for (name, value) in &mut self.env {
+      if value == "<redacted>" {
+        *value = stored.env.get(name).cloned().ok_or_else(|| {
+          ApplicationError::invalid(format!(
+            "redacted shell env value `{name}` has no stored value"
+          ))
+        })?;
+      }
+    }
+    Ok(())
   }
 }
 

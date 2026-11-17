@@ -112,6 +112,15 @@ struct Secret {
 /// In the order a save is checked: item by item, as the save lists them, each field in turn.
 const SECRETS: &[Secrets] = &[
   Secrets {
+    items: &["shell"],
+    each: false,
+    fields: &[Secret {
+      path: &["env", "*"],
+      shown_empty: true,
+      missing: |_, name| format!("redacted shell env value `{name}` has no stored value"),
+    }],
+  },
+  Secrets {
     items: &["fetch", "providers"],
     each: true,
     fields: &[Secret {

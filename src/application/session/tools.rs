@@ -3,7 +3,7 @@
 mod extensions;
 use super::{SessionSlot, ToolChanges, ToolSwitches};
 use crate::application::{
-  config::ShellSettings,
+  config::{ProxyConfig, ShellSettings},
   error::{ApplicationError, blocking},
 };
 use crate::capability::Capability;
@@ -579,18 +579,29 @@ impl SessionSlot {
     let _ = self.events.send(json!({"type":"history_changed"}));
     Ok(())
   }
-  /// Sessions following global settings get a tail notice, never a rewritten active prefix.
-  pub fn follow_global_shell(&self, global: &ShellCommand) {
-    if self.descriptor.read().unwrap().shell_override.is_none() {
-      let previous = self.effective_shell.read().unwrap().clone();
-      if previous != *global {
-        let cwd = self.get_descriptor().cwd;
-        if let Err(error) = self.environment_notice(global, &cwd) {
-          eprintln!("shell environment notice: {error}");
+  /// Sessions following global settings (or just its network proxy) get a tail notice, never a
+  /// rewritten active prefix. A session's explicit environment stays independent.
+  pub fn follow_global_shell(&self, global: &ShellCommand, proxy: &ProxyConfig) {
+    let own = self.get_descriptor().shell_override;
+    let next = match own {
+      Some(settings) if settings.use_network_proxy => match settings.resolve(proxy) {
+        Ok(shell) => shell,
+        Err(error) => {
+          eprintln!("shell environment update: {error}");
           return;
         }
-        *self.effective_shell.write().unwrap() = global.clone();
+      },
+      Some(_) => return,
+      None => global.clone(),
+    };
+    let previous = self.effective_shell.read().unwrap().clone();
+    if previous != next {
+      let cwd = self.get_descriptor().cwd;
+      if let Err(error) = self.environment_notice(&next, &cwd) {
+        eprintln!("shell environment notice: {error}");
+        return;
       }
+      *self.effective_shell.write().unwrap() = next;
     }
   }
   /// Gives this session its own shell; only new commands use it.
@@ -598,9 +609,10 @@ impl SessionSlot {
     &self,
     settings: Option<ShellSettings>,
     global: &ShellCommand,
+    proxy: &ProxyConfig,
   ) -> Result<(), ApplicationError> {
     let next = match &settings {
-      Some(settings) => settings.resolve()?,
+      Some(settings) => settings.resolve(proxy)?,
       None => global.clone(),
     };
     let previous = self.effective_shell.read().unwrap().clone();

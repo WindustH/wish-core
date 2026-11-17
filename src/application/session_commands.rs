@@ -264,18 +264,27 @@ pub async fn answer(app: Arc<App>, id: String, input: Answer) -> Result<Value, A
 pub async fn set_shell(
   app: Arc<App>,
   id: String,
-  settings: Option<ShellSettings>,
+  mut settings: Option<ShellSettings>,
 ) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
   let _update = slot.update_lock.clone().lock_owned().await;
+  // Serialize with global saves so an override cannot retain an obsolete proxy snapshot.
+  let file = app.config_file.lock().await;
+  if let Some(settings) = &mut settings {
+    let descriptor = slot.get_descriptor();
+    settings.restore_env(descriptor.shell_override.as_ref().unwrap_or(&file.config.shell))?;
+  }
+  let proxy = file.config.proxy.clone();
   let global = app.shell.read().unwrap().clone();
-  blocking(move || {
+  let result = blocking(move || {
     slot.require_live()?;
-    slot.set_shell(settings, &global)?;
+    slot.set_shell(settings, &global, &proxy)?;
     Ok(slot.describe())
   })
-  .await
+  .await;
+  drop(file);
+  result
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
