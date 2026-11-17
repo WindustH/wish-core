@@ -21,7 +21,16 @@ pub fn variant(id: &str) -> Option<(&str, &'static str)> {
     ("tiered", "adaptive"),
   ]
   .into_iter()
-  .find_map(|(suffix, effort)| id.strip_suffix(&format!("-{suffix}")).map(|base| (base, effort)))
+  .find_map(|(suffix, effort)| {
+    id.strip_suffix(&format!("-{suffix}"))
+      // Tier routing also exposes ids such as hydrogen-tiered-high alongside
+      // hydrogen-high. Both name the same model and reasoning level.
+      .map(|base| (base.strip_suffix("-tiered").unwrap_or(base), effort))
+  })
+}
+
+fn disabled(id: &str, value: &Value) -> bool {
+  value["disabled"] == true || id.ends_with("-disabled")
 }
 
 pub fn parse(body: &Value) -> Result<ModelListPage, Error> {
@@ -31,7 +40,7 @@ pub fn parse(body: &Value) -> Result<ModelListPage, Error> {
     .ok_or_else(|| Error::Malformed("Antigravity model list has no models object".into()))?;
   let mut groups = BTreeMap::<&str, Vec<(&str, &Value, Option<&str>)>>::new();
   for (id, value) in entries {
-    if id.is_empty() || id.starts_with("tab_") || id.starts_with("chat_") {
+    if id.is_empty() || id.starts_with("tab_") || id.starts_with("chat_") || disabled(id, value) {
       continue;
     }
     let (base, effort) =
@@ -43,10 +52,19 @@ pub fn parse(body: &Value) -> Result<ModelListPage, Error> {
     let grouped = entries.iter().any(|(_, _, effort)| effort.is_some());
     let mut model = Model::new(id);
     if grouped {
+      let tiered_prefix = format!("{id}-tiered-");
       for (wire_id, value, effort) in &entries {
         let effort =
           effort.unwrap_or(if value["supportsThinking"] == false { "none" } else { "default" });
-        model.reasoning_variants.insert(effort.to_owned(), (*wire_id).to_owned());
+        let selected = model
+          .reasoning_variants
+          .entry(effort.to_owned())
+          .or_insert_with(|| (*wire_id).to_owned());
+        // Prefer the ordinary agent deployment when both routes are offered.
+        // If only the tier route is available, keep its real callable id.
+        if selected.starts_with(&tiered_prefix) && !wire_id.starts_with(&tiered_prefix) {
+          *selected = (*wire_id).to_owned();
+        }
       }
       model.default_reasoning_effort = [
         "default", "medium", "high", "low", "adaptive", "none", "enabled", "minimal", "xhigh",
@@ -157,10 +175,13 @@ pub fn resolve(request: &Request, models: &[Model]) -> Result<Request, Error> {
 pub fn normalize_overrides(values: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
   let mut models: BTreeMap<_, _> = values
     .iter()
-    .filter(|(id, _)| variant(id).is_none())
+    .filter(|(id, value)| !disabled(id, value) && variant(id).is_none())
     .map(|(k, v)| (k.clone(), v.clone()))
     .collect();
   for (id, value) in values {
+    if disabled(id, value) {
+      continue;
+    }
     let Some((base, effort)) = variant(id) else { continue };
     let mut value = value.clone();
     if let Some(object) = value.as_object_mut() {
