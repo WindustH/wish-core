@@ -7,6 +7,9 @@
 
 use serde_json::Value;
 
+/// Marks the request-local user instruction following an output-limited assistant segment.
+pub(crate) const OUTPUT_CONTINUATION_SOURCE: &str = "wish_request_continuation";
+
 /// The conversation in order, oldest message first.
 pub type Conversation = Vec<Message>;
 

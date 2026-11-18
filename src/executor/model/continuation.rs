@@ -1,4 +1,5 @@
 //! Request-local output continuation. No synthetic instructions or intermediate responses enter Session.
+use crate::protocol::model_use::message::OUTPUT_CONTINUATION_SOURCE;
 use crate::session::statistics::CallObservation;
 use crate::{
   protocol::error::Error,
@@ -44,7 +45,7 @@ impl Continuation {
     self.request.conversation.extend(messages.clone());
     self.messages.extend(messages);
     self.request.conversation.push(Message::User {
-      metadata: serde_json::json!({"source":"wish_request_continuation","instruction_title":"输出截断后的续写指令"}),
+      metadata: serde_json::json!({"source":OUTPUT_CONTINUATION_SOURCE,"instruction_title":"输出截断后的续写指令"}),
       content: vec![ContentBlock::Text { text: "Your previous response reached its output limit. Continue from where it stopped without repeating content already provided. Reissue any cut-off tool call in full if still needed.".into() }],
     });
   }

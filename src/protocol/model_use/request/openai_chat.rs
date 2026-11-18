@@ -52,7 +52,7 @@
 //!   not modelled yet.
 
 use crate::protocol::error::Error;
-use crate::protocol::model_use::message::image_data_url;
+use crate::protocol::model_use::message::{OUTPUT_CONTINUATION_SOURCE, image_data_url};
 use crate::protocol::model_use::mistral_chunks::render_thinking_chunk;
 use crate::protocol::model_use::mode::REASONING_FIELD;
 use crate::protocol::model_use::request::{
@@ -242,8 +242,15 @@ fn render_messages(
         pending_reasoning = None;
         messages.push(render_placed_instruction("developer", content, placement)?);
       }
-      Message::User { content, .. } => {
-        pending_reasoning = None;
+      Message::User { content, metadata } => {
+        // A capped segment can end in reasoning before producing text or a tool call.
+        // Give that segment its native assistant turn before the continuation prompt.
+        let reasoning = pending_reasoning.take();
+        if metadata["source"] == OUTPUT_CONTINUATION_SOURCE
+          && let Some(thought) = reasoning.filter(|text| !text.is_empty())
+        {
+          messages.push(render_assistant(&[], Vec::new(), Some(thought), mode)?);
+        }
         messages.push(render_user(content)?);
       }
       Message::Assistant { content, .. } => {
