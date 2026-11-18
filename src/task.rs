@@ -4,6 +4,8 @@ mod operation;
 mod platform;
 mod process;
 mod runtime;
+mod terminal;
+pub use terminal::TerminalRequest;
 
 pub use operation::{DataEncoding, KillMode, TaskOperation};
 pub use runtime::TaskManager;

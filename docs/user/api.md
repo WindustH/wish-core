@@ -123,6 +123,23 @@ While a session runs, `PATCH /api/sessions/{id}` (with `If-Match: <revision>`) s
 - `POST /api/sessions/{id}/history/search` takes `{"query": {"text": "...", "mode": "terms"|"substring", "limit": 20}, "filter": {...}}`.
 - `POST /api/sessions/{id}/tasks` runs task management actions (`{"action": "list"}`, `show`, `background`, `remove`, or `execute` with `start`/`poll`/`write`/`kill`).
 
+### Interactive session terminal
+
+`POST /api/sessions/{id}/terminal` is an authenticated **user** endpoint, separate from the model task tool. Request bodies are tagged by `action`:
+
+| Action | Additional fields | Result |
+| --- | --- | --- |
+| `state` | none | `{terminal: null}` or the current terminal snapshot; never starts a shell |
+| `start` | `cols`, `rows` | `{terminal: ...}`; reuses the running terminal, otherwise creates a new one |
+| `poll` | `id`, `offset` | `{terminal, data, next_offset, reset, eof}`; waits up to 15 seconds for changes |
+| `write` | `id`, `data` | `{ok: true}`; `data` is base64-encoded raw input, at most 32 KiB |
+| `resize` | `id`, `cols`, `rows` | `{ok: true}`; updates the PTY window size |
+| `close` | `id` | `{terminal: ...}` after the shell exits |
+
+Snapshots contain `id`, `running`, nullable `exit_code` / `error`, `cols`, `rows`, and the **initial** `cwd`. Dimensions must be 2–500 columns and 2–300 rows. Output `data` is base64 raw PTY bytes (including ANSI escapes); `next_offset` is a byte cursor. Each response carries at most 64 KiB, with a 1 MiB ring retained per terminal. `reset: true` means the requested cursor is no longer retained: reset the terminal display before applying this chunk. Continue reading until `eof`, the shell has exited, and the returned chunk is empty. Never automatically retry uncertain input writes.
+
+There is one terminal per session and at most 16 live terminals per server. Opening another browser shares that session's terminal, including input and dimensions. Hiding the sidebar or disconnecting a browser leaves the process running; explicit close, session deletion, or server shutdown stops it. Output is transient, not written into chat history or persisted across server restarts. The shell toggle gates start and input, while existing output and close remain accessible when disabled. This endpoint uses the same bearer and origin protections as other user APIs; it is not a model/CLI bridge action.
+
 ### Library links, bookmarks, previews, and cleanup
 
 - `POST /api/sessions/{id}/library/link` accepts `{"path": "/absolute/file-or-folder", "parent": null}` and detects the path type. It returns `{"kind":"file","blob":...}` or `{"kind":"folder","folder":...}`. Files become visible in the selected virtual Library folder; folder links let you browse their live children without importing the tree. Repeated links preserve display names and reuse the same folder link within the same parent. Clients can submit mixed batches one path at a time and retry only failures. The file-only `/blobs/link` and folder-only `/library/folders/link` endpoints remain available.

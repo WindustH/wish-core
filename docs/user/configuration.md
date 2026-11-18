@@ -191,3 +191,11 @@ Image and media catalog entries may include `service: {id, name}` to group model
 Keep secrets in environment variables (`bearer_token_env`, `api_key_env`, `credentials_env`, or `${ENV_VAR}` in headers). When reading `/api/config`, Wish masks stored secrets as `"<redacted>"`; sending `"<redacted>"` back preserves the saved values on disk.
 
 Inside `data_dir`, Wish keeps `wish.sqlite`, `management.sqlite`, `blobs/<session_id>/`, `shell/<session_id>/`, `bin/wish`, `backups/`, and `format.json`.
+
+## Interactive terminal in the Web sidebar
+
+Choose **Terminal** in the right sidebar, then **Start terminal**. The **Background tasks** tab keeps model-started task history and controls separate. The terminal is a real PTY: ANSI colors, shell editing, Ctrl+C, and applications that require a TTY are supported. Mobile adds Esc, Tab, Ctrl+C, and arrow keys next to the terminal.
+
+A new terminal uses the session's working directory, selected shell program, preset environment, network-proxy environment, and Wish aliases. Missing working directories follow the same recovery policy as new shell tasks. Existing terminals retain their process environment and directory; restart the terminal to pick up configuration changes. Task `shell.args` are command wrappers, so they are not passed to interactive shells: Bash/Zsh use `-l`, sh/dash/fish use `-i`, PowerShell uses `-NoLogo`, and cmd uses `/D`.
+
+Switching sessions/tabs or reloading the page reconnects to the running terminal. **Stop** ends it and its jobs. Server restart and session deletion also end the terminal; its output is not a permanent log. Commands entered here run as the Wish service user, outside the model's task transcript.

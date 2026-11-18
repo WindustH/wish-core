@@ -41,11 +41,15 @@ struct Runtime {
 #[derive(Default)]
 struct Registry {
   closed: bool,
+  terminal: Option<Arc<super::terminal::Terminal>>,
   executions: HashMap<String, Arc<Execution>>,
 }
 impl Drop for Runtime {
   fn drop(&mut self) {
     let registry = self.registry.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(terminal) = &registry.terminal {
+      terminal.kill();
+    }
     for execution in registry.executions.values() {
       let _ = execution.kills.send(KillMode::Force);
     }
@@ -64,6 +68,55 @@ impl Drop for Foreground {
 }
 
 impl TaskManager {
+  pub async fn terminal(&self, request: super::TerminalRequest) -> Result<Value, TaskError> {
+    use super::TerminalRequest;
+    if let TerminalRequest::Start { cols, rows } = request {
+      let manager = self.clone();
+      return crate::utils::blocking::io(move || {
+        let mut registry = manager.lock_registry()?;
+        if registry.closed {
+          return Err(TaskError::Closed);
+        }
+        if registry.terminal.as_ref().is_none_or(|terminal| !terminal.running()) {
+          registry.terminal =
+            Some(super::terminal::Terminal::start(&manager.inner.config, cols, rows)?);
+        }
+        Ok(json!({"terminal":registry.terminal.as_ref().map(|terminal| terminal.snapshot())}))
+      })
+      .await
+      .map_err(|error| io::Error::other(error.to_string()))?;
+    }
+    let terminal = self.lock_registry()?.terminal.clone();
+    if matches!(request, TerminalRequest::State) {
+      return Ok(json!({"terminal": terminal.map(|terminal| terminal.snapshot())}));
+    }
+    let id = match &request {
+      TerminalRequest::Poll { id, .. }
+      | TerminalRequest::Write { id, .. }
+      | TerminalRequest::Resize { id, .. }
+      | TerminalRequest::Close { id } => id,
+      _ => unreachable!(),
+    };
+    let terminal = terminal
+      .filter(|terminal| terminal.matches(id))
+      .ok_or_else(|| TaskError::ExecutionNotFound(id.clone()))?;
+    match request {
+      TerminalRequest::Poll { offset, .. } => Ok(json!(terminal.poll(offset).await)),
+      TerminalRequest::Write { data, .. } => {
+        terminal.write(data).await?;
+        Ok(json!({"ok":true}))
+      }
+      TerminalRequest::Resize { cols, rows, .. } => {
+        terminal.resize(cols, rows)?;
+        Ok(json!({"ok":true}))
+      }
+      TerminalRequest::Close { .. } => {
+        terminal.close().await;
+        Ok(json!({"terminal":terminal.snapshot()}))
+      }
+      _ => unreachable!(),
+    }
+  }
   pub async fn new(mut config: TaskConfig) -> Result<Self, TaskError> {
     if !cfg!(any(unix, windows)) {
       return Err(
@@ -145,10 +198,11 @@ impl TaskManager {
   pub fn can_unload(&self) -> bool {
     Arc::strong_count(&self.inner) == 1
       && self.lock_registry().is_ok_and(|registry| {
-        registry
-          .executions
-          .values()
-          .all(|execution| execution.get_snapshot().status != Status::Running)
+        registry.terminal.as_ref().is_none_or(|terminal| !terminal.running())
+          && registry
+            .executions
+            .values()
+            .all(|execution| execution.get_snapshot().status != Status::Running)
       })
   }
   pub fn forget_removed(&self) {
@@ -160,11 +214,14 @@ impl TaskManager {
   }
   /// Stop all owned process groups and await reaping. Captures and completed handles are retained.
   pub async fn shutdown(&self) -> Result<(), TaskError> {
-    let executions: Vec<_> = {
+    let (executions, terminal): (Vec<_>, _) = {
       let mut registry = self.lock_registry()?;
       registry.closed = true;
-      registry.executions.values().cloned().collect()
+      (registry.executions.values().cloned().collect(), registry.terminal.clone())
     };
+    if let Some(terminal) = terminal {
+      terminal.close().await;
+    }
     let results = futures_util::future::join_all(
       executions.iter().map(|execution| execution.terminate(KillMode::Force)),
     )

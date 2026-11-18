@@ -26,6 +26,7 @@ mod sse;
 mod status;
 mod storage;
 mod tasks;
+mod terminal;
 pub mod tool_commands;
 mod usage;
 use crate::application::{app::App, presets};
@@ -154,6 +155,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/config", put(sessions::set_config))
     .route("/sessions/{id}/metadata", put(sessions::set_metadata))
     .route("/sessions/{id}/tasks/background-shell", post(tasks::background_foreground))
+    .route("/sessions/{id}/terminal", post(terminal::request))
     .route("/sessions/{id}/tasks", get(tasks::list).post(tasks::user))
     .route("/sessions/{id}/cwd", put(sessions::set_working_directory))
     .route("/sessions/{id}/shell", put(sessions::set_shell))

@@ -44,6 +44,7 @@ pub(crate) mod skills;
 pub(crate) mod storage_cleanup;
 pub(crate) mod storage_usage;
 pub(crate) mod task_access;
+pub(crate) mod terminal_access;
 pub(crate) mod usage_queries;
 pub(crate) mod web_services;
 

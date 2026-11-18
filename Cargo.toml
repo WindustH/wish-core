@@ -51,6 +51,7 @@ sse-stream = "0.2"
 # ends whatever it started too - `npx` and the server behind it.
 process-wrap = { version = "10", default-features = false, features = ["tokio1", "process-group", "job-object", "kill-on-drop"] }
 zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+portable-pty = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
