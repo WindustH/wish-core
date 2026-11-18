@@ -67,10 +67,9 @@ pub async fn fetch<T: Transport>(
     source.auth = AuthScheme::None;
   }
   let draft = if protocol == ModelListProtocol::GoogleAntigravityModels {
-    let project = credentials.project.as_deref().filter(|v| !v.is_empty()).ok_or_else(|| {
-      Error::Build("Antigravity model listing requires a Cloud Code project".to_owned())
-    })?;
-    Draft::post_json(&serde_json::json!({"project": project}))?
+    Draft::post_json(&crate::protocol::endpoint::antigravity::project_body(
+      credentials.project.as_deref(),
+    ))?
   } else {
     Draft::get(build_page_query(protocol, query.cursor.as_deref(), query.page_size))
   };

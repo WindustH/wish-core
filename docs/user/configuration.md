@@ -75,7 +75,7 @@ An account takes a human label (`name`), an optional `preset`, and credentialsâ€
 
 Three presets support interactive subscription login without copying raw keys:
 - **ChatGPT (`openai_codex`)**: PKCE OAuth (`localhost:1455` callback, or paste the redirect URL if running remotely).
-- **Google Antigravity (`google_antigravity`)**: Google OAuth (`localhost:51121` callback, automatically discovers your Cloud Code project ID).
+- **Google Antigravity (`google_antigravity`)**: Google OAuth (`localhost:51121` callback, automatically enrolls the account and discovers a Cloud Code project ID when supplied by Google; consumer accounts do not require a project).
 - **GitHub Copilot (`github_copilot`)**: GitHub device code flow; Wish renews short-lived Copilot tokens in the background.
 
 ## Model providers

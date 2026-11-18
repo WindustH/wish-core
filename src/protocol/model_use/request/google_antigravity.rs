@@ -135,16 +135,17 @@ pub fn wrap(
   project: Option<&str>,
   session: &str,
 ) -> Result<Value, Error> {
-  let project = project.filter(|v| !v.is_empty()).ok_or_else(|| {
-    Error::Build("Antigravity requires a Cloud Code project; sign in with Google first".to_owned())
-  })?;
   let mut body = body;
   body["sessionId"] = json!(session);
-  Ok(json!({
-    "project": project, "model": model, "request": body,
+  let mut envelope = json!({
+    "model": model, "request": body,
     "userAgent": "antigravity", "requestType": "agent",
     "requestId": format!("agent-{}", uuid::Uuid::new_v4()),
-  }))
+  });
+  if let Some(project) = project.map(str::trim).filter(|p| !p.is_empty()) {
+    envelope["project"] = json!(project);
+  }
+  Ok(envelope)
 }
 
 /// Named Cloud Code deployments expose their tier in the callable id.

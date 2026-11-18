@@ -43,12 +43,9 @@ pub async fn fetch<T: Transport>(
     return Err(Error::build_unsupported("account state", protocol, reason.get_text()));
   };
   let draft = if protocol == AccountStateProtocol::GoogleAntigravityQuota {
-    let project = credentials
-      .project
-      .as_deref()
-      .filter(|v| !v.is_empty())
-      .ok_or_else(|| Error::Build("Antigravity quota requires a Google project".into()))?;
-    Draft::post_json(&serde_json::json!({"project": project}))?
+    Draft::post_json(&crate::protocol::endpoint::antigravity::project_body(
+      credentials.project.as_deref(),
+    ))?
   } else {
     Draft::get(Vec::new())
   };

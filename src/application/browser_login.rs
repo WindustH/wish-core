@@ -59,6 +59,7 @@ pub(crate) struct LoginGrant {
   pub(crate) issuer: String,
   pub(crate) kind: LoginKind,
   pub(crate) proxy: Proxy,
+  pub(crate) project: Option<String>,
   pub(crate) end: CancellationToken,
 }
 
@@ -136,9 +137,9 @@ async fn exchange_code(grant: &LoginGrant, code: &str) -> Result<Credentials, Ap
         "Google login did not return a refresh token; grant offline access again",
       ));
     }
-    let mut credentials = Credentials::default().renew(&tokens);
-    credentials.project =
-      Some(super::google_login::discover_project(&transport, &credentials, &grant.end).await?);
+    let mut credentials =
+      Credentials { project: grant.project.clone(), ..Default::default() }.renew(&tokens);
+    credentials.project = super::google_login::enroll(&transport, &credentials, &grant.end).await?;
     return Ok(credentials);
   }
   let reply = codex_oauth::post_authorization_code(
@@ -268,7 +269,9 @@ pub async fn begin<T>(
   };
   let attempt_id = uuid::Uuid::new_v4().to_string();
   let end = CancellationToken::new();
-  let grant = LoginGrant { state, verifier, redirect_uri, issuer, kind, proxy, end: end.clone() };
+  let project = account.client.get_credentials().project.clone();
+  let grant =
+    LoginGrant { state, verifier, redirect_uri, issuer, kind, proxy, project, end: end.clone() };
   *current = Some(LoginAttempt {
     id: attempt_id.clone(),
     provider: provider_id.to_owned(),
