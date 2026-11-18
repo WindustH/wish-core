@@ -183,10 +183,14 @@ async fn execute_standby_summary(
     ModelResult::Complete(response) => response,
     ModelResult::Interrupted(_) => return Err(Failure::Outcome(RunOutcome::Interrupted)),
     // A summary keeps nothing of a stream that failed: the error that ended it is the failure.
-    ModelResult::Failed(RunOutcome::StreamFailed(partial)) => match partial.reason {
-      IncompleteReason::Failed(error) => return Err(error.into()),
-      reason => unreachable!("a failed stream ends for its error, not {reason:?}"),
-    },
+    ModelResult::Failed(RunOutcome::StreamFailed(partial)) => {
+      if let IncompleteReason::Failed(error) = &partial.reason {
+        return Err(error.clone().into());
+      }
+      // Exhausting the bounded continuation budget is a normal failure, not an
+      // impossible stream state. Leave the active context untouched.
+      return Err(Failure::Outcome(RunOutcome::StreamFailed(partial)));
+    }
     ModelResult::Failed(outcome) => return Err(Failure::Outcome(outcome)),
   };
   let content = collect_assistant_content(&response, "summary").map_err(Failure::Outcome)?;

@@ -171,21 +171,31 @@ fn count_kept_prefix(conversation: &[Message]) -> usize {
       .count()
 }
 
-/// Keep tool declarations/history for replay and prefix caching, but forbid new calls on
-/// wires that support it. Messages and Converse currently cannot express None in our
-/// renderers; use Auto there instead of inheriting a forced-tool setting. Responses are
-/// still validated as text-only and never passed to the tool executor.
+/// Keep declarations/history for prefix caching when the wire can forbid new calls.
+/// Converse has no `none` choice, so remove declarations and represent past tool activity
+/// as ordinary text in this side-call copy. The session's original history stays intact.
 fn constrain_text_call(caller: &impl ModelCaller, request: &mut Request) {
-  request.tool_choice = if request.tools.is_empty() {
-    None
-  } else if matches!(
-    caller.get_model_use_protocol(),
-    Some(ModelUseProtocol::AnthropicMessages(_) | ModelUseProtocol::BedrockConverse)
-  ) {
-    Some(ToolChoice::Auto)
-  } else {
-    Some(ToolChoice::None)
-  };
+  if matches!(caller.get_model_use_protocol(), Some(ModelUseProtocol::BedrockConverse)) {
+    request.tools.clear();
+    for message in &mut request.conversation {
+      *message = match message {
+        Message::ToolUse { metadata, call_id, name, arguments } => Message::Assistant {
+          metadata: metadata.clone(),
+          content: vec![ContentBlock::Text {
+            text: format!("[Historical tool call {call_id}] {name} {arguments}"),
+          }],
+        },
+        Message::ToolResult { metadata, call_id, name, content } => Message::User {
+          metadata: metadata.clone(),
+          content: vec![ContentBlock::Text {
+            text: format!("[Historical tool result {call_id}] {name} {content}"),
+          }],
+        },
+        _ => continue,
+      };
+    }
+  }
+  request.tool_choice = if request.tools.is_empty() { None } else { Some(ToolChoice::None) };
 }
 
 /// The assistant content of a completed side call, a summary or a handoff (`what`): refused when
@@ -216,6 +226,15 @@ fn collect_assistant_content(
         ))));
       }
     }
+  }
+  if !content.iter().all(|block| matches!(block, ContentBlock::Text { .. }))
+    || !content
+      .iter()
+      .any(|block| matches!(block, ContentBlock::Text { text } if !text.trim().is_empty()))
+  {
+    return Err(RunOutcome::Failed(Error::Malformed(format!(
+      "{what} response must contain non-empty assistant text only"
+    ))));
   }
   Ok(content)
 }

@@ -37,7 +37,7 @@
 //! Trade-offs:
 //! - A `max_output_tokens` cap at or below the thinking budget is raised to leave room for the
 //!   answer.
-//! - `ToolChoice::None` has no wire spelling and is rejected rather than silently dropped.
+//! - `ToolChoice::None` renders as `tool_choice: {type: "none"}`, including with thinking.
 //! - Call/result pairing is validated in both directions, so a dangling `ToolUse` or an orphan
 //!   result is an error instead of a malformed request.
 //! - A `Developer` message has no role of its own on this wire, so in the leading run its text joins
@@ -89,12 +89,6 @@ fn render_body(
   mode: MessagesApiCompatMode,
   max_tokens: Option<u64>,
 ) -> Result<Value, Error> {
-  if request.tool_choice == Some(ToolChoice::None) {
-    return Err(Error::Build(
-      "tool_choice `none` cannot be expressed on the anthropic messages wire".to_owned(),
-    ));
-  }
-
   let (system, rest) = split_turn_instructions(
     &request.conversation,
     "a system instruction can only carry text blocks on the anthropic messages wire",
@@ -518,6 +512,6 @@ fn render_tool_choice(choice: ToolChoice) -> Value {
   match choice {
     ToolChoice::Auto => json!({"type": "auto"}),
     ToolChoice::Required => json!({"type": "any"}),
-    ToolChoice::None => unreachable!("tool_choice `none` is rejected before rendering"),
+    ToolChoice::None => json!({"type": "none"}),
   }
 }

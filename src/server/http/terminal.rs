@@ -67,7 +67,7 @@ pub async fn ticket(
       expires: Instant::now() + Duration::from_secs(30),
     },
   );
-  Ok(Json(json!({"ticket":token,"replay_until":replay_until})))
+  Ok(Json(json!({"ticket":token,"replay_until":replay_until,"pause_output":true})))
 }
 #[derive(Deserialize)]
 pub struct Upgrade {
@@ -102,6 +102,7 @@ enum Control {
   Resize { cols: u16, rows: u16 },
   Ping { time: f64 },
   Ack { offset: u64 },
+  Pause { paused: bool },
 }
 async fn stream(
   socket: WebSocket,
@@ -118,6 +119,36 @@ async fn stream(
   let reader_terminal = terminal.clone();
   let terminal_id = terminal.snapshot().id;
   let (ack, mut acknowledged) = tokio::sync::watch::channel(offset);
+  let (pause, mut paused) = tokio::sync::watch::channel(false);
+  // A blocked PTY stdin must not prevent output ACKs, resize, or heartbeats.
+  // Keep input ordered and bounded independently of the control reader.
+  let (input, mut inputs) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+  let input_terminal = terminal.clone();
+  let input_messages = messages.clone();
+  let input_writer = async move {
+    while let Some(bytes) = inputs.recv().await {
+      let count = bytes.len();
+      match input_terminal.write(STANDARD.encode(bytes)).await {
+        Ok(()) => {
+          if input_messages
+            .send(Message::Text(json!({"type":"input_ack","bytes":count}).to_string().into()))
+            .await
+            .is_err()
+          {
+            break;
+          }
+        }
+        Err(error) => {
+          let _ = input_messages
+            .send(Message::Text(
+              json!({"type":"error","message":error.to_string()}).to_string().into(),
+            ))
+            .await;
+          break;
+        }
+      }
+    }
+  };
   let reader = async move {
     loop {
       let message = tokio::select! {
@@ -133,19 +164,16 @@ async fn stream(
       }
       let result = match message {
         Message::Binary(bytes) => {
-          let count = bytes.len();
-          let result = reader_terminal.write(STANDARD.encode(bytes)).await;
-          if result.is_ok()
-            && messages
-              .send(Message::Text(json!({"type":"input_ack","bytes":count}).to_string().into()))
-              .await
-              .is_err()
-          {
+          if bytes.len() > 32768 || input.try_send(bytes.to_vec()).is_err() {
             break;
           }
-          result
+          Ok(())
         }
         Message::Text(text) => match serde_json::from_str::<Control>(&text) {
+          Ok(Control::Pause { paused }) => {
+            pause.send_replace(paused);
+            Ok(())
+          }
           Ok(Control::Resize { cols, rows }) => reader_terminal.resize(cols, rows),
           Ok(Control::Ping { time }) => {
             if messages
@@ -185,6 +213,14 @@ async fn stream(
   let writer = async {
     let mut stalled: Option<(u64, tokio::time::Instant)> = None;
     loop {
+      if *paused.borrow() {
+        tokio::select! {
+          _ = stop.cancelled() => break,
+          changed = paused.changed() => if changed.is_err() { break },
+          message = receive.recv() => if let Some(message) = message && send_frame(&mut sink, message).await.is_err() { break },
+        }
+        continue;
+      }
       // Bound output awaiting browser rendering. Keyboard input uses an independent reader.
       let cursor = *acknowledged.borrow();
       if offset.saturating_sub(cursor) > 131072 {
@@ -193,6 +229,7 @@ async fn stream(
         let deadline = *deadline;
         tokio::select! {
           _ = stop.cancelled() => break,
+          changed = paused.changed() => if changed.is_err() { break },
           changed = acknowledged.changed() => if changed.is_err() { break },
           message = receive.recv() => if let Some(message) = message && send_frame(&mut sink, message).await.is_err() { break },
           _ = tokio::time::sleep_until(deadline) => break,
@@ -206,6 +243,7 @@ async fn stream(
       let output = tokio::select! {
         _ = stop.cancelled() => break,
         message = receive.recv() => { if let Some(message) = message && send_frame(&mut sink, message).await.is_err() { break } continue },
+        changed = paused.changed() => { if changed.is_err() { break; } continue; },
         output = terminal.poll(offset) => output,
       };
       let eof = !output.terminal.running && output.eof && output.data.is_empty();
@@ -224,7 +262,7 @@ async fn stream(
       }
     }
   };
-  tokio::select! { _ = reader => {}, _ = writer => {}, _ = stop.cancelled() => {} }
+  tokio::select! { _ = reader => {}, _ = input_writer => {}, _ = writer => {}, _ = stop.cancelled() => {} }
   stop.cancel();
   // Complete the WebSocket close handshake instead of dropping a live TCP stream.
   let _ = tokio::time::timeout(Duration::from_secs(2), sink.close()).await;
