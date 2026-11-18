@@ -50,7 +50,8 @@ pub async fn ticket(
   Path(id): Path<String>,
   Json(input): Json<Connect>,
 ) -> Result<Json<Value>, ApiError> {
-  terminal_access::connect(&app, &id, &input.id).await?;
+  let terminal = terminal_access::connect(&app, &id, &input.id).await?;
+  let replay_until = terminal.output_offset();
   let token = uuid::Uuid::new_v4().to_string();
   let mut tickets = TICKETS.lock().map_err(ApiError::internal)?;
   tickets.retain(|_, ticket| ticket.expires > Instant::now() && ticket.app.strong_count() > 0);
@@ -66,7 +67,7 @@ pub async fn ticket(
       expires: Instant::now() + Duration::from_secs(30),
     },
   );
-  Ok(Json(json!({"ticket":token})))
+  Ok(Json(json!({"ticket":token,"replay_until":replay_until})))
 }
 #[derive(Deserialize)]
 pub struct Upgrade {

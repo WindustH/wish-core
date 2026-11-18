@@ -417,6 +417,10 @@ impl Terminal {
       }
     });
   }
+  /// Output preceding this cursor belongs to a newly attached client's replay.
+  pub fn output_offset(&self) -> u64 {
+    lock(&self.buffer).end
+  }
   pub fn snapshot(&self) -> TerminalSnapshot {
     lock(&self.state).clone()
   }
