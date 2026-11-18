@@ -245,6 +245,25 @@ impl Terminal {
       }
     };
     command.cwd(&cwd);
+    // This PTY belongs to the web emulator, even when the server was launched
+    // from another terminal. Brand hints can make TUIs skip capability probes.
+    for key in [
+      "TERM_PROGRAM_VERSION",
+      "KITTY_WINDOW_ID",
+      "KITTY_PID",
+      "KITTY_LISTEN_ON",
+      "KONSOLE_VERSION",
+      "ITERM_SESSION_ID",
+      "WEZTERM_EXECUTABLE",
+      "GHOSTTY_RESOURCES_DIR",
+      "WT_SESSION",
+      "WARP_HONOR_PS1",
+      "VSCODE_INJECTION",
+      "TABBY_CONFIG_DIRECTORY",
+    ] {
+      command.env_remove(key);
+    }
+    command.env("TERM_PROGRAM", "wish");
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
     for (key, value) in &shell.env {
