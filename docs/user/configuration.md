@@ -196,6 +196,8 @@ Inside `data_dir`, Wish keeps `wish.sqlite`, `management.sqlite`, `blobs/<sessio
 
 Choose **Terminal** in the right sidebar, then **Start terminal**. The **Background tasks** tab keeps model-started task history and controls separate. The terminal is a real PTY: ANSI colors, shell editing, Ctrl+C, and applications that require a TTY are supported. Mobile adds Esc, Tab, Ctrl+C, and arrow keys next to the terminal.
 
-A new terminal uses the session's working directory, selected shell program, preset environment, network-proxy environment, and Wish aliases. Missing working directories follow the same recovery policy as new shell tasks. Existing terminals retain their process environment and directory; restart the terminal to pick up configuration changes. Task `shell.args` are command wrappers, so they are not passed to interactive shells: Bash/Zsh use `-l`, sh/dash/fish use `-i`, PowerShell uses `-NoLogo`, and cmd uses `/D`.
+A new terminal uses the session's working directory, preset environment, network-proxy environment, and Wish aliases. Its program is the local service user's default shell (`$SHELL`, then the account database on Unix; `COMSPEC` on Windows), independently of the model command runner's `shell.program` and `shell.args`. Unix terminals start as interactive login shells on a PTY, loading the shell's own startup files (for example, Zsh reads `.zprofile` and `.zshrc`; Bash reads a login profile, which can source `.bashrc`). On Windows, cmd keeps AutoRun enabled.
+
+Existing terminals retain their process environment and directory; restart the terminal to pick up changes to the default shell, profiles, or preset environment.
 
 Switching sessions/tabs or reloading the page reconnects to the running terminal. **Stop** ends it and its jobs. Server restart and session deletion also end the terminal; its output is not a permanent log. Commands entered here run as the Wish service user, outside the model's task transcript.

@@ -85,17 +85,10 @@ impl Terminal {
       .map_err(|_| TaskError::InvalidArguments("too many open terminals (maximum 16)".into()))?;
     let shell = config.command.read().map_err(io_error)?.clone();
     let cwd = config.cwd.read().map_err(io_error)?.clone();
-    let mut command = CommandBuilder::new(&shell.program);
-    // Task arguments contain command-text flags (-c, -Command); interactive shells need their own mode.
-    let family =
-      shell.program.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
-    match family.as_str() {
-      "bash" | "zsh" => command.arg("-l"),
-      "sh" | "dash" | "fish" => command.arg("-i"),
-      "powershell" | "pwsh" => command.arg("-NoLogo"),
-      "cmd" => command.arg("/D"),
-      _ => (),
-    }
+    // A user terminal follows the host login shell, independently of the model's
+    // command runner. portable-pty resolves $SHELL / the account shell and uses
+    // login argv[0] on Unix; Windows uses COMSPEC with startup processing enabled.
+    let mut command = CommandBuilder::new_default_prog();
     command.cwd(&cwd);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
