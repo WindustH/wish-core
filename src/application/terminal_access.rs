@@ -21,5 +21,24 @@ pub async fn execute(
     slot.ensure_working_directory().await?;
   }
   let manager = slot.tools.task_manager().await?;
-  Ok(app.lifecycle.until_shutdown(manager.terminal(request)).await??)
+  let settings = app.config_file.lock().await.config.terminal.clone();
+  let mut result =
+    app.lifecycle.until_shutdown(manager.terminal(request, settings.clone())).await??;
+  result["settings"] = serde_json::to_value(settings).map_err(ApplicationError::internal)?;
+  Ok(result)
+}
+
+/// Authenticate and pin the session before upgrading a dedicated PTY connection.
+pub async fn connect(
+  app: &Arc<App>,
+  id: &str,
+  terminal_id: &str,
+) -> Result<Arc<crate::task::Terminal>, ApplicationError> {
+  app.lifecycle.require_open()?;
+  let slot = app.get_session(id).await?;
+  slot.require_live()?;
+  if !slot.get_descriptor().tools.shell {
+    return Err(ApplicationError::conflict("shell is disabled for this session"));
+  }
+  Ok(slot.tools.task_manager().await?.connected_terminal(terminal_id)?)
 }

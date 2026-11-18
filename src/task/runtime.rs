@@ -37,6 +37,7 @@ pub struct TaskManager {
 struct Runtime {
   config: TaskConfig,
   registry: Mutex<Registry>,
+  terminal_gate: Arc<tokio::sync::Mutex<()>>,
 }
 #[derive(Default)]
 struct Registry {
@@ -68,20 +69,45 @@ impl Drop for Foreground {
 }
 
 impl TaskManager {
-  pub async fn terminal(&self, request: super::TerminalRequest) -> Result<Value, TaskError> {
+  pub async fn terminal(
+    &self,
+    request: super::TerminalRequest,
+    settings: super::TerminalSettings,
+  ) -> Result<Value, TaskError> {
     use super::TerminalRequest;
+    let gate = if matches!(
+      request,
+      TerminalRequest::Start { .. } | TerminalRequest::Leave { .. } | TerminalRequest::Close { .. }
+    ) {
+      Some(self.inner.terminal_gate.clone().lock_owned().await)
+    } else {
+      None
+    };
     if let TerminalRequest::Start { cols, rows } = request {
       let manager = self.clone();
       return crate::utils::blocking::io(move || {
+        let _gate = gate;
+        {
+          let registry = manager.lock_registry()?;
+          if registry.closed {
+            return Err(TaskError::Closed);
+          }
+          if let Some(terminal) = &registry.terminal
+            && terminal.running()
+          {
+            return Ok(json!({"terminal":terminal.snapshot()}));
+          }
+        }
+        let terminal =
+          super::terminal::Terminal::start(&manager.inner.config, &settings, cols, rows)?;
         let mut registry = manager.lock_registry()?;
         if registry.closed {
+          terminal.kill();
           return Err(TaskError::Closed);
         }
-        if registry.terminal.as_ref().is_none_or(|terminal| !terminal.running()) {
-          registry.terminal =
-            Some(super::terminal::Terminal::start(&manager.inner.config, cols, rows)?);
-        }
-        Ok(json!({"terminal":registry.terminal.as_ref().map(|terminal| terminal.snapshot())}))
+        let snapshot = terminal.snapshot();
+        registry.terminal = Some(terminal);
+        Ok(json!({"terminal": snapshot}))
       })
       .await
       .map_err(|error| io::Error::other(error.to_string()))?;
@@ -94,7 +120,8 @@ impl TaskManager {
       TerminalRequest::Poll { id, .. }
       | TerminalRequest::Write { id, .. }
       | TerminalRequest::Resize { id, .. }
-      | TerminalRequest::Close { id } => id,
+      | TerminalRequest::Close { id }
+      | TerminalRequest::Leave { id, .. } => id,
       _ => unreachable!(),
     };
     let terminal = terminal
@@ -110,12 +137,35 @@ impl TaskManager {
         terminal.resize(cols, rows)?;
         Ok(json!({"ok":true}))
       }
+      TerminalRequest::Leave { force, .. } => {
+        let probe = terminal.clone();
+        let snapshot = crate::utils::blocking::io(move || {
+          let mut snapshot = probe.snapshot();
+          snapshot.busy = snapshot.running && !snapshot.persistent && probe.has_jobs();
+          snapshot
+        })
+        .await
+        .map_err(|error| io::Error::other(error.to_string()))?;
+        if !force && !snapshot.persistent && snapshot.busy {
+          return Ok(json!({"confirmation_required":true,"terminal":snapshot}));
+        }
+        terminal.close().await;
+        Ok(json!({"confirmation_required":false,"terminal":terminal.snapshot()}))
+      }
       TerminalRequest::Close { .. } => {
         terminal.close().await;
         Ok(json!({"terminal":terminal.snapshot()}))
       }
       _ => unreachable!(),
     }
+  }
+  pub fn connected_terminal(&self, id: &str) -> Result<Arc<super::Terminal>, TaskError> {
+    self
+      .lock_registry()?
+      .terminal
+      .clone()
+      .filter(|t| t.matches(id))
+      .ok_or_else(|| TaskError::ExecutionNotFound(id.into()))
   }
   pub async fn new(mut config: TaskConfig) -> Result<Self, TaskError> {
     if !cfg!(any(unix, windows)) {
@@ -171,7 +221,13 @@ impl TaskManager {
       }
       registry.executions.insert(id.to_owned(), execution);
     }
-    Ok(Self { inner: Arc::new(Runtime { config, registry: Mutex::new(registry) }) })
+    Ok(Self {
+      inner: Arc::new(Runtime {
+        config,
+        registry: Mutex::new(registry),
+        terminal_gate: Arc::new(tokio::sync::Mutex::new(())),
+      }),
+    })
   }
 
   fn lock_registry(&self) -> Result<std::sync::MutexGuard<'_, Registry>, TaskError> {

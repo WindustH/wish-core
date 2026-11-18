@@ -3,6 +3,7 @@ use super::{TaskConfig, TaskError};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
   collections::VecDeque,
   io::{self, Read, Write},
@@ -14,15 +15,67 @@ use tokio::sync::{Semaphore, oneshot, watch};
 const RETAINED: usize = 1024 * 1024;
 static SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(16)));
 
+/// Settings for user terminals, independent of the model command runner.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TerminalSettings {
+  pub shell: String,
+  pub persistence: Persistence,
+  pub per_session: bool,
+  pub session_name: String,
+  pub font_size: u16,
+  pub colors: std::collections::BTreeMap<String, String>,
+}
+impl Default for TerminalSettings {
+  fn default() -> Self {
+    Self {
+      shell: String::new(),
+      persistence: Persistence::None,
+      per_session: false,
+      session_name: String::new(),
+      font_size: 13,
+      colors: Default::default(),
+    }
+  }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Persistence {
+  #[default]
+  None,
+  Tmux,
+  Zellij,
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TerminalRequest {
   State,
-  Start { cols: u16, rows: u16 },
-  Poll { id: String, offset: u64 },
-  Write { id: String, data: String },
-  Resize { id: String, cols: u16, rows: u16 },
-  Close { id: String },
+  Start {
+    cols: u16,
+    rows: u16,
+  },
+  Poll {
+    id: String,
+    offset: u64,
+  },
+  Write {
+    id: String,
+    data: String,
+  },
+  Resize {
+    id: String,
+    cols: u16,
+    rows: u16,
+  },
+  Close {
+    id: String,
+  },
+  Leave {
+    id: String,
+    #[serde(default)]
+    force: bool,
+  },
 }
 #[derive(Clone, Serialize)]
 pub struct TerminalSnapshot {
@@ -33,6 +86,8 @@ pub struct TerminalSnapshot {
   pub cols: u16,
   pub rows: u16,
   pub cwd: String,
+  pub persistent: bool,
+  pub busy: bool,
 }
 #[derive(Serialize)]
 pub struct TerminalOutput {
@@ -48,13 +103,16 @@ struct Buffer {
   eof: bool,
 }
 type Input = (Vec<u8>, oneshot::Sender<io::Result<()>>);
-pub(super) struct Terminal {
+pub struct Terminal {
   state: Arc<Mutex<TerminalSnapshot>>,
   buffer: Arc<Mutex<Buffer>>,
   changed: watch::Sender<u64>,
   master: Mutex<Box<dyn MasterPty + Send>>,
   killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
   input: std::sync::mpsc::SyncSender<Input>,
+  connections: std::sync::atomic::AtomicUsize,
+  connection_epoch: std::sync::atomic::AtomicU64,
+  last_activity: Mutex<std::time::Instant>,
   #[cfg(unix)]
   pid: Option<u32>,
 }
@@ -77,7 +135,12 @@ fn notify(changed: &watch::Sender<u64>) {
 }
 impl Terminal {
   // Called on a blocking worker while the registry serializes start against shutdown.
-  pub fn start(config: &TaskConfig, cols: u16, rows: u16) -> Result<Arc<Self>, TaskError> {
+  pub fn start(
+    config: &TaskConfig,
+    settings: &TerminalSettings,
+    cols: u16,
+    rows: u16,
+  ) -> Result<Arc<Self>, TaskError> {
     let dimensions = size(cols, rows)?;
     let permit = SLOTS
       .clone()
@@ -88,7 +151,99 @@ impl Terminal {
     // A user terminal follows the host login shell, independently of the model's
     // command runner. portable-pty resolves $SHELL / the account shell and uses
     // login argv[0] on Unix; Windows uses COMSPEC with startup processing enabled.
-    let mut command = CommandBuilder::new_default_prog();
+    let mut native = CommandBuilder::new_default_prog();
+    if !settings.shell.trim().is_empty() {
+      #[cfg(unix)]
+      native.env("SHELL", settings.shell.trim());
+      #[cfg(windows)]
+      {
+        native = CommandBuilder::new(settings.shell.trim());
+      }
+      // Never silently fall back if the explicitly selected shell is missing.
+      if !std::path::Path::new(settings.shell.trim()).is_file() {
+        return Err(TaskError::InvalidArguments(
+          "terminal.shell must name an installed executable".into(),
+        ));
+      }
+    }
+    #[cfg(unix)]
+    let selected_shell = native.get_shell();
+    #[cfg(not(unix))]
+    let selected_shell = if settings.shell.trim().is_empty() {
+      native.get_shell()
+    } else {
+      settings.shell.trim().to_owned()
+    };
+    if !settings.shell.trim().is_empty() && selected_shell != settings.shell.trim() {
+      return Err(TaskError::InvalidArguments(
+        "the selected terminal shell is not executable".into(),
+      ));
+    }
+    let login = matches!(
+      std::path::Path::new(&selected_shell).file_stem().and_then(|name| name.to_str()),
+      Some("sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" | "csh" | "tcsh" | "nu")
+    );
+    let name =
+      format!("wish-{:x}", Sha256::digest(config.capture_dir.to_string_lossy().as_bytes()));
+    let mut command = match settings.persistence {
+      Persistence::None => native,
+      Persistence::Tmux => {
+        let mut cmd = CommandBuilder::new("tmux");
+        if settings.per_session {
+          // A private server per Wish session isolates config, environment and naming.
+          cmd.args(["-L", &name, "new-session", "-A", "-s", &name, "-c"]);
+          cmd.arg(&cwd);
+          cmd.arg(&selected_shell);
+          if login {
+            cmd.arg("-l");
+          }
+        } else {
+          cmd.arg("attach-session");
+          if !settings.session_name.trim().is_empty() {
+            cmd.args(["-t", settings.session_name.trim()]);
+          }
+        }
+        cmd
+      }
+      Persistence::Zellij => {
+        let mut cmd = CommandBuilder::new("zellij");
+        cmd.arg("attach");
+        if settings.per_session {
+          cmd.args(["--create", &name]);
+        } else if !settings.session_name.trim().is_empty() {
+          cmd.arg(settings.session_name.trim());
+        } else {
+          cmd.args(["--index", "0"]);
+        }
+        cmd.args(["options", "--on-force-close", "detach"]);
+        if settings.per_session {
+          // Zellij starts default_shell without login arguments. Keep a stable,
+          // session-local launcher so every new pane loads the selected profile.
+          #[cfg(unix)]
+          {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::create_dir_all(&config.capture_dir)?;
+            let launcher = config
+              .capture_dir
+              .join(format!("terminal-login-{:x}.sh", Sha256::digest(selected_shell.as_bytes())));
+            let script = format!(
+              "#!/bin/sh\nexec '{}' {} \"$@\"\n",
+              selected_shell.replace('\'', "'\"'\"'"),
+              if login { "-l" } else { "" }
+            );
+            if std::fs::read(&launcher).ok().as_deref() != Some(script.as_bytes()) {
+              crate::utils::atomic_file::write_sync(&launcher, script.as_bytes())?;
+            }
+            std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700))?;
+            cmd.arg("--default-shell");
+            cmd.arg(launcher);
+          }
+          #[cfg(not(unix))]
+          cmd.args(["--default-shell", &selected_shell]);
+        }
+        cmd
+      }
+    };
     command.cwd(&cwd);
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
@@ -106,6 +261,13 @@ impl Terminal {
       command.env(key, value);
     }
     command.env_remove("WISH_TASK_ID");
+    command.env_remove("TMUX");
+    command.env_remove("TMUX_PANE");
+    command.env_remove("ZELLIJ");
+    command.env_remove("ZELLIJ_SESSION_NAME");
+    if !settings.shell.trim().is_empty() {
+      command.env("SHELL", &selected_shell);
+    }
     let pair = portable_pty::native_pty_system().openpty(dimensions).map_err(io_error)?;
     let mut reader = pair.master.try_clone_reader().map_err(io_error)?;
     let mut writer = pair.master.take_writer().map_err(io_error)?;
@@ -123,6 +285,8 @@ impl Terminal {
       cols,
       rows,
       cwd: cwd.to_string_lossy().into_owned(),
+      persistent: settings.persistence != Persistence::None,
+      busy: false,
     }));
     let buffer = Arc::new(Mutex::new(Buffer { bytes: VecDeque::new(), end: 0, eof: false }));
     let (changed, _) = watch::channel(0);
@@ -134,6 +298,9 @@ impl Terminal {
       master: Mutex::new(pair.master),
       killer: Mutex::new(killer),
       input,
+      connections: 0.into(),
+      connection_epoch: 0.into(),
+      last_activity: Mutex::new(std::time::Instant::now()),
       #[cfg(unix)]
       pid,
     });
@@ -207,10 +374,75 @@ impl Terminal {
       let _ = lock(&child).wait();
       return Err(error.into());
     }
+    let weak = Arc::downgrade(&terminal);
+    tokio::spawn(async move {
+      loop {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let Some(terminal) = weak.upgrade() else { break };
+        if terminal.connection_epoch.load(std::sync::atomic::Ordering::SeqCst) != 0
+          || !terminal.running()
+        {
+          break;
+        }
+        // Also permit legacy HTTP polling clients; a lost start/ticket response
+        // must not pin a shell and its session cache indefinitely.
+        if lock(&terminal.last_activity).elapsed() >= Duration::from_secs(30) {
+          terminal.close().await;
+          break;
+        }
+      }
+    });
     Ok(terminal)
+  }
+  pub fn attach(&self) {
+    use std::sync::atomic::Ordering::SeqCst;
+    self.connections.fetch_add(1, SeqCst);
+    self.connection_epoch.fetch_add(1, SeqCst);
+  }
+  pub fn detach(self: &Arc<Self>) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if self.connections.fetch_sub(1, SeqCst) != 1 {
+      return;
+    }
+    let epoch = self.connection_epoch.load(SeqCst);
+    let weak = Arc::downgrade(self);
+    tokio::spawn(async move {
+      // Brief network interruptions can reattach without losing an ordinary shell.
+      tokio::time::sleep(Duration::from_secs(30)).await;
+      if let Some(terminal) = weak.upgrade()
+        && terminal.connections.load(SeqCst) == 0
+        && terminal.connection_epoch.load(SeqCst) == epoch
+      {
+        terminal.close().await;
+      }
+    });
   }
   pub fn snapshot(&self) -> TerminalSnapshot {
     lock(&self.state).clone()
+  }
+  pub fn has_jobs(&self) -> bool {
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = self.pid {
+      let Ok(entries) = std::fs::read_dir("/proc") else { return true };
+      for entry in entries.flatten() {
+        if entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) == Some(pid) {
+          continue;
+        }
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else { continue };
+        let Some((_, fields)) = stat.rsplit_once(") ") else { continue };
+        let fields: Vec<_> = fields.split_whitespace().collect();
+        if fields.first() != Some(&"Z")
+          && fields.get(3).and_then(|s| s.parse::<u32>().ok()) == Some(pid)
+        {
+          return true;
+        }
+      }
+      // A shell executing a builtin loop is busy even without child processes.
+      let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+      return stat.rsplit_once(") ").is_none_or(|(_, fields)| !fields.starts_with("S "));
+    }
+    // On platforms without a full process-tree probe, err on the side of asking.
+    true
   }
   pub fn matches(&self, id: &str) -> bool {
     lock(&self.state).id == id
@@ -226,6 +458,7 @@ impl Terminal {
     Ok(())
   }
   pub async fn write(&self, data: String) -> Result<(), TaskError> {
+    *lock(&self.last_activity) = std::time::Instant::now();
     if !self.running() {
       return Err(TaskError::Closed);
     }
@@ -243,17 +476,19 @@ impl Terminal {
       .input
       .try_send((bytes, reply))
       .map_err(|_| TaskError::InvalidArguments("terminal input is busy".into()))?;
-    match tokio::time::timeout(Duration::from_secs(5), received).await {
-      Ok(Ok(result)) => result.map_err(Into::into),
-      _ => {
-        self.kill();
-        Err(TaskError::Unknown(
-          "terminal input stalled; terminal stopped, do not repeat input automatically".into(),
-        ))
-      }
+    // A program may intentionally stop reading stdin. Backpressure is not a
+    // reason to kill it; closing the PTY releases this bounded writer instead.
+    match received.await {
+      Ok(result) => result.map_err(Into::into),
+      Err(_) if !self.running() => Err(TaskError::Closed),
+      Err(_) => Err(TaskError::Unknown(
+        "terminal input writer closed; do not repeat input automatically".into(),
+      )),
     }
   }
+
   pub async fn poll(&self, offset: u64) -> TerminalOutput {
+    *lock(&self.last_activity) = std::time::Instant::now();
     let mut changes = self.changed.subscribe();
     let wait = {
       let buffer = lock(&self.buffer);

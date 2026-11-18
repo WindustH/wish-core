@@ -24,7 +24,7 @@ httpdate = "1"
 # The application owns the runtime; built-in tools use its process and file I/O facilities.
 tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "net", "signal", "process", "fs", "io-util", "macros"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 uuid = { version = "1", features = ["v4"] }
 # Byte-level stream reading, for bodies that must stay under a ceiling while being read.
 futures-util = "0.3"

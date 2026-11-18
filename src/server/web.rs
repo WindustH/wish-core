@@ -96,7 +96,7 @@ pub async fn guard(State(front): State<Arc<WebFront>>, request: Request, next: N
   }
   let changes =
     matches!(*request.method(), Method::POST | Method::PUT | Method::PATCH | Method::DELETE);
-  if changes {
+  if changes || text("upgrade").is_some_and(|value| value.eq_ignore_ascii_case("websocket")) {
     if let Some(origin) = text(header::ORIGIN.as_str())
       && origin != format!("http://{host}")
       && origin != format!("https://{host}")

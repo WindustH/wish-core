@@ -156,6 +156,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/metadata", put(sessions::set_metadata))
     .route("/sessions/{id}/tasks/background-shell", post(tasks::background_foreground))
     .route("/sessions/{id}/terminal", post(terminal::request))
+    .route("/sessions/{id}/terminal/connect", post(terminal::ticket))
     .route("/sessions/{id}/tasks", get(tasks::list).post(tasks::user))
     .route("/sessions/{id}/cwd", put(sessions::set_working_directory))
     .route("/sessions/{id}/shell", put(sessions::set_shell))
@@ -182,6 +183,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/skills/{name}", get(skills::show))
     .route("/mcp/servers/{id}/check", post(mcp::check))
     .route_layer(middleware::from_fn_with_state(app.clone(), authorize))
+    .route("/sessions/{id}/terminal/socket", get(terminal::upgrade))
     // The bridge a session's shell reaches its MCP servers through checks that session's own token
     // instead of the application's.
     .route(

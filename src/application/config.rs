@@ -26,6 +26,7 @@ pub struct Config {
   pub accounts: BTreeMap<String, super::accounts::AccountConfig>,
   pub proxy: ProxyConfig,
   pub shell: ShellSettings,
+  pub terminal: task::TerminalSettings,
   pub mcp: McpConfig,
   /// The services `web_search` asks, and in what order.
   pub search: SearchConfig,
@@ -43,6 +44,65 @@ pub struct Config {
 impl Config {
   /// Refuses a proxy, MCP server, search provider or usage limit that could never work.
   pub fn validate(&self) -> Result<(), ApplicationError> {
+    let terminal_shell = self.terminal.shell.trim();
+    if !terminal_shell.is_empty()
+      && (!std::path::Path::new(terminal_shell).is_absolute()
+        || !crate::task::is_runnable(std::path::Path::new(terminal_shell)))
+    {
+      return Err(ApplicationError::invalid(
+        "terminal.shell must be an absolute path to an executable",
+      ));
+    }
+    if self.terminal.session_name.trim().starts_with('-')
+      || matches!(self.terminal.session_name.trim(), "options" | "help")
+    {
+      return Err(ApplicationError::invalid(
+        "terminal.session_name cannot start with '-' or be a multiplexer command name",
+      ));
+    }
+    if self.terminal.session_name.len() > 128
+      || self.terminal.session_name.chars().any(|c| c.is_control())
+    {
+      return Err(ApplicationError::invalid(
+        "terminal.session_name must be at most 128 bytes without control characters",
+      ));
+    }
+    if !(8..=32).contains(&self.terminal.font_size) {
+      return Err(ApplicationError::invalid("terminal.font_size must be between 8 and 32"));
+    }
+    for (key, value) in &self.terminal.colors {
+      if ![
+        "background",
+        "foreground",
+        "cursor",
+        "selectionBackground",
+        "black",
+        "red",
+        "green",
+        "yellow",
+        "blue",
+        "magenta",
+        "cyan",
+        "white",
+        "brightBlack",
+        "brightRed",
+        "brightGreen",
+        "brightYellow",
+        "brightBlue",
+        "brightMagenta",
+        "brightCyan",
+        "brightWhite",
+      ]
+      .contains(&key.as_str())
+        || value.len() != 7
+        || !value.starts_with('#')
+        || !value[1..].bytes().all(|b| b.is_ascii_hexdigit())
+      {
+        return Err(ApplicationError::invalid(
+          "terminal.colors must use supported color names and #RRGGBB values",
+        ));
+      }
+    }
     self.proxy.validate()?;
     self.mcp.validate(&self.providers)?;
     let providers = self
@@ -385,6 +445,7 @@ impl Default for Config {
       accounts: BTreeMap::new(),
       proxy: ProxyConfig::default(),
       shell: ShellSettings::default(),
+      terminal: Default::default(),
       mcp: Default::default(),
       search: Default::default(),
       fetch: Default::default(),

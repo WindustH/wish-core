@@ -194,10 +194,27 @@ Inside `data_dir`, Wish keeps `wish.sqlite`, `management.sqlite`, `blobs/<sessio
 
 ## Interactive terminal in the Web sidebar
 
-Choose **Terminal** in the right sidebar, then **Start terminal**. The **Background tasks** tab keeps model-started task history and controls separate. The terminal is a real PTY: ANSI colors, shell editing, Ctrl+C, and applications that require a TTY are supported. Mobile adds Esc, Tab, Ctrl+C, and arrow keys next to the terminal.
+Opening **Terminal** automatically connects a real PTY in the session's working directory. **Background tasks** is a separate tab for model-started commands. With persistence off, Ctrl-D exits the current shell; while the terminal page remains open, Wish starts another shell. Detaching or exiting a multiplexer leaves it disconnected until you reconnect. Repeated startup failures stop automatic retries and show an error.
 
-A new terminal uses the session's working directory, preset environment, network-proxy environment, and Wish aliases. Its program is the local service user's default shell (`$SHELL`, then the account database on Unix; `COMSPEC` on Windows), independently of the model command runner's `shell.program` and `shell.args`. Unix terminals start as interactive login shells on a PTY, loading the shell's own startup files (for example, Zsh reads `.zprofile` and `.zshrc`; Bash reads a login profile, which can source `.bashrc`). On Windows, cmd keeps AutoRun enabled.
+**Settings → Terminal** controls the interactive terminal independently of the model command runner:
 
-Existing terminals retain their process environment and directory; restart the terminal to pick up changes to the default shell, profiles, or preset environment.
+```json
+"terminal": {
+  "shell": "",
+  "persistence": "none",
+  "per_session": false,
+  "session_name": "",
+  "font_size": 13,
+  "colors": {}
+}
+```
 
-Switching sessions/tabs or reloading the page reconnects to the running terminal. **Stop** ends it and its jobs. Server restart and session deletion also end the terminal; its output is not a permanent log. Commands entered here run as the Wish service user, outside the model's task transcript.
+- `shell`: absolute executable path, or empty for the service user's native shell (`$SHELL` / account database on Unix; `COMSPEC` on Windows). Unix shells load their login profile and interactive startup files. Environment variables, proxy settings and Wish aliases still follow the session's Shell settings.
+- `persistence`: `none`, `tmux` or `zellij`. Install the chosen multiplexer on the server. With persistence off, leaving closes the terminal; Wish asks before ending running jobs. Browser disconnection allows 30 seconds for reconnection before the PTY is closed. A started PTY that never gets a connection or polling activity also expires after 30 seconds.
+- `per_session`: defaults to `false`. Multiplexers attach to an **existing** session, optionally selected by `session_name`; missing sessions are not created implicitly. Without a name, tmux selects its existing session and zellij attaches to the first existing session. Set `true` to create/reuse an isolated multiplexer session for each Wish session, ignoring `session_name`.
+- Persistent sessions retain their shell, environment and jobs when the Web page detaches. Existing multiplexer sessions do not change shell when settings change. Their lifetime is managed by the multiplexer and host service manager; stopping the host or killing its process group can still end them.
+- `font_size`: 8–32 pixels. The default **Wish** palette follows light/dark appearance. `colors` overrides individual xterm theme colors using `#RRGGBB`: `background`, `foreground`, `cursor`, `selectionBackground`, the eight ANSI colors, and their `brightBlack` … `brightWhite` variants.
+
+Shell/persistence changes apply to new connections; font and palette changes apply immediately after saving. Commands run as the Wish service user and are separate from the model transcript. Multiple browser clients share one session PTY's input and dimensions.
+
+Input, output, resize and latency probes use a dedicated WebSocket. An authenticated POST exchanges credentials for a 30-second, single-use, session-scoped ticket; the long-lived bearer token is never placed in the WebSocket URL. The server retains the latest 1 MiB of PTY bytes. Reconnecting beyond that retention resets the display with a notice. A stalled renderer cannot accumulate unbounded output; uncertain input is never replayed automatically.
