@@ -1,11 +1,12 @@
 //! A user-owned PTY, separate from model tasks and their completion notifications.
+mod output;
 use super::{TaskConfig, TaskError};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use output::{Output, OutputReader};
 use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-  collections::VecDeque,
   io::{self, Read, Write},
   sync::{Arc, LazyLock, Mutex},
   time::Duration,
@@ -97,15 +98,10 @@ pub struct TerminalOutput {
   pub reset: bool,
   pub eof: bool,
 }
-struct Buffer {
-  bytes: VecDeque<u8>,
-  end: u64,
-  eof: bool,
-}
 type Input = (Vec<u8>, oneshot::Sender<io::Result<()>>);
 pub struct Terminal {
   state: Arc<Mutex<TerminalSnapshot>>,
-  buffer: Arc<Mutex<Buffer>>,
+  buffer: Arc<Output>,
   changed: watch::Sender<u64>,
   master: Mutex<Box<dyn MasterPty + Send>>,
   killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
@@ -307,7 +303,7 @@ impl Terminal {
       persistent: settings.persistence != Persistence::None,
       busy: false,
     }));
-    let buffer = Arc::new(Mutex::new(Buffer { bytes: VecDeque::new(), end: 0, eof: false }));
+    let buffer = Arc::new(Output::new());
     let (changed, _) = watch::channel(0);
     let (input, receiver) = std::sync::mpsc::sync_channel::<Input>(8);
     let terminal = Arc::new(Self {
@@ -332,12 +328,7 @@ impl Terminal {
           match reader.read(&mut chunk) {
             Ok(0) => break,
             Ok(count) => {
-              let mut output = lock(&buffer);
-              output.end += count as u64;
-              let remove = (output.bytes.len() + count).saturating_sub(RETAINED);
-              output.bytes.drain(..remove);
-              output.bytes.extend(&chunk[..count]);
-              drop(output);
+              buffer.push(&chunk[..count]);
               notify(&read_changed);
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -350,7 +341,7 @@ impl Terminal {
             }
           }
         }
-        lock(&buffer).eof = true;
+        lock(&buffer.buffer).eof = true;
         notify(&read_changed);
       })?;
       let input_state = state.clone();
@@ -438,7 +429,7 @@ impl Terminal {
   }
   /// Output preceding this cursor belongs to a newly attached client's replay.
   pub fn output_offset(&self) -> u64 {
-    lock(&self.buffer).end
+    lock(&self.buffer.buffer).end
   }
   pub fn snapshot(&self) -> TerminalSnapshot {
     lock(&self.state).clone()
@@ -510,28 +501,35 @@ impl Terminal {
     }
   }
 
+  pub(super) fn release_startup(&self) {
+    self.buffer.release_startup();
+  }
+  pub(crate) fn output_reader(&self, offset: u64) -> OutputReader {
+    self.buffer.subscribe(offset)
+  }
   pub async fn poll(&self, offset: u64) -> TerminalOutput {
     *lock(&self.last_activity) = std::time::Instant::now();
     let mut changes = self.changed.subscribe();
-    let wait = {
-      let buffer = lock(&self.buffer);
-      buffer.end == offset && !(buffer.eof && !self.running())
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let (reset, next_offset, bytes, eof) = loop {
+      {
+        let buffer = lock(&self.buffer.buffer);
+        if let Some((reset, next, bytes)) = buffer.read(offset)
+          && (reset || !bytes.is_empty() || !self.running())
+        {
+          break (reset, next, bytes, buffer.eof);
+        }
+      }
+      if tokio::time::timeout_at(deadline, changes.changed()).await.is_err() {
+        break (false, offset, Vec::new(), false);
+      }
     };
-    if wait {
-      let _ = tokio::time::timeout(Duration::from_secs(15), changes.changed()).await;
-    }
-    let buffer = lock(&self.buffer);
-    let start = buffer.end - buffer.bytes.len() as u64;
-    let reset = offset < start || offset > buffer.end;
-    let offset = if reset { start } else { offset };
-    let bytes: Vec<_> =
-      buffer.bytes.iter().skip((offset - start) as usize).take(65536).copied().collect();
     TerminalOutput {
       terminal: self.snapshot(),
-      next_offset: offset + bytes.len() as u64,
+      next_offset,
       data: STANDARD.encode(bytes),
       reset,
-      eof: buffer.eof,
+      eof,
     }
   }
   pub fn kill(&self) {

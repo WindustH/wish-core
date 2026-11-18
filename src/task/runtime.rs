@@ -127,6 +127,9 @@ impl TaskManager {
     let terminal = terminal
       .filter(|terminal| terminal.matches(id))
       .ok_or_else(|| TaskError::ExecutionNotFound(id.clone()))?;
+    if matches!(request, TerminalRequest::Poll { .. } | TerminalRequest::Write { .. }) {
+      terminal.release_startup();
+    }
     match request {
       TerminalRequest::Poll { offset, .. } => Ok(json!(terminal.poll(offset).await)),
       TerminalRequest::Write { data, .. } => {

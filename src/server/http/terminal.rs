@@ -211,9 +211,11 @@ async fn stream(
     }
   };
   let writer = async {
+    let mut reader = Some(terminal.output_reader(offset));
     let mut stalled: Option<(u64, tokio::time::Instant)> = None;
     loop {
       if *paused.borrow() {
+        reader.take();
         tokio::select! {
           _ = stop.cancelled() => break,
           changed = paused.changed() => if changed.is_err() { break },
@@ -221,6 +223,7 @@ async fn stream(
         }
         continue;
       }
+      let reader = reader.get_or_insert_with(|| terminal.output_reader(offset));
       // Bound output awaiting browser rendering. Keyboard input uses an independent reader.
       let cursor = *acknowledged.borrow();
       if offset.saturating_sub(cursor) > 131072 {
@@ -248,6 +251,7 @@ async fn stream(
       };
       let eof = !output.terminal.running && output.eof && output.data.is_empty();
       offset = output.next_offset;
+      reader.advance(offset);
       if send_frame(
         &mut sink,
         Message::Text(json!({"type":"output","output":output}).to_string().into()),
