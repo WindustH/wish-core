@@ -53,7 +53,7 @@ Compaction runs when `SessionConfig.compaction` is present (`0 < target_tokens <
 When upstream compaction isn't available, `StandbySummarizer` stays ahead of the context ceiling incrementally:
 
 1. Between turns below `trigger_tokens`, whenever at least `segment_tokens` of closed turns/tool-batches accumulate after `compaction_cursor` (excluding the latest tail), the executor launches a background streamed summary (`Purpose::CompactionSummary`) concurrent with the next model or tool step.
-2. Each summary request repeats the active request prefix verbatim to hit the provider's prompt cache, commits into `standby`, and yields cleanly if new user input arrives while it is running.
+2. Each summary request repeats the active conversation prefix and tool schemas, preserving cache reuse where supported, but sets tool selection to `None` on wires that support disabling calls. The current Messages/Converse renderers cannot express that setting, so they use `Auto` plus the text-only instruction. A tool response is never executed or committed as a summary and produces an explicit summary error. Successful summaries commit into `standby`; preparation yields cleanly if new user input arrives while it is running. Context handoff calls use the same tool constraint.
 3. At cutover (`Compacting`), remaining spans summarize in batches of two, merge with the raw tail, validate against the active request renderer, trim the oldest complete non-fixed units if still over `target_tokens`, and promote `standby` to `active`.
 
 ### Upstream compaction and handoffs

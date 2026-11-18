@@ -18,7 +18,9 @@ pub(super) use trigger::{CutoverPlan, find_cutover, force_cutover};
 use super::{ExecutionControl, model::ModelCaller, observe::deliver_new_events, run::run_scoped};
 use crate::{
   protocol::error::Error,
-  protocol::{ContentBlock, Message, Request, Response, StopReason},
+  protocol::{
+    ContentBlock, Message, Request, Response, StopReason, ToolChoice, model_use::ModelUseProtocol,
+  },
   session::{
     CompactionConfig, CompactionReason, RunOutcome, Session, SessionError, SessionEvent,
     TokenMeasurement, TokenMeasurementSource, statistics::ModelCallStatus,
@@ -169,6 +171,23 @@ fn count_kept_prefix(conversation: &[Message]) -> usize {
       .count()
 }
 
+/// Keep tool declarations/history for replay and prefix caching, but forbid new calls on
+/// wires that support it. Messages and Converse currently cannot express None in our
+/// renderers; use Auto there instead of inheriting a forced-tool setting. Responses are
+/// still validated as text-only and never passed to the tool executor.
+fn constrain_text_call(caller: &impl ModelCaller, request: &mut Request) {
+  request.tool_choice = if request.tools.is_empty() {
+    None
+  } else if matches!(
+    caller.get_model_use_protocol(),
+    Some(ModelUseProtocol::AnthropicMessages(_) | ModelUseProtocol::BedrockConverse)
+  ) {
+    Some(ToolChoice::Auto)
+  } else {
+    Some(ToolChoice::None)
+  };
+}
+
 /// The assistant content of a completed side call, a summary or a handoff (`what`): refused when
 /// the model stopped for another reason than finishing, or answered with anything but assistant
 /// content and reasoning, which is left out.
@@ -176,6 +195,13 @@ fn collect_assistant_content(
   response: &Response,
   what: &str,
 ) -> Result<Vec<ContentBlock>, RunOutcome> {
+  if response.stop_reason == StopReason::ToolUse
+    || response.messages.iter().any(|message| matches!(message, Message::ToolUse { .. }))
+  {
+    return Err(RunOutcome::Failed(Error::Malformed(format!(
+      "{what} response requested a tool instead of summary text; no tool was executed"
+    ))));
+  }
   if response.stop_reason != StopReason::Stop {
     return Err(RunOutcome::ModelStopped(Box::new(response.clone())));
   }

@@ -5,7 +5,7 @@
 //! How an item records the provider that made it and the handoff it carries is the application's
 //! business: it says which items need a handoff, whether the provider switched from can read them,
 //! and builds the copy of the item that carries the handoff.
-use super::{call_status, collect_assistant_content};
+use super::{call_status, collect_assistant_content, constrain_text_call};
 use crate::{
   executor::{
     ExecutionControl,
@@ -171,8 +171,8 @@ pub(crate) async fn write_handoff(
     metadata: serde_json::json!({"source":"wish_request_handoff","instruction_title":"上下文交接指令"}),
     content: vec![ContentBlock::Text { text: HANDOFF_PROMPT.into() }],
   });
-  // Tools, reasoning and cache stay as the conversation calls send them, so the handoff reads the
-  // prompt cache of the prefix it repeats; the prompt, not a stripped request, rules out tool calls.
+  // Preserve the replay prefix and tool schemas, while constraining new tool calls.
+  constrain_text_call(caller, &mut request);
   request.stream = true;
   request.max_output_tokens =
     caller.get_model_use_protocol().map_or(Some(HANDOFF_MAX_OUTPUT_TOKENS), |protocol| {

@@ -2,7 +2,8 @@
 //! standby generation the cutover then builds on. A run keeps at most one in flight beside its work
 //! ([`StandbySummarizer`]); a cutover summarizes remaining spans in bounded batches ([`catch_up`]).
 use super::{
-  Failure, check_cancelled, collect_assistant_content, count_kept_prefix, estimate, measure,
+  Failure, check_cancelled, collect_assistant_content, constrain_text_call, count_kept_prefix,
+  estimate, measure,
   trigger::{UsageReading, read_usage},
 };
 use crate::executor::{
@@ -149,7 +150,8 @@ async fn plan_standby_summaries(
     if measurement.tokens < config.segment_tokens {
       continue;
     }
-    let summary_request = build_summary_request(&request, eligible, start, end);
+    let mut summary_request = build_summary_request(&request, eligible, start, end);
+    constrain_text_call(caller, &mut summary_request);
     caller.validate_request(&summary_request).await?;
     plans.push(StandbySummaryPlan {
       summary_request,
@@ -276,8 +278,8 @@ const SUMMARY_EXCERPT_CHARS: usize = 240;
 
 /// The summary call: the conversation the last completed conversation call sent, unchanged, so it
 /// reads that call's prompt cache, then one instruction naming the span to summarize by its first
-/// and last entries. The model keeps the session's tools, reasoning and cache settings for the same
-/// reason; the instruction, not a stripped request, keeps it from continuing the task.
+/// and last entries. Tool declarations, reasoning and cache settings stay intact; the caller
+/// constrains tool selection separately so a summary cannot continue the task.
 fn build_summary_request(original: &Request, prefix: usize, start: usize, end: usize) -> Request {
   let conversation = &original.conversation;
   let describe = |position: usize| {
