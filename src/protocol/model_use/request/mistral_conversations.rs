@@ -41,7 +41,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::protocol::error::Error;
-use crate::protocol::model_use::message::image_data_url;
+use crate::protocol::model_use::message::{OUTPUT_CONTINUATION_SOURCE, image_data_url};
 use crate::protocol::model_use::mistral_chunks::render_thinking_chunk;
 use crate::protocol::model_use::request::split_turn_instructions;
 use crate::protocol::model_use::tool::tool_result_text;
@@ -115,7 +115,12 @@ fn render_inputs(conversation: &[Message]) -> Result<Vec<Value>, Error> {
       Message::System { content, .. }
       | Message::Developer { content, .. }
       | Message::User { content, .. } => {
-        pending_reasoning = None;
+        let reasoning = pending_reasoning.take();
+        if matches!(message, Message::User { metadata, .. } if metadata["source"] == OUTPUT_CONTINUATION_SOURCE)
+          && let Some(thought) = reasoning.filter(|text| !text.is_empty())
+        {
+          entries.push(render_message_input("assistant", &[], Some(thought))?);
+        }
         entries.push(render_message_input("user", content, None)?);
       }
       Message::Assistant { content, .. } => {

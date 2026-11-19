@@ -12,6 +12,7 @@ use std::{
   time::Duration,
 };
 use tokio::sync::{Semaphore, oneshot, watch};
+use tokio_util::sync::CancellationToken;
 
 const RETAINED: usize = 1024 * 1024;
 static SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(16)));
@@ -103,6 +104,7 @@ pub struct Terminal {
   state: Arc<Mutex<TerminalSnapshot>>,
   buffer: Arc<Output>,
   changed: watch::Sender<u64>,
+  exited: CancellationToken,
   master: Mutex<Box<dyn MasterPty + Send>>,
   killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
   input: std::sync::mpsc::SyncSender<Input>,
@@ -305,11 +307,13 @@ impl Terminal {
     }));
     let buffer = Arc::new(Output::new());
     let (changed, _) = watch::channel(0);
+    let exited = CancellationToken::new();
     let (input, receiver) = std::sync::mpsc::sync_channel::<Input>(8);
     let terminal = Arc::new(Self {
       state: state.clone(),
       buffer: buffer.clone(),
       changed: changed.clone(),
+      exited: exited.clone(),
       master: Mutex::new(pair.master),
       killer: Mutex::new(killer),
       input,
@@ -374,6 +378,7 @@ impl Terminal {
           Err(error) => snapshot.error = Some(error.to_string()),
         }
         drop(snapshot);
+        exited.cancel();
         notify(&changed);
         drop(permit);
       })?;
@@ -507,10 +512,37 @@ impl Terminal {
   pub(crate) fn output_reader(&self, offset: u64) -> OutputReader {
     self.buffer.subscribe(offset)
   }
+  /// A paused subscriber gets a final status frame without consuming hidden output.
+  pub(crate) async fn paused_exit(&self, offset: u64) -> TerminalOutput {
+    self.exited.cancelled().await;
+    TerminalOutput {
+      terminal: self.snapshot(),
+      data: String::new(),
+      next_offset: offset,
+      reset: false,
+      eof: true,
+    }
+  }
   pub async fn poll(&self, offset: u64) -> TerminalOutput {
     *lock(&self.last_activity) = std::time::Instant::now();
+    match tokio::time::timeout(Duration::from_secs(15), self.next_output(offset)).await {
+      Ok(output) => output,
+      Err(_) => {
+        // A lost cursor must remain outside retention until a safe VT boundary exists.
+        let buffer = lock(&self.buffer.buffer);
+        let reset = offset < buffer.start() || offset > buffer.end;
+        TerminalOutput {
+          terminal: self.snapshot(),
+          data: String::new(),
+          next_offset: if reset { 0 } else { offset },
+          reset,
+          eof: false,
+        }
+      }
+    }
+  }
+  pub(crate) async fn next_output(&self, offset: u64) -> TerminalOutput {
     let mut changes = self.changed.subscribe();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     let (reset, next_offset, bytes, eof) = loop {
       {
         let buffer = lock(&self.buffer.buffer);
@@ -520,9 +552,8 @@ impl Terminal {
           break (reset, next, bytes, buffer.eof);
         }
       }
-      if tokio::time::timeout_at(deadline, changes.changed()).await.is_err() {
-        break (false, offset, Vec::new(), false);
-      }
+      // The terminal owns the sender for the entire borrow.
+      let _ = changes.changed().await;
     };
     TerminalOutput {
       terminal: self.snapshot(),
@@ -533,6 +564,7 @@ impl Terminal {
     }
   }
   pub fn kill(&self) {
+    self.buffer.close();
     if !self.running() {
       return;
     }

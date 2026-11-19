@@ -352,6 +352,8 @@ pub async fn submit_input(
   let slot = app.get_session(&id).await?;
   let publication = slot.blob_publication.clone().read_owned().await;
   slot.require_live()?;
+  // Reject an unusable selection before a user message becomes durable.
+  slot.execution_provider(&app)?;
   let message = input::message(&app.data_dir.blobs(&id), input).await?;
   // Queue the message before releasing the foreground wait, so the next model step sees it.
   let entry = slot.enqueue_published(message, publication).await?;

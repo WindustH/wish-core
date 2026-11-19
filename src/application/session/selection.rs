@@ -137,13 +137,15 @@ impl SessionSlot {
   /// selection's, which applies at the operation's first boundary.
   pub fn execution_provider(&self, app: &App) -> Result<Arc<Provider>, ApplicationError> {
     let descriptor = self.get_descriptor();
-    match app.get_provider(&descriptor.provider) {
-      Ok(provider) => Ok(provider),
-      Err(error) => match descriptor.pending_selection {
-        Some(pending) => app.get_provider(&pending.provider),
-        None => Err(error),
-      },
+    if let Ok(provider) = app.get_provider(&descriptor.provider) {
+      return Ok(provider);
     }
+    let id = descriptor.pending_selection.map_or(descriptor.provider, |pending| pending.provider);
+    app.get_provider(&id).map_err(|_| {
+      ApplicationError::conflict(format!(
+        "session provider '{id}' is unavailable; select an enabled provider and model for this session"
+      ))
+    })
   }
   /// The model this session calls a provider through: its client sampled into the index and
   /// carrying the session's id.

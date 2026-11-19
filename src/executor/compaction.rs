@@ -19,7 +19,8 @@ use super::{ExecutionControl, model::ModelCaller, observe::deliver_new_events, r
 use crate::{
   protocol::error::Error,
   protocol::{
-    ContentBlock, Message, Request, Response, StopReason, ToolChoice, model_use::ModelUseProtocol,
+    ContentBlock, Message, Request, Response, StopReason, ToolChoice,
+    model_use::{ModelUseProtocol, mode::MessagesApiCompatMode, tool::tool_result_text},
   },
   session::{
     CompactionConfig, CompactionReason, RunOutcome, Session, SessionError, SessionEvent,
@@ -172,10 +173,15 @@ fn count_kept_prefix(conversation: &[Message]) -> usize {
 }
 
 /// Keep declarations/history for prefix caching when the wire can forbid new calls.
-/// Converse has no `none` choice, so remove declarations and represent past tool activity
-/// as ordinary text in this side-call copy. The session's original history stays intact.
+/// Converse and vendor Messages endpoints need not implement the official `none` choice.
+/// On these wires send historical tool activity as ordinary text in the side-call copy.
 fn constrain_text_call(caller: &impl ModelCaller, request: &mut Request) {
-  if matches!(caller.get_model_use_protocol(), Some(ModelUseProtocol::BedrockConverse)) {
+  let omit_tools = match caller.get_model_use_protocol() {
+    Some(ModelUseProtocol::BedrockConverse) => true,
+    Some(ModelUseProtocol::AnthropicMessages(mode)) => mode != MessagesApiCompatMode::Official,
+    _ => false,
+  };
+  if omit_tools {
     request.tools.clear();
     for message in &mut request.conversation {
       *message = match message {
@@ -188,7 +194,10 @@ fn constrain_text_call(caller: &impl ModelCaller, request: &mut Request) {
         Message::ToolResult { metadata, call_id, name, content } => Message::User {
           metadata: metadata.clone(),
           content: vec![ContentBlock::Text {
-            text: format!("[Historical tool result {call_id}] {name} {content}"),
+            text: format!(
+              "[Historical tool result {call_id}] {name} {}",
+              tool_result_text(content)
+            ),
           }],
         },
         _ => continue,

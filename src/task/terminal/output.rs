@@ -47,6 +47,7 @@ pub(super) struct Buffer {
   bytes: VecDeque<u8>,
   pub end: u64,
   pub eof: bool,
+  closing: bool,
   head: Boundary,
   tail: Boundary,
   last_boundary: u64,
@@ -56,7 +57,7 @@ pub(super) struct Buffer {
 }
 
 impl Buffer {
-  fn start(&self) -> u64 {
+  pub(super) fn start(&self) -> u64 {
     self.end - self.bytes.len() as u64
   }
   fn append(&mut self, bytes: &[u8]) {
@@ -122,7 +123,7 @@ impl Output {
   }
   pub fn push(&self, bytes: &[u8]) {
     let mut buffer = lock(&self.buffer);
-    loop {
+    while !buffer.closing {
       let start = buffer.start();
       let evict_to = (buffer.end + bytes.len() as u64).saturating_sub(RETAINED as u64);
       if evict_to > 0
@@ -140,6 +141,10 @@ impl Output {
       buffer = self.space.wait(buffer).unwrap_or_else(|error| error.into_inner());
     }
     buffer.append(bytes);
+  }
+  pub fn close(&self) {
+    lock(&self.buffer).closing = true;
+    self.space.notify_all();
   }
   pub fn subscribe(self: &Arc<Self>, offset: u64) -> OutputReader {
     let mut buffer = lock(&self.buffer);

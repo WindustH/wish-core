@@ -14,7 +14,9 @@ use crate::executor::{
 use crate::{
   protocol::{
     ContentBlock, Message, Request, Response,
-    model_use::{context::find_replay_unit_boundaries, stream::IncompleteReason},
+    model_use::{
+      context::find_replay_unit_boundaries, stream::IncompleteReason, tool::tool_result_text,
+    },
   },
   session::{
     GenerationId, RunOutcome, Session, SessionError, SessionEvent, SessionState, TokenMeasurement,
@@ -346,13 +348,9 @@ fn describe_entry(message: &Message) -> Option<(&'static str, String)> {
       ("instruction", text(content))
     }
     Message::ToolUse { name, arguments, .. } => ("tool call", format!("{name} {arguments}")),
-    Message::ToolResult { name, content, .. } => (
-      "tool result",
-      format!(
-        "{name} {}",
-        content.as_str().map(str::to_owned).unwrap_or_else(|| content.to_string())
-      ),
-    ),
+    Message::ToolResult { name, content, .. } => {
+      ("tool result", format!("{name} {}", tool_result_text(content)))
+    }
     Message::Reasoning { .. } | Message::UpstreamCompaction { .. } => return None,
   };
   let excerpt: String = raw
@@ -381,9 +379,10 @@ fn build_span_request(original: &Request, messages: &[Message]) -> Request {
       Message::ToolUse { name, arguments, .. } => {
         ("tool call", vec![ContentBlock::Text { text: format!("{name}: {arguments}") }])
       }
-      Message::ToolResult { name, content, .. } => {
-        ("tool result", vec![ContentBlock::Text { text: format!("{name}: {content}") }])
-      }
+      Message::ToolResult { name, content, .. } => (
+        "tool result",
+        vec![ContentBlock::Text { text: format!("{name}: {}", tool_result_text(content)) }],
+      ),
       Message::UpstreamCompaction { .. } => {
         ("opaque context", vec![ContentBlock::Text { text: "[opaque upstream context]".into() }])
       }
