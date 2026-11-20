@@ -2,9 +2,7 @@
 use serde_json::Value;
 use std::path::Path;
 pub async fn save(directory: &Path, record: &Value) -> std::io::Result<()> {
-  let temporary = directory.join("task.json.tmp");
-  tokio::fs::write(&temporary, serde_json::to_vec(record)?).await?;
-  tokio::fs::rename(temporary, directory.join("task.json")).await
+  crate::utils::atomic_file::write(&directory.join("task.json"), &serde_json::to_vec(record)?).await
 }
 pub async fn load(root: &Path) -> std::io::Result<Vec<Value>> {
   let mut entries = tokio::fs::read_dir(root).await?;

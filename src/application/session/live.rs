@@ -11,6 +11,7 @@ pub(super) struct LivePreview {
   checkpoint: Option<(u64, Vec<Value>, HashMap<String, usize>)>,
   positions: HashMap<String, usize>,
   retries: HashMap<String, RetryStatus>,
+  tools: Vec<Value>,
 }
 impl LivePreview {
   pub fn snapshot(&self, data: Value) -> Value {
@@ -18,7 +19,8 @@ impl LivePreview {
       .checkpoint
       .as_ref()
       .map(|(revision, events, _)| json!({"revision":revision, "events":events}));
-    json!({"type":"snapshot", "data":data, "revision":self.revision, "live_events":self.events,
+    let events: Vec<_> = self.events.iter().chain(&self.tools).collect();
+    json!({"type":"snapshot", "data":data, "revision":self.revision, "live_events":events,
       "stream_checkpoint":checkpoint,
       "retries":self.retries.values().collect::<Vec<_>>(), "server_time":crate::utils::time::Timestamp::now().0})
   }
@@ -33,6 +35,7 @@ impl LivePreview {
   fn clear(&mut self) {
     self.checkpoint = None;
     self.events.clear();
+    self.tools.clear();
     self.positions.clear();
   }
   pub fn observe(&mut self, event: &SessionEvent) {
@@ -45,6 +48,10 @@ impl LivePreview {
       SessionEvent::ResponseAccepted { .. }
       | SessionEvent::ResponseInterrupted(_)
       | SessionEvent::Finished(_) => self.clear(),
+      SessionEvent::ToolStarted(call) => self.tools.push(tool_started(call)),
+      SessionEvent::ToolFinished { call, .. } => {
+        self.tools.retain(|item| item["ToolStarted"]["call_id"] != call.call_id);
+      }
       SessionEvent::ModelStream(stream) => {
         match stream {
           StreamEvent::Checkpoint { revision } => {
@@ -129,4 +136,15 @@ impl LivePreview {
       _ => {}
     }
   }
+}
+
+/// Send short display fields without copying command bodies, media or full tool arguments.
+pub(super) fn tool_started(call: &crate::session::ToolCall) -> Value {
+  let mut fields = serde_json::Map::new();
+  for key in ["query", "url", "path", "model"] {
+    if let Some(text) = call.arguments.get(key).and_then(Value::as_str) {
+      fields.insert(key.into(), Value::String(text.chars().take(160).collect()));
+    }
+  }
+  json!({"ToolStarted":{"call_id":call.call_id,"name":call.name,"arguments":fields}})
 }

@@ -118,35 +118,12 @@ pub async fn cleanup(
       return Err(ApplicationError::conflict("session is running"));
     }
     with_dependencies(&slot, move |mut retained| {
-      let mut unreadable_jobs = 0;
-      match std::fs::read_dir(directory.join(".media-jobs")) {
-        Ok(entries) => {
-          for entry in entries {
-            let path = entry.map_err(ApplicationError::internal)?.path();
-            if path.extension().is_none_or(|ext| ext != "json") {
-              continue;
-            }
-            let job = crate::utils::bounded_file::read_sync(&path, 2 * 1024 * 1024)
-              .ok()
-              .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-              .filter(|job| job["phase"].is_string() && job["artifacts"].is_array());
-            let Some(job) = job else {
-              // Ignoring a damaged record's dependencies could erase an unfinished result.
-              unreadable_jobs += 1;
-              continue;
-            };
-            if !matches!(job["phase"].as_str(), Some("succeeded" | "failed" | "outcome_unknown")) {
-              for artifact in job["artifacts"].as_array().into_iter().flatten() {
-                if let Some(id) = artifact["id"].as_str() {
-                  retained.insert(id.to_owned());
-                }
-              }
-            }
-          }
+      let unreadable_jobs = super::media_generation::cleanup::visit(&directory, |_, job| {
+        if !job.terminal() {
+          retained.extend(job.blob_ids());
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(ApplicationError::internal(error)),
-      }
+      })
+      .map_err(ApplicationError::internal)?;
       let files = library::cleanup(
         &directory,
         &retained,

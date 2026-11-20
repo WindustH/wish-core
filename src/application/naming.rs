@@ -6,7 +6,7 @@ use crate::{
     session::SessionSlot,
     session_model::SessionModel,
   },
-  protocol::{ContentBlock, Message, model_use::request::ToolChoice},
+  protocol::{ContentBlock, Message},
   session::{EntryId, SessionReader},
 };
 use serde::Deserialize;
@@ -46,11 +46,12 @@ pub async fn generate(
   let slot = app.get_session(&id).await?;
   let owner = slot.clone();
   // No execution lock: naming can run beside the conversation's normal reply.
-  let (request, descriptor) = blocking(move || prepare(&owner, input)).await?;
+  let (mut request, descriptor) = blocking(move || prepare(&owner, input)).await?;
   let provider = app.get_provider(&descriptor.provider)?;
   // No with_history or conversation retry observer: this request must not become a chat turn.
   let client = provider.client.clone().with_session_id(id.clone());
   let model = SessionModel::new(provider, app.data_dir.blobs(&id), client);
+  crate::executor::model::stateless::constrain_text_call(&model, &mut request);
   let response = app
     .lifecycle
     .until_shutdown(crate::executor::model::stateless::call_once(&model, &request))
@@ -90,7 +91,6 @@ fn prepare(
         metadata: json!({"source":"wish_session_naming"}),
         content: vec![ContentBlock::Text { text: PROMPT.into() }],
       });
-      request.tool_choice = if request.tools.is_empty() { None } else { Some(ToolChoice::None) };
       request
     }
     NamingInput::FirstMessage { entry } => {

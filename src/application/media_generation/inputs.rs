@@ -7,12 +7,13 @@ use tokio::io::AsyncReadExt;
 pub(super) async fn resolve(
   inputs: &[VideoInput],
   directory: &Path,
-  protocol: MediaProtocol,
+  sources: Option<&BTreeMap<String, String>>,
   service: &MediaProvider,
   spec: &config::MediaPreset,
   credentials: &crate::protocol::endpoint::Credentials,
   state: &State,
 ) -> Result<Vec<ResolvedInput>, String> {
+  let protocol = spec.protocol;
   let mut result = Vec::new();
   let mut remaining = 40 * 1024 * 1024u64;
   for input in inputs {
@@ -48,7 +49,7 @@ pub(super) async fn resolve(
           return Err("input blob media type does not match its role".into());
         }
         // Generated output URLs remain private in the journal and are only forwarded to the selected service.
-        let url=jobs::source_url(directory,id,service).await?.ok_or("this provider requires a public HTTPS URL for this input; arbitrary local video upload is not supported, use url or a generated video blob with a recorded upstream URL")?;
+        let url=sources.and_then(|urls| urls.get(id)).cloned().ok_or("this provider requires a public HTTPS URL for this input; arbitrary local video upload is not supported, use url or a generated video blob with a recorded upstream URL")?;
         validate_input_url(&url, protocol)?;
         url
       } else {

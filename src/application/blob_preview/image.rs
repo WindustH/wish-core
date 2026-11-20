@@ -25,21 +25,10 @@ pub async fn prepare(
       "Image preview requires PNG, JPEG, WebP, GIF, BMP or TIFF",
     ));
   }
-  let file = crate::storage::blobs::linked::resolve(&app.data_dir.blobs(owner), blob).await?;
-  let metadata = opened.file.metadata().await.map_err(ApplicationError::internal)?;
-  let modified = metadata
-    .modified()
-    .ok()
-    .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-    .map(|at| at.as_nanos())
-    .unwrap_or(0);
-  let key = format!(
-    "image-rust-v2:{:?}:{owner}:{blob}:{}:{modified}:{width}",
-    app.data_dir.root(),
-    metadata.len()
-  );
+
+  let key = format!("image-rust-v2:{:?}:{owner}:{}:{width}", app.data_dir.root(), opened.version);
   let etag = format!("\"image-{:x}\"", Sha256::digest(key.as_bytes()));
-  Ok(Source { etag, key, file })
+  Ok(Source { etag, key, file: opened.path })
 }
 pub async fn render(
   _app: &Arc<App>,

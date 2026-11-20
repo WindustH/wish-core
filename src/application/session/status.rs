@@ -81,7 +81,15 @@ impl SessionSlot {
   /// Retry progress is transient and snapshot-backed, never added to model context/history.
   pub fn retry_observer(&self) -> crate::client::RetryObserver {
     let (live, events) = (self.live.clone(), self.events.clone());
+    let global = self.global_events.clone();
+    let descriptor = self.descriptor.clone();
     std::sync::Arc::new(move |status| {
+      if status.phase == crate::client::RetryPhase::Waiting {
+        let descriptor = descriptor.read().unwrap();
+        let _ = global.send(
+          json!({"type":"session_retry","id":descriptor.id,"name":descriptor.name,"retry":status}),
+        );
+      }
       let mut live = live.lock().unwrap();
       live.observe_retry(status);
       let _ =
@@ -119,6 +127,12 @@ impl SessionSlot {
   /// Follows an engine event: the status, the live preview, and the event's web form to live
   /// clients. A phase change is saved to the index.
   pub fn observe(self: &std::sync::Arc<Self>, event: &SessionEvent) {
+    if let SessionEvent::ModelStream(StreamEvent::Recovering { attempt, .. }) = event {
+      let descriptor = self.get_descriptor();
+      let _ = self.global_events.send(json!({
+        "type":"session_recovery","id":descriptor.id,"name":descriptor.name,"attempt":attempt
+      }));
+    }
     if let SessionEvent::ToolFinished { call, .. } = event {
       self.tools.published(call);
     }
@@ -256,8 +270,10 @@ pub fn web_event(event: &SessionEvent) -> Option<Value> {
     SessionEvent::CompactionTranslationFailed { .. } => {
       Some(json!({"CompactionTranslationFailed":{}}))
     }
-    SessionEvent::ToolStarted(call) => Some(json!({"ToolStarted":{"name":call.name}})),
-    SessionEvent::ToolFinished { .. } => Some(json!({"ToolFinished":{}})),
+    SessionEvent::ToolStarted(call) => Some(super::live::tool_started(call)),
+    SessionEvent::ToolFinished { call, .. } => {
+      Some(json!({"ToolFinished":{"call":{"call_id":call.call_id}}}))
+    }
     SessionEvent::MetadataUpdated(_) => Some(json!({"MetadataUpdated":{}})),
     _ => Some(json!(event)),
   }

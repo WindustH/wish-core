@@ -16,24 +16,13 @@ pub async fn prepare(
   if opened.mime_type != "application/pdf" {
     return Err(ApplicationError::invalid("PDF preview requires a PDF file"));
   }
-  let file = crate::storage::blobs::linked::resolve(&app.data_dir.blobs(owner), blob).await?;
-  let metadata = opened.file.metadata().await.map_err(ApplicationError::internal)?;
-  let modified = metadata
-    .modified()
-    .ok()
-    .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
-    .map(|at| at.as_nanos())
-    .unwrap_or(0);
+
   if page == Some(0) {
     return Err(ApplicationError::invalid("PDF page must be positive"));
   }
-  let key = format!(
-    "pdf-native-v2:{:?}:{owner}:{blob}:{}:{modified}:{page:?}",
-    app.data_dir.root(),
-    metadata.len()
-  );
+  let key = format!("pdf-native-v2:{:?}:{owner}:{}:{page:?}", app.data_dir.root(), opened.version);
   let etag = format!("\"pdf-{:x}\"", Sha256::digest(key.as_bytes()));
-  Ok(Source { etag, key, file })
+  Ok(Source { etag, key, file: opened.path })
 }
 pub async fn extract(
   _app: &Arc<App>,

@@ -15,13 +15,11 @@ mod upstream;
 pub(super) use standby::{StandbySummarizer, StandbyWait};
 pub(super) use trigger::{CutoverPlan, find_cutover, force_cutover};
 
+use super::model::stateless::constrain_text_call;
 use super::{ExecutionControl, model::ModelCaller, observe::deliver_new_events, run::run_scoped};
 use crate::{
   protocol::error::Error,
-  protocol::{
-    ContentBlock, Message, Request, Response, StopReason, ToolChoice,
-    model_use::{ModelUseProtocol, mode::MessagesApiCompatMode, tool::tool_result_text},
-  },
+  protocol::{ContentBlock, Message, Request, Response, StopReason},
   session::{
     CompactionConfig, CompactionReason, RunOutcome, Session, SessionError, SessionEvent,
     TokenMeasurement, TokenMeasurementSource, statistics::ModelCallStatus,
@@ -170,41 +168,6 @@ fn count_kept_prefix(conversation: &[Message]) -> usize {
       .iter()
       .take_while(|message| matches!(message, Message::UpstreamCompaction { .. }))
       .count()
-}
-
-/// Keep declarations/history for prefix caching when the wire can forbid new calls.
-/// Converse and vendor Messages endpoints need not implement the official `none` choice.
-/// On these wires send historical tool activity as ordinary text in the side-call copy.
-fn constrain_text_call(caller: &impl ModelCaller, request: &mut Request) {
-  let omit_tools = match caller.get_model_use_protocol() {
-    Some(ModelUseProtocol::BedrockConverse) => true,
-    Some(ModelUseProtocol::AnthropicMessages(mode)) => mode != MessagesApiCompatMode::Official,
-    _ => false,
-  };
-  if omit_tools {
-    request.tools.clear();
-    for message in &mut request.conversation {
-      *message = match message {
-        Message::ToolUse { metadata, call_id, name, arguments } => Message::Assistant {
-          metadata: metadata.clone(),
-          content: vec![ContentBlock::Text {
-            text: format!("[Historical tool call {call_id}] {name} {arguments}"),
-          }],
-        },
-        Message::ToolResult { metadata, call_id, name, content } => Message::User {
-          metadata: metadata.clone(),
-          content: vec![ContentBlock::Text {
-            text: format!(
-              "[Historical tool result {call_id}] {name} {}",
-              tool_result_text(content)
-            ),
-          }],
-        },
-        _ => continue,
-      };
-    }
-  }
-  request.tool_choice = if request.tools.is_empty() { None } else { Some(ToolChoice::None) };
 }
 
 /// The assistant content of a completed side call, a summary or a handoff (`what`): refused when

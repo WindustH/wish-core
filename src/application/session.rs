@@ -106,7 +106,7 @@ pub struct CreateSession {
 }
 
 pub struct SessionSlot {
-  descriptor: RwLock<Descriptor>,
+  descriptor: Arc<RwLock<Descriptor>>,
   pub(super) management: Arc<ManagementStore>,
   /// The application's events, where the session list hears of changes.
   global_events: broadcast::Sender<Value>,
@@ -193,7 +193,7 @@ impl SessionSlot {
     let (events, _) = broadcast::channel(256);
     let slot = Arc::new_cyclic(|slot| Self {
       tools: SessionTools::new(slot.clone(), shell_config, &session, &descriptor.id),
-      descriptor: RwLock::new(descriptor),
+      descriptor: Arc::new(RwLock::new(descriptor)),
       management: app.management.clone(),
       global_events: app.events.clone(),
       schedule_epoch: AtomicU64::new(0),

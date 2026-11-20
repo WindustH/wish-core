@@ -76,6 +76,7 @@ pub async fn ask(
   request.stream = input.stream;
   append_ask_messages(&mut request.conversation, input)?;
   let model = slot.make_model(provider);
+  crate::executor::model::stateless::omit_unsupported_side_call_tools(&model, &mut request);
   let response = app.lifecycle.until_shutdown(model.call(&request)).await??;
   Ok(response)
 }

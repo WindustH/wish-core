@@ -59,8 +59,8 @@ stored_kinds! {
 
 /// One storage transaction on a session: its record, and the time the transaction's facts are
 /// recorded at.
-pub(super) struct SessionTransaction<'a, 'db> {
-  pub record: &'a mut SessionRecord,
+pub(super) struct SessionTransaction<'a, 'db, Record = &'a mut SessionRecord> {
+  pub record: Record,
   pub store: &'a mut Transaction<'db>,
   pub key: &'a str,
   pub recorded_at: Timestamp,
@@ -108,11 +108,12 @@ impl Session {
 impl SessionSender {
   /// Runs `apply` in one transaction on the session as stored, from beside the owner. The owner
   /// saves its whole record with each change it makes, so a change a sender made to the record would
-  /// be lost: `apply` may append to and edit the session's lists, and a transaction that changed
-  /// the record is refused and rolled back.
+  /// be lost. Senders can append to and edit the lists through an immutable header.
   pub(in crate::session) fn transact<R: Send + 'static>(
     &self,
-    apply: impl FnOnce(&mut SessionTransaction<'_, '_>) -> Result<R, SessionError> + Send + 'static,
+    apply: impl FnOnce(&mut SessionTransaction<'_, '_, &SessionRecord>) -> Result<R, SessionError>
+    + Send
+    + 'static,
   ) -> Result<R, SessionError> {
     let _queue_mutation = self
       .queue_size
@@ -123,15 +124,9 @@ impl SessionSender {
     let recorded_at = Timestamp::now();
     let (result, queued) = self.storage.transaction(move |store| -> Result<_, SessionError> {
       let stored = store.load_object::<SessionRecord>(&key)?;
-      let mut record = (*stored).clone();
       let result =
-        apply(&mut SessionTransaction { record: &mut record, store, key: &key, recorded_at })?;
-      if serde_json::to_value(&record).map_err(StorageError::from)?
-        != serde_json::to_value(&*stored).map_err(StorageError::from)?
-      {
-        return Err(StorageError::Corrupt("a sender changed the session record".into()).into());
-      }
-      Ok((result, store.list_len::<EntryId>(&record.queue)?))
+        apply(&mut SessionTransaction { record: stored.as_ref(), store, key: &key, recorded_at })?;
+      Ok((result, store.list_len::<EntryId>(&stored.queue)?))
     })?;
     self.queue_size.publish(queued);
     Ok(result)

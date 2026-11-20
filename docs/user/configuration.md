@@ -52,6 +52,7 @@ Here is a working starting point (`config.example.json` in the repo):
 | Key | Default | What it controls | When changes apply |
 | --- | --- | --- | --- |
 | `listen` | `127.0.0.1:9780` (`:8790` auto-created) | Listen IP and port | Restart |
+| `ssh` | Disabled | Optional public SSH port, host identity and user public-key allowlist. Requires loopback HTTP. See [deployment](deployment.md#public-ssh-access-from-a-device-local-wish-web). | Restart to change settings; allowlist checked on login |
 | `data_dir` | `"data"` | Databases, session files, shell logs, backups | Restart |
 | `bearer_token_env` | `null` | Env var holding the Bearer token for `/api/*` | Restart |
 | `web_dir` | `null` | Custom static web directory (defaults to `web/` beside `wish`) | Restart |

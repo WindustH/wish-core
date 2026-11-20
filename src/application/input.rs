@@ -19,6 +19,8 @@ pub struct Attachment {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   byte_count: Option<usize>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
+  dimensions: Option<(u32, u32)>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
   pub placeholder: Option<String>,
 }
 #[derive(Clone, Deserialize)]
@@ -121,6 +123,7 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
         let prepared = crate::utils::model_image::prepare_file(std::path::Path::new(&blob.path))
           .await
           .map_err(ApplicationError::invalid)?;
+        attachment.dimensions = Some(prepared.dimensions);
         let directory = blob_dir.to_path_buf();
         crate::utils::blocking::io(move || {
           blobs::save_image_bytes(&directory, &prepared.bytes)?;
@@ -214,6 +217,7 @@ impl InitialInput {
         name: item.name,
         placeholder: item.placeholder,
         byte_count: Some(blob.byte_count),
+        dimensions: None,
       });
     }
     message(

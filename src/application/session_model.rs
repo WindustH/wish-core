@@ -3,7 +3,7 @@
 //! their handoff, and its images projected for what the model accepts - the stored conversation
 //! keeps the originals. An upstream that refuses images turns them into file references for the
 //! rest of the model's life.
-use super::model_images::{ImageDelivery, project_images};
+use super::model_images::{ImageDelivery, ImageProjection, project_images};
 use crate::application::{
   compaction_item,
   provider::{ModelClient, Provider},
@@ -75,7 +75,8 @@ impl SessionModel {
     Ok(())
   }
   async fn prepare(&self, request: &Request) -> Result<(Request, bool), Error> {
-    let (mut request, images, deliveries) = self.prepare_projection(request, true, true).await?;
+    let (mut request, images, deliveries) =
+      self.prepare_projection(request, ImageProjection::Send).await?;
     // Sending is a durable lifecycle action. The pure projection below never invents
     // prompt text; only committed admission events may supply an omission explanation.
     if let Some(observer) = &self.instruction_observer {
@@ -86,8 +87,7 @@ impl SessionModel {
   async fn prepare_projection(
     &self,
     request: &Request,
-    save: bool,
-    materialize: bool,
+    projection: ImageProjection,
   ) -> Result<(Request, bool, Vec<ImageDelivery>), Error> {
     let mut request = request.clone();
     compaction_item::project(&mut request.conversation, &self.provider.id);
@@ -97,15 +97,14 @@ impl SessionModel {
       &self.blob_dir,
       self.rejected.load(Ordering::Relaxed),
       &mut request.conversation,
-      save,
-      materialize,
+      projection,
     )
     .await?;
     Ok((request, images, deliveries))
   }
   /// Read-only projection for inspection. This is current context, not a past wire request.
   pub async fn inspect(&self, request: &Request) -> Result<Value, Error> {
-    let (projected, _, _) = self.prepare_projection(request, false, false).await?;
+    let (projected, _, _) = self.prepare_projection(request, ImageProjection::Inspect).await?;
     let mut value =
       serde_json::to_value(projected).map_err(|error| Error::Build(error.to_string()))?;
     image_references(&mut value);
@@ -132,7 +131,24 @@ impl ModelCaller for SessionModel {
     self.client().supports_upstream_compaction()
   }
   async fn validate_request(&self, request: &Request) -> Result<(), Error> {
-    let (mut request, _, _) = self.prepare_projection(request, false, false).await?;
+    let needs_projection = request.conversation.iter().any(|message| match message {
+      Message::UpstreamCompaction { .. } => true,
+      Message::User { content, .. }
+      | Message::Assistant { content, .. }
+      | Message::System { content, .. }
+      | Message::Developer { content, .. } => content.iter().any(|block| {
+        matches!(
+          block,
+          crate::protocol::ContentBlock::Image { .. }
+            | crate::protocol::ContentBlock::ImageRef { .. }
+        )
+      }),
+      _ => false,
+    });
+    if !needs_projection {
+      return self.client().validate_request(request).await;
+    }
+    let (mut request, _, _) = self.prepare_projection(request, ImageProjection::Inspect).await?;
     // Compaction validates message structure, tool pairing and protocol capabilities.
     // Blob integrity is checked when sending; no file reads/Base64 are needed to probe a cut.
     for message in &mut request.conversation {
@@ -160,7 +176,7 @@ impl ModelCaller for SessionModel {
       return Ok(None);
     }
     // A real provider count still receives actual image bytes; placeholders would change its meaning.
-    let (request, _, _) = self.prepare_projection(request, false, true).await?;
+    let (request, _, _) = self.prepare_projection(request, ImageProjection::CountTokens).await?;
     ModelCaller::count_tokens(&client, &request)
       .await
       .map_err(|error| self.with_model_context(error, &request.model))

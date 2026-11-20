@@ -115,7 +115,9 @@ impl SessionSlot {
         }
         Ok(None) => {}
         Err(error) => {
-          let _ = slot.events.send(json!({"type":"operation_failed","error":error.to_string()}));
+          let ending = json!({"type":"operation_failed","error":error.to_string()});
+          slot.announce_failure(&ending);
+          let _ = slot.events.send(ending);
         }
       }
     });
@@ -226,6 +228,12 @@ impl SessionSlot {
       }
     }
   }
+  fn announce_failure(&self, ending: &serde_json::Value) {
+    let descriptor = self.get_descriptor();
+    let _ = self.global_events.send(json!({
+      "type":"session_failed","id":descriptor.id,"name":descriptor.name,"ending":ending
+    }));
+  }
   /// Ends an operation: settles a session a failure left mid-step, reports the ending in the status
   /// and to live clients, and saves the model calls and the index record.
   fn finish_operation(&self, session: &mut Session, result: Result<RunOutcome, SessionError>) {
@@ -234,10 +242,14 @@ impl SessionSlot {
       let _ = session.settle_interrupted();
     }
     self.tools.clear_publications();
+    let failed = !matches!(&result, Ok(RunOutcome::Completed | RunOutcome::Interrupted));
     let ending = match result {
       Ok(outcome) => json!({"type":"operation_finished","outcome":web_outcome(&outcome)}),
       Err(error) => json!({"type":"operation_failed","error":error.to_string()}),
     };
+    if failed {
+      self.announce_failure(&ending);
+    }
     *self.status.lock().unwrap() = SessionStatus::after_operation(session, ending.clone());
     self.descriptor.write().unwrap().updated_at = Timestamp::now().0;
     let (descriptor, calls) = (self.get_descriptor(), self.reader.get_model_calls());

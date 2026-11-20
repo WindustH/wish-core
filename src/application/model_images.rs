@@ -10,17 +10,23 @@ use std::{
   collections::BTreeMap,
   path::{Path, PathBuf},
 };
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ImageProjection {
+  Inspect,
+  CountTokens,
+  Send,
+}
+
 /// Materializes retained images within the model's capabilities and byte budget.
-/// Returns admission decisions, never prompt text. With `save`, legacy inline images
+/// Returns admission decisions, never prompt text. When sending, legacy inline images
 /// are retained as blobs; ordinary inputs were already saved at admission.
-pub async fn project_images(
+pub(super) async fn project_images(
   models: &BTreeMap<String, Value>,
   model: &str,
   blob_dir: &Path,
   rejected: bool,
   messages: &mut [Message],
-  save: bool,
-  materialize: bool,
+  projection: ImageProjection,
 ) -> Result<(bool, Vec<ImageDelivery>), Error> {
   let unsupported = models
     .get(model)
@@ -85,7 +91,7 @@ pub async fn project_images(
             None
           } else {
             remaining -= wire_bytes;
-            if materialize {
+            if projection != ImageProjection::Inspect {
               let bytes = crate::utils::bounded_file::read(&path, byte_count)
                 .await
                 .map_err(|error| Error::Build(format!("read stored image: {error}")))?;
@@ -126,7 +132,7 @@ pub async fn project_images(
               let wire_bytes = prepared.bytes.len().div_ceil(3) * 4;
               if wire_bytes <= remaining {
                 length = wire_bytes;
-                image = Some(if materialize {
+                image = Some(if projection != ImageProjection::Inspect {
                   ContentBlock::Image {
                     mime_type: prepared.mime.into(),
                     data_base64: base64::engine::general_purpose::STANDARD.encode(&prepared.bytes),
@@ -146,7 +152,7 @@ pub async fn project_images(
           .map_err(Error::Build)?;
           remaining -= length;
           let path = blob_dir.join(&id);
-          if save {
+          if projection == ImageProjection::Send {
             let directory = blob_dir.to_path_buf();
             crate::utils::blocking::io(move || blobs::save_image_bytes(&directory, &bytes))
               .await

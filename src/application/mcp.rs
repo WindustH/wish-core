@@ -390,12 +390,16 @@ impl McpHub {
     caller: &Caller,
     providers: &Providers,
   ) -> Result<Vec<Value>, McpFailure> {
-    if let Some(tools) = self.catalogs.lock().unwrap().get(id).and_then(|c| c.tools.clone()) {
+    let cached = || self.catalogs.lock().unwrap().get(id).and_then(|c| c.tools.clone());
+    if let Some(tools) = cached() {
       return Ok(tools);
     }
     let server = self.find_server(id)?;
     let instance = self.get_instance(id, &server, caller, providers)?;
     let connection = self.connect(id, &instance).await?;
+    if let Some(tools) = cached() {
+      return Ok(tools);
+    }
     let tools = connection.list_tools().await?;
     self.catalogs.lock().unwrap().entry(id.to_owned()).or_default().tools = Some(tools.clone());
     Ok(tools)

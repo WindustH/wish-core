@@ -195,34 +195,13 @@ fn release_unreferenced_files(
   let executions = data_dir.shell(id);
   let mut job_resources = Vec::new();
   let mut retained_artifacts = protected.clone();
-  let mut unreadable_jobs = 0;
-  if let Ok(entries) = std::fs::read_dir(blobs.join(".media-jobs")) {
-    for entry in entries.flatten() {
-      let path = entry.path();
-      if path.extension().is_none_or(|ext| ext != "json") {
-        continue;
-      }
-      let job = crate::utils::bounded_file::read_sync(&path, 2 * 1024 * 1024)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .filter(|job| job["phase"].is_string() && job["artifacts"].is_array());
-      let Some(job) = job else {
-        unreadable_jobs += 1;
-        continue;
-      };
-      let terminal =
-        matches!(job["phase"].as_str(), Some("succeeded" | "failed" | "outcome_unknown"));
-      if terminal && job["id"].as_str().is_some_and(|id| names.contains(id)) {
-        job_resources.push(ResourceFiles::File { path, companions: vec![] });
-      } else if let Some(artifacts) = job["artifacts"].as_array() {
-        for artifact in artifacts {
-          if let Some(id) = artifact["id"].as_str() {
-            retained_artifacts.insert(id.to_owned());
-          }
-        }
-      }
+  let unreadable_jobs = super::media_generation::cleanup::visit(&blobs, |path, job| {
+    if job.terminal() && job.id.as_ref().is_some_and(|id| names.contains(id)) {
+      job_resources.push(ResourceFiles::File { path, companions: vec![] });
+    } else {
+      retained_artifacts.extend(job.blob_ids());
     }
-  }
+  })?;
   // Keep recoverable job records alongside their artifacts when ownership could
   // not be established. Independent task/MCP history can still be reclaimed.
   if unreadable_jobs > 0 {

@@ -172,24 +172,7 @@ impl MediaHub {
         VideoMode::Reference
       }
     });
-    let mut reusable_blobs = std::collections::HashSet::new();
-    if video && request.provider.is_none() {
-      for (service_id, service) in &state.config.providers {
-        if !service.enabled || !scope.accepts(&service.preset) {
-          continue;
-        }
-        for input in &request.inputs {
-          if let Some(id) = &input.blob_id
-            && blobs::is_blob_id(id)
-            && source_url(directory, id, service)
-              .await?
-              .is_some_and(|url| url.starts_with("https://"))
-          {
-            reusable_blobs.insert((service_id.clone(), id.clone()));
-          }
-        }
-      }
-    }
+    let sources = source_urls(directory, &request, &scope, &state.config).await?;
     let selected = request
       .provider
       .as_deref()
@@ -218,7 +201,10 @@ impl MediaHub {
                         request.inputs.iter().all(|input| {
                           input.blob_id.as_ref().is_none_or(|id| {
                             caps.blob_inputs.iter().any(|kind| kind == input.role.media_type())
-                              || reusable_blobs.contains(&((*service_id).clone(), id.clone()))
+                              || sources
+                                .get(*service_id)
+                                .and_then(|urls| urls.get(id))
+                                .is_some_and(|url| url.starts_with("https://"))
                           })
                         })
                       })))
@@ -260,7 +246,7 @@ impl MediaHub {
       let inputs = super::inputs::resolve(
         &request.inputs,
         directory,
-        spec.protocol,
+        sources.get(selected),
         &service,
         spec,
         credentials,
@@ -440,7 +426,6 @@ impl MediaHub {
     }
     job.next_poll_at = now + 5;
     save_job(path, job).await?;
-    let transport = state.transport(job.service.proxy_enabled, TransferProfile::Artifact)?;
     if job.phase == Phase::Running
       || (job.phase == Phase::Downloading && job.error.is_some() && job.task_id.is_some())
     {
@@ -484,6 +469,7 @@ impl MediaHub {
       save_job(path, job).await?;
     }
     if job.phase == Phase::Downloading {
+      let transport = state.transport(job.service.proxy_enabled, TransferProfile::Artifact)?;
       let _download = self.download_permits.acquire().await.map_err(|e| e.to_string())?;
       let spec = preset(&job.service.preset).map_err(|e| e.to_string())?;
       let trusted_base = job
@@ -598,29 +584,74 @@ pub(super) async fn source_task(
   }
   job.task_id.ok_or("source job has no upstream task ID".into())
 }
-pub(super) async fn source_url(
+/// Read job records once per submission. Keep only URLs needed by a candidate service
+/// for the requested inputs. A URL never crosses account, endpoint, preset or model.
+async fn source_urls(
   directory: &Path,
-  blob: &str,
-  service: &MediaProvider,
-) -> Result<Option<String>, String> {
+  request: &Request,
+  scope: &Scope,
+  config: &MediaConfig,
+) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
+  let mut sources = BTreeMap::<String, BTreeMap<String, String>>::new();
+  if !request.inputs.iter().any(|input| input.blob_id.is_some()) {
+    return Ok(sources);
+  }
+  let mut wanted = Vec::new();
+  for (id, service) in &config.providers {
+    if !service.enabled
+      || !scope.accepts(&service.preset)
+      || request.provider.as_ref().is_some_and(|p| p != id)
+    {
+      continue;
+    }
+    let model = request.model.as_ref().unwrap_or(&service.model);
+    let Some(caps) =
+      preset(&service.preset).ok().and_then(|p| p.protocol.video_capabilities(model))
+    else {
+      continue;
+    };
+    let blobs: std::collections::HashSet<_> = request
+      .inputs
+      .iter()
+      .filter(|input| !caps.blob_inputs.iter().any(|kind| kind == input.role.media_type()))
+      .filter_map(|input| input.blob_id.as_deref().filter(|id| blobs::is_blob_id(id)))
+      .collect();
+    if !blobs.is_empty() {
+      wanted.push((id, service, model, blobs));
+    }
+  }
+  if wanted.is_empty() {
+    return Ok(sources);
+  }
   let mut entries = match tokio::fs::read_dir(directory.join(".media-jobs")).await {
-    Ok(v) => v,
-    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-    Err(e) => return Err(e.to_string()),
+    Ok(entries) => entries,
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(sources),
+    Err(error) => return Err(error.to_string()),
   };
-  while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
-    if entry.path().extension().is_some_and(|s| s == "json") {
-      let Ok(job) = read_job::<Job>(&entry.path()).await else { continue };
-      if job.phase == Phase::Succeeded
-        && job.service.preset == service.preset
-        && job.service.credential_id == service.credential_id
-        && job.service.base_url == service.base_url
-        && job.service.model == service.model
-        && job.artifacts.iter().any(|b| b.id == blob)
+  while let Some(entry) = entries.next_entry().await.map_err(|error| error.to_string())? {
+    if entry.path().extension().is_none_or(|ext| ext != "json") {
+      continue;
+    }
+    let Ok(job) = read_job::<Job>(&entry.path()).await else { continue };
+    let Some(url) = job.asset_url.filter(|_| job.phase == Phase::Succeeded) else { continue };
+    for &(id, service, model, ref blobs) in &wanted {
+      if job.service.preset != service.preset
+        || job.service.credential_id != service.credential_id
+        || job.service.base_url != service.base_url
+        || &job.service.model != model
       {
-        return Ok(job.asset_url);
+        continue;
+      }
+      for artifact in &job.artifacts {
+        if blobs.contains(artifact.id.as_str()) {
+          sources
+            .entry(id.clone())
+            .or_default()
+            .entry(artifact.id.clone())
+            .or_insert_with(|| url.clone());
+        }
       }
     }
   }
-  Ok(None)
+  Ok(sources)
 }

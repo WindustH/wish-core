@@ -13,6 +13,7 @@ pub const MAX_WIRE_BYTES: usize = 24 * 1024 * 1024;
 pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_EDGE: u32 = 2048;
 pub struct Prepared {
+  pub dimensions: (u32, u32),
   pub bytes: Vec<u8>,
   pub mime: &'static str,
 }
@@ -86,12 +87,14 @@ fn convert(bytes: &[u8]) -> Result<Prepared, String> {
     let orientation = decoder.orientation()?;
     let mut picture = image::DynamicImage::from_decoder(decoder)?;
     picture.apply_orientation(orientation);
+    let dimensions = (picture.width(), picture.height());
     if picture.width().max(picture.height()) <= MAX_EDGE
       && bytes.len() <= MAX_OUTPUT_BYTES
       && orientation == image::metadata::Orientation::NoTransforms
       && matches!(format, Some(image::ImageFormat::Png | image::ImageFormat::Jpeg))
     {
       return Ok(Prepared {
+        dimensions,
         bytes: bytes.to_vec(),
         mime: if format == Some(image::ImageFormat::Png) { "image/png" } else { "image/jpeg" },
       });
@@ -114,7 +117,7 @@ fn convert(bytes: &[u8]) -> Result<Prepared, String> {
         )?;
         // Preserve text, diagrams and transparency losslessly whenever the budget permits.
         if png.len() <= MAX_OUTPUT_BYTES {
-          return Ok(Prepared { bytes: png, mime: "image/png" });
+          return Ok(Prepared { dimensions, bytes: png, mime: "image/png" });
         }
         // After an opaque image exceeds the lossless budget, keep JPEG on retries.
         try_png = alpha;
@@ -130,7 +133,7 @@ fn convert(bytes: &[u8]) -> Result<Prepared, String> {
             image::ExtendedColorType::Rgb8,
           )?;
           if jpeg.len() <= MAX_OUTPUT_BYTES {
-            return Ok(Prepared { bytes: jpeg, mime: "image/jpeg" });
+            return Ok(Prepared { dimensions, bytes: jpeg, mime: "image/jpeg" });
           }
         }
       }

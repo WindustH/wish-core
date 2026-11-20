@@ -14,6 +14,8 @@ use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
   pub listen: SocketAddr,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub ssh: Option<SshSettings>,
   pub data_dir: PathBuf,
   pub bearer_token_env: Option<String>,
   /// The built web app to hand out beside the API; `web` beside the program when absent.
@@ -41,9 +43,32 @@ pub struct Config {
   pub usage: UsageConfig,
   pub defaults: Defaults,
 }
+#[derive(Clone, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SshSettings {
+  pub listen: SocketAddr,
+  pub host_key: Option<PathBuf>,
+  pub authorized_keys: PathBuf,
+  #[serde(default = "rekey_default")]
+  pub rekey_seconds: u32,
+}
+fn rekey_default() -> u32 {
+  3600
+}
+
 impl Config {
   /// Refuses a proxy, MCP server, search provider or usage limit that could never work.
   pub fn validate(&self) -> Result<(), ApplicationError> {
+    if let Some(ssh) = &self.ssh {
+      if !self.listen.ip().is_loopback() {
+        return Err(ApplicationError::invalid(
+          "ssh requires the HTTP listen address to be loopback",
+        ));
+      }
+      if ssh.rekey_seconds == 0 {
+        return Err(ApplicationError::invalid("ssh.rekey_seconds must be positive"));
+      }
+    }
     let terminal_shell = self.terminal.shell.trim();
     if !terminal_shell.is_empty()
       && (!std::path::Path::new(terminal_shell).is_absolute()
@@ -441,6 +466,7 @@ impl Default for Config {
       bearer_token_env: None,
       web_dir: None,
       allowed_hosts: Vec::new(),
+      ssh: None,
       providers: BTreeMap::new(),
       accounts: BTreeMap::new(),
       proxy: ProxyConfig::default(),

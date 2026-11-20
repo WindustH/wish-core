@@ -2,7 +2,7 @@
 //! consumption into the active context at a stable boundary.
 use super::context::is_input;
 use super::history::Fact;
-use super::persistence::SessionTransaction;
+use super::persistence::{SessionRecord, SessionTransaction};
 use super::{EntryId, EntryOrigin, EventId, Session, SessionError, SessionEvent, SessionState};
 use crate::{protocol::Message, storage::Storage};
 use serde_json::Value;
@@ -197,15 +197,6 @@ impl SessionTransaction<'_, '_> {
       self.record.next_generation_instructions.insert(source.into(), text.into());
     }
   }
-  pub(in crate::session) fn append_input(
-    &mut self,
-    message: Message,
-  ) -> Result<EntryId, SessionError> {
-    let entry = self.store_entry(message, EntryOrigin::Input)?;
-    self.store.append_item(&self.record.queue, &entry)?;
-    self.record_event(SessionEvent::MessageQueued { entry })?;
-    Ok(entry)
-  }
   /// Moves the queued input, up to `queue_end`, the end of the queue, into the active context and
   /// its history.
   pub(super) fn consume_inputs(&mut self, queue_end: u64) -> Result<(), SessionError> {
@@ -237,5 +228,17 @@ impl QueueSize {
   }
   pub fn publish(&self, total: u64) {
     self.total.store(total, Ordering::Release);
+  }
+}
+
+impl<R: std::ops::Deref<Target = SessionRecord>> SessionTransaction<'_, '_, R> {
+  pub(in crate::session) fn append_input(
+    &mut self,
+    message: Message,
+  ) -> Result<EntryId, SessionError> {
+    let entry = self.store_entry(message, EntryOrigin::Input)?;
+    self.store.append_item(&self.record.queue, &entry)?;
+    self.record_event(SessionEvent::MessageQueued { entry })?;
+    Ok(entry)
   }
 }

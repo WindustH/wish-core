@@ -477,13 +477,14 @@ impl App {
     let asr = super::media_generation::MediaHub::prepare(&next.audio_transcription, &next.proxy);
     let shell = next.shell.resolve(&next.proxy)?;
     if next.listen != current.listen
+      || next.ssh != current.ssh
       || next.data_dir != current.data_dir
       || next.bearer_token_env != current.bearer_token_env
       || next.web_dir != current.web_dir
       || next.allowed_hosts != current.allowed_hosts
     {
       return Err(ApplicationError::invalid(
-        "listen, data_dir, bearer_token_env, web_dir and allowed_hosts are startup settings; edit \
+        "listen, ssh, data_dir, bearer_token_env, web_dir and allowed_hosts are startup settings; edit \
          the file and restart",
       ));
     }

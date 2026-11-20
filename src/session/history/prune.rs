@@ -1,7 +1,7 @@
 //! Releasing the history the context no longer uses.
 use super::{Entry, HistoryItem, HistoryRecord, SessionEvent};
 use crate::protocol::Message;
-use crate::session::persistence::SessionTransaction;
+use crate::session::persistence::{SessionRecord, SessionTransaction};
 use crate::session::{EntryId, Session, SessionError, SessionState};
 use crate::utils::time::Timestamp;
 use std::collections::HashSet;
@@ -77,22 +77,6 @@ impl SessionTransaction<'_, '_> {
       resources: released.resources,
     })
   }
-  /// The entries the context uses: both generations', and the input still waiting.
-  pub(in crate::session) fn used_entries(&mut self) -> Result<HashSet<usize>, SessionError> {
-    let mut lists = Vec::new();
-    for id in [self.record.active, self.record.standby] {
-      lists.push((self.load_generation(id)?.entries, 0));
-    }
-    lists.push((self.record.queue.clone(), self.record.queue_head));
-    let mut used = HashSet::new();
-    for (list, start) in lists {
-      self.store.for_each_item::<EntryId, SessionError>(&list, start, |_, id| {
-        used.insert(id.0);
-        Ok(())
-      })?;
-    }
-    Ok(used)
-  }
   /// What goes: the entries nothing uses and the events, except a suspended run's outcome, that
   /// `old` accepts the time of, with their history records; and the resources only those entries
   /// name.
@@ -149,5 +133,24 @@ impl SessionTransaction<'_, '_> {
     })?;
     let resources = released.difference(&kept).cloned().collect();
     Ok(Released { entries, events, sequences, resources })
+  }
+}
+
+impl<R: std::ops::Deref<Target = SessionRecord>> SessionTransaction<'_, '_, R> {
+  /// The entries the context uses: both generations', and the input still waiting.
+  pub(in crate::session) fn used_entries(&mut self) -> Result<HashSet<usize>, SessionError> {
+    let mut lists = Vec::new();
+    for id in [self.record.active, self.record.standby] {
+      lists.push((self.load_generation(id)?.entries, 0));
+    }
+    lists.push((self.record.queue.clone(), self.record.queue_head));
+    let mut used = HashSet::new();
+    for (list, start) in lists {
+      self.store.for_each_item::<EntryId, SessionError>(&list, start, |_, id| {
+        used.insert(id.0);
+        Ok(())
+      })?;
+    }
+    Ok(used)
   }
 }

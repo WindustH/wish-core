@@ -45,13 +45,13 @@ pub async fn application_events(app: Arc<App>) -> impl futures_util::Stream<Item
 
   futures_util::stream::unfold((receiver, stop, true), |(mut receiver, stop, first)| async move {
     let value = if first {
-      json!({"type":"snapshot"})
+      json!({"type":"snapshot","session_failures":true})
     } else {
       tokio::select! {
         _ = stop.cancelled() => return None,
         result = receiver.recv() => match result {
           Ok(value) => value,
-          Err(RecvError::Lagged(_)) => json!({"type":"gap"}),
+          Err(RecvError::Lagged(_)) => json!({"type":"gap","session_failures":true}),
           Err(_) => return None,
         }
       }

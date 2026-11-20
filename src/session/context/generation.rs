@@ -1,5 +1,5 @@
 use super::validation::ToolPairValidator;
-use crate::session::persistence::SessionTransaction;
+use crate::session::persistence::{SessionRecord, SessionTransaction};
 use crate::session::{EntryId, EntryOrigin, Session, SessionConfig, SessionError, SessionEvent};
 use crate::storage::{ListId, StorageError};
 
@@ -114,19 +114,6 @@ impl SessionTransaction<'_, '_> {
     self.save_generation(&standby)?;
     self.promote_standby()?;
     self.append_standby(&[], 0, None)
-  }
-  /// The generation `id`, to edit and save.
-  pub(in crate::session) fn load_generation(
-    &mut self,
-    id: GenerationId,
-  ) -> Result<Generation, SessionError> {
-    Ok(
-      self
-        .store
-        .get_item::<Generation>(&self.record.generations, id.0 as u64)?
-        .map(|item| (*item).clone())
-        .ok_or_else(|| StorageError::Corrupt("missing generation".into()))?,
-    )
   }
   pub(in crate::session) fn save_generation(
     &mut self,
@@ -273,5 +260,21 @@ impl SessionTransaction<'_, '_> {
     let replaced = std::mem::replace(&mut generation.entries, self.allocate_list::<EntryId>()?);
     self.store.delete_list::<EntryId>(&replaced)?;
     Ok(())
+  }
+}
+
+impl<R: std::ops::Deref<Target = SessionRecord>> SessionTransaction<'_, '_, R> {
+  /// The generation `id`, to edit and save.
+  pub(in crate::session) fn load_generation(
+    &mut self,
+    id: GenerationId,
+  ) -> Result<Generation, SessionError> {
+    Ok(
+      self
+        .store
+        .get_item::<Generation>(&self.record.generations, id.0 as u64)?
+        .map(|item| (*item).clone())
+        .ok_or_else(|| StorageError::Corrupt("missing generation".into()))?,
+    )
   }
 }

@@ -8,7 +8,7 @@ mod reader;
 pub use entry::{Entry, EntryId, EntryOrigin};
 pub use event::SessionEvent;
 
-use super::persistence::SessionTransaction;
+use super::persistence::{SessionRecord, SessionTransaction};
 use super::statistics::{ModelCallId, ModelCallRecord};
 use super::{GenerationId, Session, SessionError};
 use crate::protocol::Message;
@@ -66,7 +66,7 @@ impl Session {
     })
   }
 }
-impl SessionTransaction<'_, '_> {
+impl<R: std::ops::Deref<Target = SessionRecord>> SessionTransaction<'_, '_, R> {
   /// Records `event` and returns its id. It belongs to the running model call, unless it is one of
   /// the events no call causes.
   pub fn record_event(&mut self, event: SessionEvent) -> Result<EventId, SessionError> {

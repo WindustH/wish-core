@@ -9,6 +9,7 @@ mod console;
 mod copilot_login;
 mod error;
 mod http;
+mod ssh;
 mod user_dirs;
 mod web;
 
@@ -74,11 +75,15 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
   console::install();
   let config: config::Config = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
   let web_app = web::find_app_dir(config.web_dir.as_deref())?;
-  let app = app::App::open(&config, path).await?;
   let listener = tokio::net::TcpListener::bind(config.listen)
     .await
     .map_err(|error| format!("listen on {}: {error}", config.listen))?;
   let address = listener.local_addr()?;
+  let tunnel = match &config.ssh {
+    Some(settings) => Some(ssh::Endpoint::bind(settings, address).await?),
+    None => None,
+  };
+  let app = app::App::open(&config, path).await?;
   eprintln!("wish listening on {address}");
   app.bridge.set_address(address);
   let front = std::sync::Arc::new(web::WebFront::new(
@@ -95,13 +100,22 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     eprintln!("open http://{browsable} in a browser");
   }
+  let stop = app.lifecycle.stop.clone();
+  let tasks = app.lifecycle.tasks.clone();
+  let serve_ssh = async move {
+    if let Some(endpoint) = tunnel {
+      endpoint.serve(stop, tasks).await?;
+    }
+    Ok::<(), std::io::Error>(())
+  };
   let shutdown = app.clone();
-  let result = axum::serve(listener, http::build_router(app.clone(), front))
+  let local = axum::serve(listener, http::build_router(app.clone(), front))
     .with_graceful_shutdown(async move {
       wait_for_signal().await;
       shutdown.begin_shutdown().await;
     })
-    .await;
+    .into_future();
+  let result = tokio::try_join!(local, serve_ssh);
   app.begin_shutdown().await;
   let finished = app.finish_shutdown().await;
   #[cfg(windows)]

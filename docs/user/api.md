@@ -167,7 +167,7 @@ Client binary frames contain raw input bytes (maximum 32 KiB). Text controls are
 
 Both `/api/events` and `/api/sessions/{id}/events` emit `event: wish` frames carrying JSON tagged by `type`. Streams carry live deltas only without replay buffers—on `snapshot` or `gap`, refetch REST state.
 
-- **Global**: `snapshot`, `session_changed`, `session_deleted`, `list_changed`, `configuration_changed`, `gap`.
+- **Global**: `snapshot`, `session_changed`, `session_deleted`, `list_changed`, `configuration_changed`, `session_failed`, `session_retry`, `session_recovery`, `gap`. A live retry event carries the session ID, name and upstream retry status once per scheduled attempt. Stream recovery carries the attempt number. A failure carries the operation ending.
 - **Session**: `snapshot` (current descriptor/status, `live_events`, `retries`, optional `stream_checkpoint`), `upstream_retry`, `session_event` (turns, text/reasoning/tool deltas, native `Checkpoint`/`Rewind`/`Recovering`), `history_changed`, `history_pruned`, `operation_finished`, `operation_failed`, `deleted`.
 
 ### Shell bridge commands

@@ -211,6 +211,7 @@ pub async fn delete(app: &Arc<App>, owner: &str, blob: &str) -> Result<(), Appli
   }).await
 }
 pub struct BlobReader {
+  pub(super) path: std::path::PathBuf,
   pub file: tokio::fs::File,
   pub length: u64,
   pub mime_type: String,
@@ -222,16 +223,14 @@ pub async fn open(app: &Arc<App>, owner: &str, blob: &str) -> Result<BlobReader,
   if !blobs::is_blob_id(blob) {
     return Err(ApplicationError::not_found());
   }
-  let mut file =
-    tokio::fs::File::open(blobs::linked::resolve(&app.data_dir.blobs(owner), blob).await?)
-      .await
-      .map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-          ApplicationError::not_found()
-        } else {
-          ApplicationError::internal(error)
-        }
-      })?;
+  let path = blobs::linked::resolve(&app.data_dir.blobs(owner), blob).await?;
+  let mut file = tokio::fs::File::open(&path).await.map_err(|error| {
+    if error.kind() == std::io::ErrorKind::NotFound {
+      ApplicationError::not_found()
+    } else {
+      ApplicationError::internal(error)
+    }
+  })?;
   let metadata = file.metadata().await.map_err(ApplicationError::internal)?;
   let length = metadata.len();
   let modified = metadata
@@ -245,7 +244,7 @@ pub async fn open(app: &Arc<App>, owner: &str, blob: &str) -> Result<BlobReader,
   let count = file.read(&mut prefix).await.map_err(ApplicationError::internal)?;
   file.rewind().await.map_err(ApplicationError::internal)?;
   let mime_type = blobs::sniff_mime_type(&prefix[..count]).into();
-  Ok(BlobReader { file, length, mime_type, version })
+  Ok(BlobReader { file, length, mime_type, version, path })
 }
 pub async fn metadata(
   app: &Arc<App>,

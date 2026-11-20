@@ -11,7 +11,11 @@ pub async fn run(args: Vec<String>) -> i32 {
     return super::tool_commands::run("blob", args).await;
   }
   match arguments(positional) {
-    Ok(value) => super::tool_commands::run("blob", vec!["--json".into(), value.to_string()]).await,
+    Ok(value) => {
+      let mut forwarded = args[..args.len() - positional.len()].to_vec();
+      forwarded.extend(["--json".into(), value.to_string()]);
+      super::tool_commands::run("blob", forwarded).await
+    }
     Err(error) => {
       eprintln!("wish blob: {error}\n{HELP}");
       2
