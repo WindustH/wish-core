@@ -14,6 +14,8 @@ mod aws_eventstream;
 mod error;
 mod http;
 mod record;
+mod responses_socket;
+pub(crate) use responses_socket::{ResponseFrames, ResponsesSocket};
 mod sse;
 
 use error::TransportError;

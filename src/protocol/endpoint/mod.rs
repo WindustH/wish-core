@@ -27,6 +27,8 @@
 //! into an [`Endpoint`].
 
 mod credentials;
+mod multipart;
+pub(crate) use multipart::multipart_file;
 
 pub mod antigravity;
 pub mod codex_oauth;

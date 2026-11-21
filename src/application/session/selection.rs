@@ -68,6 +68,16 @@ impl ModelCaller for SwitchingModel {
   ) -> Result<UpstreamCompaction, Error> {
     self.current().compact_upstream(request).await
   }
+  async fn call_turn(
+    &self,
+    request: &Request,
+    generation: usize,
+  ) -> Result<CallResponse<Self::Stream>, Error> {
+    self.current().call_turn(request, generation).await
+  }
+  fn checkpoint(&self, messages: &[Message]) -> Option<Box<dyn FnOnce() + Send>> {
+    self.current().checkpoint(messages)
+  }
   async fn call(&self, request: &Request) -> Result<CallResponse<Self::Stream>, Error> {
     self.current().call(request).await
   }
@@ -165,6 +175,7 @@ impl SessionSlot {
       self.reader.clone(),
       self.events.clone(),
       self.instruction_state.clone(),
+      self.incremental.clone(),
     )
   }
   /// Stages a selection while an operation runs. Only the model, reasoning and output limit may

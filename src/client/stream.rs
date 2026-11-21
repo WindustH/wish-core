@@ -14,6 +14,8 @@ use crate::{
 use std::collections::VecDeque;
 
 pub struct EventStream<T: Transport> {
+  pub(super) socket: Option<crate::transport::ResponseFrames>,
+  pub(super) turn: Option<super::turn::TurnAttempt>,
   pub(super) recovery: Option<Recovery>,
   transport: std::sync::Arc<T>,
   observer: Option<Box<dyn AttemptObserver>>,
@@ -29,7 +31,7 @@ pub struct EventStream<T: Transport> {
 impl<T: Transport + Send + Sync> EventStream<T> {
   pub(super) fn new(
     transport: std::sync::Arc<T>,
-    records: RecordStream<T::Stream>,
+    records: Option<RecordStream<T::Stream>>,
     protocol: ModelUseProtocol,
     observer: Option<Box<dyn AttemptObserver>>,
     account_state: Option<AccountState>,
@@ -37,9 +39,11 @@ impl<T: Transport + Send + Sync> EventStream<T> {
     Self {
       transport,
       recovery: None,
+      socket: None,
+      turn: None,
       observer,
       protocol,
-      records: Some(records),
+      records,
       decoder: protocol.create_stream_decoder(),
       pending: VecDeque::new(),
       done: false,
@@ -78,7 +82,11 @@ impl<T: Transport + Send + Sync> EventStream<T> {
         self.schedule_recovery(None)?;
         continue;
       }
-      let next = match self.records.as_mut().expect("open stream").next().await {
+      let read = match &mut self.socket {
+        Some(wire) => wire.next().await,
+        None => self.records.as_mut().expect("open stream").next().await,
+      };
+      let next = match read {
         Ok(next) => next,
         Err(error) => {
           self.schedule_recovery(Some(error))?;
@@ -92,6 +100,12 @@ impl<T: Transport + Send + Sync> EventStream<T> {
           } else {
             (record.data, None, false)
           };
+          if let Some(turn) = &self.turn
+            && (turn.returned.lock().unwrap().is_none() || data.contains("\"store\""))
+            && let Ok(value) = serde_json::from_str(&data)
+          {
+            turn.capture(&value, true);
+          }
           let mut events = match self.decoder.feed(record.event.as_deref(), &data) {
             Ok(events) => events,
             Err(error) => {
@@ -132,6 +146,9 @@ impl<T: Transport + Send + Sync> EventStream<T> {
             }
           }
           if events.iter().any(|event| matches!(event, StreamEvent::Stop(_))) {
+            if let Some(wire) = &mut self.socket {
+              wire.release();
+            }
             self.done = true;
             self.observer.take();
           }

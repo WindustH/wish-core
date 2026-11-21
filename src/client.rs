@@ -15,9 +15,11 @@ pub mod account;
 mod image_payload;
 mod model_catalog;
 mod observer;
+pub(crate) mod resources;
 pub(crate) use crate::protocol::retry;
 mod stream;
 mod stream_recovery;
+pub(crate) mod turn;
 
 pub use observer::{AttemptObserver, AttemptObserverFactory};
 pub use retry::{RetryObserver, RetryOperation, RetryPhase, RetryStatus};
@@ -59,6 +61,10 @@ pub enum CodeAgentIdentity {
 #[derive(Clone)]
 pub struct Client<T> {
   attempt_observer: Option<AttemptObserverFactory>,
+  pub(crate) resources:
+    Option<std::sync::Arc<crate::protocol::model_use::resources::ResourceConfig>>,
+  resource_cache: std::sync::Arc<resources::Cache>,
+  pub(crate) turn: Option<turn::TurnAttempt>,
   code_agent_identity: Option<CodeAgentIdentity>,
   model_use: ModelUseProtocol,
   endpoint: Endpoint,
@@ -75,6 +81,11 @@ pub struct Client<T> {
   catalog: std::sync::Arc<model_catalog::ModelCatalogCache>,
 }
 
+impl Client<crate::transport::ReqwestTransport> {
+  pub(crate) fn responses_socket(&self) -> crate::transport::ResponsesSocket {
+    crate::transport::ResponsesSocket::new(&self.transport)
+  }
+}
 impl<T: Transport + Send + Sync> Client<T> {
   pub fn with_retry_observer(mut self, observer: RetryObserver) -> Self {
     self.retry_observer = Some(observer);
@@ -103,6 +114,9 @@ impl<T: Transport + Send + Sync> Client<T> {
   pub fn new(model_use: ModelUseProtocol, endpoint: Endpoint, transport: T) -> Self {
     Self {
       attempt_observer: None,
+      resources: None,
+      resource_cache: Default::default(),
+      turn: None,
       code_agent_identity: None,
       model_use,
       endpoint,
@@ -134,6 +148,7 @@ impl<T: Transport + Send + Sync> Client<T> {
   /// half-addressed.
   #[must_use]
   pub fn with_credentials(mut self, credentials: Credentials) -> Self {
+    self.resource_cache = Default::default();
     self.credentials = credentials;
     self.catalog = Default::default();
     self
@@ -272,6 +287,20 @@ impl<T: Transport + Send + Sync> Client<T> {
   /// Sends a request in the response mode it declares. Buffered calls retry whole attempts;
   /// streamed calls retry until the first event, then recover only from native checkpoints.
   pub async fn call(&self, request: &Request) -> Result<CallResponse<EventStream<T>>, Error> {
+    let resources = self.resources.is_some() && self.endpoint.session_id().is_some();
+    let result = self.call_with_resources(request, resources).await;
+    if resources && result.as_ref().is_err_and(|e| self.resource_rejected(e)) {
+      self.resource_cache.forget(self.endpoint.session_id().unwrap(), &request.model);
+      return self.call_with_resources(request, false).await;
+    }
+    result
+  }
+
+  async fn call_with_resources(
+    &self,
+    request: &Request,
+    resources: bool,
+  ) -> Result<CallResponse<EventStream<T>>, Error> {
     let logical_model = &request.model;
     let resolved;
     let request = if self.model_use == ModelUseProtocol::GoogleAntigravityGenerateContent
@@ -285,22 +314,36 @@ impl<T: Transport + Send + Sync> Client<T> {
     } else {
       request
     };
+    let mut policy = self.model_retry;
+    if self.turn.as_ref().is_some_and(|t| {
+      t.socket.is_some()
+        || t.protocol
+          == crate::protocol::model_use::incremental::IncrementalProtocol::OpenaiConversations
+        || (t.previous.is_some()
+          && matches!(
+            t.protocol,
+            crate::protocol::model_use::incremental::IncrementalProtocol::MistralConversations
+              | crate::protocol::model_use::incremental::IncrementalProtocol::AnthropicThreads
+          ))
+    }) {
+      policy.max_attempts = 1;
+    }
     if request.stream {
       retry_upstream(
-        &self.model_retry,
+        &policy,
         RetryOperation::Model,
         self.retry_observer.clone(),
-        |_| self.attempt_streamed_call(request, logical_model),
+        |_| self.attempt_streamed_call(request, logical_model, resources),
         classify_retry,
       )
       .await
       .map(CallResponse::Stream)
     } else {
       retry_upstream(
-        &self.model_retry,
+        &policy,
         RetryOperation::Model,
         self.retry_observer.clone(),
-        |_| self.attempt_buffered_call(request),
+        |_| self.attempt_buffered_call(request, resources),
         classify_retry,
       )
       .await
@@ -411,7 +454,7 @@ impl<T: Transport + Send + Sync> Client<T> {
 
   /// Internal: the call one attempt of [`Client::call`] sends: the rendered body with the coding
   /// client's identity applied, on the path the request resolves to.
-  fn build_model_use_call(&self, request: &Request) -> Result<Call, Error> {
+  async fn build_model_use_call(&self, request: &Request, resources: bool) -> Result<Call, Error> {
     let session_id = self.call_session_id();
     let (projected, images) = image_payload::Images::bind(request)?;
     let mut body = self.model_use.render(&projected)?;
@@ -424,11 +467,75 @@ impl<T: Transport + Send + Sync> Client<T> {
         &session_id,
       )?;
     }
-    let path =
+    let mut path =
       self.model_use.resolve_request_path(request, self.endpoint.resolve_path(&request.model));
-    let body = images.serialize(&body)?;
+    let mut extra = self.get_code_agent_headers(request);
+    if let Some(turn) = &self.turn {
+      turn.render(self.model_use, &projected, &mut body, &mut path)?;
+      if turn.protocol
+        == crate::protocol::model_use::incremental::IncrementalProtocol::OpenaiConversations
+        && turn.previous.is_none()
+      {
+        let parent = path.trim_end_matches('/').strip_suffix("/responses").ok_or_else(|| {
+          Error::Build("OpenAI Conversations needs a Responses endpoint path".into())
+        })?;
+        let mut create = Draft::post_json(&serde_json::json!({}))?;
+        create.path = Some(format!("{parent}/conversations"));
+        let conversation = self.resource_json(create).await?;
+        let id = conversation["id"]
+          .as_str()
+          .filter(|id| !id.is_empty())
+          .ok_or_else(|| Error::Malformed("missing OpenAI conversation ID".into()))?;
+        body["conversation"] = serde_json::json!(id);
+      }
+      if turn.protocol
+        == crate::protocol::model_use::incremental::IncrementalProtocol::AnthropicThreads
+      {
+        extra.push(("anthropic-beta", "message-threads-2026-08-12"));
+      }
+    }
+    if resources {
+      self.apply_resources(&mut body, &images, &request.model).await?;
+    }
+    if resources
+      && matches!(self.model_use, ModelUseProtocol::AnthropicMessages(_))
+      && self.resources.as_ref().is_some_and(|r| r.files.is_some())
+    {
+      extra.retain(|(name, _)| *name != "anthropic-beta");
+      let beta = if self.turn.is_some() {
+        "message-threads-2026-08-12,files-api-2025-04-14"
+      } else {
+        "files-api-2025-04-14"
+      };
+      extra.push(("anthropic-beta", beta));
+    }
+    let mut headers = self.build_headers(&extra);
+    if let Some((_, beta)) = headers.iter_mut().find(|(n, _)| n == "anthropic-beta")
+      && let Some((_, configured)) =
+        self.endpoint.get_headers().iter().find(|(n, _)| n.eq_ignore_ascii_case("anthropic-beta"))
+    {
+      for value in configured.split(',').map(str::trim).filter(|v| !v.is_empty()) {
+        if !beta.split(',').any(|b| b.trim() == value) {
+          beta.push(',');
+          beta.push_str(value);
+        }
+      }
+    }
+    if resources
+      && self.resources.as_ref().is_some_and(|r| !r.image_locations.is_empty())
+      && matches!(
+        self.model_use,
+        ModelUseProtocol::OpenAiChat(
+          crate::protocol::model_use::mode::ChatCompletionApiCompatMode::Qwen
+        )
+      )
+    {
+      headers.push(("X-DashScope-OssResourceResolve".into(), "enable".into()));
+    }
+    let (body, inline_bytes) = images.serialize_measured(&body)?;
+    resources::log_transfer("model", body.len(), inline_bytes);
     self.endpoint.clone().with_session_id(session_id).build_call(
-      Draft::post(Some(path), self.build_headers(&self.get_code_agent_headers(request)), body),
+      Draft::post(Some(path), headers, body),
       &self.credentials,
       unix_seconds(),
     )
@@ -489,10 +596,17 @@ impl<T: Transport + Send + Sync> Client<T> {
   }
 
   /// Internal: one attempt of a buffered [`Client::call`].
-  async fn attempt_buffered_call(&self, request: &Request) -> Result<Response, Error> {
-    let call = self.build_model_use_call(request)?;
+  async fn attempt_buffered_call(
+    &self,
+    request: &Request,
+    resources: bool,
+  ) -> Result<Response, Error> {
+    let call = self.build_model_use_call(request, resources).await?;
     let (headers, body) = self.read_reply(self.transport.execute(&call).await?)?;
     let mut response = self.model_use.decode(&body)?;
+    if let Some(turn) = &self.turn {
+      turn.capture(&body, false);
+    }
     response.account_state = self.parse_account_state_reading(&headers, Some(&body))?;
     Ok(response)
   }
@@ -510,13 +624,29 @@ impl<T: Transport + Send + Sync> Client<T> {
     &self,
     request: &Request,
     logical_model: &str,
+    resources: bool,
   ) -> Result<EventStream<T>, Error> {
-    let call = self.build_model_use_call(request)?;
+    let call = self.build_model_use_call(request, resources).await?;
     let framing = match self.model_use {
       ModelUseProtocol::BedrockConverse => Framing::AwsEventStream,
       _ => Framing::Sse,
     };
-    let mut stream = self.open_event_stream(&call, logical_model, framing).await?;
+    let mut stream = if let Some(socket) = self.turn.as_ref().and_then(|t| t.socket.as_ref()) {
+      let wire =
+        socket.start(&call, self.turn.as_ref().is_some_and(|t| t.previous.is_some())).await?;
+      let observer = self.attempt_observer.as_ref().map(|factory| factory(logical_model));
+      let account = self.parse_account_state_reading(wire.headers(), None)?;
+      let mut stream =
+        EventStream::new(self.transport.clone(), None, self.model_use, observer, account);
+      stream.socket = Some(wire);
+      stream
+    } else {
+      self.open_event_stream(&call, logical_model, framing).await?
+    };
+    stream.turn = self.turn.clone();
+    if let Some(turn) = &stream.turn {
+      turn.returned.lock().unwrap().take();
+    }
     if let Some(protocol) = crate::protocol::model_use::recovery::RecoveryProtocol::for_call(
       self.model_use,
       &request.model,
@@ -662,7 +792,7 @@ impl<T: Transport + Send + Sync> Client<T> {
     let account_state = self.parse_account_state_reading(reply.get_headers(), None)?;
     Ok(EventStream::new(
       self.transport.clone(),
-      RecordStream::new(reply, framing),
+      Some(RecordStream::new(reply, framing)),
       self.model_use,
       observer,
       account_state,

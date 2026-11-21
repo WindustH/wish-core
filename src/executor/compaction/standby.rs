@@ -180,9 +180,9 @@ async fn execute_standby_summary(
   plan: StandbySummaryPlan,
 ) -> SummaryOutcome {
   let (result, observation) =
-    execute_model(caller, &plan.summary_request, control, None, &mut |_| {}).await;
+    execute_model(caller, &plan.summary_request, control, None, None, &mut |_| {}).await;
   let response = match result {
-    ModelResult::Complete(response) => response,
+    ModelResult::Complete(response, _) => response,
     ModelResult::Interrupted(_) => return Err(Failure::Outcome(RunOutcome::Interrupted)),
     // A summary keeps nothing of a stream that failed: the error that ended it is the failure.
     ModelResult::Failed(RunOutcome::StreamFailed(partial)) => {

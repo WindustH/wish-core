@@ -54,6 +54,17 @@ pub trait ModelCaller: Sync {
     None
   }
   type Stream: ModelStream;
+  fn call_turn(
+    &self,
+    request: &Request,
+    _generation: usize,
+  ) -> impl Future<Output = Result<CallResponse<Self::Stream>, Error>> + Send {
+    self.call(request)
+  }
+  /// Prepare a checkpoint that the executor publishes only after the session accepts the turn.
+  fn checkpoint(&self, _messages: &[crate::protocol::Message]) -> Option<Box<dyn FnOnce() + Send>> {
+    None
+  }
   fn call(
     &self,
     request: &Request,

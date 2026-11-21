@@ -24,9 +24,8 @@
 //! - A `function.result` entry answers a `function.call` entry by `tool_call_id`.
 //!
 //! Trade-offs:
-//! - Every call starts a fresh conversation with `store: false` and the whole history rather than
-//!   appending to a stored one: a call stays reproducible from the request alone and leaves nothing
-//!   behind to delete, at the price of sending the history again.
+//! - The full renderer starts a fresh conversation with `store: false`. The optional continuation
+//!   adapter requests storage and appends new inputs to the returned conversation ID.
 //! - `handoff_execution: "client"` is always sent, because built-in connectors are not modelled: a
 //!   function call comes back to the caller instead of being answered by the service.
 //! - A `Developer` message has no role of its own on this wire, so in the leading run its text joins
@@ -101,7 +100,7 @@ fn render_instructions(run: &[Vec<&str>]) -> Option<String> {
 }
 
 /// The history after the leading instructions as entries, in conversation order.
-fn render_inputs(conversation: &[Message]) -> Result<Vec<Value>, Error> {
+pub(crate) fn render_inputs(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   let mut entries: Vec<Value> = Vec::new();
   let mut pending_reasoning: Option<String> = None;
   for message in conversation {

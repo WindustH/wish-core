@@ -29,6 +29,7 @@ axum = { version = "0.8", features = ["ws"] }
 uuid = { version = "1", features = ["v4"] }
 # Byte-level stream reading, for bodies that must stay under a ceiling while being read.
 futures-util = "0.3"
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 # HTTP client. `default-features = false` on purpose: rustls instead of system OpenSSL and `stream`
 # for SSE bodies, with no auto-decompression, no HTTP/2 and no platform proxy detection until asked.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }

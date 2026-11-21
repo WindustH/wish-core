@@ -137,6 +137,7 @@ pub struct SessionSlot {
   /// This session's live events, for `GET /sessions/{id}/events`.
   pub(super) events: broadcast::Sender<Value>,
   live: Arc<Mutex<live::LivePreview>>,
+  incremental: super::session_model::TurnHistory,
   instruction_state: Arc<Mutex<super::model_observation::InstructionState>>,
   status: Mutex<SessionStatus>,
   observation: Mutex<status::ObservationState>,
@@ -212,6 +213,7 @@ impl SessionSlot {
       app: Arc::downgrade(app),
       events,
       live: Arc::new(Mutex::new(live::LivePreview::default())),
+      incremental: Default::default(),
       instruction_state: Default::default(),
       status,
       observation: Default::default(),

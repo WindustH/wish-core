@@ -27,11 +27,12 @@
 //!   omitted when all of them are absent; `stream` is always sent, since one body serves both calls.
 //! - Of the reasoning axes only a tier word and a summary have a spelling (`thinking_level`, spelled
 //!   lowercase, and `thinking_summaries`); an off switch is rejected.
-//! - Requests are always stateless: `store: false` and no `previous_interaction_id`.
+//! - The full renderer emits a stateless request. The optional continuation adapter adds storage and
+//!   replaces the retained input prefix with a previous interaction ID.
 //! - A call goes out as `name` + `arguments`; the decoders also read `tool_name` + `args`, which
 //!   older traffic spells.
 //! - Not modeled: the eight built-in tools (and the signatures their steps carry), `agent` /
-//!   `agent_config`, `background`, `previous_interaction_id`, `response_format`, `seed`,
+//!   `agent_config`, `background`, `response_format`, `seed`,
 //!   `stop_sequences`, `speech_config`, `transcription_config`, `video_config`, and the retrieve /
 //!   cancel / delete endpoints.
 //! - Tool results pass the payload through unchanged, and call/result pairing is not validated yet.
@@ -75,7 +76,7 @@ pub fn render(request: &Request) -> Result<Value, Error> {
   Ok(Value::Object(body))
 }
 
-fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
+pub(crate) fn render_steps(conversation: &[Message]) -> Result<Vec<Value>, Error> {
   let mut steps: Vec<Value> = Vec::new();
   for message in conversation {
     match message {

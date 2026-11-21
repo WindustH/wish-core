@@ -33,7 +33,7 @@
 //! Trade-offs:
 //! - Flat `display` text becomes one `summary_text` part when replayed; the original summary part
 //!   boundaries are not retained by the shared message representation.
-//! - `store: false` is always sent, and system text stays an input item instead of being hoisted into
+//! - The full renderer defaults to `store: false`. System text stays an input item instead of being hoisted into
 //!   the top-level `instructions` field: one ordering rule across all providers is worth more than
 //!   matching this protocol exactly. The assistant `phase` field is not modeled. Streaming adds
 //!   `stream: true`; the terminal response event then carries the usage, so nothing else is asked for.

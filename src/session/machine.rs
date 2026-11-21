@@ -24,6 +24,9 @@ use crate::{
 use std::{collections::HashSet, sync::Arc};
 
 impl Session {
+  pub(crate) fn active_generation_id(&self) -> usize {
+    self.record.active.0
+  }
   pub(crate) fn advance(&mut self) -> Result<SessionAction, SessionError> {
     self.update(move |transaction| transaction.advance())
   }
@@ -31,7 +34,7 @@ impl Session {
     &mut self,
     response: Response,
     observation: CallObservation,
-  ) -> Result<(), SessionError> {
+  ) -> Result<bool, SessionError> {
     self.end_model_call(observation, ModelCallStatus::Completed, |transaction| {
       transaction.accept_response(response)
     })
@@ -56,17 +59,17 @@ impl Session {
   }
   /// Ends the running conversation call as `status` and takes what it produced with `settle`, which
   /// still records under the call; the session has no running call after.
-  fn end_model_call(
+  fn end_model_call<R: Send + 'static>(
     &mut self,
     observation: CallObservation,
     status: ModelCallStatus,
-    settle: impl FnOnce(&mut SessionTransaction<'_, '_>) -> Result<(), SessionError> + Send + 'static,
-  ) -> Result<(), SessionError> {
+    settle: impl FnOnce(&mut SessionTransaction<'_, '_>) -> Result<R, SessionError> + Send + 'static,
+  ) -> Result<R, SessionError> {
     self.update(move |transaction| {
       transaction.complete_model_call(observation, status)?;
-      settle(transaction)?;
+      let settled = settle(transaction)?;
       transaction.record.active_model_call = None;
-      Ok(())
+      Ok(settled)
     })
   }
   pub(crate) fn start_tool(&mut self, call: &ToolCall) -> Result<(), SessionError> {
@@ -161,19 +164,21 @@ impl SessionTransaction<'_, '_> {
     self.record_event(SessionEvent::TurnStarted { turn })?;
     Ok(SessionAction::CallModel(request))
   }
-  fn accept_response(&mut self, response: Response) -> Result<(), SessionError> {
+  fn accept_response(&mut self, response: Response) -> Result<bool, SessionError> {
     let SessionState::CallingModel { turn } = self.record.state else {
       return Err(SessionError::UnexpectedPhase);
     };
     if !matches!(response.stop_reason, StopReason::Stop | StopReason::ToolUse) {
-      return self.finish_run(RunOutcome::ModelStopped(Box::new(response)));
+      self.finish_run(RunOutcome::ModelStopped(Box::new(response)))?;
+      return Ok(false);
     }
     let calls = tool_calls(&response);
     if !is_acceptable(&response, &calls) {
       self.record_event(SessionEvent::ResponseRejected(Box::new(response)))?;
-      return self.finish_run(RunOutcome::Failed(Error::Malformed(
+      self.finish_run(RunOutcome::Failed(Error::Malformed(
         "invalid agent response or tool call batch".into(),
-      )));
+      )))?;
+      return Ok(false);
     }
     let entry_start = self.store.list_len::<Entry>(&self.record.entries)?;
     for message in response.messages {
@@ -192,7 +197,8 @@ impl SessionTransaction<'_, '_> {
       self.complete_turn(turn, false)
     } else {
       self.start_tool_batch(turn, calls)
-    }
+    }?;
+    Ok(true)
   }
   fn accept_interruption(&mut self, partial: PartialResponse) -> Result<(), SessionError> {
     let SessionState::CallingModel { turn } = self.record.state else {

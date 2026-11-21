@@ -61,6 +61,10 @@ pub struct ProviderConfig {
   pub credentials_env: BTreeMap<String, String>,
   #[serde(default)]
   pub headers: BTreeMap<String, String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub resources: Option<crate::protocol::model_use::resources::ResourceConfig>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub incremental: Option<crate::protocol::model_use::incremental::IncrementalProtocol>,
   pub token_count: Option<String>,
   pub compaction: Option<String>,
   pub model_list: Option<String>,
@@ -184,6 +188,13 @@ impl Provider {
       }
       _ => {}
     }
+    if let Some(resources) = &config.resources {
+      resources.validate(protocol, config.incremental)?;
+      client.resources = Some(Arc::new(resources.clone()));
+    }
+    if let Some(incremental) = config.incremental {
+      incremental.validate(protocol)?;
+    }
     if let Some(value) = &config.token_count {
       let protocol = value
         .parse::<TokenCountProtocol>()
@@ -257,7 +268,7 @@ impl Provider {
     serde_json::json!({"id":self.id,"display_name":self.config.display_name,"preset":self.config.preset,"enabled":self.config.enabled,
       "brand":preset.map(|p|&p["provider"]),"reasoning_efforts":preset.map(|p|&p["reasoning_efforts"]),
       "max_output_tokens":preset.map(|p|&p["max_output_tokens"]),"protocol":self.config.protocol,"base_url":self.config.base_url,
-      "token_count":self.config.token_count,"compaction":self.config.compaction,
+      "resources":self.config.resources,"incremental":self.config.incremental,"token_count":self.config.token_count,"compaction":self.config.compaction,
       "model_list":self.config.model_list,"account_state":self.config.account_state,"models":self.config.models})
   }
 }

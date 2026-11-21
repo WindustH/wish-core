@@ -14,11 +14,13 @@
 //! [`ModelUseProtocol::get_reasoning_replay`].
 
 pub mod context;
+pub mod incremental;
 pub mod message;
 pub(crate) mod mistral_chunks;
 pub mod mode;
 pub mod recovery;
 pub mod request;
+pub mod resources;
 pub mod response;
 pub mod stream;
 pub mod tool;

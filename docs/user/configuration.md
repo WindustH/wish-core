@@ -124,6 +124,76 @@ Declaring models under `providers.<id>.models.<model_id>` populates context gaug
 }
 ```
 
+### Incremental model uploads
+
+Configure these optional fields under a single model provider. A session keeps one volatile
+checkpoint. A subsequent turn can reuse it after its previous response has entered local
+history. Wish verifies the provider instance, credentials, generation, model parameters,
+tools and ordered projected messages. Reopening a session after a server restart sends a
+complete first request. The durable conversation stays usable independently of the provider.
+
+| `incremental` value | Supported endpoint and behavior |
+| --- | --- |
+| `responses_websocket` | Streaming OpenAI Responses and ChatGPT Codex. Sends `response.create` on a session-owned WebSocket with `store: false`. The official Codex endpoint selects this mode by default. Idle sockets close after two minutes. |
+| `responses` | HTTP Responses deployments with documented stored-response chaining, including OpenAI and Zhipu's Responses endpoint. Sets `store: true` and sends `previous_response_id` with subsequent inputs. |
+| `openai_conversations` | OpenAI platform Responses with a durable conversation object. Creates the object at the sibling `/conversations` endpoint and attaches each generation using `conversation`. Items persist without the response chain’s 30-day TTL. |
+| `ark_responses` | Volcengine Ark Responses session cache. Enables `caching` on creation and continuation. The model and account must support explicit caching. |
+| `anthropic_threads` | Official Anthropic Messages with the message threads beta. Creation sends tools and system instructions. Continuation sends the new user or tool-result turn with the previous message ID. |
+| `google_interactions` | Gemini Interactions. Stores interactions, resends generation controls and tools, and chains with `previous_interaction_id`. |
+| `mistral_conversations` | Mistral Conversations. Appends inputs to the stored conversation's endpoint. An ambiguous append failure ends the attempt. |
+| `disabled` | Sends full model requests, including on the official Codex deployment. |
+
+Stored responses, uploaded files, and explicit prefix caches use the provider's retention
+and billing rules. Enable each feature on the specific endpoint that implements it. A
+Chat Completions endpoint with automatic token caching still receives full message history.
+Antigravity's generation recovery tokens apply within a stream. DeepSeek documents its
+Responses endpoint as stateless. For DeepSeek vision models, select file reuse to avoid
+resending historical image bytes. [DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/).
+[DeepSeek vision](https://api-docs.deepseek.com/guides/vision/).
+
+For example, an official Anthropic provider can set `"incremental": "anthropic_threads"`.
+An Ark Responses provider can set `"incremental": "ark_responses"`. Keep the existing
+model protocol, endpoint, credentials and model selection when adding these fields.
+The account, region and model must have access to the upstream feature.
+[Anthropic message threads](https://platform.claude.com/docs/en/build-with-claude/message-threads).
+[OpenAI WebSocket mode](https://developers.openai.com/api/docs/guides/websocket-mode).
+
+Use `resources.files` to upload images and reuse file IDs on subsequent generation calls.
+Both the `protocol` and `path` are required. Paths append to the configured `base_url`,
+including any API version already present there.
+
+| File protocol | Generation wire | Example upload path |
+| --- | --- | --- |
+| `openai` | OpenAI platform Responses | `/v1/files` |
+| `deepseek` | DeepSeek Chat, Messages or Responses | `/files` |
+| `anthropic` | Anthropic Messages | `/v1/files` |
+| `kimi` | Kimi vision Chat | `/v1/files` |
+| `gemini` | Gemini GenerateContent or Interactions | `/upload/v1beta/files` |
+
+For example, a DeepSeek model provider with base URL `https://api.deepseek.com` can set
+`"resources": {"files": {"protocol": "deepseek", "path": "/files"}}`.
+Identical image bytes share a file reference within the same authenticated session.
+OpenAI and DeepSeek uploads request a one-day expiration. Other uploads follow the
+provider's file lifecycle. Local reference eviction does not delete a provider file.
+
+Use `resources.prefix` with `{"protocol": "gemini", "path": "/v1beta/cachedContents"}`,
+`vertex` with the project's cachedContents collection, or `ark` with its Responses path.
+Wish creates a cache for a stable prefix of at least 4096 serialized bytes, subject to the
+provider's token threshold. Google receives the inherited system instructions and tools in
+the cache creation request. Later requests carry the returned name and the remaining contents.
+Ark creates a non-streaming prefix and references its ID. A session continuation takes precedence
+when a previous response is available.
+
+For an image already held in provider-accessible object storage, set
+`resources.image_locations` to an object mapping the SHA-256 digest of the admitted image bytes
+to its URI. Vertex accepts `gs://`, Bedrock Converse accepts `s3://`, and Qwen Chat accepts
+`oss://` on models and accounts that support the respective storage service. The operator
+provisions object permissions. Wish sends the URI in the model request.
+
+Set `WISH_MODEL_TRANSFER_LOG=1` on the server to log generation and resource request body
+sizes. `image_base64_bytes` counts encoded image bytes expanded into the serialized model
+body. These counts exclude TLS, HTTP and WebSocket framing.
+
 ## Session defaults (`defaults`)
 
 New sessions copy their starting settings from `defaults`:

@@ -20,10 +20,10 @@ use super::{Proxy, TransportError, build_payload_error, build_read_error, cap_me
 /// Attempts HTTP calls with `reqwest`.
 #[derive(Clone)]
 pub struct ReqwestTransport {
-  client: reqwest::Client,
+  pub(super) client: reqwest::Client,
   proxy: std::sync::Arc<Proxy>,
-  limits: Limits,
-  stream_total: Option<std::time::Duration>,
+  pub(super) limits: Limits,
+  pub(super) stream_total: Option<std::time::Duration>,
   deferred_stream_headers: Option<std::time::Duration>,
   resolver_clients:
     std::sync::Arc<std::sync::Mutex<std::collections::HashMap<std::any::TypeId, reqwest::Client>>>,

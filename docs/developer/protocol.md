@@ -52,3 +52,30 @@ OAuth helpers (`codex_oauth`, `google_oauth`, `copilot_oauth`, and `antigravity`
 - **`account_state`**: Header/body quota parsers (`headers.rs`, `codex.rs`) plus standalone account balance/quota readers, preserving exact decimal strings and mapping in-band account refusals to `AccountState.failure`.
 
 Antigravity omits entries marked `disabled: true` and `-disabled` placeholders from the catalog; an exhausted quota alone does not hide a model. Reasoning deployments, including nested tier routes such as `hydrogen-tiered-high`, share one logical model. When an ordinary and a tier route expose the same effort, the ordinary route wins; a tier-only effort retains its original callable id. Existing sessions using an explicit deployment id keep that route.
+
+## Incremental model requests
+
+The local session remains the source of the transcript. A full request can always be
+built from it. Three independent provider capabilities reduce repeated request bytes.
+
+- **Response continuation.** `protocol/model_use/incremental.rs` defines each wire's
+  cursor and endpoint rules. `application/session_model/turns.rs` matches an in-memory
+  checkpoint against the authenticated provider, local generation, request controls,
+  and ordered hashes of the projected messages. Stored image references participate in
+  the match before the application loads their bytes. A mismatch starts a fresh chain.
+- **Commit boundary.** The client captures the upstream ID while decoding the response.
+  The executor publishes it only after a single uninterrupted segment has produced an
+  accepted, persisted turn. Auxiliary calls, speculative summaries and forks have
+  independent lifecycles. A rejected or cancelled turn leaves no usable child cursor.
+  The Responses WebSocket belongs to the same volatile checkpoint as its response ID.
+- **Reusable resources.** `client/resources/` maps admitted image bytes to provider
+  file IDs or existing object locations, and complete historical prefixes to provider
+  cache IDs. Authentication changes invalidate local references. Expired references can
+  be replaced by an inline request when the upstream explicitly rejects them before output.
+
+To add a wire, specify its create and continue forms, how it acknowledges storage,
+where its response ID appears in buffered and streamed output, and which errors
+prove a rejected continuation can be replayed. Exercise both turns through a real
+Wish session backed by a recording fixture. Include a fork, an expired ID and an
+image-bearing history when checking wire bytes. Provider configuration and examples
+are in [Model providers](../user/configuration.md).

@@ -6,6 +6,7 @@ use std::{borrow::Cow, io::Write};
 
 struct ImageBinding<'a> {
   token: String,
+  mime: &'a str,
   data_base64: &'a str,
 }
 pub(super) struct Images<'a>(Vec<ImageBinding<'a>>);
@@ -55,7 +56,7 @@ impl<'a> Images<'a> {
               ));
             }
             let token = format!("wish-image-{}", uuid::Uuid::new_v4());
-            images.push(ImageBinding { token: token.clone(), data_base64 });
+            images.push(ImageBinding { token: token.clone(), data_base64, mime: mime_type });
             Ok(ContentBlock::Image { mime_type: mime_type.clone(), data_base64: token })
           } else {
             Ok(block.clone())
@@ -87,18 +88,25 @@ impl<'a> Images<'a> {
       .collect::<Result<Vec<_>, Error>>()?;
     Ok((Cow::Owned(projected), Self(images)))
   }
+  pub fn bindings(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+    self.0.iter().map(|b| (b.token.as_str(), b.data_base64, b.mime))
+  }
   pub fn serialize(&self, value: &Value) -> Result<Vec<u8>, Error> {
+    self.serialize_measured(value).map(|(bytes, _)| bytes)
+  }
+  pub fn serialize_measured(&self, value: &Value) -> Result<(Vec<u8>, usize), Error> {
     if self.0.is_empty() {
-      return serde_json::to_vec(value).map_err(|e| Error::Build(e.to_string()));
+      return serde_json::to_vec(value).map(|b| (b, 0)).map_err(|e| Error::Build(e.to_string()));
     }
     let mut output = Vec::new();
-    self.write(value, &mut output).map_err(|e| Error::Build(e.to_string()))?;
-    Ok(output)
+    let mut inline = 0;
+    self.write(value, &mut output, &mut inline).map_err(|e| Error::Build(e.to_string()))?;
+    Ok((output, inline))
   }
-  fn write(&self, value: &Value, out: &mut Vec<u8>) -> std::io::Result<()> {
+  fn write(&self, value: &Value, out: &mut Vec<u8>, inline: &mut usize) -> std::io::Result<()> {
     match value {
       Value::String(text) => {
-        for ImageBinding { token, data_base64: data } in &self.0 {
+        for ImageBinding { token, data_base64: data, .. } in &self.0 {
           let prefix = if text == token {
             Some("")
           } else {
@@ -107,6 +115,7 @@ impl<'a> Images<'a> {
               .filter(|prefix| prefix.starts_with("data:") && prefix.ends_with(";base64,"))
           };
           if let Some(prefix) = prefix {
+            *inline += data.len();
             // Use JSON's string escaping for the MIME prefix and the encoded data too;
             // legacy input may contain invalid Base64 and must never inject raw JSON.
             out.push(b'"');
@@ -130,7 +139,7 @@ impl<'a> Images<'a> {
           if index > 0 {
             out.push(b',');
           }
-          self.write(value, out)?;
+          self.write(value, out, inline)?;
         }
         out.push(b']');
       }
@@ -142,7 +151,7 @@ impl<'a> Images<'a> {
           }
           serde_json::to_writer(&mut *out, key)?;
           out.push(b':');
-          self.write(value, out)?;
+          self.write(value, out, inline)?;
         }
         out.push(b'}');
       }

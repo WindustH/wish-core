@@ -62,7 +62,11 @@ pub fn decode(body: &Value) -> Result<Response, Error> {
 
 /// The failure a `failed` response reports, from its `error` object.
 pub(crate) fn decode_in_band_error(body: &Value) -> Error {
-  decode_in_band(body.get("error"), &["code"], "upstream reported failure without an error message")
+  decode_in_band(
+    body.get("error").or_else(|| (body["type"] == "error").then_some(body)),
+    &["code"],
+    "upstream reported failure without an error message",
+  )
 }
 
 pub(crate) fn decode_reasoning(item: &Value) -> Option<Message> {

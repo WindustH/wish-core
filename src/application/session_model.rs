@@ -3,6 +3,7 @@
 //! their handoff, and its images projected for what the model accepts - the stored conversation
 //! keeps the originals. An upstream that refuses images turns them into file references for the
 //! rest of the model's life.
+mod turns;
 use super::model_images::{ImageDelivery, ImageProjection, project_images};
 use crate::application::{
   compaction_item,
@@ -26,6 +27,7 @@ use std::{
     atomic::{AtomicBool, Ordering},
   },
 };
+pub(super) use turns::TurnHistory;
 
 pub struct SessionModel {
   provider: Arc<Provider>,
@@ -34,6 +36,8 @@ pub struct SessionModel {
   blob_dir: PathBuf,
   /// Set once the upstream refused an image.
   rejected: AtomicBool,
+  history: TurnHistory,
+  pending: Mutex<Option<turns::Pending>>,
   instruction_observer: Option<super::model_observation::InstructionObserver>,
 }
 impl SessionModel {
@@ -44,6 +48,8 @@ impl SessionModel {
       client: Mutex::new(client),
       blob_dir,
       rejected: AtomicBool::new(false),
+      history: Default::default(),
+      pending: Default::default(),
       instruction_observer: None,
     }
   }
@@ -63,7 +69,9 @@ impl SessionModel {
     reader: crate::session::SessionReader,
     events: tokio::sync::broadcast::Sender<Value>,
     state: Arc<Mutex<super::model_observation::InstructionState>>,
+    history: TurnHistory,
   ) -> Self {
+    self.history = history;
     self.instruction_observer =
       Some(super::model_observation::InstructionObserver::new(sender, reader, events, state));
     self
@@ -109,6 +117,25 @@ impl SessionModel {
       serde_json::to_value(projected).map_err(|error| Error::Build(error.to_string()))?;
     image_references(&mut value);
     Ok(value)
+  }
+  async fn call_full(
+    &self,
+    original: &Request,
+    client: &ModelClient,
+  ) -> Result<CallResponse<<ModelClient as ModelCaller>::Stream>, Error> {
+    let (request, images) = self.prepare(original).await?;
+    self.record_instructions(original, &request).await?;
+    let result = match client.call(&request).await {
+      // Client has not handed out any event; partial stream failures never enter this branch.
+      Err(error) if images && crate::protocol::http_error::rejects_image_input(&error) => {
+        self.rejected.store(true, Ordering::Relaxed);
+        let (request, _) = self.prepare(original).await?;
+        self.record_instructions(original, &request).await?;
+        client.call(&request).await
+      }
+      result => result,
+    };
+    result.map_err(|error| self.with_model_context(error, &request.model))
   }
   fn with_model_context(&self, error: Error, model: &str) -> Error {
     match error {
@@ -217,21 +244,20 @@ impl ModelCaller for SessionModel {
     }
     Ok(compaction)
   }
+  async fn call_turn(
+    &self,
+    request: &Request,
+    generation: usize,
+  ) -> Result<CallResponse<Self::Stream>, Error> {
+    self.continue_turn(request, generation).await
+  }
+  fn checkpoint(&self, messages: &[Message]) -> Option<Box<dyn FnOnce() + Send>> {
+    self.pending.lock().unwrap().take()?.commit(messages, self.history.clone())
+  }
   async fn call(&self, original: &Request) -> Result<CallResponse<Self::Stream>, Error> {
-    let client = self.client();
-    let (request, images) = self.prepare(original).await?;
-    self.record_instructions(original, &request).await?;
-    let result = match client.call(&request).await {
-      // Client has not handed out any event; partial stream failures never enter this branch.
-      Err(error) if images && crate::protocol::http_error::rejects_image_input(&error) => {
-        self.rejected.store(true, Ordering::Relaxed);
-        let (request, _) = self.prepare(original).await?;
-        self.record_instructions(original, &request).await?;
-        client.call(&request).await
-      }
-      result => result,
-    };
-    result.map_err(|error| self.with_model_context(error, &request.model))
+    let mut client = self.client();
+    client.resources = None;
+    self.call_full(original, &client).await
   }
 }
 

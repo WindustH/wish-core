@@ -16,7 +16,7 @@ use crate::{
 
 /// How a logical model call ended.
 pub(in crate::executor) enum ModelResult {
-  Complete(Response),
+  Complete(Response, bool),
   Interrupted(PartialResponse),
   Failed(RunOutcome),
 }
@@ -28,6 +28,7 @@ pub(in crate::executor) async fn execute_model(
   model_caller: &impl ModelCaller,
   request: &Request,
   control: &ExecutionControl,
+  generation: Option<usize>,
   estimator: Option<TokenEstimator>,
   observe: &mut (impl FnMut(&SessionEvent) + Send),
 ) -> (ModelResult, CallObservation) {
@@ -41,8 +42,15 @@ pub(in crate::executor) async fn execute_model(
   loop {
     segments += 1;
     let mut observation = continuation.observe_next_segment();
-    let mut result =
-      call_segment(model_caller, &continuation.request, control, &mut observation, observe).await;
+    let mut result = call_segment(
+      model_caller,
+      &continuation.request,
+      generation.filter(|_| segments == 1),
+      control,
+      &mut observation,
+      observe,
+    )
+    .await;
     stream_recoveries = stream_recoveries.saturating_add(observation.stream_recoveries);
     first_event_at = first_event_at.or(observation.first_event_at);
     continuation.next_index = observation.next_index;
@@ -86,7 +94,9 @@ pub(in crate::executor) async fn execute_model(
     observation.call.last_request_estimated_tokens = last_request_estimated_tokens;
     observation.call.finish(started);
     let result = match result {
-      SegmentResult::Complete(response) => ModelResult::Complete(response),
+      SegmentResult::Complete(response) => {
+        ModelResult::Complete(response, segments == 1 && stream_recoveries == 0)
+      }
       SegmentResult::Interrupted(partial) => ModelResult::Interrupted(partial),
       SegmentResult::Failed(outcome) => ModelResult::Failed(outcome),
       SegmentResult::OutputLimited(_) => unreachable!("handled within the model executor"),
@@ -105,11 +115,20 @@ enum SegmentResult {
 async fn call_segment(
   model_caller: &impl ModelCaller,
   request: &Request,
+  generation: Option<usize>,
   control: &ExecutionControl,
   observation: &mut SegmentObservation,
   observe: &mut (impl FnMut(&SessionEvent) + Send),
 ) -> SegmentResult {
-  match control.run_until_cancelled(model_caller.call(request)).await {
+  match control
+    .run_until_cancelled(async {
+      match generation {
+        Some(id) => model_caller.call_turn(request, id).await,
+        None => model_caller.call(request).await,
+      }
+    })
+    .await
+  {
     None => finalize_interruption(StreamAccumulator::new()),
     Some(Err(error)) => SegmentResult::Failed(RunOutcome::Failed(error)),
     Some(Ok(CallResponse::Complete(response))) => {

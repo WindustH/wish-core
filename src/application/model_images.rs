@@ -14,6 +14,7 @@ use std::{
 pub(super) enum ImageProjection {
   Inspect,
   CountTokens,
+  SendSuffix(usize),
   Send,
 }
 
@@ -49,7 +50,7 @@ pub(super) async fn project_images(
     })
     .collect();
   // Prefer the newest images; older ones remain accessible through their file references.
-  for message in messages.iter_mut().rev() {
+  for (index, message) in messages.iter_mut().enumerate().rev() {
     let (from_view_image, source_path) = match message {
       Message::User { metadata, .. } if metadata["tool_name"] == "view_image" => {
         let call = metadata["tool_call_id"].as_str().or_else(|| metadata["call_id"].as_str());
@@ -91,7 +92,9 @@ pub(super) async fn project_images(
             None
           } else {
             remaining -= wire_bytes;
-            if projection != ImageProjection::Inspect {
+            if matches!(projection, ImageProjection::SendSuffix(start) if index < start) {
+              Some(ContentBlock::Image { mime_type, data_base64: String::new() })
+            } else if projection != ImageProjection::Inspect {
               let bytes = crate::utils::bounded_file::read(&path, byte_count)
                 .await
                 .map_err(|error| Error::Build(format!("read stored image: {error}")))?;
@@ -152,7 +155,7 @@ pub(super) async fn project_images(
           .map_err(Error::Build)?;
           remaining -= length;
           let path = blob_dir.join(&id);
-          if projection == ImageProjection::Send {
+          if matches!(projection, ImageProjection::Send | ImageProjection::SendSuffix(_)) {
             let directory = blob_dir.to_path_buf();
             crate::utils::blocking::io(move || blobs::save_image_bytes(&directory, &bytes))
               .await

@@ -93,7 +93,7 @@ fn render_body(
     &request.conversation,
     "a system instruction can only carry text blocks on the anthropic messages wire",
   )?;
-  let messages = render_messages(&rest)?;
+  let messages = render_messages(&rest, vec![])?;
   if messages.is_empty() {
     return Err(Error::Build("request has no messages".to_owned()));
   }
@@ -230,10 +230,34 @@ fn insert_output_effort(config: &ReasoningConfig, body: &mut Map<String, Value>)
   }
 }
 
-fn render_messages(conversation: &[Message]) -> Result<Vec<Value>, Error> {
+/// Render just the new user turn. Its tool results can answer calls in the retained
+/// assistant turn. Deriving those ids from the boundary preserves pairing validation.
+pub(crate) fn render_delta(request: &Request, cut: usize) -> Result<Vec<Value>, Error> {
+  let (earlier, suffix) = request.conversation.split_at(cut);
+  let mut pending: Vec<_> = earlier
+    .iter()
+    .rev()
+    .take_while(|m| {
+      matches!(m, Message::Reasoning { .. } | Message::Assistant { .. } | Message::ToolUse { .. })
+    })
+    .filter_map(|m| match m {
+      Message::ToolUse { call_id, .. } => Some(call_id.clone()),
+      _ => None,
+    })
+    .collect();
+  pending.reverse();
+  let mut messages = render_messages(suffix, pending)?;
+  if request.cache.as_ref().is_some_and(|cache| cache.breakpoints) {
+    mark_tail(messages.last_mut().and_then(|m| m.get_mut("content")));
+  }
+  Ok(messages)
+}
+
+fn render_messages(
+  conversation: &[Message],
+  mut pending: Vec<String>,
+) -> Result<Vec<Value>, Error> {
   let mut turns = AlternatingTurns::default();
-  // The calls of the last assistant turn that still wait for their results.
-  let mut pending: Vec<String> = Vec::new();
   let mut rest = conversation;
   while let [message, ..] = rest {
     let used = match message {

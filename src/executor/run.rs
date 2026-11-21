@@ -155,8 +155,14 @@ async fn run_session(
       }
       SessionAction::CallModel(request) => {
         let estimator = session.get_config().compaction.as_ref().map(|config| config.estimator);
-        let calling =
-          model::execute_model(model_caller, &request, control, estimator, &mut observe);
+        let calling = model::execute_model(
+          model_caller,
+          &request,
+          control,
+          Some(session.active_generation_id()),
+          estimator,
+          &mut observe,
+        );
         let ((result, observation), summary) = standby.beside(calling).await;
         // Input queued during the call.
         deliver_new_events(session, &mut delivered, &mut observe)?;
@@ -164,14 +170,21 @@ async fn run_session(
           summary.settle(session, &mut delivered, &mut observe)?;
         }
         let context_rejected = match &result {
-          ModelResult::Complete(response) => {
+          ModelResult::Complete(response, _) => {
             response.stop_reason == StopReason::ContextLengthExceeded
           }
           ModelResult::Failed(outcome) => outcome.is_context_length_exceeded(),
           ModelResult::Interrupted(_) => false,
         };
         match result {
-          ModelResult::Complete(response) => session.accept_response(response, observation)?,
+          ModelResult::Complete(response, single) => {
+            let checkpoint = single.then(|| model_caller.checkpoint(&response.messages)).flatten();
+            if session.accept_response(response, observation)?
+              && let Some(commit) = checkpoint
+            {
+              commit();
+            }
+          }
           ModelResult::Interrupted(partial) => session.accept_interruption(partial, observation)?,
           ModelResult::Failed(outcome) => session.fail_model_call(outcome, observation)?,
         }

@@ -71,7 +71,8 @@ pub fn decode_anthropic_messages(status: u16, body: &Value) -> Error {
   let error = body.get("error");
   from_envelope(
     status,
-    read_string_member(error, "type"),
+    read_string_member(body.pointer("/error/details"), "error_code")
+      .or_else(|| read_string_member(error, "type")),
     read_string_member(error, "message"),
     body,
   )
