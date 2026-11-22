@@ -362,7 +362,9 @@ pub async fn submit_input(
     let sender = slot.sender.clone();
     let lookup = digest.clone();
     if let Some(entry) = blocking(move || Ok(sender.input_receipt(id, lookup)?)).await? {
-      return Ok(input_reply(entry, false, request_id.as_deref()));
+      slot.schedule_input(&app, entry);
+      drop(publication);
+      return Ok(input_reply(entry, is_first_input(&slot, entry).await, request_id.as_deref()));
     }
     Some((id, digest))
   } else {
@@ -374,20 +376,20 @@ pub async fn submit_input(
   // Queue the message before releasing the foreground wait, so the next model step sees it.
   let (entry, appended) = slot.enqueue_input(message, request, publication).await?;
   if !appended {
-    return Ok(input_reply(entry, false, request_id.as_deref()));
+    slot.schedule_input(&app, entry);
+    return Ok(input_reply(entry, is_first_input(&slot, entry).await, request_id.as_deref()));
   }
+  slot.schedule(&app);
   let touched = slot.clone();
   if let Err(error) = blocking(move || touched.touch()).await {
     eprintln!("indexing queued input: {error}");
   }
-  slot.schedule(&app);
+  Ok(input_reply(entry, is_first_input(&slot, entry).await, request_id.as_deref()))
+}
+
+async fn is_first_input(slot: &super::session::SessionSlot, entry: EntryId) -> bool {
   let reader = slot.reader.clone();
-  let first_user_message = crate::application::error::blocking(move || {
-    Ok(super::naming::first_user(&reader)? == Some(entry))
-  })
-  .await
-  .unwrap_or(false);
-  Ok(input_reply(entry, first_user_message, request_id.as_deref()))
+  blocking(move || Ok(super::naming::first_user(&reader)? == Some(entry))).await.unwrap_or(false)
 }
 
 fn input_reply(entry: EntryId, first_user_message: bool, request_id: Option<&str>) -> Value {

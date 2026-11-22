@@ -228,7 +228,7 @@ impl InitialInput {
     message(
       directory,
       Input {
-        request_id: None,
+        request_id: Some(self.request_id),
         text: self.text,
         attachments,
         metadata: Value::Null,

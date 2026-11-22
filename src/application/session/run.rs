@@ -13,7 +13,7 @@ use super::{
 use crate::application::{app::App, error::ApplicationError, provider::Provider};
 use crate::{
   executor::{self, BoundaryResult, ExecutionControl},
-  session::{RunOutcome, Session, SessionError},
+  session::{EntryId, RunOutcome, Session, SessionError},
   utils::time::Timestamp,
 };
 use serde_json::json;
@@ -89,6 +89,15 @@ impl SessionSlot {
   /// Runs the queued input once the session is free, unless an interrupt comes first. A failure to
   /// start is reported to live clients.
   pub fn schedule(self: &Arc<Self>, app: &Arc<App>) {
+    self.schedule_for(app, None);
+  }
+
+  /// Resumes a replayed input only if that exact entry still belongs to the pending queue.
+  pub(crate) fn schedule_input(self: &Arc<Self>, app: &Arc<App>, entry: EntryId) {
+    self.schedule_for(app, Some(entry));
+  }
+
+  fn schedule_for(self: &Arc<Self>, app: &Arc<App>, entry: Option<EntryId>) {
     let epoch = self.get_schedule_epoch();
     let (slot, app) = (self.clone(), app.clone());
     let tasks = app.lifecycle.tasks.clone();
@@ -99,8 +108,22 @@ impl SessionSlot {
           return Ok(None);
         }
         slot.require_live()?;
-        if session.get_queue_head() >= session.reader().get_message_queue().len()? {
+        let head = session.get_queue_head();
+        let queue = session.reader().get_message_queue();
+        if head >= queue.len()? {
           return Ok(None);
+        }
+        if let Some(entry) = entry {
+          let mut queued = false;
+          for page in queue.pages(head) {
+            if page?.items.iter().any(|id| **id == entry) {
+              queued = true;
+              break;
+            }
+          }
+          if !queued {
+            return Ok(None);
+          }
         }
         if !slot.settle_abandoned(&mut session)? {
           return Err(ApplicationError::conflict("session has unfinished execution"));
