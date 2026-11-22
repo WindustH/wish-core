@@ -4,16 +4,17 @@ use crate::protocol::Message;
 use crate::session::persistence::{SessionRecord, SessionTransaction};
 use crate::session::{EntryId, Session, SessionError, SessionState};
 use crate::utils::time::Timestamp;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Names the resources a message uses, such as files kept beside the session.
-pub type References = fn(&Message, &mut HashSet<String>);
+type References = std::sync::Arc<dyn Fn(&Message, &mut HashSet<String>) + Send + Sync>;
 
 /// What pruning released, or would release.
 #[derive(Clone, Debug, Default)]
 pub struct HistoryPrune {
   /// Messages released.
   pub messages: u64,
+  pub selection: HashMap<String, HashSet<u64>>,
   /// Events released.
   pub events: u64,
   /// Stored bytes released: the values and the text indexed for history search.
@@ -29,18 +30,29 @@ impl Session {
   /// goes. Released positions keep their numbers, so entry IDs and history sequences still mean
   /// what they meant.
   ///
-  /// With `apply` false the same work is rolled back and the result tells what would go.
-  pub fn prune_history(
+  /// With `apply` false only measure the selected rows.
+  pub(crate) fn prune_history_while_frozen(
     &mut self,
     before: Option<Timestamp>,
     apply: bool,
     references: References,
+    expected: Option<HashMap<String, HashSet<u64>>>,
   ) -> Result<HistoryPrune, SessionError> {
     self.require_stable()?;
     let prune = move |transaction: &mut SessionTransaction<'_, '_>| {
-      transaction.prune_history(before, references)
+      transaction.prune_history(before, references, expected, apply)
     };
-    if apply { self.update(prune) } else { self.read(prune) }
+    if !apply {
+      return self.read(prune);
+    }
+    // Only list values and their index change. The caller holds the publication guard from
+    // planning through the final commit, so acquiring the queue lock again would deadlock.
+    let mut record = self.record.clone();
+    let key = self.key.clone();
+    let recorded_at = Timestamp::now();
+    self.storage.transaction(move |store| {
+      prune(&mut SessionTransaction { record: &mut record, store, key: &key, recorded_at })
+    })
   }
 }
 
@@ -61,16 +73,29 @@ impl SessionTransaction<'_, '_> {
     &mut self,
     before: Option<Timestamp>,
     references: References,
+    expected: Option<HashMap<String, HashSet<u64>>>,
+    apply: bool,
   ) -> Result<HistoryPrune, SessionError> {
     let old = |at: Timestamp| before.is_none_or(|before| at < before);
     let used = self.used_entries()?;
     let released = self.select_released(&used, old, references)?;
+    let selection = HashMap::from([
+      ("entries".to_owned(), released.entries.iter().copied().collect()),
+      ("events".to_owned(), released.events.iter().copied().collect()),
+      ("history".to_owned(), released.sequences.iter().copied().collect()),
+    ]);
+    if expected.is_some_and(|plan| plan != selection) {
+      return Err(SessionError::Busy);
+    }
     let record = &self.record;
-    let mut bytes = self.store.remove_history_records(&record.history, &released.sequences)?;
-    bytes += self.store.release_items::<HistoryRecord>(&record.history, &released.sequences)?;
-    bytes += self.store.release_items::<Entry>(&record.entries, &released.entries)?;
-    bytes += self.store.release_items::<SessionEvent>(&record.events, &released.events)?;
+    let mut bytes =
+      self.store.prune_history_records(&record.history, &released.sequences, apply)?;
+    bytes +=
+      self.store.release_items::<HistoryRecord>(&record.history, &released.sequences, apply)?;
+    bytes += self.store.release_items::<Entry>(&record.entries, &released.entries, apply)?;
+    bytes += self.store.release_items::<SessionEvent>(&record.events, &released.events, apply)?;
     Ok(HistoryPrune {
+      selection,
       messages: released.entries.len() as u64,
       events: released.events.len() as u64,
       bytes,

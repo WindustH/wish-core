@@ -88,7 +88,7 @@ pub async fn link_path(
     slot.aliases.blob(&blob.id)?;
     let name =
       std::path::Path::new(&blob.path).file_name().map(|name| name.to_string_lossy().into_owned());
-    library::record_link(&slot.blob_dir, &blob.id, name, parent)?;
+    library::record_in_folder(&slot.blob_dir, &blob.id, name, parent)?;
     Ok(LinkedItem::File { blob })
   })
   .await

@@ -31,6 +31,29 @@ pub(crate) struct ReplyIndexHit {
   pub metadata: String,
 }
 impl Transaction<'_> {
+  pub(crate) fn recent_message_excerpts(
+    &self,
+    list: &ListId,
+  ) -> Result<Vec<serde_json::Value>, StorageError> {
+    let mut query = self.sql.prepare(
+      "SELECT sequence,message_type,recorded_at,substr(text,1,641) FROM wish_history_index
+       WHERE list=(SELECT id FROM wish_list_keys WHERE name=?) AND item_kind='message'
+       AND message_type IN ('user','assistant') ORDER BY sequence DESC LIMIT 6",
+    )?;
+    let rows = query.query_map([&list.0], |row| {
+      let mut text = row.get::<_, String>(3)?;
+      if text.chars().count() > 640 {
+        text.pop();
+        text.push('…');
+      }
+      Ok(serde_json::json!({"seq":row.get::<_,i64>(0)?, "role":row.get::<_,String>(1)?,
+        "at":row.get::<_,i64>(2)?, "text":text}))
+    })?;
+    let mut rows = rows.collect::<Result<Vec<_>, _>>()?;
+    rows.reverse();
+    Ok(rows)
+  }
+
   /// Read only indexed metadata carrying a requested field, without materializing message bodies.
   pub(crate) fn history_metadata(
     &self,
@@ -93,16 +116,26 @@ impl Transaction<'_> {
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
   }
   /// Drop the index rows of `sequences` and return the bytes of text and metadata they held.
-  pub(crate) fn remove_history_records(
+  pub(crate) fn prune_history_records(
     &self,
     list: &ListId,
     sequences: &[u64],
+    apply: bool,
   ) -> Result<u64, StorageError> {
-    let mut statement = self.sql.prepare(concat!(
-      "DELETE FROM wish_history_index WHERE list=",
-      list_key!(),
-      " AND sequence=?2 RETURNING length(text)+length(metadata)"
-    ))?;
+    let query = if apply {
+      concat!(
+        "DELETE FROM wish_history_index WHERE list=",
+        list_key!(),
+        " AND sequence=?2 RETURNING length(text)+length(metadata)"
+      )
+    } else {
+      concat!(
+        "SELECT length(text)+length(metadata) FROM wish_history_index WHERE list=",
+        list_key!(),
+        " AND sequence=?2"
+      )
+    };
+    let mut statement = self.sql.prepare(query)?;
     let mut removed = 0;
     for sequence in sequences {
       let mut rows = statement.query(params![list.0, to_integer(*sequence)?])?;
@@ -135,11 +168,6 @@ impl Transaction<'_> {
     self
       .sql
       .execute(concat!("DELETE FROM wish_history_index WHERE list=", list_key!()), [&list.0])?;
-    Ok(())
-  }
-  /// The index rows of every list whose name starts with `prefix`, which are being deleted.
-  pub(super) fn delete_namespace_history_rows(&self, prefix: &str) -> Result<(), StorageError> {
-    self.sql.execute("DELETE FROM wish_history_index WHERE list IN (SELECT id FROM wish_list_keys WHERE substr(name,1,length(?1))=?1)", [prefix])?;
     Ok(())
   }
 }

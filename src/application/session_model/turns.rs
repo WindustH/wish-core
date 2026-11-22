@@ -106,6 +106,7 @@ impl SessionModel {
     let mut attempt = TurnAttempt {
       protocol,
       previous: previous.as_ref().map(|c| (c.id.clone(), c.pending.messages.len())),
+      conversation: Default::default(),
       returned: Default::default(),
       socket: (protocol == Protocol::ResponsesWebsocket).then(|| {
         previous
@@ -148,6 +149,7 @@ impl SessionModel {
         }
         Err(err) if attempt.previous.is_some() && protocol.stale(&err) => {
           attempt.previous = None;
+          attempt.conversation = Default::default();
           attempt.returned = Default::default();
           if attempt.socket.is_some() {
             attempt.socket = Some(client.responses_socket());
@@ -156,16 +158,10 @@ impl SessionModel {
         // A proxy can serve an ordinary HTTP page or forbid upgrades while
         // accepting POST. No model generation has started at the handshake.
         Err(Error::Upstream {
-          status: Some(200..=400 | 403 | 404 | 405 | 426 | 501),
+          status: None | Some(200..=400 | 403 | 404 | 405 | 426 | 429 | 500..=599),
           ref code,
           ..
         }) if code.as_deref() == Some("websocket_handshake") => {
-          client.turn = None;
-          return self.call_full(original, &client).await;
-        }
-        Err(Error::Build(ref message))
-          if message == "Responses WebSocket handshake unavailable" =>
-        {
           client.turn = None;
           return self.call_full(original, &client).await;
         }

@@ -169,7 +169,7 @@ impl ManagementStore {
     step: i64,
   ) -> Result<Vec<StreamAggregate>, RepositoryError> {
     let db = self.lock()?;
-    let mut statement = db.prepare("SELECT provider,model,?2+(at_ms-?2)/?4*?4,SUM(output_bytes),SUM(duration_ms),COUNT(*) FROM stream_samples WHERE (?1 IS NULL OR session=?1) AND at_ms>=?2 AND at_ms<?3 GROUP BY provider,model,3")?;
+    let mut statement = db.prepare("SELECT provider,model,?2+(at_ms-?2)/?4*?4,SUM(output_bytes),SUM(duration_ms),COUNT(*) FROM stream_samples WHERE duration_ms>0 AND (?1 IS NULL OR session=?1) AND at_ms>=?2 AND at_ms<?3 GROUP BY provider,model,3")?;
     let rows = statement.query_map(params![session, from, to, step], |row| {
       Ok(StreamAggregate {
         provider: row.get(0)?,
@@ -190,7 +190,7 @@ impl ManagementStore {
     to: i64,
   ) -> Result<Vec<StreamSample>, RepositoryError> {
     let db = self.lock()?;
-    let mut statement = db.prepare("SELECT attempt_id,provider,model,at_ms,duration_ms,output_bytes FROM stream_samples WHERE (?1 IS NULL OR session=?1) AND at_ms>=?2 AND at_ms<?3 ORDER BY at_ms DESC,attempt_id DESC LIMIT ?4")?;
+    let mut statement = db.prepare("SELECT attempt_id,provider,model,at_ms,duration_ms,output_bytes FROM stream_samples WHERE duration_ms>0 AND (?1 IS NULL OR session=?1) AND at_ms>=?2 AND at_ms<?3 ORDER BY at_ms DESC,attempt_id DESC LIMIT ?4")?;
     let limit = sampling::LIST_LIMIT as i64;
     let rows = statement.query_map(params![session, from, to, limit], stream_sample)?;
     rows.map(|row| row.map_err(RepositoryError::from)).collect()

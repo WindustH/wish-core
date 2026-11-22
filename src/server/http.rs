@@ -1,8 +1,10 @@
 //! The HTTP API: the routes, and the layers every request passes - the checks a server without a
 //! token makes (see [`web`]), cross-origin rules and the bearer token. Everything lives under
 //! `/api` except the unauthenticated `/health` and `/version`; other paths are the web app's.
+mod archives;
 mod ask;
 mod bridge;
+mod browser;
 mod conditional;
 mod config;
 pub(crate) mod content;
@@ -29,6 +31,7 @@ mod tasks;
 mod terminal;
 pub mod tool_commands;
 mod usage;
+mod website;
 use crate::application::{app::App, presets};
 use crate::server::{
   browser_login, copilot_login,
@@ -46,12 +49,21 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
+  let preview_proxy = website::Proxy::new(app.clone());
   let api = Router::new()
+    .route("/sessions/{id}/archive", post(archives::archive))
+    .route("/sessions/{id}/export", post(archives::export))
+    .route("/exports/{id}", get(archives::download_export))
+    .route("/archives", get(archives::list))
+    .route("/archives/{id}", get(archives::detail).delete(archives::remove))
+    .route("/archives/{id}/download-grant", post(archives::download_grant))
+    .route("/archives/{id}/download", get(archives::download))
     .route("/status", get(status::status))
     .route("/events", get(status::events))
     .route("/version", get(version))
     .route("/storage", get(storage::storage))
     .route("/storage/sessions", get(storage::session_storage))
+    .route("/storage/sessions/{id}/preview", get(storage::session_preview))
     .route("/storage/prune", post(storage::prune))
     .route("/storage/detail", get(storage::detail))
     .route("/storage/prune-usage", post(storage::prune_usage))
@@ -117,6 +129,9 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/messages", post(sessions::enqueue))
     .route("/sessions/{id}/input", post(content::input))
     .route("/sessions/{id}/queue/{entry}", delete(manage::cancel_input).patch(manage::move_input))
+    .route("/sessions/{id}/websites", post(website::create))
+    .route("/sessions/{id}/blobs/{blob}/website", post(website::open))
+    .route("/sessions/{id}/blobs/{blob}/website/{label}", delete(website::close))
     .route("/sessions/{id}/blobs/link", post(content::link))
     .route("/sessions/{id}/blobs", get(content::list).post(content::upload))
     .route("/sessions/{id}/library/folders", post(content::create_folder))
@@ -157,6 +172,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/sessions/{id}/tasks/background-shell", post(tasks::background_foreground))
     .route("/sessions/{id}/terminal", post(terminal::request))
     .route("/sessions/{id}/terminal/connect", post(terminal::ticket))
+    .route("/sessions/{id}/browser/connect", post(browser::ticket))
     .route("/sessions/{id}/tasks", get(tasks::list).post(tasks::user))
     .route("/sessions/{id}/cwd", put(sessions::set_working_directory))
     .route("/sessions/{id}/shell", put(sessions::set_shell))
@@ -184,6 +200,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .route("/mcp/servers/{id}/check", post(mcp::check))
     .route_layer(middleware::from_fn_with_state(app.clone(), authorize))
     .route("/sessions/{id}/terminal/socket", get(terminal::upgrade))
+    .route("/sessions/{id}/browser/socket", get(browser::upgrade))
     // The bridge a session's shell reaches its MCP servers through checks that session's own token
     // instead of the application's.
     .route(
@@ -213,6 +230,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     })
     .layer(middleware::from_fn_with_state(app.clone(), cross_origin))
     .layer(middleware::from_fn_with_state(front, web::guard))
+    .layer(middleware::from_fn_with_state(preview_proxy, website::dispatch))
     .with_state(app)
 }
 async fn version() -> Json<Value> {

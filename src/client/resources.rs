@@ -56,7 +56,8 @@ impl<T: Transport + Send + Sync> Client<T> {
         let bytes = base64::engine::general_purpose::STANDARD
           .decode(encoded)
           .map_err(|_| Error::Build("invalid image encoding".into()))?;
-        if let Some(uri) = resources.image_locations.get(&hex::encode(Sha256::digest(bytes))) {
+        let digest = hex::encode(Sha256::digest(bytes));
+        if let Some(uri) = resources.image_locations.get(&digest) {
           files::object_location(body, token, mime, uri);
         }
       }

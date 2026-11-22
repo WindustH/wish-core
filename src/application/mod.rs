@@ -1,11 +1,13 @@
 //! Application configuration and use cases. Server adapters call this layer.
 pub(crate) mod accounts;
 pub(crate) mod app;
+pub(crate) mod archives;
 pub(crate) mod attachments;
 pub(crate) mod background_tools;
 pub(crate) mod blob_access;
 pub(crate) mod bridge;
 pub(crate) mod bridge_access;
+pub(crate) mod browser;
 pub(crate) mod browser_login;
 pub(crate) mod compaction_item;
 pub(crate) mod config;
@@ -56,7 +58,8 @@ pub(crate) mod blob_preview;
 mod pagination;
 
 mod session_creation;
-mod session_temp;
+mod session_reclaim;
+pub(crate) mod session_temp;
 
 pub(crate) mod credentials;
 
@@ -81,3 +84,5 @@ pub(crate) mod library_cleanup;
 pub(crate) mod library_items;
 
 mod env_aliases;
+
+pub(crate) mod websites;

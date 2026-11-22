@@ -30,6 +30,16 @@ pub struct GenerationStructure {
   pub entries: crate::storage::Page<Entry>,
 }
 impl SessionReader {
+  pub(crate) fn preview(
+    storage: &Storage,
+    id: &str,
+  ) -> Result<Vec<serde_json::Value>, SessionError> {
+    let key = Session::build_key(id);
+    storage.transaction(move |tx| {
+      let record = tx.load_object::<SessionRecord>(&key)?;
+      Ok(tx.recent_message_excerpts(&record.history)?)
+    })
+  }
   /// Compatibility reads do not need to claim or open the session's running state machine.
   pub fn attachment_metadata(
     storage: &Storage,
@@ -66,6 +76,7 @@ impl SessionReader {
     limit: usize,
     kind: Option<String>,
     origin: Option<String>,
+    descending: bool,
   ) -> Result<GenerationStructure, SessionError> {
     let reader = self.clone();
     self.storage.transaction(move |tx| {
@@ -73,10 +84,21 @@ impl SessionReader {
         .get_item::<Generation>(&reader.generations, id.0 as u64)?
         .ok_or_else(|| StorageError::Corrupt("missing generation".into()))?;
       let count = tx.list_len::<EntryId>(&generation.entries)?;
-      let mut position = start.min(count);
+      // In reverse order, the cursor is an exclusive upper bound on storage positions.
+      // New entries at the end of an active generation cannot shift an in-flight page.
+      let mut cursor = if descending && start == 0 { count } else { start.min(count) };
+      let has_more = |cursor| if descending { cursor > 0 } else { cursor < count };
       let mut entries = Vec::new();
       let mut positions = Vec::new();
-      while position < count && entries.len() < limit {
+      while has_more(cursor) && entries.len() < limit {
+        let position = if descending {
+          cursor -= 1;
+          cursor
+        } else {
+          let position = cursor;
+          cursor += 1;
+          position
+        };
         if let Some(id) = tx.get_item::<EntryId>(&generation.entries, position)? {
           let entry = tx
             .get_item::<Entry>(&reader.entries, id.0 as u64)?
@@ -90,7 +112,6 @@ impl SessionReader {
             entries.push(entry);
           }
         }
-        position += 1;
       }
       Ok(GenerationStructure {
         generation,
@@ -99,8 +120,8 @@ impl SessionReader {
         entries: crate::storage::Page {
           start,
           items: entries,
-          end: position,
-          next: (position < count).then_some(position),
+          end: cursor,
+          next: has_more(cursor).then_some(cursor),
         },
       })
     })

@@ -11,6 +11,11 @@ pub async fn execute(
 ) -> Result<Value, ApplicationError> {
   app.lifecycle.require_open()?;
   let slot = app.get_session(&id).await?;
+  let _publication = if matches!(request, TerminalRequest::Start { .. }) {
+    Some(slot.blob_publication.clone().read_owned().await)
+  } else {
+    None
+  };
   slot.require_live()?;
   if matches!(request, TerminalRequest::Start { .. } | TerminalRequest::Write { .. })
     && !slot.get_descriptor().tools.shell

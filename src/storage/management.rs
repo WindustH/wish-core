@@ -3,6 +3,7 @@
 //! - `sessions`: a record per session, for the session list;
 //! - `folders`: the folders the list is arranged in, and where everything is;
 //! - `usage`: every session's model calls and one-second stream samples, for the statistics.
+pub mod archives;
 mod folders;
 pub mod sampling;
 mod sessions;
@@ -48,10 +49,12 @@ impl ManagementStore {
 
   pub fn open(path: &Path) -> Result<Self, RepositoryError> {
     let db = Connection::open(path)?;
+    db.busy_timeout(std::time::Duration::from_secs(5))?;
     // Incremental auto-vacuum lets what is deleted leave the file ([`shrink`]). It takes hold on a
     // new file; format migration 8 rebuilds an older one in it.
     db.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; PRAGMA journal_mode=WAL;")?;
     db.execute_batch(SCHEMA)?;
+    db.execute_batch(archives::SCHEMA)?;
     Ok(Self { db: Mutex::new(db), sample_limit: AtomicU64::new(0) })
   }
   /// How the index's file is used: its pages by table and index, and what is free.

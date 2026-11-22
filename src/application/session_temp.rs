@@ -22,10 +22,7 @@ pub(super) async fn ensure(path: &Path) -> Result<(), ApplicationError> {
 }
 
 /// Only remove the scratch namespace allocated for this owner, never its project directory.
-pub(super) async fn remove(id: &str, path: Option<&Path>) -> Result<(), ApplicationError> {
-  let Some(path) = path else {
-    return Ok(());
-  };
+pub(super) fn validate(id: &str, path: &Path) -> Result<(), ApplicationError> {
   if !path.is_absolute()
     || path.file_name().and_then(|v| v.to_str()) != Some(id)
     || path.parent().and_then(Path::file_name).and_then(|v| v.to_str()) != Some("wish-core")
@@ -35,6 +32,11 @@ pub(super) async fn remove(id: &str, path: Option<&Path>) -> Result<(), Applicat
       "refusing to remove a path outside the session scratch namespace",
     ));
   }
+  Ok(())
+}
+pub(super) async fn remove(id: &str, path: Option<&Path>) -> Result<(), ApplicationError> {
+  let Some(path) = path else { return Ok(()) };
+  validate(id, path)?;
   match tokio::fs::remove_dir_all(path).await {
     Ok(()) => Ok(()),
     Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),

@@ -23,6 +23,25 @@ Everything [Wish Web](https://github.com/WindustH/wish-web) does runs over Wish'
 | `GET` | `/api/storage`, `/api/storage/detail`, `/api/storage/sessions` | Total, per-category, and per-session disk usage |
 | `POST` | `/api/storage/prune`, `/api/storage/prune-usage` | Prune out-of-context history or leftover deleted-session usage |
 
+### Session packages
+
+| Method | Path | Result |
+| --- | --- | --- |
+| `POST` | `/api/sessions/{id}/export` | Copy an idle session into a temporary ZIP. Returns `export_id`, `filename`, `bytes`, `expires_at` and `download_url`. |
+| `GET` | `/api/exports/{id}` | Download via bearer authentication or the scoped URL returned by export. |
+| `GET` | `/api/storage/sessions/{id}/preview` | Read excerpts from the six latest user or assistant messages without opening the session. |
+| `POST` | `/api/sessions/{id}/archive` | Verify and retain the full ZIP, then remove the active session. `DELETE /api/sessions/{id}?archive=true` does the same. |
+| `GET` | `/api/archives` | Page through durable packages with `kind`, `session_id`, `batch_id`, `q`, `limit` `order=time` or `order=size` and the opaque `cursor` from `next`. |
+| `GET` | `/api/archives/{id}`, `/api/archives/{id}/download` | Read the manifest metadata or download the ZIP. Downloads support byte ranges and ETags. |
+| `POST` | `/api/archives/{id}/download-grant` | Issue a download URL valid for this ZIP for 15 minutes. |
+| `DELETE` | `/api/archives/{id}` | Permanently remove this package. |
+
+Exports accept an optional JSON object with `include_blobs`, `include_shell` and `include_transcript`. All three default to true. A temporary download expires after 30 minutes or a server restart. Temporary exports share a limit of 16 files and 4 GiB. Older downloads can expire earlier when that limit is reached. Keep the signed URL private. Up to two packages can be built concurrently. Exports leave the source session, terminal and browser open.
+
+Set `archive: true` on `POST /api/storage/prune`, `POST /api/sessions/{id}/library/cleanup` or `POST /api/storage/prune-usage` to retain the selected data before removal. History cleanup returns `batch_id` and `archives` with one package per affected session. Library and usage cleanup return `archive` when there is data to retain. Dry runs leave the archive list untouched. Plain history cleanup compacts the database before returning. With archival enabled, database page reclamation runs in the background and the reported sizes are snapshots at response time. Disk usage includes durable packages in `bytes.archives`.
+
+ZIP format version 1 contains a manifest and the data selected for release. Full sessions include the management record, authoritative storage rows and their positions, owned files, and a Markdown transcript. Linked host files are represented by their descriptors. Scratch directories, derived search indexes and generated terminal login scripts are omitted. Configured shell environment values are redacted. Messages, attachments and command output retain their original contents.
+
 ### Configuration & Discovery
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -119,6 +138,7 @@ While a session runs, `PATCH /api/sessions/{id}` (with `If-Match: <revision>`) s
 ### History, search, and tasks
 
 - `GET /api/sessions/{id}/history?limit=40&order=desc&before=&after=&include_outcomes=false` returns timeline items and a `next` cursor (`after_sequence`).
+- `GET /api/sessions/{id}/generations/{g}/structure` accepts `order=asc` (default) or `order=desc`. Start with `start=0` and pass each returned `next` as `start` with the same order and filters. The `positions` always refer to the original context order.
 - `POST /api/sessions/{id}/history/query` filters chronologically by `kind` (`message` | `event`), `message_types`, `event_types`, `origins`, `generation`, `model_call_id`, `tool_name`, `since`/`until`, and JSON path `metadata` predicates (`{"operation": "equals"|"exists", "path": "$.key", "value"}`).
 - `POST /api/sessions/{id}/history/search` takes `{"query": {"text": "...", "mode": "terms"|"substring", "limit": 20}, "filter": {...}}`.
 - `POST /api/sessions/{id}/tasks` runs task management actions (`{"action": "list"}`, `show`, `background`, `remove`, or `execute` with `start`/`poll`/`write`/`kill`).

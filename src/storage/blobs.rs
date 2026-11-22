@@ -92,7 +92,7 @@ where
   tokio::fs::rename(&temporary.0, &path).await.map_err(RepositoryError::internal)?;
   let blob = Blob {
     id: id.clone(),
-    mime_type: sniff_mime_type(&prefix).into(),
+    mime_type: stored_mime(directory, &id, &prefix).await.into(),
     byte_count: count,
     path: tokio::fs::canonicalize(&path)
       .await
@@ -108,6 +108,49 @@ where
   .await
   .map_err(RepositoryError::internal)?;
   Ok(blob)
+}
+
+pub(crate) const WEBSITE_PREFIX: &str = "Wish-Website/1\n";
+pub(crate) const WEBSITE_MIME: &str = "application/vnd.wish.website";
+
+/// Only explicit Library creation writes this media type. Existing descriptors also
+/// carry it, so previously created resources do not require a migration.
+pub(crate) fn save_website(directory: &Path, bytes: &[u8]) -> Result<Blob, RepositoryError> {
+  let _catalog = catalog::Mutation(directory);
+  std::fs::create_dir_all(directory).map_err(RepositoryError::internal)?;
+  let id = blob_id(bytes);
+  let path = std::fs::canonicalize(directory).map_err(RepositoryError::internal)?.join(&id);
+  let blob = Blob {
+    id: id.clone(),
+    mime_type: WEBSITE_MIME.into(),
+    byte_count: bytes.len(),
+    path: path.to_string_lossy().into_owned(),
+    linked: false,
+  };
+  let description = serde_json::to_vec(&blob).map_err(RepositoryError::internal)?;
+  atomic_write_sync(&path, bytes).map_err(RepositoryError::internal)?;
+  if let Err(error) = atomic_write_sync(&description_path(directory, &id), &description) {
+    std::fs::remove_file(path).map_err(RepositoryError::internal)?;
+    return Err(RepositoryError::internal(error));
+  }
+  Ok(blob)
+}
+
+pub(super) fn is_website_description(bytes: &[u8], id: &str) -> bool {
+  serde_json::from_slice::<Blob>(bytes)
+    .is_ok_and(|b| b.id == id && !b.linked && b.mime_type == WEBSITE_MIME)
+}
+
+pub(crate) async fn stored_mime(directory: &Path, id: &str, prefix: &[u8]) -> &'static str {
+  if prefix.starts_with(WEBSITE_PREFIX.as_bytes())
+    && crate::utils::bounded_file::read(&description_path(directory, id), 64 * 1024)
+      .await
+      .is_ok_and(|data| is_website_description(&data, id))
+  {
+    WEBSITE_MIME
+  } else {
+    sniff_mime_type(prefix)
+  }
 }
 
 /// Detect media and UTF-8 text consistently for uploads, catalogs and downloads.

@@ -62,6 +62,7 @@ impl IncrementalProtocol {
           Some(id) => {
             let object = body.as_object_mut().unwrap();
             object.remove("tools");
+            object.remove("tool_choice");
             object.remove("system");
             json!({"type":"continue","previous_message_id":id})
           }

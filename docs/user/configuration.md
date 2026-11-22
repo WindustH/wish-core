@@ -222,7 +222,7 @@ Each capability has an enable toggle and, for CLI-capable tools, a delivery mode
 
 ## Proxy and shell
 
-- **`proxy`**: `mode` can be `"environment"` (reads `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY`), `"manual"` (`url` plus optional `username` and `password`), or `"direct"`. Individual providers, accounts, extension services, and HTTP MCP servers can opt out via `proxy_enabled: false`.
+- **`proxy`**: `mode` can be `"environment"` (reads `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY`), `"manual"` (`url` plus optional `username` and `password`), or `"direct"`. Manual proxy URLs support HTTP, HTTPS, SOCKS5 (local DNS) and SOCKS5H (proxy DNS). Individual providers, accounts, extension services, and HTTP MCP servers can opt out via `proxy_enabled: false`.
 - **`shell`**: Set `program` to an absolute path (empty picks the OS default) and optionally override `args` (omitted picks defaults for that shell family, such as `["-lc"]` for `bash`/`zsh`). Each session shell receives `$WISH_TMPDIR` and `$WISH_BLOB_*` / `$WISH_SESSION_ID_*` aliases automatically.
 
 `shell.env` is a map of preset environment variables for new commands, layered over the server process's inherited environment. Values are passed literally, including spaces and newlines; `$NAME` is not expanded. Names must match `[A-Za-z_][A-Za-z0-9_]*`; `WISH_*` names are reserved. Removing a preset restores the inherited value, while an empty string sets an empty value. Existing processes retain their environment.

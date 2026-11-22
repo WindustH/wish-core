@@ -103,7 +103,27 @@ impl<'a> Images<'a> {
     self.write(value, &mut output, &mut inline).map_err(|e| Error::Build(e.to_string()))?;
     Ok((output, inline))
   }
-  fn write(&self, value: &Value, out: &mut Vec<u8>, inline: &mut usize) -> std::io::Result<()> {
+  pub fn digest(&self, value: &Value) -> Result<([u8; 32], usize), Error> {
+    use sha2::{Digest, Sha256};
+    struct HashWriter {
+      hash: Sha256,
+      len: usize,
+    }
+    impl Write for HashWriter {
+      fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.hash.update(bytes);
+        self.len += bytes.len();
+        Ok(bytes.len())
+      }
+      fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+      }
+    }
+    let mut writer = HashWriter { hash: Sha256::new(), len: 0 };
+    self.write(value, &mut writer, &mut 0).map_err(|e| Error::Build(e.to_string()))?;
+    Ok((writer.hash.finalize().into(), writer.len))
+  }
+  fn write(&self, value: &Value, out: &mut impl Write, inline: &mut usize) -> std::io::Result<()> {
     match value {
       Value::String(text) => {
         for ImageBinding { token, data_base64: data, .. } in &self.0 {
@@ -118,7 +138,7 @@ impl<'a> Images<'a> {
             *inline += data.len();
             // Use JSON's string escaping for the MIME prefix and the encoded data too;
             // legacy input may contain invalid Base64 and must never inject raw JSON.
-            out.push(b'"');
+            out.write_all(&[b'"'])?;
             for segment in [prefix, *data] {
               if segment.bytes().all(|byte| byte >= 0x20 && byte != b'"' && byte != b'\\') {
                 out.write_all(segment.as_bytes())?;
@@ -127,33 +147,33 @@ impl<'a> Images<'a> {
                 out.write_all(&encoded.as_bytes()[1..encoded.len() - 1])?;
               }
             }
-            out.push(b'"');
+            out.write_all(&[b'"'])?;
             return Ok(());
           }
         }
         serde_json::to_writer(out, value)?;
       }
       Value::Array(values) => {
-        out.push(b'[');
+        out.write_all(&[b'['])?;
         for (index, value) in values.iter().enumerate() {
           if index > 0 {
-            out.push(b',');
+            out.write_all(&[b','])?;
           }
           self.write(value, out, inline)?;
         }
-        out.push(b']');
+        out.write_all(&[b']'])?;
       }
       Value::Object(values) => {
-        out.push(b'{');
+        out.write_all(&[b'{'])?;
         for (index, (key, value)) in values.iter().enumerate() {
           if index > 0 {
-            out.push(b',');
+            out.write_all(&[b','])?;
           }
           serde_json::to_writer(&mut *out, key)?;
-          out.push(b':');
+          out.write_all(&[b':'])?;
           self.write(value, out, inline)?;
         }
-        out.push(b'}');
+        out.write_all(&[b'}'])?;
       }
       _ => serde_json::to_writer(out, value)?,
     }

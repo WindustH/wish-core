@@ -192,7 +192,7 @@ impl Storage {
   }
   /// Rebuild the database file without the pages deleted and released data left free, so it
   /// shrinks on disk; the search index is merged first, so the text of deleted history leaves it
-  /// too. The rebuilt file is in incremental auto-vacuum mode, which [`Storage::shrink`] needs.
+  /// too. The rebuilt file is in incremental auto-vacuum mode, which incremental space reclamation needs.
   /// Other storage work waits until it finishes.
   pub fn vacuum(&self) -> Result<(), StorageError> {
     self.dispatch(|database| -> Result<(), StorageError> {
@@ -202,19 +202,39 @@ impl Storage {
       Ok(())
     })?
   }
-  /// Give the room deleted data took back to the file system without rebuilding the file: the
-  /// search index is merged as in [`Storage::vacuum`] and the free pages are cut off the end. Its
-  /// cost follows what was deleted and the index, not the whole database, so it suits deleting a
-  /// session. A database not yet in incremental auto-vacuum mode keeps its free pages for reuse.
-  pub fn shrink(&self) -> Result<(), StorageError> {
-    self.dispatch(|database| -> Result<(), StorageError> {
-      super::history_index::compact_index(&database.connection)?;
-      // Each step frees one page and returns a row.
-      let mut freeing = database.connection.prepare("PRAGMA incremental_vacuum")?;
-      let mut pages = freeing.query([])?;
-      while pages.next()?.is_some() {}
-      database.connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-      Ok(())
+  /// Submit one bounded slice at a time to the shared storage thread. A negative
+  /// first merge starts coalescing old segments; positive slices resume that merge.
+  pub(crate) fn reclaim_step(&self, first: bool) -> Result<bool, StorageError> {
+    self.dispatch(move |database| -> Result<bool, StorageError> {
+      let db = &database.connection;
+      let mut more = false;
+      for command in [
+        "INSERT INTO wish_history_words(wish_history_words,rank) VALUES('merge',?1)",
+        "INSERT INTO wish_history_substrings(wish_history_substrings,rank) VALUES('merge',?1)",
+      ] {
+        let before = db.total_changes();
+        db.execute(command, [if first { -64 } else { 64 }])?;
+        more |= db.total_changes() - before >= 2;
+      }
+      let mut vacuum = db.prepare("PRAGMA incremental_vacuum(128)")?;
+      let mut pages = vacuum.query([])?;
+      let mut freed = 0;
+      while pages.next()?.is_some() {
+        freed += 1;
+      }
+      Ok(more || freed >= 128)
+    })?
+  }
+  pub(crate) fn finish_reclaim(&self) -> Result<bool, StorageError> {
+    self.dispatch(|database| -> Result<bool, StorageError> {
+      // A long-lived reader can pin the WAL. Let it finish without holding up other sessions.
+      let db = &database.connection;
+      let timeout: i64 = db.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+      db.pragma_update(None, "busy_timeout", 0)?;
+      let checkpoint =
+        db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get::<_, i64>(0));
+      db.pragma_update(None, "busy_timeout", timeout)?;
+      Ok(checkpoint? == 0)
     })?
   }
   /// A read-only handle on the list `id`; opening it reads nothing.
@@ -332,6 +352,7 @@ impl Database {
       Source::File(path) => Connection::open(path)?,
       Source::Memory => Connection::open_in_memory()?,
     };
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
     // Incremental auto-vacuum lets `shrink` return free pages. It takes effect when the database
     // is created, and for an older file at its next `vacuum`.
     connection.execute_batch(

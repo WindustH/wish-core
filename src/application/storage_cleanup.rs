@@ -9,7 +9,7 @@ use crate::{
   utils::time::Timestamp,
 };
 use crate::{
-  session::resources::{collect_references, is_execution_id},
+  session::resources::is_execution_id,
   storage::{
     blobs::is_blob_id,
     data_dir::DataDir,
@@ -32,6 +32,8 @@ pub struct PruneRequest {
   /// Tell what would go and change nothing.
   #[serde(default)]
   dry_run: bool,
+  #[serde(default)]
+  archive: bool,
 }
 
 #[derive(Default)]
@@ -94,33 +96,48 @@ pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, Applicat
   };
   let initial = database_bytes();
   let (mut total, mut sessions, mut skipped) = (CleanupSummary::default(), Vec::new(), Vec::new());
+  let batch = (apply && input.archive).then(|| uuid::Uuid::new_v4().to_string());
+  let mut archives = vec![];
+  let permit = if batch.is_some() { Some(Arc::new(super::archives::permit()?)) } else { None };
   for id in ids {
-    let slot = match app.get_session(&id).await {
-      Ok(slot) => slot,
-      // A session deleted while this ran is simply gone.
-      Err(error) if every && error.kind == crate::application::error::ErrorKind::NotFound => {
+    let opening = app.lock_session_open(&id).await;
+    let slot = app.cached_session(&id).await;
+    let db = app.management.clone();
+    let owner = id.clone();
+    let record = match blocking(move || Ok(db.read(&owner)?)).await {
+      Ok(record) => record,
+      Err(e) if every && e.kind == super::error::ErrorKind::NotFound => continue,
+      Err(e) => return Err(e.into()),
+    };
+    let (mut hot, publication) = if let Some(slot) = &slot {
+      let Some(session) = slot.lock_idle().await else {
+        skipped.push(json!({"id":id,"reason":"running"}));
         continue;
-      }
-      Err(error) => return Err(error),
-    };
-    let Some(session) = slot.lock_idle().await else {
-      skipped.push(json!({"id": id, "reason": "running"}));
-      continue;
-    };
-    let Ok(publication) = slot.blob_publication.clone().try_write_owned() else {
-      skipped.push(json!({"id": id, "reason": "uploading"}));
-      continue;
+      };
+      let Ok(publication) = slot.blob_publication.clone().try_write_owned() else {
+        skipped.push(json!({"id":id,"reason":"uploading"}));
+        continue;
+      };
+      (Some(session), Some(publication))
+    } else {
+      (None, None)
     };
     let data_dir = app.data_dir.clone();
     let target = id.clone();
-    let result = blocking(move || {
-      let mut session = session;
+    let worker = app.clone();
+    let batch_id = batch.clone();
+    let permit = permit.clone();
+    let result = super::error::package_work(batch_id.is_some(), move || {
+      let _permit = permit;
+      let _opening = opening;
       let _publication = publication;
-      slot.require_live()?;
-      if slot.tools.background.is_active() {
+      if let Some(slot) = &slot {
+        slot.require_live()?;
+      }
+      if slot.as_ref().is_some_and(|s| s.tools.background.is_active()) {
         return Ok(None);
       }
-      if let Some(shell) = slot.tools.tasks() {
+      if let Some(shell) = slot.as_ref().and_then(|s| s.tools.tasks()) {
         let tasks = shell.list().map_err(ApplicationError::internal)?;
         if tasks["tasks"]
           .as_array()
@@ -131,39 +148,154 @@ pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, Applicat
           return Ok(None);
         }
       }
-      let history = match session.prune_history(before, apply, collect_references) {
+      let mut cold;
+      let mut legacy_visible = HashSet::new();
+      let (session, aliases) =
+        if let (Some(session), Some(slot)) = (hot.as_deref_mut(), slot.as_ref()) {
+          (session, slot.aliases.snapshot())
+        } else {
+          if apply {
+            super::library::ensure(&data_dir, &worker.storage, &target)?;
+          } else if !data_dir
+            .blobs(&target)
+            .join(".library.json")
+            .try_exists()
+            .map_err(ApplicationError::internal)?
+          {
+            legacy_visible
+              .extend(super::library::recover(&data_dir, &worker.storage, &target)?.into_keys());
+          }
+          cold = crate::session::Session::load(worker.storage.clone(), &target)?;
+          if !cold.get_state().is_stable() {
+            return Ok(None);
+          }
+          (&mut cold, super::env_aliases::Aliases::snapshot_existing(&data_dir.blobs(&target))?)
+        };
+      let sender = session.create_sender();
+      let _frozen = sender.freeze_publication()?;
+      let references = super::library_cleanup::references(aliases);
+      let history = match session.prune_history_while_frozen(
+        before,
+        apply && batch_id.is_none(),
+        Arc::new(references.clone()),
+        None,
+      ) {
         Ok(history) => history,
         Err(SessionError::Busy) => return Ok(None),
         Err(error) => return Err(error.into()),
       };
-      let resources = history.resources.clone();
-      let tool_slot = slot.clone();
-      let released = super::library_cleanup::with_dependencies(&slot, move |protected| {
-        release_unreferenced_files(
-          &data_dir,
-          &target,
-          &resources,
-          &protected,
-          tool_slot.tools.tasks(),
-          apply,
-        )
-      })?
+      let mut protected = session.resource_dependencies(references.clone())?;
+      protected.extend(legacy_visible);
+      let mut plan = plan_files(
+        &data_dir,
+        &target,
+        &history.resources,
+        &protected,
+        slot.as_ref().and_then(|s| s.tools.tasks()),
+      )
       .map_err(ApplicationError::internal)?;
-      if apply && (history.messages > 0 || history.events > 0) {
+      let dir = data_dir.blobs(&target);
+      let mut archive = None;
+      let package_lock;
+      let _package_guard;
+      if let Some(batch) = batch_id {
+        let hidden = crate::storage::blobs::library::release_hidden(&dir, &plan.candidates, false)?;
+        plan.candidates = hidden.ids.iter().cloned().collect();
+        if history.messages + history.events + hidden.ids.len() as u64 > 0
+          || release_resources(&plan.resources, false)
+            .map_err(ApplicationError::internal)?
+            .resources
+            > 0
+        {
+          let mut w = super::archives::Writer::new(
+            &worker,
+            "history_prune",
+            Some(&target),
+            record["session"]["name"].as_str().unwrap_or(&target),
+            Some(&batch),
+            false,
+          )?;
+          super::archives::session::records(
+            &worker,
+            &target,
+            &mut w,
+            Some(&history.selection),
+            true,
+          )?;
+          if !hidden.ids.is_empty() {
+            super::archives::library_files(&mut w, &dir, &hidden.ids)?;
+          }
+          let shell = data_dir.shell(&target);
+          for resource in &plan.resources {
+            let path = match resource {
+              ResourceFiles::Directory { path } | ResourceFiles::File { path, .. } => path,
+            };
+            if let Ok(relative) = path.strip_prefix(&dir) {
+              w.tree(&dir, relative, "blobs")?;
+            } else {
+              w.tree(
+                &shell,
+                path.strip_prefix(&shell).map_err(ApplicationError::internal)?,
+                "shell",
+              )?;
+            }
+          }
+          let manifest = w.finish()?;
+          package_lock = super::archives::package_lock(super::archives::package_id(&manifest)?);
+          _package_guard = package_lock.lock().map_err(ApplicationError::internal)?;
+          super::archives::persist(&worker, &manifest, None)?;
+          if let Err(e) = session.prune_history_while_frozen(
+            before,
+            true,
+            Arc::new(references.clone()),
+            Some(history.selection),
+          ) {
+            super::archives::discard_unapplied(&worker, &manifest)?;
+            return Err(e.into());
+          }
+          archive = Some(manifest);
+        }
+      }
+      let tool_slot = slot.clone();
+      let released = {
+        let released =
+          release_resources(&plan.resources, apply).map_err(ApplicationError::internal)?;
+        let blobs = crate::storage::blobs::library::release_hidden(&dir, &plan.candidates, apply)?;
+        if apply && let Some(shell) = tool_slot.as_ref().and_then(|s| s.tools.tasks()) {
+          shell.forget_removed();
+        }
+        CleanupSummary {
+          files: released.resources + blobs.unused_hidden,
+          stale_entries: blobs.stale_entries,
+          unreadable_jobs: plan.unreadable_jobs,
+          file_bytes: released.bytes + blobs.bytes,
+          ..Default::default()
+        }
+      };
+      if apply
+        && (history.messages > 0 || history.events > 0)
+        && let Some(slot) = &slot
+      {
         let _ = slot.events.send(json!({"type": "history_pruned"}));
       }
-      Ok(Some(CleanupSummary {
-        messages: history.messages,
-        events: history.events,
-        history_bytes: history.bytes,
-        ..released
-      }))
+      Ok(Some((
+        CleanupSummary {
+          messages: history.messages,
+          events: history.events,
+          history_bytes: history.bytes,
+          ..released
+        },
+        archive,
+      )))
     })
     .await?;
-    let Some(released) = result else {
+    let Some((released, archive)) = result else {
       skipped.push(json!({"id": id, "reason": "running"}));
       continue;
     };
+    if let Some(m) = archive {
+      archives.push(m);
+    }
     total.add(&released);
     let mut item = released.describe();
     item["id"] = json!(id);
@@ -172,8 +304,14 @@ pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, Applicat
   let mut result = total.describe();
   result["sessions"] = json!(sessions);
   result["skipped"] = json!(skipped);
+  if let Some(batch) = &batch {
+    result["batch_id"] = json!(batch);
+    result["archives"] = json!(archives);
+  }
   if apply {
-    if total.history_bytes > 0 {
+    if batch.is_some() {
+      app.reclaim.notify_one();
+    } else if total.history_bytes > 0 {
       let storage = app.storage.clone();
       blocking(move || storage.vacuum().map_err(ApplicationError::from)).await?;
     }
@@ -183,14 +321,18 @@ pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, Applicat
 }
 
 /// Select resource paths while the session lock is held. Running shell output is retained.
-fn release_unreferenced_files(
+struct FilePlan {
+  resources: Vec<ResourceFiles>,
+  candidates: HashSet<String>,
+  unreadable_jobs: u64,
+}
+fn plan_files(
   data_dir: &DataDir,
   id: &str,
   names: &HashSet<String>,
   protected: &HashSet<String>,
   shell: Option<&crate::task::TaskManager>,
-  apply: bool,
-) -> std::io::Result<CleanupSummary> {
+) -> std::io::Result<FilePlan> {
   let blobs = data_dir.blobs(id);
   let executions = data_dir.shell(id);
   let mut job_resources = Vec::new();
@@ -234,7 +376,7 @@ fn release_unreferenced_files(
     })
     .collect();
   resources.extend(job_resources);
-  let released = release_resources(&resources, apply)?;
+
   // Re-check visibility while holding the same lock as show/pin and remove the
   // metadata with the bytes. A concurrent add-to-Library operation cannot be lost.
   let candidates = names
@@ -242,16 +384,5 @@ fn release_unreferenced_files(
     .filter(|name| unreadable_jobs == 0 && is_blob_id(name) && !retained_artifacts.contains(*name))
     .cloned()
     .collect();
-  let blobs_released = crate::storage::blobs::library::release_hidden(&blobs, &candidates, apply)
-    .map_err(std::io::Error::other)?;
-  if apply && let Some(shell) = shell {
-    shell.forget_removed();
-  }
-  Ok(CleanupSummary {
-    files: released.resources + blobs_released.unused_hidden,
-    stale_entries: blobs_released.stale_entries,
-    unreadable_jobs,
-    file_bytes: released.bytes + blobs_released.bytes,
-    ..Default::default()
-  })
+  Ok(FilePlan { resources, candidates, unreadable_jobs })
 }

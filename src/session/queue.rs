@@ -23,6 +23,12 @@ pub struct SessionSender {
   pub(super) queue_size: Arc<QueueSize>,
 }
 impl SessionSender {
+  /// Freeze side-channel input and events while an idle owner packages its lists.
+  pub(crate) fn freeze_publication(&self) -> Result<std::sync::MutexGuard<'_, ()>, SessionError> {
+    self.queue_size.mutation.lock().map_err(|_| {
+      crate::storage::StorageError::Corrupt("queue publication lock poisoned".into()).into()
+    })
+  }
   /// Last committed queue length, available without a database round trip.
   pub fn queued_total(&self) -> u64 {
     self.queue_size.total.load(Ordering::Acquire)

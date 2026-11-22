@@ -1,0 +1,38 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer">
+<style>html,body,iframe{width:100%;height:100%;margin:0;border:0;display:block;overflow:hidden}</style></head>
+<body><iframe title="Website"></iframe><script>
+history.replaceState(null, '', '/.wish-view');
+const page = document.querySelector('iframe');
+page.onload = () => {
+  let error = '';
+  try { error = page.contentDocument.querySelector('meta[name=wish-preview-error]')?.content || ''; } catch {}
+  parent.postMessage({type:'wish-website-loaded',error}, '*');
+};
+page.src = location.origin + SITE_PATH;
+let renderer;
+function loadRenderer() {
+  if (!renderer) renderer = new Promise((resolve,reject) => {
+    const script = document.createElement('script');
+    script.src = '/.wish-view/html2canvas.js';
+    script.onload = resolve;
+    script.onerror = () => {renderer = undefined; reject(new Error('Could not load capture support'));};
+    document.head.append(script);
+  });
+  return renderer;
+}
+addEventListener('message', async event => {
+  const port = event.ports[0];
+  if (event.source !== parent || event.data?.type !== 'wish-capture' || !port) return;
+  try {
+    await loadRenderer();
+    const view = page.contentWindow;
+    await new Promise(resolve => view.requestAnimationFrame(resolve));
+    const canvas = await html2canvas(view.document.documentElement, {
+      x:view.scrollX, y:view.scrollY, width:view.innerWidth, height:view.innerHeight,
+      scale:Math.min(devicePixelRatio,2048/Math.max(view.innerWidth,view.innerHeight)),
+      useCORS:true, logging:false, imageTimeout:4000
+    });
+    canvas.toBlob(blob => {port.postMessage(blob);port.close();}, 'image/png');
+  } catch(error) {port.postMessage({error:String(error)});port.close();}
+});
+</script></body></html>

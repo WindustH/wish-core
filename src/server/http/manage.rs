@@ -34,9 +34,14 @@ pub async fn update_session(
 pub async fn delete_session(
   State(app): State<Arc<App>>,
   Path(id): Path<String>,
-) -> Result<StatusCode, ApiError> {
+  axum::extract::Query(options): axum::extract::Query<super::storage::UsageOptions>,
+) -> Result<axum::response::Response, ApiError> {
+  use axum::response::IntoResponse;
+  if options.archive {
+    return Ok(super::archives::archive(State(app), Path(id)).await?.into_response());
+  }
   session_commands::delete_session(app, id).await?;
-  Ok(StatusCode::NO_CONTENT)
+  Ok(StatusCode::NO_CONTENT.into_response())
 }
 pub async fn cancel_input(
   State(app): State<Arc<App>>,

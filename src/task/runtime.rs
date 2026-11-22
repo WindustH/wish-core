@@ -254,6 +254,12 @@ impl TaskManager {
   }
   /// No running processes or independent owners (including completion-notification workers).
   /// An application may then unload its idle session without terminating background work.
+  pub fn has_live_processes(&self) -> bool {
+    self.lock_registry().map_or(true, |r| {
+      r.terminal.as_ref().is_some_and(|t| t.running())
+        || r.executions.values().any(|e| e.get_snapshot().status == Status::Running)
+    })
+  }
   pub fn can_unload(&self) -> bool {
     Arc::strong_count(&self.inner) == 1
       && self.lock_registry().is_ok_and(|registry| {

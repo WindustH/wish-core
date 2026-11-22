@@ -35,7 +35,7 @@ pub(crate) fn attachments(metadata: &Value) -> BTreeMap<String, Entry> {
     .collect()
 }
 
-fn recover(
+pub(super) fn recover(
   data: &DataDir,
   storage: &crate::storage::Storage,
   owner: &str,

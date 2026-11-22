@@ -53,7 +53,7 @@ impl<T: Transport + Send + Sync> Client<T> {
         }
       }
     }
-    let settings = Sha256::digest(images.serialize(&seed)?).into();
+    let (settings, mut size) = images.digest(&seed)?;
     // Start the live suffix at a user message, leaving a complete exchange in the
     // prefix. Keep using that immutable prefix as the conversation grows.
     let cached = self
@@ -85,13 +85,12 @@ impl<T: Transport + Send + Sync> Client<T> {
           && turns[n].pointer("/parts/0/functionResponse").is_none()
       })
       .unwrap_or(latest);
-    let mut size = 0usize;
     let digests = turns[..cut]
       .iter()
       .map(|item| {
-        let bytes = images.serialize(item)?;
-        size += bytes.len();
-        Ok::<[u8; 32], Error>(Sha256::digest(bytes).into())
+        let (digest, len) = images.digest(item)?;
+        size += len;
+        Ok::<_, Error>(digest)
       })
       .collect::<Result<Vec<_>, _>>()?;
     let cached = cached.filter(|p| p.digests == digests);
@@ -99,7 +98,7 @@ impl<T: Transport + Send + Sync> Client<T> {
       let Some(id) = entry.id else { return Ok(()) };
       id
     } else {
-      if size + seed.to_string().len() < 4096 {
+      if size < 4096 {
         return Ok(());
       }
       seed[items] = Value::Array(turns[..cut].to_vec());

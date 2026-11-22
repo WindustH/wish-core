@@ -92,7 +92,7 @@ impl Session {
     })?;
     Self::from_record(storage, key, owner, record)
   }
-  pub(super) fn build_key(id: &str) -> String {
+  pub(crate) fn build_key(id: &str) -> String {
     format!("session/{}", hex::encode(id.as_bytes()))
   }
   fn from_record(
@@ -117,6 +117,13 @@ impl Session {
 }
 
 impl Session {
+  /// Delete a closed session without reconstructing its readers or replaying history.
+  pub(crate) fn delete_closed(storage: &Storage, id: &str) -> Result<(), SessionError> {
+    let key = Self::build_key(id);
+    let _owner = storage.claim_owner(&key)?;
+    storage.transaction(move |store| store.delete_namespace(&key))?;
+    Ok(())
+  }
   /// Permanently delete an inactive session and all its stored history and generations.
   pub fn delete(&mut self) -> Result<(), SessionError> {
     self.require_stable()?;

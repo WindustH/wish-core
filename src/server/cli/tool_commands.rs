@@ -18,7 +18,9 @@ async fn execute(name: &str, mut args: Vec<String>) -> Result<(), Failure> {
   if args.is_empty() || args.iter().any(|arg| matches!(arg.as_str(), "--help" | "-h")) {
     println!(
       "{}",
-      if name == "blob" {
+      if name == "browser" {
+        include_str!("help/browser.txt")
+      } else if name == "blob" {
         include_str!("help/blob.txt")
       } else if name.starts_with("history_") {
         include_str!("help/history.txt")

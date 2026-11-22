@@ -145,8 +145,13 @@ impl<T: Transport + Send + Sync> EventStream<T> {
               events.push(StreamEvent::Checkpoint { revision: recovery.revision });
             }
           }
-          if events.iter().any(|event| matches!(event, StreamEvent::Stop(_))) {
-            if let Some(wire) = &mut self.socket {
+          if let Some(reason) = events.iter().find_map(|event| match event {
+            StreamEvent::Stop(reason) => Some(reason),
+            _ => None,
+          }) {
+            if let Some(mut wire) = self.socket.take()
+              && *reason != crate::protocol::StopReason::MaxOutputLengthExceeded
+            {
               wire.release();
             }
             self.done = true;

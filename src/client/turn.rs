@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) struct TurnAttempt {
   pub protocol: IncrementalProtocol,
   pub previous: Option<(String, usize)>,
+  pub conversation: Arc<tokio::sync::OnceCell<String>>,
   pub returned: Arc<Mutex<Option<String>>>,
   pub socket: Option<crate::transport::ResponsesSocket>,
 }
@@ -53,6 +54,12 @@ impl TurnAttempt {
       body[self.protocol.items()] = Value::Array(items);
     }
     self.protocol.apply(body, path, self.previous.as_ref().map(|(id, _)| id.as_str()));
+    if self.socket.is_some() {
+      let envelope =
+        body.as_object_mut().ok_or_else(|| Error::Build("expected a Responses object".into()))?;
+      envelope.remove("stream");
+      envelope.insert("type".into(), "response.create".into());
+    }
     Ok(())
   }
 }

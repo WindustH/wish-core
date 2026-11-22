@@ -151,6 +151,14 @@ pub async fn inspect_context(app: Arc<App>, id: String) -> Result<Value, Applica
   )
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum StructureOrder {
+  #[default]
+  Asc,
+  Desc,
+}
+
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StructurePage {
@@ -158,10 +166,11 @@ pub struct StructurePage {
   limit: usize,
   kind: Option<String>,
   origin: Option<String>,
+  order: StructureOrder,
 }
 impl Default for StructurePage {
   fn default() -> Self {
-    Self { start: 0, limit: 20, kind: None, origin: None }
+    Self { start: 0, limit: 20, kind: None, origin: None, order: StructureOrder::Asc }
   }
 }
 
@@ -193,7 +202,15 @@ pub async fn generation_structure(
   let reader = app.get_session(&id).await?.reader.clone();
   blocking(move || {
     if reader.get_generations().get(generation as u64)?.is_none() { return Err(ApplicationError::not_found()) }
-    let crate::session::GenerationStructure {generation, count, positions, entries} = reader.generation_structure(crate::session::GenerationId(generation), page.start, page.limit, page.kind, page.origin)?;
+    let crate::session::GenerationStructure {generation, count, positions, entries} =
+      reader.generation_structure(
+        crate::session::GenerationId(generation),
+        page.start,
+        page.limit,
+        page.kind,
+        page.origin,
+        matches!(page.order, StructureOrder::Desc),
+      )?;
     let mut items = Vec::new();
     for entry in entries.items {
       let mut value = json!(entry);

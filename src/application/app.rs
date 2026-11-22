@@ -36,6 +36,7 @@ const SESSION_IDLE_SECONDS: u64 = 15 * 60;
 
 pub struct App {
   pub(super) storage: Storage,
+  pub(super) reclaim: Arc<tokio::sync::Notify>,
   pub(super) management: Arc<ManagementStore>,
   pub(super) config_file: AsyncMutex<ConfigFile>,
   pub browser_login: LoginManager,
@@ -60,6 +61,7 @@ pub struct App {
   pub(super) data_dir: DataDir,
   pub bearer_token: Option<String>,
   pub lifecycle: Lifecycle,
+  pub(crate) previews: super::websites::Previews,
   /// How sessions' shells reach this server: `wish mcp` and `wish skill` go through it.
   pub bridge: Bridge,
   /// Wish's own skills: `skills` beside the configuration file.
@@ -175,6 +177,7 @@ impl App {
     let mcp = McpHub::new(config.mcp.clone(), config.proxy.clone(), config.defaults.cwd.clone());
     let bridge = Bridge::new(&data_dir);
     let app = Arc::new(Self {
+      reclaim: Default::default(),
       storage,
       management,
       config_file: AsyncMutex::new(config_file),
@@ -192,6 +195,7 @@ impl App {
       retired_sessions: Mutex::new(BTreeMap::new()),
       data_dir,
       bearer_token,
+      previews: Default::default(),
       lifecycle,
       bridge,
       skills_dir,
@@ -203,8 +207,10 @@ impl App {
       audio: super::media_generation::MediaHub::new(&config.audio_generation, &config.proxy),
       asr: super::media_generation::MediaHub::new(&config.audio_transcription, &config.proxy),
     });
+    super::archives::recover(&app).await?;
     crate::application::credentials::start_refresh_worker(&app);
     super::draft_uploads::start_reaper(&app);
+    super::session_reclaim::start(&app);
     let reaper = app.clone();
     app.lifecycle.tasks.spawn(async move {
       let mut reclaimed_at = std::time::Instant::now();
@@ -216,6 +222,10 @@ impl App {
             reaper.reap_sessions(reaper.started.elapsed().as_secs()).await;
             if reclaimed_at.elapsed() >= std::time::Duration::from_secs(60) {
               reclaimed_at = std::time::Instant::now();
+              reaper.previews.reap().await;
+              if let Err(e)=super::archives::expire(&reaper,crate::utils::time::Timestamp::now().0).await {eprintln!("export cleanup: {e}");}
+              let slots: Vec<_> = reaper.sessions.lock().await.values().cloned().collect();
+              futures_util::future::join_all(slots.iter().map(|slot| slot.tools.browser.reap_idle())).await;
               super::blob_preview::reap().await;
               let idle = reaper.sessions.lock().await.values().all(|slot| !slot.get_status().status.running);
               let _ = crate::utils::blocking::io(move || {
@@ -275,6 +285,11 @@ impl App {
         .store(self.started.elapsed().as_secs(), std::sync::atomic::Ordering::Relaxed);
       return Ok(slot.clone());
     }
+    let _opening = self.lock_session_open(id).await;
+    self.open_session_locked(id).await
+  }
+
+  pub(super) async fn lock_session_open(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
     let opening = {
       let mut locks = self.session_open_locks.lock().unwrap();
       locks.retain(|_, lock| lock.strong_count() > 0);
@@ -288,26 +303,29 @@ impl App {
         }
       }
     };
-    let _opening = opening.lock().await;
-    if let Some(slot) = self.sessions.lock().await.get(id) {
+    opening.lock_owned().await
+  }
+
+  pub(super) async fn cached_session(&self, id: &str) -> Option<Arc<SessionSlot>> {
+    let mut sessions = self.sessions.lock().await;
+    if let Some(slot) = sessions.get(id) {
+      return Some(slot.clone());
+    }
+    let slot = self.retired_sessions.lock().unwrap().remove(id)?.upgrade()?;
+    sessions.insert(id.to_owned(), slot.clone());
+    Some(slot)
+  }
+
+  pub(super) async fn open_session_locked(
+    self: &Arc<Self>,
+    id: &str,
+  ) -> Result<Arc<SessionSlot>, ApplicationError> {
+    if let Some(slot) = self.cached_session(id).await {
       slot.require_live()?;
       slot
         .last_access
         .store(self.started.elapsed().as_secs(), std::sync::atomic::Ordering::Relaxed);
-      return Ok(slot.clone());
-    }
-    {
-      let mut sessions = self.sessions.lock().await;
-      let retired =
-        self.retired_sessions.lock().unwrap().get(id).and_then(std::sync::Weak::upgrade);
-      if let Some(slot) = retired {
-        slot.require_live()?;
-        slot
-          .last_access
-          .store(self.started.elapsed().as_secs(), std::sync::atomic::Ordering::Relaxed);
-        sessions.insert(id.to_owned(), slot.clone());
-        return Ok(slot);
-      }
+      return Ok(slot);
     }
     self.lifecycle.require_open()?;
     let storage = self.storage.clone();
@@ -562,10 +580,12 @@ impl App {
     }
   }
   pub async fn finish_shutdown(&self) -> Result<(), ApplicationError> {
+    let slots: Vec<_> = self.sessions.lock().await.values().cloned().collect();
+    futures_util::future::join_all(slots.iter().map(|slot| slot.tools.browser.set_enabled(false)))
+      .await;
     self.lifecycle.tasks.close();
     self.lifecycle.tasks.wait().await;
     self.mcp.close_all().await;
-    let slots: Vec<_> = self.sessions.lock().await.values().cloned().collect();
     for slot in slots {
       if let Some(shell) = slot.tools.tasks() {
         shell.shutdown().await.map_err(ApplicationError::internal)?;

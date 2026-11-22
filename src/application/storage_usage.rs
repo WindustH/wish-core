@@ -8,6 +8,15 @@ use crate::storage::{
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
 
+pub async fn session_preview(app: Arc<App>, id: String) -> Result<Value, ApplicationError> {
+  blocking(move || {
+    app.management.read(&id)?;
+    let messages = crate::session::SessionReader::preview(&app.storage, &id)?;
+    Ok(json!({"messages":messages}))
+  })
+  .await
+}
+
 /// Every session with what it stores: a session's history in the database, attachments
 /// and commands' output; with a few facts to
 /// recognize each by.
@@ -60,9 +69,10 @@ pub async fn storage(app: Arc<App>) -> Result<Value, ApplicationError> {
     let (blobs, executions) = (measure(&data_dir.blob_root())?, measure(&data_dir.shell_root())?);
     let (data, service) =
       (database_size(&data_dir.database()).map_err(ApplicationError::internal)?, database_size(&data_dir.management_database()).map_err(ApplicationError::internal)?);
-    let total = blobs + executions + data + service;
+    let archives=measure(&data_dir.packages(false))?;
+    let total = blobs + executions + data + service + archives;
     Ok(json!({
-      "bytes": {"total": total, "blobs": blobs, "executions": executions, "session_data": data, "service_data": service},
+      "bytes": {"total": total, "archives":archives, "blobs": blobs, "executions": executions, "session_data": data, "service_data": service},
       "counts": {"executions": null, "blobs": null, "image_jobs": null, "context_generations": null},
       "stream_samples": {"count": management.stream_sample_count()?, "limit": limit},
       "leftover_usage": management.leftover_usage()?,
@@ -108,17 +118,24 @@ pub async fn detail(app: Arc<App>) -> Result<Value, ApplicationError> {
       &[],
       service,
     );
-    Ok(json!({"session_data": session_data, "service_data": service_data}))
+    Ok(json!({"session_data": session_data, "service_data": service_data, "archives":size(&data_dir.packages(false)).map_err(ApplicationError::internal)?}))
   })
   .await
 }
 
 /// Clears the usage records deleted sessions left - their calls and stream samples - which the
 /// usage statistics count until then.
-pub async fn prune_usage(app: Arc<App>) -> Result<Value, ApplicationError> {
+pub async fn prune_usage(app: Arc<App>, archive: bool) -> Result<Value, ApplicationError> {
   let (path, management) = (app.data_dir.management_database(), app.management.clone());
-  blocking(move || {
+  let permit = if archive { Some(super::archives::permit()?) } else { None };
+  super::error::package_work(archive,move || {
+    let _permit = permit;
     let before = database_size(&path).map_err(ApplicationError::internal)?;
+    if archive {
+      let (calls,samples,manifest)=super::archives::usage(&app,&path)?;
+      let after=database_size(&path).map_err(ApplicationError::internal)?;
+      return Ok(json!({"calls":calls,"stream_samples":samples,"archive":manifest,"database":{"before":before,"after":after}}));
+    }
     let pruned = management.prune_usage()?;
     Ok(json!({
       "calls": pruned.calls,

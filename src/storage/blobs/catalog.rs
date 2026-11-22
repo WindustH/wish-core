@@ -264,7 +264,16 @@ pub fn list_in(
     let mut prefix = [0; 512];
     let length = file.read(&mut prefix).map_err(RepositoryError::internal)?;
     let prefix = &prefix[..length];
-    let mime_type = super::sniff_mime_type(prefix).to_owned();
+    let mime_type = if linked_blob.is_none()
+      && prefix.starts_with(super::WEBSITE_PREFIX.as_bytes())
+      && crate::utils::bounded_file::read_sync(&super::description_path(directory, &id), 64 * 1024)
+        .is_ok_and(|data| super::is_website_description(&data, &id))
+    {
+      super::WEBSITE_MIME
+    } else {
+      super::sniff_mime_type(prefix)
+    }
+    .to_owned();
     // Model images can exist without an upload sidecar; inspect only a small prefix.
     items.push(Item {
       id,

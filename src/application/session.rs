@@ -13,7 +13,7 @@ pub mod selection;
 mod status;
 mod tools;
 mod working_directory;
-pub(crate) use tools::PublishedOutcome;
+pub(crate) use tools::{BlobPublication, PublishedOutcome};
 
 pub use super::capabilities::{ToolChanges, ToolDelivery, ToolSwitches};
 use crate::storage::management::ManagementStore;
@@ -242,6 +242,7 @@ impl SessionSlot {
       && self.events.receiver_count() == 0
       && self.control.lock().unwrap().is_none()
       && !self.tools.background.is_active()
+      && self.tools.browser.can_unload()
       && self.tools.tasks().is_none_or(crate::task::TaskManager::can_unload)
       && self.session.try_lock().is_ok_and(|session| session.get_state().is_stable())
   }
@@ -335,6 +336,17 @@ impl SessionSlot {
     if self.deleted.load(Ordering::Acquire) { Err(ApplicationError::not_found()) } else { Ok(()) }
   }
   /// Marks the session deleted: from now on it is not found.
+  /// Commit removal from the management index while excluding all index writers.
+  pub(super) fn commit_archive(
+    &self,
+    commit: impl FnOnce() -> Result<(), ApplicationError>,
+  ) -> Result<(), ApplicationError> {
+    let _descriptor = self.descriptor.write().unwrap();
+    self.require_live()?;
+    commit()?;
+    self.deleted.store(true, Ordering::Release);
+    Ok(())
+  }
   pub fn mark_deleted(&self) {
     // Serialize with descriptor/index writers so none can resurrect the deleted index.
     let _descriptor = self.descriptor.write().unwrap();

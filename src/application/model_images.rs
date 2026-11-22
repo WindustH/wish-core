@@ -72,7 +72,7 @@ pub(super) async fn project_images(
     };
     let mut projected = Vec::new();
     for block in std::mem::take(content).into_iter().rev() {
-      let omitted = if unsupported {
+      let mut omitted = if unsupported {
         Some("model does not support images")
       } else if rejected {
         Some("image input rejected by upstream")
@@ -81,13 +81,14 @@ pub(super) async fn project_images(
       };
       let (path, image) = match block {
         ContentBlock::ImageRef { blob_id, byte_count, mime_type } => {
-          if !blobs::is_blob_id(&blob_id)
-            || byte_count > crate::utils::model_image::MAX_OUTPUT_BYTES
-          {
+          if !blobs::is_blob_id(&blob_id) {
             return Err(Error::Build("invalid stored image reference".into()));
           }
           let path = blob_dir.join(&blob_id);
-          let wire_bytes = byte_count.div_ceil(3) * 4;
+          let wire_bytes = byte_count.div_ceil(3).saturating_mul(4);
+          if byte_count > crate::utils::model_image::MAX_OUTPUT_BYTES {
+            omitted.get_or_insert("single image exceeds size limit");
+          }
           let image = if omitted.is_some() || wire_bytes > remaining {
             None
           } else {
@@ -169,15 +170,7 @@ pub(super) async fn project_images(
           continue;
         }
       };
-      let reason = if unsupported {
-        Some("model does not support images")
-      } else if rejected {
-        Some("image input rejected by upstream")
-      } else if image.is_none() {
-        Some("image budget exceeded")
-      } else {
-        None
-      };
+      let reason = omitted.or_else(|| image.is_none().then_some("image budget exceeded"));
       deliveries.push(ImageDelivery {
         path,
         reason,

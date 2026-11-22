@@ -218,6 +218,7 @@ impl Transaction<'_> {
     &mut self,
     list: &ListId,
     positions: &[u64],
+    apply: bool,
   ) -> Result<u64, StorageError> {
     let length = self.list_len::<T>(list)?;
     let mut released = 0;
@@ -235,9 +236,11 @@ impl Transaction<'_> {
     for &position in positions.iter().filter(|position| **position < length) {
       let bytes: i64 = measure.query_row(params![list.0, position as i64], |row| row.get(0))?;
       if bytes > 0 {
-        clear.execute(params![list.0, position as i64])?;
+        if apply {
+          clear.execute(params![list.0, position as i64])?;
+          changed.push(position);
+        }
         released += bytes as u64;
-        changed.push(position);
       }
     }
     drop((measure, clear));
@@ -375,15 +378,31 @@ impl Transaction<'_> {
   /// Namespace matching is literal and only includes descendants separated by `/`.
   pub fn delete_namespace(&mut self, namespace: &str) -> Result<(), StorageError> {
     let prefix = format!("{namespace}/");
-    // Eviction before commit is safe on rollback: it only discards cached values.
-    self.cache.clear();
-    self.delete_namespace_history_rows(&prefix)?;
-    self.sql.execute("DELETE FROM wish_items WHERE list IN (SELECT id FROM wish_list_keys WHERE substr(name,1,length(?1))=?1)", [&prefix])?;
-    self.sql.execute("DELETE FROM wish_list_keys WHERE substr(name,1,length(?1))=?1", [&prefix])?;
-    self.sql.execute("DELETE FROM wish_lists WHERE substr(name,1,length(?1))=?1", [&prefix])?;
+    // Under the schema's binary collation, '0' immediately follows '/'.
+    let end = format!("{namespace}0");
+    self.cache.invalidate_namespace(namespace, &prefix);
+    let lists = {
+      let mut query =
+        self.sql.prepare("SELECT id FROM wish_list_keys WHERE name >= ?1 AND name < ?2")?;
+      query
+        .query_map([&prefix, &end], |row| row.get::<_, i64>(0))?
+        .collect::<Result<Vec<_>, _>>()?
+    };
+    {
+      let mut index = self.sql.prepare("DELETE FROM wish_history_index WHERE list=?1")?;
+      let mut items = self.sql.prepare("DELETE FROM wish_items WHERE list=?1")?;
+      for list in lists {
+        index.execute([list])?;
+        items.execute([list])?;
+      }
+    }
+    self
+      .sql
+      .execute("DELETE FROM wish_list_keys WHERE name >= ?1 AND name < ?2", [&prefix, &end])?;
+    self.sql.execute("DELETE FROM wish_lists WHERE name >= ?1 AND name < ?2", [&prefix, &end])?;
     self.sql.execute(
-      "DELETE FROM wish_objects WHERE name=?1 OR substr(name,1,length(?2))=?2",
-      params![namespace, prefix],
+      "DELETE FROM wish_objects WHERE name=?1 OR (name >= ?2 AND name < ?3)",
+      params![namespace, prefix, end],
     )?;
     Ok(())
   }

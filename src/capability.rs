@@ -8,6 +8,7 @@ pub enum Capability {
   Sessions,
   Shell,
   Task,
+  Browser,
   AskUser,
   WebFetch,
   WebSearch,
@@ -19,7 +20,7 @@ pub enum Capability {
 }
 impl Capability {
   /// Stable advertisement order for a newly built generation.
-  pub const ALL: [Self; 14] = [
+  pub const ALL: [Self; 15] = [
     Self::History,
     Self::Image,
     Self::Blob,
@@ -34,6 +35,7 @@ impl Capability {
     Self::AudioGenerate,
     Self::AudioTranscribe,
     Self::ExtensionDiscovery,
+    Self::Browser,
   ];
   pub fn from_tool(name: &str) -> Option<Self> {
     Some(match name {
@@ -45,6 +47,7 @@ impl Capability {
         Self::Shell
       }
       "task" => Self::Task,
+      "browser" => Self::Browser,
       "ask_user" => Self::AskUser,
       "extension_tools" => Self::ExtensionDiscovery,
       _ => {
@@ -81,6 +84,9 @@ impl Capability {
         "`wish extension search [TAG ...]`, `wish extension inspect TOOL`, `wish extension call TOOL --json '<arguments>'` — discover and invoke extension-owned tools"
       }
       Self::History => "`wish history` — search/read session history",
+      Self::Browser => {
+        "`wish browser` — operate the session browser, observe pages and run JavaScript (see --help)"
+      }
       Self::AskUser => "`wish askuser` — ask the user",
       _ => return None,
     })

@@ -27,10 +27,25 @@ pub struct Resource<P> {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceConfig {
-  #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+  #[serde(
+    default,
+    deserialize_with = "image_locations",
+    skip_serializing_if = "std::collections::BTreeMap::is_empty"
+  )]
   pub image_locations: std::collections::BTreeMap<String, String>,
   pub files: Option<Resource<FileProtocol>>,
   pub prefix: Option<Resource<PrefixProtocol>>,
+}
+fn image_locations<'de, D: serde::Deserializer<'de>>(
+  input: D,
+) -> Result<std::collections::BTreeMap<String, String>, D::Error> {
+  let mut locations = std::collections::BTreeMap::new();
+  for (digest, uri) in std::collections::BTreeMap::<String, String>::deserialize(input)? {
+    if locations.insert(digest.to_ascii_lowercase(), uri).is_some() {
+      return Err(serde::de::Error::custom("duplicate image digest"));
+    }
+  }
+  Ok(locations)
 }
 impl ResourceConfig {
   pub fn validate(

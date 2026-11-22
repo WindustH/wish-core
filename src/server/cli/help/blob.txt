@@ -2,6 +2,7 @@ wish blob — session files and user-facing references
 
   wish blob list [--all | --displayed] [--start N] [--limit N]
   wish blob add PATH [--name NAME] [--hidden]
+  wish blob website http://localhost:5173/demo [--name NAME]
   wish blob symlink PATH [--hidden]
   wish blob mention ID_OR_PATH [--label TEXT] [--page N] [--time SECONDS] [--visible]
   wish blob show|hide|pin|unpin ID

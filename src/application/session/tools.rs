@@ -31,7 +31,7 @@ use std::sync::{
 
 /// Bytes remain protected until their ImageRef is committed either to a tool
 /// batch or, for detached work, to the input queue.
-type BlobPublication = Arc<tokio::sync::OwnedRwLockReadGuard<()>>;
+pub(crate) type BlobPublication = Arc<tokio::sync::OwnedRwLockReadGuard<()>>;
 pub(crate) struct PublishedOutcome {
   pub outcome: ToolOutcome,
   pub publication: Option<BlobPublication>,
@@ -50,6 +50,7 @@ pub struct SessionTools {
   shell_config: TaskConfig,
   shell_on: AtomicBool,
   ask_user_on: AtomicBool,
+  pub browser: crate::application::browser::Room,
   pub ask_user: AskUserTool,
   web_search_on: AtomicBool,
   web_fetch_on: AtomicBool,
@@ -74,6 +75,7 @@ impl SessionTools {
       Capability::Sessions => vec![crate::application::session_access::specification()],
       Capability::Task => vec![crate::application::task_access::specification()],
       Capability::Shell => self.shell().map(|shell| shell.get_specifications()).unwrap_or_default(),
+      Capability::Browser => vec![crate::application::browser::specification()],
       Capability::AskUser => vec![self.ask_user.get_specification()],
       Capability::ExtensionDiscovery => vec![extensions::specification()],
       Capability::WebFetch
@@ -99,6 +101,7 @@ impl SessionTools {
       shell_config,
       shell_on: AtomicBool::new(false),
       ask_user_on: AtomicBool::new(false),
+      browser: Default::default(),
       ask_user: AskUserTool::new(questions_changed(slot.clone())),
       web_search_on: AtomicBool::new(false),
       web_fetch_on: AtomicBool::new(false),
@@ -120,7 +123,9 @@ impl SessionTools {
     call: &ToolCall,
     control: &ExecutionControl,
   ) -> PublishedOutcome {
-    let publication = if Capability::from_tool(&call.name) == Some(Capability::Image) {
+    let publication = if Capability::from_tool(&call.name) == Some(Capability::Image)
+      || (call.name == "browser" && call.arguments["action"] == "screenshot")
+    {
       let Some(slot) = self.slot.upgrade() else {
         return ToolOutcome::Failed("the session is closed".into()).into();
       };
@@ -180,6 +185,7 @@ impl SessionTools {
           ApplicationError::invalid(format!("could not start the shell: {error}"))
         })?;
     }
+    self.browser.set_enabled(switches.browser).await;
     self.history_on.store(switches.history_search, Ordering::Release);
     self.shell_on.store(switches.shell, Ordering::Release);
     self.ask_user_on.store(switches.ask_user, Ordering::Release);
@@ -485,6 +491,23 @@ impl SessionTools {
             failed: false,
           },
           Some(Err(error)) => ToolOutcome::Failed(error.to_string()),
+          None => ToolOutcome::Cancelled,
+        }
+      }
+      Some(Capability::Browser) => {
+        let Some(slot) = self.slot.upgrade() else {
+          return ToolOutcome::Failed("session closed".into());
+        };
+        match control
+          .run_until_cancelled(Box::pin(crate::application::browser::execute(
+            &slot,
+            &call.arguments,
+            publication,
+          )))
+          .await
+        {
+          Some(Ok(out)) => out,
+          Some(Err(err)) => ToolOutcome::Failed(err.to_string()),
           None => ToolOutcome::Cancelled,
         }
       }

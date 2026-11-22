@@ -30,6 +30,7 @@ fn arguments(args: &[String]) -> Result<Value, &'static str> {
     let source = rest.next().ok_or("file path or blob ID is required")?;
     match action {
       "add" | "link" | "symlink" => value["path"] = source.clone().into(),
+      "website" => value["url"] = source.clone().into(),
       "mention" => value["source"] = source.clone().into(),
       "delete" | "update" => value["id"] = source.clone().into(),
       "show" | "hide" | "pin" | "unpin" => {

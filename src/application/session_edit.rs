@@ -158,45 +158,161 @@ async fn update_idle(
 }
 /// Deletes a session's storage, owned files, scratch directory and index record.
 pub async fn delete(app: &Arc<App>, id: &str) -> Result<(), ApplicationError> {
-  app.lifecycle.require_open()?;
-  let slot = app.get_session(id).await?;
-  let mut session = slot.lock_idle().await.ok_or_else(|| {
-    ApplicationError::conflict("interrupt and wait for the session before deleting")
-  })?;
-  let publication = slot
-    .blob_publication
-    .clone()
-    .try_write_owned()
-    .map_err(|_| ApplicationError::conflict("files are being added to this session"))?;
-  slot.require_live()?;
-  slot.tools.background.shutdown().await;
-  if let Some(shell) = slot.tools.tasks() {
-    shell.shutdown().await.map_err(ApplicationError::internal)?;
+  let owner = app.clone();
+  let id = id.to_owned();
+  app
+    .lifecycle
+    .while_open(|| {
+      app.lifecycle.tasks.spawn(async move { release(&owner, &id, None).await.map(|_| ()) })
+    })
+    .ok_or_else(ApplicationError::shutting_down)?
+    .await
+    .map_err(ApplicationError::internal)?
+}
+
+pub(super) async fn release(
+  app: &Arc<App>,
+  id: &str,
+  package: Option<(bool, super::archives::Include)>,
+) -> Result<Value, ApplicationError> {
+  let _draft = super::draft_uploads::lock_owner(app, id).await;
+  let _opening = app.lock_session_open(id).await;
+  let slot = app.cached_session(id).await;
+  let _edit =
+    if let Some(slot) = &slot { Some(slot.update_lock.clone().lock_owned().await) } else { None };
+  let db = app.management.clone();
+  let target = id.to_owned();
+  let record = blocking(move || Ok(db.read(&target)?)).await?;
+  let temp: Option<std::path::PathBuf> =
+    serde_json::from_value(record["session"]["temp_dir"].clone())
+      .map_err(ApplicationError::internal)?;
+  if let Some(path) = &temp {
+    super::session_temp::validate(id, path)?;
   }
-  app.mcp.close_session(id);
-  let (management, target, deleted) = (app.management.clone(), id.to_owned(), slot.clone());
-  let _publication = blocking(move || {
-    session.delete()?;
-    deleted.mark_deleted();
-    management.delete(&target)?;
-    Ok(publication)
-  })
-  .await?;
-  app.sessions.lock().await.remove(id);
-  super::session_temp::remove(id, slot.get_descriptor().temp_dir.as_deref()).await?;
-  for directory in [app.data_dir.shell(id), app.data_dir.blobs(id)] {
-    match tokio::fs::remove_dir_all(directory).await {
-      Ok(()) => {}
-      Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-      Err(e) => return Err(ApplicationError::internal(e)),
+  let mut idle = None;
+  let mut publication = None;
+  if let Some(slot) = &slot {
+    slot.require_live()?;
+    idle = Some(slot.lock_idle().await.ok_or_else(|| {
+      ApplicationError::conflict("interrupt and wait for the session before deleting or packaging")
+    })?);
+    publication = Some(
+      slot
+        .blob_publication
+        .clone()
+        .try_write_owned()
+        .map_err(|_| ApplicationError::conflict("files are being added to this session"))?,
+    );
+    if package.is_some_and(|(export, _)| !export)
+      && (slot.tools.background.is_active()
+        || !slot.tools.browser.can_unload()
+        || slot.tools.tasks().is_some_and(|tasks| tasks.has_live_processes()))
+    {
+      return Err(ApplicationError::conflict(
+        "close the terminal or browser and wait for running tools before archiving",
+      ));
     }
   }
-  let _ = slot.events.send(json!({"type":"deleted"}));
-  let _ = app.events.send(json!({"type":"session_deleted","id":id}));
-  // The session is gone either way; this only hands its room back to the file system.
+  let mut summary = Value::Null;
+  if let Some((export, options)) = package {
+    let app = app.clone();
+    let owner = id.to_owned();
+    let journal = crate::storage::management::archives::PendingRelease { temp_dir: temp.clone() };
+    let hot = slot.clone();
+    let session = idle.take();
+    let packaged = crate::utils::blocking::cpu(move || {
+      let sender = session.as_ref().map(|session| session.create_sender());
+      let _frozen = sender.as_ref().map(|sender| sender.freeze_publication()).transpose()?;
+      let summary = super::archives::session::pack(&app, &owner, record, options, export)?;
+      let commit = || super::archives::persist(&app, &summary, (!export).then_some(&journal));
+      if !export && let Some(slot) = hot {
+        slot.commit_archive(commit)?;
+      } else {
+        commit()?;
+      }
+      Ok::<_, ApplicationError>((summary, session))
+    })
+    .await
+    .map_err(ApplicationError::internal)??;
+    idle = packaged.1;
+    summary = packaged.0;
+    if export {
+      return Ok(summary);
+    }
+  }
+  let target = id.to_owned();
+  let journal = crate::storage::management::archives::PendingRelease { temp_dir: temp.clone() };
+  if package.is_none() {
+    let db = app.management.clone();
+    let owner = target.clone();
+    let hot = slot.clone();
+    blocking(move || {
+      let commit = || Ok(db.begin_delete(&owner, &journal)?);
+      if let Some(slot) = hot { slot.commit_archive(commit) } else { commit() }
+    })
+    .await?;
+  }
+  // Active writers were refused before packaging. Retire the idle managers only once
+  // the catalog has committed, so failed packages leave the live session usable.
+  let shutdown = if let Some(slot) = &slot {
+    let shell = slot.tools.tasks();
+    let (_, _, result) = tokio::join!(
+      slot.tools.background.shutdown(),
+      slot.tools.browser.set_enabled(false),
+      async {
+        if let Some(shell) = shell {
+          shell.shutdown().await?;
+        }
+        Ok::<_, crate::task::TaskError>(())
+      }
+    );
+    result
+  } else {
+    Ok(())
+  };
+  app.mcp.close_session(id);
+  app.previews.revoke(id, None);
   let storage = app.storage.clone();
-  if let Err(error) = blocking(move || storage.shrink().map_err(ApplicationError::internal)).await {
-    eprintln!("shrink storage after deleting {id}: {}", error.message);
+  let deletion = blocking(move || {
+    shutdown?;
+    Ok(if let Some(mut session) = idle {
+      session.delete()?
+    } else {
+      Session::delete_closed(&storage, &target)?
+    })
+  })
+  .await;
+  app.sessions.lock().await.remove(id);
+  if let Some(slot) = slot {
+    let _ = slot.events.send(json!({"type":"deleted"}));
+  }
+  let archive = summary["archive_id"].as_str().map(str::to_owned);
+  if archive.is_some() {
+    let _ = app.events.send(json!({"type":"session_archived","id":id,"archive":summary}));
+  }
+  let _ = app.events.send(json!({"type":"session_deleted","id":id}));
+  deletion?;
+  detach_files(app, id, temp).await?;
+  let db = app.management.clone();
+  let owner = id.to_owned();
+  blocking(move || {
+    Ok(if let Some(id) = archive { db.finish_release(&id)? } else { db.finish_delete(&owner)? })
+  })
+  .await?;
+  app.reclaim.notify_one();
+  drop(publication);
+  Ok(summary)
+}
+pub(super) async fn detach_files(
+  app: &App,
+  id: &str,
+  temp: Option<std::path::PathBuf>,
+) -> Result<(), ApplicationError> {
+  if let Some(path) = &temp {
+    super::session_temp::validate(id, path)?;
+  }
+  for dir in temp.into_iter().chain([app.data_dir.shell(id), app.data_dir.blobs(id)]) {
+    super::session_reclaim::detach(app, &dir).await?;
   }
   Ok(())
 }

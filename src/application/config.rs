@@ -27,6 +27,7 @@ pub struct Config {
   pub providers: BTreeMap<String, ProviderConfig>,
   pub accounts: BTreeMap<String, super::accounts::AccountConfig>,
   pub proxy: ProxyConfig,
+  pub browser_executable: String,
   pub shell: ShellSettings,
   pub terminal: task::TerminalSettings,
   pub mcp: McpConfig,
@@ -67,6 +68,14 @@ impl Config {
       }
       if ssh.rekey_seconds == 0 {
         return Err(ApplicationError::invalid("ssh.rekey_seconds must be positive"));
+      }
+    }
+    if !self.browser_executable.is_empty() {
+      let path = std::path::Path::new(&self.browser_executable);
+      if !path.is_absolute() || !crate::task::is_runnable(path) {
+        return Err(ApplicationError::invalid(
+          "browser_executable must be an absolute executable path",
+        ));
       }
     }
     let terminal_shell = self.terminal.shell.trim();
@@ -335,8 +344,11 @@ impl ProxyConfig {
     }
     let url = reqwest::Url::parse(&self.url)
       .map_err(|_| ApplicationError::invalid("proxy URL must be valid"))?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-      return Err(ApplicationError::invalid("manual proxy URL must use http:// or https://"));
+    if !matches!(url.scheme(), "http" | "https" | "socks5" | "socks5h") || url.host_str().is_none()
+    {
+      return Err(ApplicationError::invalid(
+        "manual proxy URL must use http://, https://, socks5:// or socks5h://",
+      ));
     }
     if !url.username().is_empty() || url.password().is_some() {
       return Err(ApplicationError::invalid(
@@ -422,6 +434,8 @@ impl Default for Defaults {
         web_search_delivery: super::session::ToolDelivery::Command,
         ask_user_delivery: super::session::ToolDelivery::Command,
         shell: true,
+        browser: false,
+        browser_delivery: super::session::ToolDelivery::Command,
         ask_user: true,
         mcp: true,
         web_search: true,
@@ -470,6 +484,7 @@ impl Default for Config {
       providers: BTreeMap::new(),
       accounts: BTreeMap::new(),
       proxy: ProxyConfig::default(),
+      browser_executable: String::new(),
       shell: ShellSettings::default(),
       terminal: Default::default(),
       mcp: Default::default(),

@@ -26,6 +26,7 @@ pub fn agent_instructions(switches: super::session::ToolSwitches) -> String {
       Capability::WebSearch,
       Capability::History,
       Capability::AskUser,
+      Capability::Browser,
     ] {
       if switches.enabled(capability)
         && switches.delivery(capability) == ToolDelivery::Command
@@ -234,6 +235,13 @@ pub fn delivery_notice(
       next.web_search,
       previous.web_search_delivery,
       next.web_search_delivery,
+    ),
+    (
+      "browser / wish browser",
+      previous.browser,
+      next.browser,
+      previous.browser_delivery,
+      next.browser_delivery,
     ),
     (
       "ask_user / wish askuser",

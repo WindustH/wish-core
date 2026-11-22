@@ -1,0 +1,23 @@
+wish browser — use this session's browser targets
+  wish browser --json '{"action":"open","url":"https://example.org"}'
+  wish browser --output-json --json '{"action":"observe"}'
+  wish browser --json '{"action":"click","ref":"<ref from observe>"}'
+  wish browser --stdin
+  wish browser --schema
+
+Pass a JSON object with an action. open navigates the active tab (new_tab opens
+another). tabs, switch_tab and close_tab manage pages. observe returns element
+references. click, fill, select, press and scroll interact with the page. read
+accepts a section heading and character offset; wait accepts text or a selector.
+screenshot creates a session image. evaluate accepts a JavaScript function and
+a JSON args value, awaits its result, and saves large JSON results as files.
+For example, pipe {"action":"evaluate","script":"({n}) => document.title.slice(0,n)","args":{"n":40}}
+to wish browser --stdin. Tab IDs are optional except for switch_tab.
+Observe again after a stale reference or
+an uncertain action result before retrying. The browser closes with the session.
+
+Use {"action":"targets"} to discover the server browser and the attached device.
+Set "target":"client" to operate the connected Wish device, or
+"target":"server" for session Chromium. A disconnected client is unavailable.
+Client actions are listed by targets. Use open with an HTTP(S) URL to launch
+the first device page or navigate it while the user chats. A client request never launches or falls back to server Chromium.

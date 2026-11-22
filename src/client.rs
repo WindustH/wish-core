@@ -473,22 +473,6 @@ impl<T: Transport + Send + Sync> Client<T> {
     if let Some(turn) = &self.turn {
       turn.render(self.model_use, &projected, &mut body, &mut path)?;
       if turn.protocol
-        == crate::protocol::model_use::incremental::IncrementalProtocol::OpenaiConversations
-        && turn.previous.is_none()
-      {
-        let parent = path.trim_end_matches('/').strip_suffix("/responses").ok_or_else(|| {
-          Error::Build("OpenAI Conversations needs a Responses endpoint path".into())
-        })?;
-        let mut create = Draft::post_json(&serde_json::json!({}))?;
-        create.path = Some(format!("{parent}/conversations"));
-        let conversation = self.resource_json(create).await?;
-        let id = conversation["id"]
-          .as_str()
-          .filter(|id| !id.is_empty())
-          .ok_or_else(|| Error::Malformed("missing OpenAI conversation ID".into()))?;
-        body["conversation"] = serde_json::json!(id);
-      }
-      if turn.protocol
         == crate::protocol::model_use::incremental::IncrementalProtocol::AnthropicThreads
       {
         extra.push(("anthropic-beta", "message-threads-2026-08-12"));
@@ -497,12 +481,41 @@ impl<T: Transport + Send + Sync> Client<T> {
     if resources {
       self.apply_resources(&mut body, &images, &request.model).await?;
     }
+    if let Some(turn) = &self.turn {
+      if turn.protocol
+        == crate::protocol::model_use::incremental::IncrementalProtocol::OpenaiConversations
+        && turn.previous.is_none()
+      {
+        let parent = path.trim_end_matches('/').strip_suffix("/responses").ok_or_else(|| {
+          Error::Build("OpenAI Conversations needs a Responses endpoint path".into())
+        })?;
+        let mut create = Draft::post_json(&serde_json::json!({}))?;
+        create.path = Some(format!("{parent}/conversations"));
+        let id = turn
+          .conversation
+          .get_or_try_init(|| async {
+            let conversation = self.resource_json(create).await?;
+            conversation["id"]
+              .as_str()
+              .filter(|id| !id.is_empty())
+              .map(str::to_owned)
+              .ok_or_else(|| Error::Malformed("missing OpenAI conversation ID".into()))
+          })
+          .await?;
+        body["conversation"] = serde_json::json!(id);
+      }
+    }
     if resources
       && matches!(self.model_use, ModelUseProtocol::AnthropicMessages(_))
-      && self.resources.as_ref().is_some_and(|r| r.files.is_some())
+      && self.resources.as_ref().and_then(|r| r.files.as_ref()).is_some_and(|f| {
+        f.protocol == crate::protocol::model_use::resources::FileProtocol::Anthropic
+      })
     {
       extra.retain(|(name, _)| *name != "anthropic-beta");
-      let beta = if self.turn.is_some() {
+      let beta = if self.turn.as_ref().is_some_and(|turn| {
+        turn.protocol
+          == crate::protocol::model_use::incremental::IncrementalProtocol::AnthropicThreads
+      }) {
         "message-threads-2026-08-12,files-api-2025-04-14"
       } else {
         "files-api-2025-04-14"

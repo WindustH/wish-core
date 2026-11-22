@@ -3,6 +3,8 @@
 pub enum RepositoryError {
   #[error("{0}")]
   Invalid(String),
+  #[error("{0}")]
+  Conflict(String),
   #[error("not found")]
   Missing,
   #[error("{0}")]

@@ -43,8 +43,19 @@ impl Cache {
       self.used -= value.weight;
     }
   }
-  pub fn clear(&mut self) {
-    self.values.clear();
-    self.used = 0;
+  pub fn invalidate_namespace(&mut self, namespace: &str, prefix: &str) {
+    let keys: Vec<_> = self
+      .values
+      .iter()
+      .filter_map(|(key, _)| {
+        let name = match key {
+          CacheKey::Object(name) | CacheKey::Item(name, _) | CacheKey::Page(name, _) => name,
+        };
+        (name == namespace || name.starts_with(prefix)).then(|| key.clone())
+      })
+      .collect();
+    for key in keys {
+      self.invalidate(&key);
+    }
   }
 }

@@ -69,7 +69,12 @@ impl ResponsesSocket {
       .header("Sec-WebSocket-Key", &key)
       .send()
       .await
-      .map_err(|_| Error::Build("Responses WebSocket handshake unavailable".into()))?;
+      .map_err(|_| Error::Upstream {
+        status: None,
+        code: Some("websocket_handshake".into()),
+        message: "Responses WebSocket handshake unavailable".into(),
+        retry_after_ms: None,
+      })?;
     if response.status() != 101 {
       return Err(Error::Upstream {
         status: Some(response.status().as_u16()),
@@ -107,9 +112,9 @@ impl ResponsesSocket {
           retry_after_ms: None,
         });
       }
-      None => timeout(self.limits.first_byte, self.connect(call))
-        .await
-        .map_err(|_| Error::Build("Responses WebSocket handshake unavailable".into()))??,
+      None => timeout(self.limits.first_byte, self.connect(call)).await.map_err(|_| {
+        super::TransportError::Connect("Responses WebSocket handshake timed out".into())
+      })??,
     };
     connection.expiry.take();
     // An idle peer may already have sent its close frame. Discover that before
@@ -129,12 +134,12 @@ impl ResponsesSocket {
         }
       }
     }
-    let mut event: serde_json::Value =
-      serde_json::from_slice(&call.body).map_err(|e| Error::Build(e.to_string()))?;
-    let object = event.as_object_mut().unwrap();
-    object.remove("stream");
-    object.insert("type".into(), "response.create".into());
-    timeout(self.limits.first_byte, connection.wire.send(Message::Text(event.to_string().into())))
+    let frame = call
+      .body
+      .clone()
+      .try_into()
+      .map_err(|_| Error::Build("invalid Responses frame encoding".into()))?;
+    timeout(self.limits.first_byte, connection.wire.send(Message::Text(frame)))
       .await
       .map_err(|_| build_read_error("WebSocket send timed out"))?
       .map_err(|e| build_read_error(&e.to_string()))?;
@@ -149,7 +154,7 @@ impl ResponsesSocket {
 }
 impl ResponseFrames {
   pub fn headers(&self) -> &[(String, String)] {
-    &self.connection.as_ref().unwrap().headers
+    self.connection.as_ref().map_or(&[], |c| c.headers.as_slice())
   }
   pub fn release(&mut self) {
     if let Some(mut connection) = self.connection.take() {
@@ -165,7 +170,7 @@ impl ResponseFrames {
     }
   }
   pub async fn next(&mut self) -> Result<Option<Record>, Error> {
-    let connection = self.connection.as_mut().unwrap();
+    let Some(connection) = self.connection.as_mut() else { return Ok(None) };
     loop {
       let deadline = self.deadline.min(Instant::now() + self.slot.limits.idle);
       let frame = timeout_at(deadline, connection.wire.next())

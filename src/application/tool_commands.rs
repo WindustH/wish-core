@@ -26,6 +26,7 @@ pub async fn execute(
       matches!(
         capability,
         Capability::ExtensionDiscovery
+          | Capability::Browser
           | Capability::Blob
           | Capability::History
           | Capability::WebFetch
@@ -74,6 +75,10 @@ pub async fn execute(
   }
   match outcome {
     ToolOutcome::Report { mut output, failed: false, .. } => {
+      slot.aliases.shorten_value(&mut output);
+      Ok(output)
+    }
+    ToolOutcome::SuccessWithInput { mut output, .. } if name == "browser" => {
       slot.aliases.shorten_value(&mut output);
       Ok(output)
     }

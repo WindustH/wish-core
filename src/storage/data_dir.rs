@@ -10,6 +10,9 @@ impl DataDir {
     // All owner locks and caches must use the same key, even with a relative config path.
     Ok(Self(std::path::absolute(root)?))
   }
+  pub fn packages(&self, export: bool) -> PathBuf {
+    self.0.join(if export { ".exports" } else { "archives" })
+  }
   pub fn root(&self) -> &Path {
     &self.0
   }

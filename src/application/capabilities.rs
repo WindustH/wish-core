@@ -60,6 +60,8 @@ tool_settings! {
   pub web_search_delivery: ToolDelivery,
   #[serde(default)]
   pub ask_user_delivery: ToolDelivery,
+  #[serde(default)] pub browser: bool,
+  #[serde(default = "command_delivery")] pub browser_delivery: ToolDelivery,
   /// Questions to the user: `ask_user`.
   pub ask_user: bool,
   /// Whether `wish mcp` in the session's shell may reach the MCP servers. The model's request is
@@ -106,6 +108,7 @@ impl ToolSwitches {
       Capability::History => self.history_search,
       Capability::Shell | Capability::Task => self.shell,
       Capability::Sessions => self.sessions,
+      Capability::Browser => self.browser,
       Capability::AskUser => self.ask_user,
       Capability::WebFetch => self.web_fetch,
       Capability::ImageGenerate => self.image_generate,
@@ -131,6 +134,7 @@ impl ToolSwitches {
       Capability::Sessions => self.sessions_delivery,
       Capability::Task => self.task_delivery,
       Capability::Blob => self.blob_delivery,
+      Capability::Browser => self.browser_delivery,
       Capability::AskUser => self.ask_user_delivery,
       Capability::WebFetch => self.web_fetch_delivery,
       Capability::ImageGenerate => self.image_generate_delivery,

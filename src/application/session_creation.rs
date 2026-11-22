@@ -40,6 +40,12 @@ impl App {
     // inventory lock while normalizing images or initializing a session.
     // Serialize creation/replay so a retry after a lost response cannot enqueue the first input twice.
     let _creation = self.creation_lock.lock().await;
+    let _opening = self.lock_session_open(&id).await;
+    let db = self.management.clone();
+    let release_id = id.clone();
+    if blocking(move || Ok(db.releasing(&release_id)?)).await? {
+      return Err(ApplicationError::conflict("session archive cleanup is pending"));
+    }
     let initial_input_digest = input
       .first_input
       .as_ref()
@@ -50,7 +56,7 @@ impl App {
       })
       .transpose()?;
     if input.first_input.is_some() {
-      match self.get_session(&id).await {
+      match self.open_session_locked(&id).await {
         Ok(slot) if slot.get_descriptor().initial_input_digest == initial_input_digest => {
           self.drafts.lock().await.adopted(&id);
           return Ok(slot);
@@ -98,6 +104,8 @@ impl App {
       web_search_delivery: delivery_defaults.web_search_delivery,
       ask_user_delivery: delivery_defaults.ask_user_delivery,
       shell: false,
+      browser: delivery_defaults.browser,
+      browser_delivery: delivery_defaults.browser_delivery,
       ask_user: true,
       mcp: true,
       web_search: false,

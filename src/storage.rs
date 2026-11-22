@@ -8,6 +8,7 @@ macro_rules! list_key {
   };
 }
 
+pub mod archive;
 pub mod blobs;
 mod cache;
 pub mod calendar;

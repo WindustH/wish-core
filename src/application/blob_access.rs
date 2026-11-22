@@ -33,6 +33,10 @@ pub enum Request {
     path: String,
     visible: Option<bool>,
   },
+  Website {
+    url: String,
+    name: Option<String>,
+  },
   Mention {
     source: String,
     label: Option<String>,
@@ -52,12 +56,13 @@ pub enum Request {
 pub fn specification() -> Tool {
   Tool {
     name: "blob".into(),
-    description: "Manage files belonging to this session. IDs and paths accept session environment aliases such as $WISH_BLOB_ID_0 and $WISH_BLOB_ROOT/$WISH_BLOB_ID_0. Markdown also accepts [file](wish://blob/$WISH_SESSION_ID_0/$WISH_BLOB_ID_0). list includes hidden files by default. add copies a local file; link (symlink) records its local path without copying or modifying it. mention accepts a blob ID or local path (silently linked), returns a clickable user-facing reference and Markdown; optional page is a 1-based PDF page and time is video/audio seconds. Include the returned Markdown in your answer, or write [label](/absolute/path/file) directly without calling mention; append #page=N or #time=SECONDS for a location. add/link appear in the Library by default; mention alone does not add to the displayed Library. update sets visible/pinned. delete removes stored bytes or the link, NEVER the original linked file; refused for images required by current/standby context or pending input. Hiding is always available.".into(),
+    description: "Manage files belonging to this session. IDs and paths accept session environment aliases such as $WISH_BLOB_ID_0 and $WISH_BLOB_ROOT/$WISH_BLOB_ID_0. Markdown also accepts [file](wish://blob/$WISH_SESSION_ID_0/$WISH_BLOB_ID_0). list includes hidden files by default. add copies a local file; link (symlink) records its local path without copying or modifying it. website adds a live local development website to the Library using url and optional name. mention accepts a blob ID or local path (silently linked), returns a clickable user-facing reference and Markdown; optional page is a 1-based PDF page and time is video/audio seconds. Include the returned Markdown in your answer, or write [label](/absolute/path/file) directly without calling mention; append #page=N or #time=SECONDS for a location. add/link appear in the Library by default; mention alone does not add to the displayed Library. update sets visible/pinned. delete removes stored bytes or the link, NEVER the original linked file; refused for images required by current/standby context or pending input. Hiding is always available.".into(),
     input_schema: json!({"type":"object","required":["action"],"properties":{
-      "action":{"type":"string","enum":["list","add","link","symlink","mention","update","delete"]},
+      "action":{"type":"string","enum":["list","add","link","symlink","website","mention","update","delete"]},
       "all":{"type":"boolean"},"start":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":200},
       "id":{"type":"string","description":"Session-local blob ID"},
       "path":{"type":"string","x-preserve-whitespace":true},
+      "url":{"type":"string","description":"Development host loopback HTTP(S) URL for a website resource"},
       "source":{"type":"string","description":"Blob ID or local file path, resolved relative to this session's working directory","x-preserve-whitespace":true},
       "name":{"type":"string"},"label":{"type":"string"},
       "page":{"type":"integer","minimum":1},"time":{"type":"number","minimum":0},
@@ -89,7 +94,7 @@ pub async fn execute(
     Request::Add { path, .. } | Request::Link { path, .. } => *path = slot.aliases.expand(path)?,
     Request::Mention { source, .. } => *source = slot.aliases.expand(source)?,
     Request::Update { id, .. } | Request::Delete { id } => *id = slot.aliases.expand(id)?,
-    Request::List { .. } => {}
+    Request::List { .. } | Request::Website { .. } => {}
   }
   let descriptor = slot.get_descriptor();
   if !descriptor.tools.blob {
@@ -137,6 +142,10 @@ pub async fn execute(
         attachments::upload_stream(app, &owner, stream, visible == Some(false), name).await?;
       Ok(json!(blob))
     }
+    Request::Website { url, name } => Ok(json!(
+      super::websites::create(app, &owner, super::websites::Website { url, name, parent: None })
+        .await?
+    )),
     Request::Link { path: input, visible } => {
       let path = path(&slot, &input)?;
       Ok(json!(

@@ -32,18 +32,27 @@ pub async fn grant(
   };
   Ok(Json(json!({"path":path,"expires_at":expires})))
 }
+pub(super) fn package_url(app: &App, path: &str, expires: u64) -> String {
+  if let Some(key) = &app.bearer_token {
+    format!(
+      "/api{path}?expires={expires}&signature={}",
+      hex::encode(signature(key, path, expires, None).finalize().into_bytes())
+    )
+  } else {
+    format!("/api{path}")
+  }
+}
 pub fn authorized(request: &Request, key: &str) -> bool {
   if !matches!(*request.method(), Method::GET | Method::HEAD) {
     return false;
   }
   let path = request.uri().path().strip_prefix("/api").unwrap_or(request.uri().path());
   let parts: Vec<_> = path.split('/').collect();
-  if parts.len() != 5
-    || parts[1] != "sessions"
-    || uuid::Uuid::parse_str(parts[2]).is_err()
-    || parts[3] != "blobs"
-    || !crate::storage::blobs::is_blob_id(parts[4])
-  {
+  let blob = matches!(parts.as_slice(),["","sessions",owner,"blobs",id] if uuid::Uuid::parse_str(owner).is_ok() && crate::storage::blobs::is_blob_id(id));
+  let export = matches!(parts.as_slice(),["","exports",id] if uuid::Uuid::parse_str(id).is_ok());
+  let archive =
+    matches!(parts.as_slice(),["","archives",id,"download"] if uuid::Uuid::parse_str(id).is_ok());
+  if !blob && !export && !archive {
     return false;
   }
   let Some(query) = request.uri().query().filter(|q| q.len() < 200) else {

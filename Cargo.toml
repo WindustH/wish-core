@@ -14,6 +14,9 @@ path = "src/main.rs"
 
 [dependencies]
 bytes = "1"
+url = "2"
+hyper = { version = "1", features = ["http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 serde = { version = "1", features = ["derive", "rc"] }
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 lru = "0.18.2"
@@ -32,7 +35,7 @@ futures-util = "0.3"
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
 # HTTP client. `default-features = false` on purpose: rustls instead of system OpenSSL and `stream`
 # for SSE bodies, with no auto-decompression, no HTTP/2 and no platform proxy detection until asked.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "socks"] }
 # AWS SigV4 request signing: the digests, and the HMAC-SHA256 chain a signature is made of.
 sha2 = "0.10"
 hmac = "0.12"
@@ -54,6 +57,7 @@ sse-stream = "0.2"
 process-wrap = { version = "10", default-features = false, features = ["tokio1", "process-group", "job-object", "kill-on-drop"] }
 zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 portable-pty = "0.9"
+chromiumoxide = "0.9.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

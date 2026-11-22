@@ -17,7 +17,7 @@ pub mod bookmarks;
 mod cleanup;
 mod folders;
 pub mod linked_folders;
-pub use cleanup::{Cleanup, CleanupOptions, cleanup, release_hidden};
+pub use cleanup::{Cleanup, CleanupOptions, cleanup, cleanup_tracked, release_hidden};
 pub use folders::{
   Folder, FolderInput, FolderMove, create_folder, delete_folder, move_items, rename_folder,
 };
@@ -150,12 +150,12 @@ pub fn record_upload(
 ) -> Result<(), RepositoryError> {
   record_file(directory, id, name, temporary, None, None)
 }
-/// Check a destination before registering a local file; record_link repeats the
+/// Check a destination before registering a local file; record_in_folder repeats the
 /// check under the metadata write lock in case the folder changes concurrently.
 pub fn check_parent(directory: &Path, parent: Option<&str>) -> Result<(), RepositoryError> {
   folders::parent(&snapshot(directory)?, parent)
 }
-pub fn record_link(
+pub fn record_in_folder(
   directory: &Path,
   id: &str,
   name: Option<String>,

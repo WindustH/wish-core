@@ -116,9 +116,14 @@ pub async fn download(
   Path((id, blob)): Path<(String, String)>,
   request: HeaderMap,
 ) -> Result<axum::response::Response, ApiError> {
+  serve_file(attachments::open(&app, &id, &blob).await?, request).await
+}
+pub(super) async fn serve_file(
+  mut opened: attachments::BlobReader,
+  request: HeaderMap,
+) -> Result<axum::response::Response, ApiError> {
   use axum::{body::Body, response::IntoResponse};
   use tokio::io::{AsyncReadExt, AsyncSeekExt};
-  let mut opened = attachments::open(&app, &id, &blob).await?;
   let length = opened.length;
   let etag = &opened.version;
   let mut headers = HeaderMap::new();

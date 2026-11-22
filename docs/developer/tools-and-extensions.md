@@ -4,7 +4,7 @@ Wish separates built-in runtime capabilities (`src/tool/` + `src/task/`) from bu
 
 ## Capabilities and delivery modes
 
-`src/capability.rs` defines the 14 `Capability` variants, and `src/application/capabilities.rs` maps per-session `ToolSwitches` and `ToolDelivery` (`tool` vs `command`):
+`src/capability.rs` defines the built-in `Capability` variants, and `src/application/capabilities.rs` maps per-session `ToolSwitches` and `ToolDelivery` (`tool` vs `command`):
 
 - `view_image` (always enabled) and `shell` advertise directly as model function tools.
 - Command-backed capabilities default to `"command"` for core tools (`blob`, `history_search`, `task_delivery`, `web_fetch`, `web_search`, `ask_user`, `sessions`) and `"tool"` (disabled) for media/ASR (`image_generate`, `video_generate`, `audio_generate`, `audio_transcribe`).
@@ -36,3 +36,35 @@ Shared host runtimes enforce two key safety invariants:
 - **Skills (`src/application/skills.rs`)**: Scans `.agents/skills` in `cwd`, `<config_dir>/skills`, and `skills.dirs` on demand inside `blocking`, ranking matches across names, categories, descriptions, and CJK bigrams.
 - **Peers (`application/peer_commands.rs`)**: Powers `wish session` with ownership checks (`created_by`), alias translation and blob sharing under `blob_publication`, and direct enqueueing (`source: session_message`) into the target session.
 - **Folders (`storage/management/folders.rs`)**: Lives exclusively in `management.sqlite` (`folders` table and `sessions.{folder,pinned}` columns) so folder listings and tree moves only touch single index pointers.
+
+## Session browsers
+
+The optional `browser` capability owns a headless Chromium process and a private
+temporary profile per live session. Set `browser_executable` to an absolute path
+on the **server**, or leave it empty for executable discovery. Set
+`defaults.tools.browser` for new sessions or change the individual session's
+built-in tool settings. The default is off. Disabling the capability, unloading
+the session or stopping the server releases the browser and its temporary profile.
+
+Server Chromium can reach loopback and LAN services on the development host.
+SSH authenticates incoming connections to Wish. A browser running on the server
+can reach the local API listener directly. Configure `bearer_token_env` to require
+a credential for those API requests as well.
+
+The model function and `wish browser --output-json --stdin` use the same page
+and action dispatcher. `observe` returns document-specific element references.
+`evaluate` accepts a JavaScript function and a JSON argument. It runs in the
+page and awaits the result. A shell script can orchestrate multiple browser
+commands across navigations. Screenshots and JSON results larger than 24 KiB
+are saved as session files. Run `wish browser --schema` for action arguments.
+
+Browser calls can select the server or client with the `target` field.
+`{"action":"targets"}` lists the two targets without launching Chromium.
+A client attachment uses a single-use ticket scoped to the session and to the
+client role. Each session accepts one attached device. Requests and replies
+carry a sequence number. Disabling the capability or closing the attachment
+ends the connection. An interrupted action has an uncertain outcome.
+Existing calls with no target use the server while no device is attached.
+When a device is attached, callers must specify the target.
+
+The Tauri sidebar renders its device page locally. The attachment carries agent commands and results. Server Chromium runs independently and creates a screenshot only for an explicit screenshot action.

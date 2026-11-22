@@ -42,6 +42,22 @@ where
   B: AsRef<[u8]>,
   E: std::fmt::Display,
 {
+  upload_published(app, owner, stream, temporary, name, None).await
+}
+
+pub(super) async fn upload_published<S, B, E>(
+  app: &Arc<App>,
+  owner: &str,
+  stream: S,
+  temporary: bool,
+  name: Option<String>,
+  publication: Option<super::session::BlobPublication>,
+) -> Result<Blob, ApplicationError>
+where
+  S: futures_util::Stream<Item = Result<B, E>>,
+  B: AsRef<[u8]>,
+  E: std::fmt::Display,
+{
   app.lifecycle.require_open()?;
   require_owner(app, owner).await?;
   if name.as_ref().is_some_and(|name| name.len() > 1024) {
@@ -49,7 +65,10 @@ where
   }
   let directory = app.data_dir.blobs(owner);
   let slot = app.get_session(owner).await?;
-  let publication = slot.blob_publication.clone().read_owned().await;
+  let publication = match publication {
+    Some(guard) => guard,
+    None => Arc::new(slot.blob_publication.clone().read_owned().await),
+  };
   slot.require_live()?;
   let blob = blobs::save_upload_stream(&directory, stream, blobs::MAX_UPLOAD_BYTES).await?;
   let id = blob.id.clone();
@@ -194,6 +213,7 @@ pub async fn delete(app: &Arc<App>, owner: &str, blob: &str) -> Result<(), Appli
   let directory = app.data_dir.blobs(owner);
   let blob = blob.to_owned();
   let slot = app.get_session(owner).await?;
+  let owner = owner.to_owned();
   let publication = slot
     .blob_publication
     .clone()
@@ -202,11 +222,14 @@ pub async fn delete(app: &Arc<App>, owner: &str, blob: &str) -> Result<(), Appli
   super::error::blocking(move || {
     let _publication = publication;
     slot.require_live()?;
+    let slot_app = slot.app.clone();
     slot.sender.with_image_dependencies(move |images| {
       if images.contains(&blob) {
         return Err(ApplicationError::conflict("This image is required by the current or standby generation, or a pending message; hide it from the Library instead"));
       }
-      Ok(blobs::library::delete(&directory, &blob)?)
+      blobs::library::delete(&directory, &blob)?;
+      if let Some(app) = slot_app.upgrade() { app.previews.revoke(&owner, Some(&blob)); }
+      Ok(())
     })?
   }).await
 }
@@ -243,7 +266,8 @@ pub async fn open(app: &Arc<App>, owner: &str, blob: &str) -> Result<BlobReader,
   let mut prefix = [0; 512];
   let count = file.read(&mut prefix).await.map_err(ApplicationError::internal)?;
   file.rewind().await.map_err(ApplicationError::internal)?;
-  let mime_type = blobs::sniff_mime_type(&prefix[..count]).into();
+  let mime_type =
+    blobs::stored_mime(&app.data_dir.blobs(owner), blob, &prefix[..count]).await.into();
   Ok(BlobReader { file, length, mime_type, version, path })
 }
 pub async fn metadata(

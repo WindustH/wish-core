@@ -1,9 +1,5 @@
 //! User-requested Library reclamation, with context and background-work ownership checks.
-use super::{
-  app::App,
-  error::{ApplicationError, blocking},
-  session::SessionSlot,
-};
+use super::{app::App, error::ApplicationError};
 use crate::{protocol::Message, storage::blobs::library};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,6 +15,8 @@ pub struct CleanupRequest {
   pub unused_hidden: bool,
   #[serde(default)]
   pub dry_run: bool,
+  #[serde(default)]
+  pub archive: bool,
   pub ids: Option<HashSet<String>>,
 }
 
@@ -26,6 +24,7 @@ pub struct CleanupRequest {
 pub struct CleanupResult {
   #[serde(flatten)]
   files: library::Cleanup,
+  archive: Option<Value>,
   unreadable_jobs: u64,
 }
 
@@ -52,29 +51,23 @@ fn collect_aliases(
   }
 }
 
-pub(super) fn with_dependencies<R: Send + 'static>(
-  slot: &SessionSlot,
-  apply: impl FnOnce(HashSet<String>) -> R + Send + 'static,
-) -> Result<R, ApplicationError> {
-  let environment = slot.aliases.snapshot();
-  Ok(slot.sender.with_resource_dependencies(
-    move |message: &Message, found| {
-      if let Ok(value) = serde_json::to_value(message) {
-        crate::session::resources::collect(&value, found);
-        // Alias syntax examples in managed environment instructions are not file references.
-        let metadata = message.get_metadata();
-        let environment_notice = matches!(message, Message::System { .. })
-          && (metadata["source"] == "wish_environment"
-            || metadata["next_generation_instruction"]["source"] == "wish_environment");
-        if !environment_notice {
-          collect_aliases(&value, &environment, found);
-        }
+pub(super) fn references(
+  environment: BTreeMap<String, String>,
+) -> impl Fn(&Message, &mut HashSet<String>) + Clone + Send + Sync + 'static {
+  move |message: &Message, found: &mut HashSet<String>| {
+    if let Ok(value) = serde_json::to_value(message) {
+      crate::session::resources::collect(&value, found);
+      // Alias syntax examples in managed environment instructions are not file references.
+      let metadata = message.get_metadata();
+      let environment_notice = matches!(message, Message::System { .. })
+        && (metadata["source"] == "wish_environment"
+          || metadata["next_generation_instruction"]["source"] == "wish_environment");
+      if !environment_notice {
+        collect_aliases(&value, &environment, found);
       }
-    },
-    apply,
-  )?)
+    }
+  }
 }
-
 pub async fn cleanup(
   app: &Arc<App>,
   owner: &str,
@@ -100,8 +93,14 @@ pub async fn cleanup(
     .try_write_owned()
     .map_err(|_| ApplicationError::conflict("files are being added to this session"))?;
   let directory = app.data_dir.blobs(owner);
-  blocking(move || {
-    let _session = session;
+  let app = app.clone();
+  let owner = owner.to_owned();
+  let permit =
+    if request.archive && !request.dry_run { Some(super::archives::permit()?) } else { None };
+  super::error::package_work(permit.is_some(), move || {
+    let _permit = permit;
+    let sender = session.create_sender();
+    let _frozen = sender.freeze_publication()?;
     let _publication = publication;
     slot.require_live()?;
     if slot.tools.background.is_active()
@@ -117,26 +116,78 @@ pub async fn cleanup(
     {
       return Err(ApplicationError::conflict("session is running"));
     }
-    with_dependencies(&slot, move |mut retained| {
-      let unreadable_jobs = super::media_generation::cleanup::visit(&directory, |_, job| {
-        if !job.terminal() {
-          retained.extend(job.blob_ids());
-        }
-      })
-      .map_err(ApplicationError::internal)?;
-      let files = library::cleanup(
+    let mut retained = session.resource_dependencies(references(slot.aliases.snapshot()))?;
+    let unreadable_jobs = super::media_generation::cleanup::visit(&directory, |_, job| {
+      if !job.terminal() {
+        retained.extend(job.blob_ids());
+      }
+    })
+    .map_err(ApplicationError::internal)?;
+    let mut ids = request.ids;
+    let mut archive = None;
+    let package_lock;
+    let _package_guard;
+    if request.archive && !request.dry_run {
+      let preview = library::cleanup(
         &directory,
         &retained,
         library::CleanupOptions {
           missing_links: request.missing_links,
           unused_hidden: request.unused_hidden,
           retain_all: unreadable_jobs > 0,
-          ids: request.ids.as_ref(),
+          ids: ids.as_ref(),
+        },
+        false,
+      )?;
+      if preview.unused_hidden + preview.missing_links > 0 {
+        let mut w = super::archives::Writer::new(
+          &app,
+          "library_cleanup",
+          Some(&owner),
+          &slot.get_descriptor().name,
+          None,
+          false,
+        )?;
+        super::archives::library_files(&mut w, &directory, &preview.ids)?;
+        let manifest = w.finish()?;
+        package_lock = super::archives::package_lock(super::archives::package_id(&manifest)?);
+        _package_guard = package_lock.lock().map_err(ApplicationError::internal)?;
+        super::archives::persist(&app, &manifest, None)?;
+        archive = Some(manifest);
+      }
+      ids = Some(preview.ids.into_iter().collect());
+    }
+    {
+      let mut removed_file = false;
+      let result = library::cleanup_tracked(
+        &directory,
+        &retained,
+        library::CleanupOptions {
+          missing_links: request.missing_links,
+          unused_hidden: request.unused_hidden,
+          retain_all: unreadable_jobs > 0,
+          ids: ids.as_ref(),
         },
         !request.dry_run,
-      )?;
-      Ok(CleanupResult { files, unreadable_jobs })
-    })?
+        &mut removed_file,
+      );
+      let files = match result {
+        Ok(files) => files,
+        Err(error) => {
+          if let Some(archive) = &archive {
+            if removed_file {
+              return Err(ApplicationError::internal(format!(
+                "library cleanup incomplete; retained archive {}: {error}",
+                super::archives::package_id(archive)?
+              )));
+            }
+            super::archives::discard_unapplied(&app, archive)?;
+          }
+          return Err(error.into());
+        }
+      };
+      Ok(CleanupResult { files, unreadable_jobs, archive })
+    }
   })
   .await
 }

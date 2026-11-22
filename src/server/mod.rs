@@ -18,11 +18,14 @@ pub(crate) async fn run() -> Result<(), Box<dyn std::error::Error>> {
   match std::env::args().nth(1).as_deref() {
     Some("--help" | "-h" | "help") => {
       println!(
-        "Wish: agent service and session commands\n\nServer: wish [--config PATH]\nCommands: docs, extension, history, task, blob, askuser, mcp, skill, session\nRun wish <command> --help for its manual. Session commands run inside a Wish session shell.\nOffline manual: wish docs (no server or configuration needed)."
+        "Wish: agent service and session commands\n\nServer: wish [--config PATH]\nCommands: docs, extension, history, task, blob, browser, askuser, mcp, skill, session\nRun wish <command> --help for its manual. Session commands run inside a Wish session shell.\nOffline manual: wish docs (no server or configuration needed)."
       );
       return Ok(());
     }
     Some("docs") => std::process::exit(cli::docs::run(args.skip(1).collect())),
+    Some("browser") => {
+      std::process::exit(cli::tool_commands::run("browser", args.skip(1).collect()).await)
+    }
     Some("askuser") => {
       std::process::exit(cli::tool_commands::run("askuser", args.skip(1).collect()).await)
     }

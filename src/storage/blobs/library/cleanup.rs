@@ -30,6 +30,16 @@ pub fn cleanup(
   options: CleanupOptions<'_>,
   apply: bool,
 ) -> Result<Cleanup, RepositoryError> {
+  cleanup_tracked(directory, retained, options, apply, &mut false)
+}
+
+pub fn cleanup_tracked(
+  directory: &Path,
+  retained: &HashSet<String>,
+  options: CleanupOptions<'_>,
+  apply: bool,
+  removed_file: &mut bool,
+) -> Result<Cleanup, RepositoryError> {
   let lock = WRITES.get(directory.to_path_buf());
   let _guard = lock.lock().map_err(RepositoryError::internal)?;
   let mut library = read(directory)?;
@@ -115,7 +125,7 @@ pub fn cleanup(
       result.bytes += bytes;
       if apply {
         match std::fs::remove_file(path) {
-          Ok(()) => {}
+          Ok(()) => *removed_file = true,
           Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
           Err(error) => return Err(RepositoryError::internal(error)),
         }

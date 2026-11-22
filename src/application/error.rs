@@ -118,10 +118,21 @@ pub async fn blocking<T: Send + 'static>(
   crate::utils::blocking::io(f).await.map_err(ApplicationError::internal)?
 }
 
+pub async fn package_work<T: Send + 'static>(
+  compress: bool,
+  work: impl FnOnce() -> Result<T, ApplicationError> + Send + 'static,
+) -> Result<T, ApplicationError> {
+  if compress {
+    crate::utils::blocking::cpu(work).await.map_err(ApplicationError::internal)?
+  } else {
+    blocking(work).await
+  }
+}
 impl From<crate::storage::repository_error::RepositoryError> for ApplicationError {
   fn from(error: crate::storage::repository_error::RepositoryError) -> Self {
     use crate::storage::repository_error::RepositoryError;
     match error {
+      RepositoryError::Conflict(message) => Self::conflict(message),
       RepositoryError::Invalid(message) => Self::invalid(message),
       RepositoryError::Missing => Self::not_found(),
       other => Self::internal(other),

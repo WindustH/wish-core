@@ -215,6 +215,22 @@ impl Aliases {
   pub fn root(&self) -> &Path {
     &self.directory
   }
+  pub fn snapshot_existing(directory: &Path) -> Result<BTreeMap<String, String>, ApplicationError> {
+    let names: Names = match crate::utils::bounded_file::read_sync(&directory.join(FILE), MAX_BYTES)
+    {
+      Ok(bytes) => serde_json::from_slice(&bytes).map_err(ApplicationError::internal)?,
+      Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+      Err(e) => return Err(ApplicationError::internal(e)),
+    };
+    Ok(
+      names
+        .blobs
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| (format!("WISH_BLOB_ID_{}", ordinal(i)), id))
+        .collect(),
+    )
+  }
   pub fn snapshot(&self) -> BTreeMap<String, String> {
     self.environment.read().unwrap().clone()
   }
@@ -473,6 +489,7 @@ pub async fn shorten_outcome(
     ToolOutcome::Report { .. }
       | ToolOutcome::Success(_)
       | ToolOutcome::SuccessWithMetadata { .. }
+      | ToolOutcome::SuccessWithInput { .. }
       | ToolOutcome::Failed(_)
       | ToolOutcome::Unknown(_)
   ) {
@@ -498,6 +515,13 @@ pub async fn shorten_outcome(
           let output = output.clone();
           let metadata = outcome.metadata();
           outcome = ToolOutcome::SuccessWithProjection { output, model_output, metadata };
+        }
+      }
+      ToolOutcome::SuccessWithInput { output, model_text, .. } if model_text.is_none() => {
+        let mut projected = output.clone();
+        aliases.shorten_value(&mut projected);
+        if projected != *output {
+          *model_text = Some(projected.to_string());
         }
       }
       ToolOutcome::Failed(text) | ToolOutcome::Unknown(text) => {
