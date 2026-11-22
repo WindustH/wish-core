@@ -234,7 +234,7 @@ pub fn build_router(app: Arc<App>, front: Arc<WebFront>) -> Router {
     .with_state(app)
 }
 async fn version() -> Json<Value> {
-  Json(json!({"name":"wish","version":env!("CARGO_PKG_VERSION")}))
+  Json(json!({"name":"wish","version":env!("CARGO_PKG_VERSION"),"input_request_id":true}))
 }
 /// Pages from other origins may call a server that requires a token: they cannot
 /// act without knowing it. A server without one answers its own origin only, so

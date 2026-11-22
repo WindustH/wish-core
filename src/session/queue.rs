@@ -4,13 +4,39 @@ use super::context::is_input;
 use super::history::Fact;
 use super::persistence::{SessionRecord, SessionTransaction};
 use super::{EntryId, EntryOrigin, EventId, Session, SessionError, SessionEvent, SessionState};
-use crate::{protocol::Message, storage::Storage};
+use crate::{
+  protocol::Message,
+  storage::{Storage, StorageError, StoredValue, Transaction},
+};
 use serde_json::Value;
 use std::sync::{
   Arc, Mutex,
   atomic::{AtomicU64, Ordering},
 };
 use tokio::sync::watch;
+use uuid::Uuid;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct InputReceipt {
+  digest: String,
+  entry: EntryId,
+}
+impl StoredValue for InputReceipt {
+  const KIND: &'static str = "wish_core::session::queue::InputReceipt";
+}
+
+fn read_receipt(
+  store: &mut Transaction<'_>,
+  name: &str,
+  digest: &str,
+) -> Result<Option<EntryId>, SessionError> {
+  match store.load_object::<InputReceipt>(name) {
+    Ok(receipt) if receipt.digest == digest => Ok(Some(receipt.entry)),
+    Ok(_) => Err(SessionError::InputRequestConflict),
+    Err(StorageError::NotFound(_)) => Ok(None),
+    Err(error) => Err(error.into()),
+  }
+}
 
 /// A durable input handle usable while the runner owns the session, and after it is gone. Sending
 /// commits the entry, queue reference and history event together; it never interrupts or changes a
@@ -35,12 +61,40 @@ impl SessionSender {
   }
   /// Appends `message` to the queue, where the next run collects it.
   pub fn enqueue_message(&self, message: Message) -> Result<EntryId, SessionError> {
+    self.enqueue_input(message, None).map(|(entry, _)| entry)
+  }
+  pub(crate) fn input_receipt(
+    &self,
+    id: Uuid,
+    digest: String,
+  ) -> Result<Option<EntryId>, SessionError> {
+    let name = format!("{}/input-receipts/{id}", self.key);
+    self.storage.rehearse(move |store| read_receipt(store, &name, &digest))
+  }
+  pub(crate) fn enqueue_input(
+    &self,
+    message: Message,
+    request: Option<(Uuid, String)>,
+  ) -> Result<(EntryId, bool), SessionError> {
     if !is_input(&message) {
       return Err(SessionError::InvalidInput);
     }
-    let entry = self.transact(move |transaction| transaction.append_input(message))?;
-    self.arrivals.announce();
-    Ok(entry)
+    let (entry, appended) = self.transact(move |transaction| {
+      let Some((id, digest)) = request else {
+        return Ok((transaction.append_input(message)?, true));
+      };
+      let name = format!("{}/input-receipts/{id}", transaction.key);
+      if let Some(entry) = read_receipt(transaction.store, &name, &digest)? {
+        return Ok((entry, false));
+      }
+      let entry = transaction.append_input(message)?;
+      transaction.store.create_object(&name, &InputReceipt { digest, entry })?;
+      Ok((entry, true))
+    })?;
+    if appended {
+      self.arrivals.announce();
+    }
+    Ok((entry, appended))
   }
   /// Records a note of the application's in the session's history, beside whatever runs.
   pub fn record_application_event(&self, value: Value) -> Result<EventId, SessionError> {

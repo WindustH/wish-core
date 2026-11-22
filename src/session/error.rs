@@ -16,6 +16,8 @@ pub enum SessionError {
   UnexpectedPhase,
   #[error("only user, system and developer messages can be enqueued")]
   InvalidInput,
+  #[error("request_id was already used for different input")]
+  InputRequestConflict,
   #[error("invalid entry reference: {0:?}")]
   InvalidEntry(EntryId),
   #[error("queued input cannot be used before consumption: {0:?}")]

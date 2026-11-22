@@ -320,15 +320,23 @@ impl SessionSlot {
   /// guard after copying peer resources could deadlock behind a waiting cleanup writer.
   pub(super) async fn enqueue_published(
     &self,
-    mut message: Message,
+    message: Message,
     publication: tokio::sync::OwnedRwLockReadGuard<()>,
   ) -> Result<EntryId, ApplicationError> {
+    self.enqueue_input(message, None, publication).await.map(|(entry, _)| entry)
+  }
+  pub(super) async fn enqueue_input(
+    &self,
+    mut message: Message,
+    request: Option<(uuid::Uuid, String)>,
+    publication: tokio::sync::OwnedRwLockReadGuard<()>,
+  ) -> Result<(EntryId, bool), ApplicationError> {
     self.require_live()?;
     let sender = self.sender.clone();
     super::model_images::retain_input(&self.blob_dir, &mut message).await?;
     blocking(move || {
       let _publication = publication;
-      Ok(sender.enqueue_message(message)?)
+      Ok(sender.enqueue_input(message, request)?)
     })
     .await
   }

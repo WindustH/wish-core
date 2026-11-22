@@ -352,11 +352,30 @@ pub async fn submit_input(
   let slot = app.get_session(&id).await?;
   let publication = slot.blob_publication.clone().read_owned().await;
   slot.require_live()?;
+  let request_id = input.request_id.clone();
+  let request = if let Some(raw) = &request_id {
+    let id = uuid::Uuid::parse_str(raw)
+      .map_err(|_| ApplicationError::invalid("request_id must be a UUID"))?;
+    let digest = crate::storage::blobs::blob_id(
+      &serde_json::to_vec(&input).map_err(ApplicationError::internal)?,
+    );
+    let sender = slot.sender.clone();
+    let lookup = digest.clone();
+    if let Some(entry) = blocking(move || Ok(sender.input_receipt(id, lookup)?)).await? {
+      return Ok(input_reply(entry, false, request_id.as_deref()));
+    }
+    Some((id, digest))
+  } else {
+    None
+  };
   // Reject an unusable selection before a user message becomes durable.
   slot.execution_provider(&app)?;
   let message = input::message(&app.data_dir.blobs(&id), input).await?;
   // Queue the message before releasing the foreground wait, so the next model step sees it.
-  let entry = slot.enqueue_published(message, publication).await?;
+  let (entry, appended) = slot.enqueue_input(message, request, publication).await?;
+  if !appended {
+    return Ok(input_reply(entry, false, request_id.as_deref()));
+  }
   let touched = slot.clone();
   if let Err(error) = blocking(move || touched.touch()).await {
     eprintln!("indexing queued input: {error}");
@@ -368,5 +387,13 @@ pub async fn submit_input(
   })
   .await
   .unwrap_or(false);
-  Ok(json!({"entry":entry,"first_user_message":first_user_message}))
+  Ok(input_reply(entry, first_user_message, request_id.as_deref()))
+}
+
+fn input_reply(entry: EntryId, first_user_message: bool, request_id: Option<&str>) -> Value {
+  let mut result = json!({"entry":entry,"first_user_message":first_user_message});
+  if let Some(request_id) = request_id {
+    result["request_id"] = json!(request_id);
+  }
+  result
 }

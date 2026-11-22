@@ -60,9 +60,10 @@ impl From<SessionError> for ApplicationError {
   fn from(error: SessionError) -> Self {
     match error {
       SessionError::Storage(e) => e.into(),
-      SessionError::Busy | SessionError::UnexpectedPhase | SessionError::Suspended => {
-        Self::conflict(error.to_string())
-      }
+      SessionError::Busy
+      | SessionError::UnexpectedPhase
+      | SessionError::Suspended
+      | SessionError::InputRequestConflict => Self::conflict(error.to_string()),
       _ => Self::invalid(error.to_string()),
     }
   }

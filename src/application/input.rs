@@ -23,12 +23,14 @@ pub struct Attachment {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub placeholder: Option<String>,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Input {
+  #[serde(default, skip_serializing)]
+  pub request_id: Option<String>,
   #[serde(default)]
   // Legacy clients may still send this hint; backend run policy is authoritative.
-  #[serde(rename = "background_shell")]
+  #[serde(rename = "background_shell", skip_serializing)]
   pub _background_shell: bool,
   pub text: String,
   #[serde(default)]
@@ -163,7 +165,10 @@ pub async fn message(blob_dir: &Path, mut input: Input) -> Result<Message, Appli
   if content.is_empty() {
     return Err(ApplicationError::invalid("message is empty"));
   }
-  let metadata = json!({"custom":input.metadata,"attachments":input.attachments,"input_text":input.text,"input_parts":parts});
+  let mut metadata = json!({"custom":input.metadata,"attachments":input.attachments,"input_text":input.text,"input_parts":parts});
+  if let Some(id) = input.request_id {
+    metadata["input_request_id"] = json!(id);
+  }
   let directory = blob_dir.to_path_buf();
   let library_metadata = metadata.clone();
   super::error::blocking(move || {
@@ -222,7 +227,13 @@ impl InitialInput {
     }
     message(
       directory,
-      Input { text: self.text, attachments, metadata: Value::Null, _background_shell: false },
+      Input {
+        request_id: None,
+        text: self.text,
+        attachments,
+        metadata: Value::Null,
+        _background_shell: false,
+      },
     )
     .await
   }
