@@ -246,10 +246,9 @@ impl Room {
     if guard
       .as_ref()
       .is_some_and(|i| i.handler.is_finished() || i.used.elapsed() >= Duration::from_secs(600))
+      && let Some(instance) = guard.take()
     {
-      if let Some(instance) = guard.take() {
-        instance.shutdown().await;
-      }
+      instance.shutdown().await;
     }
   }
   async fn instance(
@@ -261,15 +260,14 @@ impl Room {
     if !self.enabled.load(Ordering::Acquire) {
       return Err(Error::conflict("browser is disabled for this session"));
     }
-    if guard.as_ref().is_some_and(|i| i.handler.is_finished())
+    if (guard.as_ref().is_some_and(|i| i.handler.is_finished())
       || guard
         .as_mut()
         .and_then(|i| i.browser.get_mut_child())
-        .is_some_and(|child| child.try_wait().ok().flatten().is_some())
+        .is_some_and(|child| child.try_wait().ok().flatten().is_some()))
+      && let Some(stopped) = guard.take()
     {
-      if let Some(stopped) = guard.take() {
-        stopped.shutdown().await;
-      }
+      stopped.shutdown().await;
     }
     if guard.is_none() {
       let app = slot.app.upgrade().ok_or_else(Error::shutting_down)?;

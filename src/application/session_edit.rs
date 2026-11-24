@@ -275,11 +275,12 @@ pub(super) async fn release(
   let storage = app.storage.clone();
   let deletion = blocking(move || {
     shutdown?;
-    Ok(if let Some(mut session) = idle {
-      session.delete()?
+    if let Some(mut session) = idle {
+      session.delete()?;
     } else {
-      Session::delete_closed(&storage, &target)?
-    })
+      Session::delete_closed(&storage, &target)?;
+    }
+    Ok::<_, ApplicationError>(())
   })
   .await;
   app.sessions.lock().await.remove(id);
@@ -296,7 +297,12 @@ pub(super) async fn release(
   let db = app.management.clone();
   let owner = id.to_owned();
   blocking(move || {
-    Ok(if let Some(id) = archive { db.finish_release(&id)? } else { db.finish_delete(&owner)? })
+    if let Some(id) = archive {
+      db.finish_release(&id)?;
+    } else {
+      db.finish_delete(&owner)?;
+    }
+    Ok(())
   })
   .await?;
   app.reclaim.notify_one();

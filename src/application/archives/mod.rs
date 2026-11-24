@@ -190,11 +190,12 @@ pub async fn recover(app: &Arc<App>) -> Result<(), Error> {
       let db = app.management.clone();
       let target = owner.clone();
       blocking(move || {
-        Ok(if let Some(id) = archive {
-          db.finish_release(&id)?
+        if let Some(id) = archive {
+          db.finish_release(&id)?;
         } else {
-          db.finish_delete(&target)?
-        })
+          db.finish_delete(&target)?;
+        }
+        Ok(())
       })
       .await?;
       app.reclaim.notify_one();

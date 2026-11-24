@@ -185,10 +185,9 @@ impl Writer {
         if let Ok(blob) =
           serde_json::from_slice::<crate::storage::blobs::Blob>(&buf[..len as usize])
           && blob.linked
+          && let Some(links) = self.manifest["external_links"].as_array_mut()
         {
-          if let Some(links) = self.manifest["external_links"].as_array_mut() {
-            links.push(json!({"id":blob.id,"path":blob.path}));
-          }
+          links.push(json!({"id":blob.id,"path":blob.path}));
         }
       }
       if prefix == "blobs" && relative == Path::new(".library.json") {

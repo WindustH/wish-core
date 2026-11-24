@@ -107,7 +107,7 @@ pub async fn prune(app: Arc<App>, input: PruneRequest) -> Result<Value, Applicat
     let record = match blocking(move || Ok(db.read(&owner)?)).await {
       Ok(record) => record,
       Err(e) if every && e.kind == super::error::ErrorKind::NotFound => continue,
-      Err(e) => return Err(e.into()),
+      Err(e) => return Err(e),
     };
     let (mut hot, publication) = if let Some(slot) = &slot {
       let Some(session) = slot.lock_idle().await else {

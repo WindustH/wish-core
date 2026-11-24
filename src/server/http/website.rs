@@ -153,13 +153,12 @@ pub async fn dispatch(State(proxy): State<Proxy>, mut req: Request, next: Next) 
     // Same-site HTTP clients can use the ordinary host-only cookie above.
     if !secure
       && (loopback || req.headers().get("x-wish-preview-loopback").is_some_and(|h| h == "1"))
-    {
-      if let Ok(cookie) = HeaderValue::from_str(&format!(
+      && let Ok(cookie) = HeaderValue::from_str(&format!(
         "wish_view_partitioned={}; Path=/; HttpOnly; SameSite=None; Secure; Partitioned",
         grant.secret
-      )) {
-        response.headers_mut().append(header::SET_COOKIE, cookie);
-      }
+      ))
+    {
+      response.headers_mut().append(header::SET_COOKIE, cookie);
     }
     return response;
   }

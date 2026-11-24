@@ -481,29 +481,28 @@ impl<T: Transport + Send + Sync> Client<T> {
     if resources {
       self.apply_resources(&mut body, &images, &request.model).await?;
     }
-    if let Some(turn) = &self.turn {
-      if turn.protocol
+    if let Some(turn) = &self.turn
+      && turn.protocol
         == crate::protocol::model_use::incremental::IncrementalProtocol::OpenaiConversations
-        && turn.previous.is_none()
-      {
-        let parent = path.trim_end_matches('/').strip_suffix("/responses").ok_or_else(|| {
-          Error::Build("OpenAI Conversations needs a Responses endpoint path".into())
-        })?;
-        let mut create = Draft::post_json(&serde_json::json!({}))?;
-        create.path = Some(format!("{parent}/conversations"));
-        let id = turn
-          .conversation
-          .get_or_try_init(|| async {
-            let conversation = self.resource_json(create).await?;
-            conversation["id"]
-              .as_str()
-              .filter(|id| !id.is_empty())
-              .map(str::to_owned)
-              .ok_or_else(|| Error::Malformed("missing OpenAI conversation ID".into()))
-          })
-          .await?;
-        body["conversation"] = serde_json::json!(id);
-      }
+      && turn.previous.is_none()
+    {
+      let parent = path.trim_end_matches('/').strip_suffix("/responses").ok_or_else(|| {
+        Error::Build("OpenAI Conversations needs a Responses endpoint path".into())
+      })?;
+      let mut create = Draft::post_json(&serde_json::json!({}))?;
+      create.path = Some(format!("{parent}/conversations"));
+      let id = turn
+        .conversation
+        .get_or_try_init(|| async {
+          let conversation = self.resource_json(create).await?;
+          conversation["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| Error::Malformed("missing OpenAI conversation ID".into()))
+        })
+        .await?;
+      body["conversation"] = serde_json::json!(id);
     }
     if resources
       && matches!(self.model_use, ModelUseProtocol::AnthropicMessages(_))

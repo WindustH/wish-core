@@ -121,12 +121,12 @@ async fn call_segment(
   observe: &mut (impl FnMut(&SessionEvent) + Send),
 ) -> SegmentResult {
   match control
-    .run_until_cancelled(async {
+    .run_until_cancelled(Box::pin(async {
       match generation {
         Some(id) => model_caller.call_turn(request, id).await,
         None => model_caller.call(request).await,
       }
-    })
+    }))
     .await
   {
     None => finalize_interruption(StreamAccumulator::new()),

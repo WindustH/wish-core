@@ -138,7 +138,7 @@ impl<'a> Images<'a> {
             *inline += data.len();
             // Use JSON's string escaping for the MIME prefix and the encoded data too;
             // legacy input may contain invalid Base64 and must never inject raw JSON.
-            out.write_all(&[b'"'])?;
+            out.write_all(b"\"")?;
             for segment in [prefix, *data] {
               if segment.bytes().all(|byte| byte >= 0x20 && byte != b'"' && byte != b'\\') {
                 out.write_all(segment.as_bytes())?;
@@ -147,33 +147,33 @@ impl<'a> Images<'a> {
                 out.write_all(&encoded.as_bytes()[1..encoded.len() - 1])?;
               }
             }
-            out.write_all(&[b'"'])?;
+            out.write_all(b"\"")?;
             return Ok(());
           }
         }
         serde_json::to_writer(out, value)?;
       }
       Value::Array(values) => {
-        out.write_all(&[b'['])?;
+        out.write_all(b"[")?;
         for (index, value) in values.iter().enumerate() {
           if index > 0 {
-            out.write_all(&[b','])?;
+            out.write_all(b",")?;
           }
           self.write(value, out, inline)?;
         }
-        out.write_all(&[b']'])?;
+        out.write_all(b"]")?;
       }
       Value::Object(values) => {
-        out.write_all(&[b'{'])?;
+        out.write_all(b"{")?;
         for (index, (key, value)) in values.iter().enumerate() {
           if index > 0 {
-            out.write_all(&[b','])?;
+            out.write_all(b",")?;
           }
           serde_json::to_writer(&mut *out, key)?;
-          out.write_all(&[b':'])?;
+          out.write_all(b":")?;
           self.write(value, out, inline)?;
         }
-        out.write_all(&[b'}'])?;
+        out.write_all(b"}")?;
       }
       _ => serde_json::to_writer(out, value)?,
     }
